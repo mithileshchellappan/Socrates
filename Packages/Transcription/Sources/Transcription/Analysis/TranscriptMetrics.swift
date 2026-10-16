@@ -88,6 +88,31 @@ public struct TranscriptMetrics: Hashable, Sendable, Codable {
     public var labelsJudged: Int
     /// Chunks labelled with another language than was spoken (`written` = the label).
     public var labelMismatches: [LanguageMismatch]
+    /// Every reference span with the language its text is written in. Finer than the 30 s
+    /// windows: shows whether a short switch was kept, translated or dropped.
+    public var spans: [SpanResult]
+
+    /// What became of one stretch of known spoken language.
+    public struct SpanResult: Hashable, Sendable, Codable {
+        public var range: TimeRange
+        public var spoken: String
+        /// Language of the text whose segment midpoints lie in the span; nil when there is no
+        /// text or too little to tell.
+        public var written: String?
+        public var words: Int
+    }
+
+    /// Spans spoken in `spoken`, split by outcome: written in that language, written in
+    /// another one (translated), without text, or too short or mixed to tell.
+    public func spanOutcome(spoken: String) -> (kept: Int, translated: Int, missing: Int, unclear: Int) {
+        let matching = spans.filter { $0.spoken == spoken }
+        return (
+            matching.count { $0.written == spoken },
+            matching.count { $0.written != nil && $0.written != spoken },
+            matching.count { $0.words == 0 },
+            matching.count { $0.written == nil && $0.words > 0 }
+        )
+    }
 
     public var coverage: Double { speechSeconds > 0 ? coveredSpeechSeconds / speechSeconds : 0 }
     public var labelSwitches: Int { max(languageRuns.count - 1, 0) }
@@ -153,6 +178,12 @@ public struct TranscriptMetrics: Hashable, Sendable, Codable {
             windowStart += windowLength
         }
 
+        let spans = (reference?.spans ?? []).filter { $0.range.start < duration }.map { span in
+            let text = withText.filter { span.range.contains(($0.start + $0.end) / 2) }.map(\.text).joined(separator: " ")
+            let words = RepetitionDetector.words(in: text).filter { !RepetitionDetector.normalize($0).isEmpty }.count
+            return SpanResult(range: span.range, spoken: span.language, written: TextLanguage.guess(text, minimumHits: 3), words: words)
+        }
+
         return TranscriptMetrics(
             segmentCount: withText.count,
             wordCount: words.count,
@@ -167,7 +198,8 @@ public struct TranscriptMetrics: Hashable, Sendable, Codable {
             judgedWindows: judged,
             mismatches: mismatches,
             labelsJudged: labelsJudged,
-            labelMismatches: labelMismatches
+            labelMismatches: labelMismatches,
+            spans: spans
         )
     }
 }

@@ -8,8 +8,11 @@ import StudyCore
 /// 3. First pass: chunks decoded in batches, each with its own language decision.
 /// 4. Loop guard: a chunk whose text repeats an n-gram is re-decoded at higher temperatures in
 ///    the language it was detected in; the decoding with the fewest repeated words wins.
-/// 5. Clean-up: repetitions that survive are collapsed to one copy, silence hallucinations dropped.
-/// 6. Missing-speech guard: detected speech without text (≥ 3 s) is re-decoded on its own.
+/// 5. Language boundary guard: a chunk next to a chunk of another language is split at its
+///    longest pause and each half picks its own language (kept only if the halves differ).
+/// 6. Clean-up: repetitions that survive are collapsed to one copy, silence hallucinations dropped.
+/// 7. Missing-speech guard: detected speech without text (≥ 3 s) is re-decoded on its own, with
+///    its own language decision.
 public struct GuardedTranscriber: Sendable {
     public var decoder: any ChunkDecoder
     public var speechDetector: SpeechActivityDetector
@@ -84,6 +87,12 @@ public struct GuardedTranscriber: Sendable {
             try await repairLoops(in: decodable.filter { states[$0].loopWords > 0 }, states: &states, context: context)
         }
 
+        // Language boundaries: a chunk next to a chunk of another language usually holds the switch
+        // itself; its minority language would come out translated or not at all.
+        if options.guards.refineLanguageBoundaries, case .detect = context.firstPassLanguage {
+            states = try await refineLanguageBoundaries(states, speech: speech, context: context)
+        }
+
         if options.guards.cleanUpText {
             for index in states.indices where states[index].loopWords > 0 {
                 states[index].collapseLoops(cleaner: cleaner, detector: loopDetector)
@@ -98,7 +107,7 @@ public struct GuardedTranscriber: Sendable {
             minimumSpeech: options.guards.minimumMissingSpeech
         )
         if options.guards.redecodeMissingSpeech, !found.isEmpty {
-            let recovered = try await recover(found, speech: speech, existing: segments, states: states, context: context)
+            let recovered = try await recover(found, speech: speech, existing: segments, context: context)
             gaps = recovered.gaps
             segments = cleaner.merge(segments + recovered.segments)
         } else {
@@ -147,21 +156,88 @@ public struct GuardedTranscriber: Sendable {
         Log.transcription.debug("Loop guard: \(looping.count, privacy: .public) chunk(s) still repeat after re-decoding")
     }
 
+    // MARK: - Language boundary guard
+
+    /// Splits each chunk that borders a chunk of another language at its longest pause and decodes
+    /// both halves with their own language decision. The split is kept only when the halves come
+    /// back in different languages without looping; otherwise the chunk had no switch inside.
+    func refineLanguageBoundaries(_ states: [ChunkState], speech: [TimeRange], context: Context) async throws -> [ChunkState] {
+        var candidates: [(index: Int, halves: [PlannedChunk])] = []
+        for index in states.indices {
+            guard let language = states[index].language else { continue }
+            let bordersOtherLanguage = [index - 1, index + 1].contains { neighbour in
+                guard states.indices.contains(neighbour), let other = states[neighbour].language else { return false }
+                return other != language
+            }
+            guard bordersOtherLanguage, let halves = split(states[index].chunk, speech: speech) else { continue }
+            candidates.append((index, halves))
+        }
+        guard !candidates.isEmpty else { return states }
+
+        let halves = candidates.flatMap(\.halves)
+        var outcomes: [Result<ChunkDecodeResult, any Error>] = []
+        let batchSize = max(decoder.preferredBatchSize, 1)
+        for batchStart in stride(from: 0, to: halves.count, by: batchSize) {
+            try Task.checkCancellation()
+            let batch = halves[batchStart..<min(batchStart + batchSize, halves.count)]
+            outcomes += try await decoder.decode(batch.map { half in
+                request(for: half.samples, context: context, language: context.firstPassLanguage,
+                        temperature: 0, fallbackCount: 5, prompt: context.prompt)
+            })
+        }
+
+        var refined = states
+        // Back to front so replacing one state with two keeps earlier indexes valid.
+        for (number, candidate) in candidates.enumerated().reversed() {
+            let first = 2 * number
+            guard first + 1 < outcomes.count,
+                  case .success(let left) = outcomes[first], case .success(let right) = outcomes[first + 1],
+                  !left.language.isEmpty, !right.language.isEmpty, left.language != right.language else { continue }
+            var leftState = ChunkState(chunk: candidate.halves[0])
+            var rightState = ChunkState(chunk: candidate.halves[1])
+            try leftState.acceptFirstPass(.success(left), context: context, detector: loopDetector)
+            try rightState.acceptFirstPass(.success(right), context: context, detector: loopDetector)
+            guard leftState.loopWords == 0, rightState.loopWords == 0 else { continue }
+            leftState.markRepaired(.languageSplit)
+            rightState.markRepaired(.languageSplit)
+            refined.replaceSubrange(candidate.index...candidate.index, with: [leftState, rightState])
+        }
+        return refined
+    }
+
+    /// The chunk cut in its longest pause, if both halves keep at least a second of speech.
+    func split(_ chunk: PlannedChunk, speech: [TimeRange]) -> [PlannedChunk]? {
+        let inner = TimeRange(start: chunk.time.start + 1, end: chunk.time.end - 1)
+        guard inner.duration > 0,
+              let pause = TimeRanges.subtract(speech, from: [inner]).max(by: { $0.duration < $1.duration }) else { return nil }
+        let rate = Double(Self.sampleRate)
+        let cut = min(max(Int((pause.midpoint * rate).rounded()), chunk.samples.lowerBound + 1), chunk.samples.upperBound - 1)
+        let leftTime = TimeRange(start: chunk.time.start, end: Double(cut) / rate)
+        let rightTime = TimeRange(start: Double(cut) / rate, end: chunk.time.end)
+        let leftSpeech = TimeRanges.seconds(of: speech, within: leftTime)
+        let rightSpeech = TimeRanges.seconds(of: speech, within: rightTime)
+        guard leftSpeech >= 1, rightSpeech >= 1 else { return nil }
+        return [
+            PlannedChunk(samples: chunk.samples.lowerBound..<cut, time: leftTime, speechSeconds: leftSpeech),
+            PlannedChunk(samples: cut..<chunk.samples.upperBound, time: rightTime, speechSeconds: rightSpeech),
+        ]
+    }
+
     // MARK: - Missing-speech guard
 
     private func recover(
         _ found: [SpeechCoverage.Gap],
         speech: [TimeRange],
         existing: [TranscribedSegment],
-        states: [ChunkState],
         context: Context
     ) async throws -> (segments: [TranscribedSegment], gaps: [SpeechGap]) {
         let rate = Double(Self.sampleRate)
         let total = TimeRange(start: 0, end: Double(context.samples.count) / rate)
         let covered = TimeRanges.union(existing.map { TimeRange(start: $0.start, end: $0.end) })
 
-        // Each gap becomes one or more ≤ 30 s pieces, decoded in the language of the chunk around it.
-        struct Piece { var gap: Int; var samples: Range<Int>; var language: String }
+        // Each gap becomes one or more ≤ 30 s pieces. With a detecting strategy each piece gets its
+        // own language decision: speech dropped inside a chunk is often in the chunk's other language.
+        struct Piece { var gap: Int; var samples: Range<Int>; var language: ChunkLanguage }
         var pieces: [Piece] = []
         for (gapIndex, gap) in found.enumerated() {
             let window = gap.range.expanded(by: 0.5).clamped(to: total)
@@ -172,7 +248,7 @@ public struct GuardedTranscriber: Sendable {
                 let clipped = region.clamped(to: window)
                 return clipped.duration > 0 ? TimeRange(start: clipped.start - window.start, end: clipped.end - window.start) : nil
             }
-            let language = states.first { $0.chunk.time.contains(gap.range.midpoint) }?.language ?? context.fallbackLanguage
+            let language = context.firstPassLanguage
             for sub in planner.plan(sampleCount: last - first, speech: local) {
                 pieces.append(Piece(gap: gapIndex, samples: (first + sub.samples.lowerBound)..<(first + sub.samples.upperBound), language: language))
             }
@@ -185,7 +261,7 @@ public struct GuardedTranscriber: Sendable {
             try Task.checkCancellation()
             let batch = Array(pieces[batchStart..<min(batchStart + batchSize, pieces.count)])
             let outcomes = try await decoder.decode(batch.map { piece in
-                request(for: piece.samples, context: context, language: .fixed(piece.language),
+                request(for: piece.samples, context: context, language: piece.language,
                         temperature: 0, fallbackCount: 5, prompt: nil)
             })
             for (offset, piece) in batch.enumerated() where offset < outcomes.count {
@@ -244,7 +320,7 @@ public struct GuardedTranscriber: Sendable {
                 segment.end = kept[kept.count - 1].end
             }
             guard SegmentPostProcessor.hasContent(segment.text),
-                  loopDetector.repetitions(in: RepetitionDetector.words(in: segment.text)).isEmpty else { continue }
+                  ChunkState.loops(in: [segment], detector: loopDetector).redundantWords == 0 else { continue }
             segment.repair = .gapRecovered
             accepted.append(segment)
         }
@@ -363,10 +439,21 @@ struct ChunkState: Sendable {
             Log.transcription.error("Chunk at \(start, privacy: .public) s failed: \(String(describing: error), privacy: .public)")
             segments = []
         }
-        let words = Self.words(of: segments)
-        loopsFound = detector.repetitions(in: words).count
-        loopWords = detector.redundantWordCount(in: words)
+        let score = Self.loops(in: segments, detector: detector)
+        loopsFound = score.loops
+        loopWords = score.redundantWords
         loopsRemaining = loopsFound
+    }
+
+    /// Repetition loops in the segments' words, including loops inside hyphenated tokens.
+    static func loops(in segments: [TranscribedSegment], detector: RepetitionDetector) -> (loops: Int, redundantWords: Int) {
+        let words = words(of: segments)
+        let repetitions = detector.repetitions(in: words)
+        let inToken = words.filter { RepetitionDetector.hyphenatedCopies(in: $0) >= RepetitionDetector.minimumHyphenatedCopies }
+        return (
+            repetitions.count + inToken.count,
+            repetitions.reduce(0) { $0 + $1.redundantWords } + RepetitionDetector.hyphenatedRedundancy(in: words)
+        )
     }
 
     /// Replaces the chunk's text with a re-decoding when it repeats less without losing content.
@@ -377,32 +464,45 @@ struct ChunkState: Sendable {
         detector: RepetitionDetector
     ) {
         let candidate = Self.place(result, in: chunk, cleaner: context.cleaner)
-        let candidateWords = Self.words(of: candidate)
-        let candidateLoopWords = detector.redundantWordCount(in: candidateWords)
-        let currentContent = Self.words(of: segments).count - loopWords
-        let candidateContent = candidateWords.count - candidateLoopWords
-        guard candidateLoopWords < loopWords, candidateContent * 2 >= currentContent else { return }
+        let candidateScore = Self.loops(in: candidate, detector: detector)
+        let currentContent = Self.contentWords(of: segments, detector: detector)
+        let candidateContent = Self.contentWords(of: candidate, detector: detector)
+        guard candidateScore.redundantWords < loopWords, candidateContent * 2 >= currentContent else { return }
         segments = candidate.map { segment in
             var segment = segment
             segment.repair = .loopRedecoded
             return segment
         }
-        loopWords = candidateLoopWords
-        loopsRemaining = detector.repetitions(in: candidateWords).count
+        loopWords = candidateScore.redundantWords
+        loopsRemaining = candidateScore.loops
         self.temperature = temperature
+    }
+
+    mutating func markRepaired(_ repair: SegmentRepair) {
+        segments = segments.map { segment in
+            var segment = segment
+            segment.repair = repair
+            return segment
+        }
     }
 
     mutating func collapseLoops(cleaner: SegmentPostProcessor, detector: RepetitionDetector) {
         let collapsed = cleaner.collapseRepetitions(in: segments, detector: detector)
         segments = collapsed.segments
-        let remaining = detector.repetitions(in: Self.words(of: segments))
-        loopWords = remaining.reduce(0) { $0 + $1.redundantWords }
-        loopsRemaining = remaining.count
+        let remaining = Self.loops(in: segments, detector: detector)
+        loopWords = remaining.redundantWords
+        loopsRemaining = remaining.loops
     }
 
     static func place(_ result: ChunkDecodeResult, in chunk: PlannedChunk, cleaner: SegmentPostProcessor) -> [TranscribedSegment] {
         let shifted = result.segments.map { GuardedTranscriber.shift($0, by: chunk.time.start) }
         return cleaner.clean(shifted, within: chunk.time)
+    }
+
+    /// Words outside repeated n-grams; a token looping inside itself counts as one word.
+    static func contentWords(of segments: [TranscribedSegment], detector: RepetitionDetector) -> Int {
+        let words = words(of: segments)
+        return words.count - detector.redundantWordCount(in: words)
     }
 
     static func words(of segments: [TranscribedSegment]) -> [String] {

@@ -111,6 +111,61 @@ public struct RepetitionDetector: Hashable, Sendable {
         return copies
     }
 
+    // MARK: Loops inside one token
+
+    /// Copies a token needs before an in-token repetition counts as a loop.
+    public static let minimumHyphenatedCopies = 4
+
+    /// Longest run of one unit repeated inside a hyphenated token: Whisper sometimes loops
+    /// without spaces ("Folle-Folle-Folle-…" → the run length). 1 for ordinary words.
+    public static func hyphenatedCopies(in word: String) -> Int {
+        let parts = word.split(separator: "-", omittingEmptySubsequences: false).map { normalize(String($0)) }
+        var best = 1
+        var run = 1
+        for index in parts.indices.dropFirst() {
+            if !parts[index].isEmpty, parts[index] == parts[index - 1] {
+                run += 1
+                best = max(best, run)
+            } else {
+                run = 1
+            }
+        }
+        return best
+    }
+
+    /// Extra copies inside looping hyphenated tokens, summed over `words`.
+    public static func hyphenatedRedundancy(in words: [String]) -> Int {
+        words.reduce(0) { total, word in
+            let copies = hyphenatedCopies(in: word)
+            return copies >= minimumHyphenatedCopies ? total + copies - 1 : total
+        }
+    }
+
+    /// The token with every run of ≥ `minimumHyphenatedCopies` identical parts reduced to one
+    /// part, and a trailing cut-off fragment of the unit dropped.
+    public static func collapsingHyphenatedLoop(_ word: String) -> String {
+        guard hyphenatedCopies(in: word) >= minimumHyphenatedCopies else { return word }
+        let parts = word.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+        var kept: [String] = []
+        var index = 0
+        while index < parts.count {
+            var end = index + 1
+            while end < parts.count, !parts[end].isEmpty, normalize(parts[end]) == normalize(parts[index]) { end += 1 }
+            if end - index >= minimumHyphenatedCopies {
+                kept.append(parts[index])
+                // "…-Folle-F": a last part that is a cut-off copy of the unit goes too.
+                if end == parts.count - 1, !normalize(parts[end]).isEmpty,
+                   normalize(parts[index]).hasPrefix(normalize(parts[end])) {
+                    end += 1
+                }
+            } else {
+                kept.append(contentsOf: parts[index..<end])
+            }
+            index = end
+        }
+        return kept.joined(separator: "-")
+    }
+
     /// Lowercased word without surrounding punctuation.
     public static func normalize(_ word: String) -> String {
         word.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines))

@@ -37,14 +37,17 @@ enum Bench {
           Download and compile the Whisper model (large-v3-turbo).
       run --audio FILE --out FILE.json --strategy forced-en|forced-de|detect-any|detect-de-en
           [--pipeline builtin|engine] [--tuning lecture|whisperkit] [--no-guards]
-          [--glossary "a, b, c"] [--limit SECONDS] [--label NAME] [--models DIR]
+          [--glossary "a, b, c"] [--limit SECONDS | --start SECONDS --end SECONDS] [--label NAME]
+          [--models DIR]
           builtin = WhisperKit's own VAD chunking, no guards; engine = WhisperKitEngine.
+          --start/--end transcribe an excerpt; times in the output stay on the file's clock.
           Writes the transcript (lecture text) as JSON: keep FILE under .data/.
-      langmap --audio FILE --out FILE.json [--margin 0.15]
-          Reference language per 30 s window from forced en/de decoding likelihood.
+      langmap --audio FILE --out FILE.json [--margin 0.15] [--base OLD.json --windows "870-900,2190-2220"]
+          Reference language per 30 s window from forced en/de decoding likelihood. With --base,
+          only the listed windows are decoded again and replace theirs in OLD.
       analyze --audio FILE --runs A.json B.json … [--srt FILE.srt …]
-          [--reference "de:0-371,en:371-" | --reference-file LANGMAP.json] [--json FILE]
-          Prints text-free metrics as a Markdown table.
+          [--reference "de:0-371,en:371-" | --reference-file LANGMAP.json] [--range START-END] [--json FILE]
+          Prints text-free metrics as a Markdown table. --range limits every run to one excerpt.
       probe --audio FILE --strategy S --start SECONDS [--end SECONDS] [--temperature T]
           [--fallbacks N] [--raw [--language L] [--words] [--special] [--suppress-blank]
           [--no-first-token-threshold]]
@@ -96,8 +99,17 @@ enum Bench {
         let loadSeconds = loadStarted.duration(to: .now).seconds
 
         var samples = try AudioTimeline.load(.file(URL(filePath: audioPath)))
+        let rate = Double(AudioTimeline.sampleRate)
         if let limit = options.value("--limit").flatMap(Double.init) {
-            samples = Array(samples.prefix(Int(limit * Double(AudioTimeline.sampleRate))))
+            samples = Array(samples.prefix(Int(limit * rate)))
+        }
+        var offset = 0.0
+        if let start = options.value("--start").flatMap(Double.init) {
+            let end = options.value("--end").flatMap(Double.init) ?? Double(samples.count) / rate
+            let first = max(0, min(Int(start * rate), samples.count))
+            let last = max(first, min(Int(end * rate), samples.count))
+            samples = Array(samples[first..<last])
+            offset = Double(first) / rate
         }
         let duration = Double(samples.count) / Double(AudioTimeline.sampleRate)
         Console.error("transcribing \(Int(duration)) s with \(strategyName) via \(pipeline)…")
@@ -113,6 +125,7 @@ enum Bench {
             glossaryTerms: glossary.count,
             tuning: options.value("--tuning") ?? "lecture",
             audioSeconds: duration,
+            offset: offset == 0 ? nil : offset,
             wallSeconds: 0,
             modelLoadSeconds: loadSeconds,
             chunks: [],
@@ -153,6 +166,7 @@ enum Bench {
             throw BenchError.usage("unknown pipeline \(pipeline)")
         }
 
+        if offset != 0 { record.shift(by: offset) }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let outURL = URL(filePath: outPath)
@@ -235,6 +249,14 @@ enum Bench {
             if TimeRanges.seconds(of: speech, within: window) >= 3 { windows.append(window) }
             start += 30
         }
+        var base: LanguageMap?
+        if let basePath = options.value("--base") {
+            base = try JSONDecoder().decode(LanguageMap.self, from: Data(contentsOf: URL(filePath: basePath)))
+            let starts = (options.value("--windows") ?? "").split(separator: ",").compactMap { item in
+                item.split(separator: "-").first.flatMap { Double($0) }
+            }
+            windows = windows.filter { window in starts.contains { abs($0 - window.start) < 0.5 } }
+        }
         func decodeAll(_ language: String) async throws -> [ChunkDecodeResult?] {
             var results: [ChunkDecodeResult?] = []
             for batchStart in stride(from: 0, to: windows.count, by: decoder.preferredBatchSize) {
@@ -260,22 +282,53 @@ enum Bench {
             let de = german[index].map(Self.meanLogProb) ?? -10
             let enText = english[index].map { $0.segments.map(\.text).joined(separator: " ") } ?? ""
             let deText = german[index].map { $0.segments.map(\.text).joined(separator: " ") } ?? ""
+            let enWords = RepetitionDetector.words(in: enText).count
+            let deWords = RepetitionDetector.words(in: deText).count
+            // A forced decoding that loops or collapses scores a high likelihood without being
+            // evidence ("Folle-Folle-Folle-…"), so it has to be well-formed to count.
+            let enValid = english[index].map { Self.isWellFormed($0, words: enWords, otherWords: deWords) } ?? false
+            let deValid = german[index].map { Self.isWellFormed($0, words: deWords, otherWords: enWords) } ?? false
             var label = "mixed"
-            if en - de >= margin { label = "en" }
-            if de - en >= margin { label = "de" }
+            if enValid, en - de >= margin || !deValid { label = "en" }
+            if deValid, de - en >= margin || !enValid { label = "de" }
+            if !enValid, !deValid { label = "mixed" }
             // Forced German that still comes out English (or the reverse) settles it.
-            if TextLanguage.guess(deText) == "en" { label = "en" }
-            if TextLanguage.guess(enText) == "de" { label = "de" }
-            map.windows.append(.init(range: window, english: en, german: de, label: label))
+            if deValid, TextLanguage.guess(deText) == "en" { label = "en" }
+            if enValid, TextLanguage.guess(enText) == "de" { label = "de" }
+            map.windows.append(.init(
+                range: window, english: en, german: de, englishWords: enWords, germanWords: deWords,
+                englishValid: enValid, germanValid: deValid, label: label
+            ))
+        }
+        if var merged = base {
+            for window in map.windows {
+                if let index = merged.windows.firstIndex(where: { abs($0.range.start - window.range.start) < 0.5 }) {
+                    merged.windows[index] = window
+                }
+            }
+            map = merged
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(map).write(to: URL(filePath: outPath))
         let counts = Dictionary(grouping: map.windows, by: \.label).mapValues(\.count)
         Console.line("language map: \(counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")) windows in \(started.duration(to: .now))")
-        for window in map.windows where window.label != "en" {
-            Console.line(String(format: "  %@ %@ en %.2f de %.2f", window.label, "\(window.range)", window.english, window.german))
+        for window in map.windows where window.label != "en" || window.englishValid == false {
+            let validity = "\(window.englishValid.map { $0 ? "ok" : "bad" } ?? "?")/\(window.germanValid.map { $0 ? "ok" : "bad" } ?? "?")"
+            Console.line(String(format: "  %@ %@ en %.2f de %.2f en/de %@", window.label, "\(window.range)", window.english, window.german, validity))
         }
+    }
+
+    /// No compression-ratio failure, no repetition loop (also inside hyphenated words) and at
+    /// least 40 % of the words the other language's decoding produced.
+    static func isWellFormed(_ result: ChunkDecodeResult, words: Int, otherWords: Int) -> Bool {
+        let text = result.segments.map(\.text).joined(separator: " ")
+        let tokens = RepetitionDetector.words(in: text)
+        return words > 0
+            && result.segments.allSatisfy { $0.compressionRatio <= 2.4 }
+            && RepetitionDetector.loopGuard.repetitions(in: tokens).isEmpty
+            && tokens.allSatisfy { RepetitionDetector.hyphenatedCopies(in: $0) < 4 }
+            && Double(words) >= 0.4 * Double(otherWords)
     }
 
     /// Mean token log probability over a decoding, weighting segments by word count.
@@ -307,7 +360,19 @@ enum Bench {
 
         let samples = try AudioTimeline.load(.file(URL(filePath: audioPath)))
         let duration = Double(samples.count) / Double(AudioTimeline.sampleRate)
-        let speech = SpeechActivityDetector().speechRegions(in: samples)
+        var speech = SpeechActivityDetector().speechRegions(in: samples)
+        // An excerpt: only speech, text and chunk labels inside it count.
+        let excerpt = options.value("--range").flatMap { text -> TimeRange? in
+            let bounds = text.split(separator: "-").compactMap { Double($0) }
+            return bounds.count == 2 ? TimeRange(start: bounds[0], end: bounds[1]) : nil
+        }
+        if let excerpt {
+            speech = speech.map { $0.clamped(to: excerpt) }.filter { $0.duration > 0 }
+            Console.line("excerpt \(excerpt)")
+        }
+        func inExcerpt(_ start: Double, _ end: Double) -> Bool {
+            excerpt.map { $0.contains((start + end) / 2) } ?? true
+        }
         Console.line("audio \(TimeRange.clock(duration)), detected speech \(Int(TimeRanges.totalDuration(speech))) s in \(speech.count) regions\n")
 
         var rows: [(label: String, record: RunRecord?, metrics: TranscriptMetrics)] = []
@@ -315,8 +380,10 @@ enum Bench {
         for path in runs {
             let record = try decoder.decode(RunRecord.self, from: Data(contentsOf: URL(filePath: path)))
             let metrics = TranscriptMetrics.measure(
-                segments: record.segments.map { .init(start: $0.start, end: $0.end, text: $0.text) },
-                chunkLabels: record.chunks.compactMap { chunk in chunk.language.map { (TimeRange(start: chunk.start, end: chunk.end), $0) } },
+                segments: record.segments.filter { inExcerpt($0.start, $0.end) }.map { .init(start: $0.start, end: $0.end, text: $0.text) },
+                chunkLabels: record.chunks.filter { inExcerpt($0.start, $0.end) }.compactMap { chunk in
+                    chunk.language.map { (TimeRange(start: chunk.start, end: chunk.end), $0) }
+                },
                 speech: speech,
                 duration: duration,
                 reference: reference
@@ -326,7 +393,7 @@ enum Bench {
         for path in srts {
             let cues = SubRip.parse(try String(contentsOf: URL(filePath: path), encoding: .utf8))
             let metrics = TranscriptMetrics.measure(
-                segments: cues.map { .init(start: $0.start, end: $0.end, text: $0.text) },
+                segments: cues.filter { inExcerpt($0.start, $0.end) }.map { .init(start: $0.start, end: $0.end, text: $0.text) },
                 chunkLabels: [],
                 speech: speech,
                 duration: duration,
@@ -338,7 +405,7 @@ enum Bench {
         Console.line("| Run | Wall | ×RT | T>0 segs | Segments | Words | Speech covered | Missing ≥3 s (speech s) | Loops (extra words) | Chunk labels | Labels ≠ spoken | DE written EN | EN written DE |")
         Console.line("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for row in rows {
-            let wall = row.record.map { String(format: "%.0f s", $0.wallSeconds) } ?? "n/a"
+            let wall = row.record.map { String(format: $0.wallSeconds < 60 ? "%.1f s" : "%.0f s", $0.wallSeconds) } ?? "n/a"
             let speed = row.record.map { String(format: "%.1f", $0.audioSeconds / max($0.wallSeconds, 0.001)) } ?? "n/a"
             let labels = row.metrics.languageSeconds.isEmpty ? "n/a" : row.metrics.languageSeconds
                 .sorted { $0.value > $1.value }
@@ -351,6 +418,16 @@ enum Bench {
             let wrongLabels = m.labelsJudged == 0 ? "n/a" : "\(m.labelMismatches.count)/\(m.labelsJudged)"
             Console.line("| \(row.label) | \(wall) | \(speed) | \(hot) | \(m.segmentCount) | \(m.wordCount) | \(String(format: "%.1f %%", m.coverage * 100)) | \(m.missing.count) (\(Int(m.missingSpeechSeconds))) | \(m.loops) (\(m.loopRedundantWords)) | \(labels) | \(wrongLabels) | \(deAsEn) | \(enAsDe) |")
         }
+        if rows.contains(where: { !$0.metrics.spans.filter { $0.spoken == "de" }.isEmpty }) {
+            Console.line("")
+            Console.line("| Run | German spans | written DE | translated | no text | unclear |")
+            Console.line("|---|---|---|---|---|---|")
+            for row in rows {
+                let outcome = row.metrics.spanOutcome(spoken: "de")
+                let total = row.metrics.spans.filter { $0.spoken == "de" }.count
+                Console.line("| \(row.label) | \(total) | \(outcome.kept) | \(outcome.translated) | \(outcome.missing) | \(outcome.unclear) |")
+            }
+        }
         Console.line("")
         for row in rows {
             let m = row.metrics
@@ -361,8 +438,15 @@ enum Bench {
             Console.line("  judged 30 s windows: \(m.judgedWindows); mismatches: " + m.mismatches.map { "\($0.spoken)→\($0.written) \($0.range)" }.joined(separator: ", "))
             Console.line("  chunk labels judged: \(m.labelsJudged); wrong: " + m.labelMismatches.map { "\($0.spoken) labelled \($0.written) \($0.range)" }.joined(separator: ", "))
             Console.line("  missing: " + m.missing.map { "\($0)" }.joined(separator: ", "))
+            let german = m.spans.filter { $0.spoken == "de" }
+            if !german.isEmpty {
+                Console.line("  German spans: " + german.map { "\($0.range) \($0.written ?? ($0.words == 0 ? "none" : "?")) (\($0.words) w)" }.joined(separator: ", "))
+            }
             if let record = row.record, record.pipeline == "engine" {
-                Console.line("  engine: loops found \(record.loopsFound ?? 0), remaining \(record.loopsRemaining ?? 0); gaps \(record.gaps.count), recovered \(record.gaps.filter(\.recovered).count)")
+                let gaps = record.gaps.filter { inExcerpt($0.start, $0.end) }
+                let repairs = Dictionary(grouping: record.segments.filter { inExcerpt($0.start, $0.end) }.compactMap(\.repair), by: { $0 })
+                    .mapValues(\.count).sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+                Console.line("  engine: loops found \(record.loopsFound ?? 0), remaining \(record.loopsRemaining ?? 0); gaps \(gaps.count), recovered \(gaps.filter(\.recovered).count); repaired segments: \(repairs.isEmpty ? "none" : repairs)")
             }
         }
 
@@ -381,6 +465,10 @@ struct LanguageMap: Codable {
         var range: TimeRange
         var english: Double
         var german: Double
+        var englishWords: Int?
+        var germanWords: Int?
+        var englishValid: Bool?
+        var germanValid: Bool?
         /// "en", "de" or "mixed".
         var label: String
     }
@@ -437,6 +525,8 @@ struct RunRecord: Codable {
     var glossaryTerms: Int
     var tuning: String?
     var audioSeconds: Double
+    /// Start of the excerpt on the file's clock, when only an excerpt was transcribed.
+    var offset: Double?
     var wallSeconds: Double
     var modelLoadSeconds: Double
     var chunks: [Chunk]
@@ -444,6 +534,18 @@ struct RunRecord: Codable {
     var gaps: [SpeechGap]
     var loopsFound: Int?
     var loopsRemaining: Int?
+
+    /// Moves every time by `offset` seconds (excerpt clock → file clock).
+    mutating func shift(by offset: Double) {
+        chunks = chunks.map { Chunk(start: $0.start + offset, end: $0.end + offset, language: $0.language) }
+        segments = segments.map { segment in
+            var segment = segment
+            segment.start += offset
+            segment.end += offset
+            return segment
+        }
+        gaps = gaps.map { SpeechGap(start: $0.start + offset, end: $0.end + offset, speechSeconds: $0.speechSeconds, recovered: $0.recovered) }
+    }
 }
 
 enum BenchError: Error, CustomStringConvertible {

@@ -57,24 +57,29 @@ public struct TranscriptionGuards: Hashable, Sendable, Codable {
     /// Remove repetitions that survive re-decoding (keep one copy) and drop known
     /// silence hallucinations ("Untertitel der Amara.org-Community", …).
     public var cleanUpText: Bool
+    /// With a detecting language strategy: split each chunk that borders a chunk of another
+    /// language at its longest pause and let each half pick its own language.
+    public var refineLanguageBoundaries: Bool
 
     public init(
         redecodeLoops: Bool = true,
         loopRetryTemperatures: [Float] = [0.4, 0.8],
         redecodeMissingSpeech: Bool = true,
         minimumMissingSpeech: Double = 3,
-        cleanUpText: Bool = true
+        cleanUpText: Bool = true,
+        refineLanguageBoundaries: Bool = true
     ) {
         self.redecodeLoops = redecodeLoops
         self.loopRetryTemperatures = loopRetryTemperatures
         self.redecodeMissingSpeech = redecodeMissingSpeech
         self.minimumMissingSpeech = minimumMissingSpeech
         self.cleanUpText = cleanUpText
+        self.refineLanguageBoundaries = refineLanguageBoundaries
     }
 
     public static let standard = TranscriptionGuards()
     public static let none = TranscriptionGuards(
-        redecodeLoops: false, redecodeMissingSpeech: false, cleanUpText: false
+        redecodeLoops: false, redecodeMissingSpeech: false, cleanUpText: false, refineLanguageBoundaries: false
     )
 }
 
@@ -157,6 +162,8 @@ public enum SegmentRepair: String, Hashable, Sendable, Codable {
     case loopCollapsed
     /// The text came from re-decoding speech the first pass skipped.
     case gapRecovered
+    /// The chunk held a language switch and was re-decoded as two halves, each in its own language.
+    case languageSplit
 }
 
 public struct TranscribedSegment: Hashable, Sendable, Codable {

@@ -5,9 +5,10 @@ import StudyCore
 /// The on-device transcription engine: WhisperKit large-v3-turbo behind `GuardedTranscriber`.
 ///
 ///     let engine = WhisperKitEngine(store: try .shared())
-///     let transcript = try await engine.transcribe(.file(url), options: TranscriptionOptions(
-///         language: .germanEnglish, glossary: course.glossaryTerms
-///     )) { progress in … }
+///     let transcript = try await engine.transcribe(.file(url), options: TranscriptionOptions(course: course)) { progress in … }
+///
+/// The defaults are the evaluated configuration (docs/eval/transcription-m0.md): per-chunk
+/// detection among German and English, all guards on, `.lecture` decoder tuning.
 public struct WhisperKitEngine: TranscriptionEngine {
     public let decoder: WhisperKitDecoder
     public var transcriber: GuardedTranscriber

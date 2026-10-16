@@ -115,9 +115,24 @@ public struct SegmentPostProcessor: Hashable, Sendable {
     /// Collapses back-to-back repetitions across `segments` to one copy, using word timings when
     /// present. Returns the cleaned segments and how many words were removed.
     public func collapseRepetitions(
-        in segments: [TranscribedSegment],
+        in original: [TranscribedSegment],
         detector: RepetitionDetector
     ) -> (segments: [TranscribedSegment], removedWords: Int) {
+        // Loops inside one token first ("Folle-Folle-Folle-…").
+        var inTokenRemoved = 0
+        let segments = original.map { segment -> TranscribedSegment in
+            var segment = segment
+            let tokens = segment.words.isEmpty ? RepetitionDetector.words(in: segment.text) : segment.words.map(\.text)
+            let removed = RepetitionDetector.hyphenatedRedundancy(in: tokens)
+            guard removed > 0 else { return segment }
+            inTokenRemoved += removed
+            let fixed = tokens.map(RepetitionDetector.collapsingHyphenatedLoop)
+            for index in segment.words.indices { segment.words[index].text = fixed[index] }
+            segment.text = fixed.joined(separator: " ")
+            segment.repair = .loopCollapsed
+            return segment
+        }
+
         // Flatten into (segment, word) units so loops spanning segments are found.
         var units: [(segment: Int, word: Int)] = []
         var texts: [String] = []
@@ -131,7 +146,7 @@ public struct SegmentPostProcessor: Hashable, Sendable {
             }
         }
         let redundant = detector.redundantIndexes(in: texts)
-        guard !redundant.isEmpty else { return (segments, 0) }
+        guard !redundant.isEmpty else { return (segments, inTokenRemoved) }
 
         var dropped: [Int: IndexSet] = [:]
         for index in redundant {
@@ -160,6 +175,6 @@ public struct SegmentPostProcessor: Hashable, Sendable {
             }
         }
         let removedWords = redundant.count(where: { !RepetitionDetector.normalize(texts[$0]).isEmpty })
-        return (result, removedWords)
+        return (result, removedWords + inTokenRemoved)
     }
 }
