@@ -1,0 +1,82 @@
+import Capture
+import SwiftUI
+
+/// What the live-lecture screen can do right now, published as a focused scene value so menu
+/// commands (→, Space, ←, F) can drive it. Slide keys are disabled while a text field has
+/// focus, so typing a note never stamps a slide.
+public struct LiveLectureActions {
+    public var canGoNext: Bool
+    public var canGoPrevious: Bool
+    public var canFlag: Bool
+    public var isRecording: Bool
+    public var canRecord: Bool
+    /// A text field (quick note, flag text) has focus.
+    public var isEditingText: Bool
+
+    public var next: () -> Void
+    public var previous: () -> Void
+    public var flag: () -> Void
+    /// Starts recording, or asks to stop when recording.
+    public var toggleRecording: () -> Void
+
+    public init(
+        canGoNext: Bool,
+        canGoPrevious: Bool,
+        canFlag: Bool,
+        isRecording: Bool,
+        canRecord: Bool,
+        isEditingText: Bool,
+        next: @escaping () -> Void,
+        previous: @escaping () -> Void,
+        flag: @escaping () -> Void,
+        toggleRecording: @escaping () -> Void
+    ) {
+        self.canGoNext = canGoNext
+        self.canGoPrevious = canGoPrevious
+        self.canFlag = canFlag
+        self.isRecording = isRecording
+        self.canRecord = canRecord
+        self.isEditingText = isEditingText
+        self.next = next
+        self.previous = previous
+        self.flag = flag
+        self.toggleRecording = toggleRecording
+    }
+
+    public var nextEnabled: Bool { canGoNext && !isEditingText }
+    public var previousEnabled: Bool { canGoPrevious && !isEditingText }
+    public var flagEnabled: Bool { canFlag && !isEditingText }
+}
+
+extension FocusedValues {
+    /// The live-lecture screen in the key window, if any.
+    @Entry public var liveLecture: LiveLectureActions?
+}
+
+/// Menu commands for live lectures: → next slide, ← previous slide, F flag, Record/Stop.
+/// Space also advances (handled by the screen itself, since a menu item has one shortcut).
+///
+///     WindowGroup { … }.commands { LiveLectureCommands() }
+public struct LiveLectureCommands: Commands {
+    @FocusedValue(\.liveLecture) private var live
+
+    public init() {}
+
+    public var body: some Commands {
+        CommandMenu("Lecture") {
+            Button("Next Slide") { live?.next() }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .disabled(live?.nextEnabled != true)
+            Button("Previous Slide") { live?.previous() }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .disabled(live?.previousEnabled != true)
+            Button("Flag") { live?.flag() }
+                .keyboardShortcut("f", modifiers: [])
+                .disabled(live?.flagEnabled != true)
+            Divider()
+            Button(live?.isRecording == true ? "Stop Recording" : "Record") { live?.toggleRecording() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(live == nil || (live?.isRecording != true && live?.canRecord != true))
+        }
+    }
+}
