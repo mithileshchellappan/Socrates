@@ -84,6 +84,10 @@ public struct TranscriptMetrics: Hashable, Sendable, Codable {
     /// Windows written in another language than the reference says was spoken
     /// (German speech written in English = translated).
     public var mismatches: [LanguageMismatch]
+    /// Chunk labels checked against the reference (chunks whose midpoint has a reference language).
+    public var labelsJudged: Int
+    /// Chunks labelled with another language than was spoken (`written` = the label).
+    public var labelMismatches: [LanguageMismatch]
 
     public var coverage: Double { speechSeconds > 0 ? coveredSpeechSeconds / speechSeconds : 0 }
     public var labelSwitches: Int { max(languageRuns.count - 1, 0) }
@@ -124,6 +128,16 @@ public struct TranscriptMetrics: Hashable, Sendable, Codable {
             }
         }
 
+        var labelsJudged = 0
+        var labelMismatches: [LanguageMismatch] = []
+        for label in chunkLabels {
+            guard let spoken = reference?.language(at: label.range.midpoint) else { continue }
+            labelsJudged += 1
+            if spoken != label.language {
+                labelMismatches.append(LanguageMismatch(range: label.range, spoken: spoken, written: label.language))
+            }
+        }
+
         var judged = 0
         var mismatches: [LanguageMismatch] = []
         var windowStart = 0.0
@@ -151,7 +165,9 @@ public struct TranscriptMetrics: Hashable, Sendable, Codable {
             languageSeconds: languageSeconds,
             languageRuns: runs,
             judgedWindows: judged,
-            mismatches: mismatches
+            mismatches: mismatches,
+            labelsJudged: labelsJudged,
+            labelMismatches: labelMismatches
         )
     }
 }

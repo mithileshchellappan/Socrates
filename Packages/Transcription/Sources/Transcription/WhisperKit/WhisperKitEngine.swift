@@ -13,7 +13,7 @@ public struct WhisperKitEngine: TranscriptionEngine {
     public var transcriber: GuardedTranscriber
 
     public init(
-        model: WhisperModel = .largeV3Turbo,
+        model: WhisperModel = .recommended,
         store: WhisperModelStore,
         concurrentChunks: Int? = nil,
         tuning: WhisperKitDecoder.Tuning = .lecture
@@ -39,8 +39,6 @@ public struct WhisperKitEngine: TranscriptionEngine {
         progress(TranscriptionProgress(phase: .loadingAudio, fractionCompleted: 0))
         let samples = try AudioTimeline.load(audio)
         try Task.checkCancellation()
-        var transcriber = transcriber
-        transcriber.decoder = decoder
         let transcript = try await transcriber.transcribe(samples: samples, options: options, progress: progress)
         Log.transcription.info(
             "Transcribed \(transcript.duration, privacy: .public) s into \(transcript.segments.count, privacy: .public) segments in \(transcript.wallTime, privacy: .public) s"

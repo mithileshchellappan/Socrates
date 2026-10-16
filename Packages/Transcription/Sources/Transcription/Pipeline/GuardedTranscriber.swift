@@ -57,7 +57,7 @@ public struct GuardedTranscriber: Sendable {
         let batchSize = max(decoder.preferredBatchSize, 1)
         progress(TranscriptionProgress(phase: .decoding, fractionCompleted: 0, totalSeconds: duration))
 
-        // First pass + loop guard, batch by batch.
+        // First pass, batch by batch.
         for batchStart in stride(from: 0, to: decodable.count, by: batchSize) {
             try Task.checkCancellation()
             let batch = Array(decodable[batchStart..<min(batchStart + batchSize, decodable.count)])
@@ -70,9 +70,6 @@ public struct GuardedTranscriber: Sendable {
                 let outcome = offset < outcomes.count ? outcomes[offset] : .failure(TranscriptionError.decodingFailed("missing result"))
                 try states[index].acceptFirstPass(outcome, context: context, detector: loopDetector)
             }
-            if options.guards.redecodeLoops {
-                try await repairLoops(in: batch, states: &states, context: context)
-            }
             let decodedSeconds = plan[batch[batch.count - 1]].time.end
             progress(TranscriptionProgress(
                 phase: .decoding, fractionCompleted: 0.9 * decodedSeconds / duration,
@@ -81,6 +78,11 @@ public struct GuardedTranscriber: Sendable {
         }
 
         progress(TranscriptionProgress(phase: .repairing, fractionCompleted: 0.9, decodedSeconds: duration, totalSeconds: duration))
+
+        // Loop guard: all looping chunks re-decoded together so the decoder stays busy.
+        if options.guards.redecodeLoops {
+            try await repairLoops(in: decodable.filter { states[$0].loopWords > 0 }, states: &states, context: context)
+        }
 
         if options.guards.cleanUpText {
             for index in states.indices where states[index].loopWords > 0 {
@@ -119,22 +121,26 @@ public struct GuardedTranscriber: Sendable {
 
     // MARK: - Loop guard
 
-    private func repairLoops(in batch: [Int], states: inout [ChunkState], context: Context) async throws {
-        var looping = batch.filter { states[$0].loopWords > 0 }
+    private func repairLoops(in chunks: [Int], states: inout [ChunkState], context: Context) async throws {
+        var looping = chunks
+        let batchSize = max(decoder.preferredBatchSize, 1)
         for temperature in context.options.guards.loopRetryTemperatures where !looping.isEmpty {
-            try Task.checkCancellation()
-            let requests = looping.map { index in
-                request(for: states[index].chunk.samples, context: context,
-                        language: .fixed(states[index].language ?? context.fallbackLanguage),
-                        temperature: temperature, fallbackCount: 1, prompt: nil)
-            }
-            let outcomes = try await decoder.decode(requests)
-            for (offset, index) in looping.enumerated() where offset < outcomes.count {
-                guard case .success(let result) = outcomes[offset] else {
-                    if case .failure(let error) = outcomes[offset], error is CancellationError { throw error }
-                    continue
+            for batchStart in stride(from: 0, to: looping.count, by: batchSize) {
+                try Task.checkCancellation()
+                let batch = Array(looping[batchStart..<min(batchStart + batchSize, looping.count)])
+                let requests = batch.map { index in
+                    request(for: states[index].chunk.samples, context: context,
+                            language: .fixed(states[index].language ?? context.fallbackLanguage),
+                            temperature: temperature, fallbackCount: 1, prompt: nil)
                 }
-                states[index].considerRetry(result, temperature: temperature, context: context, detector: loopDetector)
+                let outcomes = try await decoder.decode(requests)
+                for (offset, index) in batch.enumerated() where offset < outcomes.count {
+                    guard case .success(let result) = outcomes[offset] else {
+                        if case .failure(let error) = outcomes[offset], error is CancellationError { throw error }
+                        continue
+                    }
+                    states[index].considerRetry(result, temperature: temperature, context: context, detector: loopDetector)
+                }
             }
             looping = looping.filter { states[$0].loopWords > 0 }
         }

@@ -35,13 +35,20 @@ enum Bench {
     usage: TranscribeBench <command> [options]
       prepare [--models DIR]
           Download and compile the Whisper model (large-v3-turbo).
-      run --audio FILE --out FILE.json --strategy forced-en|detect-any|detect-de-en
-          [--pipeline builtin|engine] [--no-guards] [--glossary "a, b, c"] [--limit SECONDS]
-          [--label NAME] [--models DIR]
+      run --audio FILE --out FILE.json --strategy forced-en|forced-de|detect-any|detect-de-en
+          [--pipeline builtin|engine] [--tuning lecture|whisperkit] [--no-guards]
+          [--glossary "a, b, c"] [--limit SECONDS] [--label NAME] [--models DIR]
           builtin = WhisperKit's own VAD chunking, no guards; engine = WhisperKitEngine.
-      analyze --audio FILE --runs A.json B.json … [--srt FILE.srt …] [--reference "de:0-371,en:371-"]
-          [--json FILE]
+          Writes the transcript (lecture text) as JSON: keep FILE under .data/.
+      langmap --audio FILE --out FILE.json [--margin 0.15]
+          Reference language per 30 s window from forced en/de decoding likelihood.
+      analyze --audio FILE --runs A.json B.json … [--srt FILE.srt …]
+          [--reference "de:0-371,en:371-" | --reference-file LANGMAP.json] [--json FILE]
           Prints text-free metrics as a Markdown table.
+      probe --audio FILE --strategy S --start SECONDS [--end SECONDS] [--temperature T]
+          [--fallbacks N] [--raw [--language L] [--words] [--special] [--suppress-blank]
+          [--no-first-token-threshold]]
+          Decodes one window and prints its text (debugging only).
     """
 
     static func store(_ options: Arguments) throws -> WhisperModelStore {
@@ -328,8 +335,8 @@ enum Bench {
             rows.append(("whisper.cpp " + URL(filePath: path).lastPathComponent, nil, metrics))
         }
 
-        Console.line("| Run | Wall | ×RT | Segments | Words | Speech covered | Missing ≥3 s (speech s) | Loops (extra words) | Chunk labels | DE written EN | EN written DE |")
-        Console.line("|---|---|---|---|---|---|---|---|---|---|---|")
+        Console.line("| Run | Wall | ×RT | T>0 segs | Segments | Words | Speech covered | Missing ≥3 s (speech s) | Loops (extra words) | Chunk labels | Labels ≠ spoken | DE written EN | EN written DE |")
+        Console.line("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for row in rows {
             let wall = row.record.map { String(format: "%.0f s", $0.wallSeconds) } ?? "n/a"
             let speed = row.record.map { String(format: "%.1f", $0.audioSeconds / max($0.wallSeconds, 0.001)) } ?? "n/a"
@@ -340,7 +347,9 @@ enum Bench {
             let m = row.metrics
             let deAsEn = m.mismatches(spoken: "de", written: "en").count
             let enAsDe = m.mismatches(spoken: "en", written: "de").count
-            Console.line("| \(row.label) | \(wall) | \(speed) | \(m.segmentCount) | \(m.wordCount) | \(String(format: "%.1f %%", m.coverage * 100)) | \(m.missing.count) (\(Int(m.missingSpeechSeconds))) | \(m.loops) (\(m.loopRedundantWords)) | \(labels) | \(deAsEn) | \(enAsDe) |")
+            let hot = row.record.map { record in String(format: "%.0f %%", 100 * Double(record.segments.filter { ($0.temperature ?? 0) > 0 }.count) / Double(max(record.segments.count, 1))) } ?? "n/a"
+            let wrongLabels = m.labelsJudged == 0 ? "n/a" : "\(m.labelMismatches.count)/\(m.labelsJudged)"
+            Console.line("| \(row.label) | \(wall) | \(speed) | \(hot) | \(m.segmentCount) | \(m.wordCount) | \(String(format: "%.1f %%", m.coverage * 100)) | \(m.missing.count) (\(Int(m.missingSpeechSeconds))) | \(m.loops) (\(m.loopRedundantWords)) | \(labels) | \(wrongLabels) | \(deAsEn) | \(enAsDe) |")
         }
         Console.line("")
         for row in rows {
@@ -350,6 +359,7 @@ enum Bench {
                 Console.line("  label runs (\(m.labelSwitches) switches): " + m.languageRuns.prefix(40).map { "\($0.language) \($0.range) (\($0.chunks))" }.joined(separator: "; "))
             }
             Console.line("  judged 30 s windows: \(m.judgedWindows); mismatches: " + m.mismatches.map { "\($0.spoken)→\($0.written) \($0.range)" }.joined(separator: ", "))
+            Console.line("  chunk labels judged: \(m.labelsJudged); wrong: " + m.labelMismatches.map { "\($0.spoken) labelled \($0.written) \($0.range)" }.joined(separator: ", "))
             Console.line("  missing: " + m.missing.map { "\($0)" }.joined(separator: ", "))
             if let record = row.record, record.pipeline == "engine" {
                 Console.line("  engine: loops found \(record.loopsFound ?? 0), remaining \(record.loopsRemaining ?? 0); gaps \(record.gaps.count), recovered \(record.gaps.filter(\.recovered).count)")
@@ -406,7 +416,7 @@ struct RunRecord: Codable {
         var language: String
         var repair: String?
         var avgLogProb: Double
-        var temperature: Double
+        var temperature: Double?
 
         init(_ segment: TranscribedSegment) {
             start = segment.start

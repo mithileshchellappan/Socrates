@@ -55,7 +55,7 @@ public actor WhisperKitDecoder: ChunkDecoder {
     public nonisolated let tuning: Tuning
 
     public init(
-        model: WhisperModel = .largeV3Turbo,
+        model: WhisperModel = .recommended,
         store: WhisperModelStore,
         concurrentChunks: Int? = nil,
         tuning: Tuning = .lecture

@@ -17,6 +17,15 @@ public struct WhisperModel: Hashable, Sendable, Codable {
     public static let largeV3Turbo = WhisperModel(name: "openai_whisper-large-v3-v20240930")
     /// large-v3-turbo compressed to ≈630 MB, for A16+/M-series iPhones and iPads.
     public static let largeV3Turbo626MB = WhisperModel(name: "openai_whisper-large-v3-v20240930_626MB")
+
+    /// The model for this platform: full large-v3-turbo on the Mac, the compressed build elsewhere.
+    public static var recommended: WhisperModel {
+        #if os(macOS)
+        .largeV3Turbo
+        #else
+        .largeV3Turbo626MB
+        #endif
+    }
 }
 
 /// Where Whisper models live on disk and how they get there.
