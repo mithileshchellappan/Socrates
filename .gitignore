@@ -7,10 +7,11 @@ DerivedData/
 xcuserdata/
 .DS_Store
 *.xcuserstate
-Models/
+/Models/
 *.wav
 *.m4a
 *.caf
 *.mp4
 *.qta
 .env
+.claude/worktrees/
