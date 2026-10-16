@@ -5,10 +5,24 @@ let package = Package(
     name: "Capture",
     platforms: [.macOS(.v26), .iOS(.v26)],
     products: [
-        .library(name: "Capture", targets: ["Capture"])
+        // Core: lecture packages, segmented recording, slide stamps, deck rendering, captions,
+        // import into the database. No SwiftUI, no AppKit/UIKit.
+        .library(name: "Capture", targets: ["Capture"]),
+        // SwiftUI live-lecture screen and menu commands.
+        .library(name: "CaptureUI", targets: ["CaptureUI"])
+    ],
+    dependencies: [
+        .package(path: "../StudyCore")
     ],
     targets: [
-        .target(name: "Capture"),
+        .target(
+            name: "Capture",
+            dependencies: [.product(name: "StudyCore", package: "StudyCore")]
+        ),
+        .target(
+            name: "CaptureUI",
+            dependencies: ["Capture"]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )
