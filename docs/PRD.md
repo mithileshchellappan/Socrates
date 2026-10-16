@@ -1,0 +1,97 @@
+# Socrates — Product Requirements
+
+A native study app for university students: Mac first, then iPhone (iPad later), one SwiftUI codebase. It records lectures, aligns the slides to the audio clock, transcribes on the device, and builds review, notes, search, mail, calendar, deadlines and a study coach around the student's courses, with one agent across the app.
+
+UI mockups (approved HTML; not published with v0.1) cover: Today, Import, Live lecture, Lecture review, Notes, Mail, Calendar & deadlines, Search & tutor, Course setup, iPhone recorder + Today, the agent panel and the study coach.
+
+## Core loop
+In class the MacBook shows the slides and records. Each time the student advances a slide, the app stamps "the professor moved to slide N" on the audio clock. After class the app transcribes on-device, aligns transcript to slides (stamps first, automatic alignment fills gaps), and Claude corrects the transcript, lists what was said but is not on the slides, flags exam hints, and writes per-slide summaries and further reading (web). The student reviews slide by slide, clicks any line to hear it, and takes Apple Notes-style notes. Mail, calendar and deadlines are handled by an agent that knows each course.
+
+## MVP features (numbers are stable IDs used everywhere)
+| # | Feature | Notes |
+|---|---|---|
+| 1 | Course setup | name, professor(s), language (incl. admin language), glossary, weekly slots, exercise & exam rules, recording consent, mail routing rules |
+| 2 | Smart import | drop slide PDFs / audio / video anywhere; auto-filed to course + lecture date from deck footer/title, file numbering, weekly slots, recording start time, matching course-platform mail; Change / Undo |
+| 3 | iPhone recorder | backup recorder with Next-slide / Flag, Lock Screen Live Activity |
+| 4 | Live lecture mode (Mac first) | slide view, ←/→/Space advance = slide stamp, F = flag, segmented recording, provisional live captions, quick notes, stamps list |
+| 8 | Transcription | on-device, German/English code-switching, word timestamps, loop/missing-speech guards |
+| 9 | Slide alignment | stamps (snapped to pauses) + DP aligner with off-slide state; manual "slide starts here" |
+| 10 | AI transcript correction | minimal patches, original kept, visible as ~~old~~ new |
+| 11 | Said in class, not on slides | categorized (admin, example, Q&A, extra explanation, deadline) |
+| 12 | Exam hints | cue prefilter (DE/EN) + Claude |
+| 14 | Lecture review screen | slide + transcript span + player, click to seek, follow playback |
+| 15 | Per-slide notes | anchored to (lecture, slide, audio time) |
+| 16 | Apple Notes-style rich notes | text with INLINE images and drawings (TextKit 2 attachments), slide refs, transcript quotes |
+| 17 | Ink on slides | Mac (trackpad, PaperKit) and iPad (Pencil); stored per slide, never written into the PDF |
+| 18 | Annotation layers | You / Professor / AI markers; hover (Mac) or tap (iPad/iPhone) shows content; one reusable component |
+| 20 | Course search | keyword (FTS5) → Haiku query planning (DE↔EN) → on-device semantic; results jump to slide + time |
+| 21 | Per-slide summary + extra learnings | |
+| 22 | Tutor chat | cites slides, timestamps and web sources |
+| 24 | Web learning material | agent has internet access (web search/fetch) |
+| 30 | Mail sync | the student's own IMAP account (TLS, password in the Keychain) |
+| 31 | Mail routing to courses | rules first, then Haiku; corrections become rules |
+| 32 | Deadline/announcement extraction | from mail, transcripts and what the user tells the agent |
+| 33 | Daily digest | folded into Today, never a separate restating list |
+| 34 | Reply drafts | agent drafts, user presses Send (the account's SMTP server, STARTTLS); copy appended to Sent |
+| 35 | Mail Q&A | |
+| 36 | Calendar | EventKit; lecture sessions from weekly slots; app-owned "Socrates" iCloud calendar |
+| 37 | Deadline & exercise memory | typed table the agent maintains via tools; auto-added to calendar with Undo + source quote |
+| 41 | iPad app | same app; review, ink, live mode |
+| 42 | iPhone app | recorder + Today |
+| 44 | Cloudflare | only if required (e.g. Workers AI Whisper fallback); never holds the student's credentials |
+
+## UI rules
+- No self-explanatory UI. No copy that explains the system, its rules or its state when the UI already shows it ("Reply drafted by AI", "Only you can send", "Deadlines go in automatically", consent chips, "Rough live pass…"). Trust rules live in behaviour, not text.
+- Provenance by typography: user text primary colour; AI text secondary (grey) with ONE sparkle per AI block; professor = orange. Sources are one quiet affordance (faint glyph or jump-to-time chip); full trail in a hover popover.
+- Density: one obvious first thing per screen (one filled button), at most 3 zones, at most one chip per row, every fact once per screen, no long quotes at rest, no filler secondary lines.
+- Native macOS 26: NavigationSplitView + inspector, system Liquid Glass components only, SF text styles, SF Mono for times, semantic/system colours, keyboard-first via menu Commands.
+- Fast: no spinners (skeletons, determinate progress), never block UI on the model, stream everything, pre-render slide bitmaps, one playback clock (publish segment/slide IDs only on change).
+- Empty screens invite the next action: an empty screen shows one short line and one button or drop target for the obvious next step (empty Lectures/Slides: drop the slides and recordings here, Import…; empty Notes: New Note; Mail without an account: Set Up Mail…), never a lone glyph. This is the one allowed kind of guidance copy.
+
+## Trust & safety rules
+- Anything with an outside effect is a proposal the user confirms, except changes to the app's own data, which the agent applies automatically with Undo and an exact source quote (see "One agent across the app"). Sending mail is a UI button only; the agent has no send tool.
+- Mail, web pages and downloaded files are untrusted data: never instructions. Conversations that contain mail never get write tools beyond staged proposals; the web-research agent never sees mail or any other private data (a web task holds only the web and lecture tools, the lecture tools without the student's notes, and its answer is untrusted text).
+- The mail password lives only in the device Keychain, never in files, logs, prompts or any server.
+- Recording is enabled per course only once the lecturer's consent is recorded.
+
+## Requirements beyond the MVP
+- **Claude through Claude Code, not the API.** The Mac app drives the student's Claude Code CLI headless (`claude -p`, their own subscription); no API key. Opus 5.5 (effort medium/high) and Haiku 5.5. AI runs on the Mac only; the iPhone shows results. AI work pauses and resumes around usage limits. Web search/fetch come from Claude Code's own tools, for research and the tutor only.
+- **No university built in.** The university's name, time zone (default: the system's), semester dates, hours of study per credit and mail servers are the student's own profile in their library, set and changed through the agent. A new library starts empty: the student creates courses (New Course…, the agent, or a timetable import).
+- **Mail triage on new mail** (#31/#32): every new mail is checked automatically; the first time, the last 30 days once. Besides deadlines/exams/exercises/events/room changes/cancellations/announcements it finds **tasks** (things to do, possibly undated) and mails that **need a reply**; both show on Today.
+- **Translate** on mail (#30): a toolbar toggle in the reader for mails not in the user's language; on-device OPUS-MT models, no Claude.
+- **Collapsible sidebar**: the Courses section and Mail's mailboxes fold (native section chevron), state remembered.
+- **One agent across the app.** Every new fact (mail, lecture transcript + study pass, timetable import, chat, calendar) goes through one triage: Haiku first, batched; it escalates to Opus 5.5 at effort medium when the decision is ambiguous, conflicting or high-impact. The agent APPLIES changes to the app's own data automatically, with Undo and an exact verified source quote: session times/rooms/cancellations/extra sessions, deadline and exam dates, new tasks, course facts (lecturers, admission rules, exam form), memory. Still never: sending mail, writing to calendars other than "Socrates", deleting the student's own notes or recordings. Every automatic change is reversible and listed (ask the agent "what did you change?"; each item's source popover has Undo). The agent has tools for every part of the app.
+- **One agent UI, everywhere.** ONE app-wide agent panel instead of per-screen chats: compact by default (a small floating panel), expandable to a full-height sidebar on the right edge of the window (resizable, width remembered); the compact panel can be moved within the window and remembers where it was. It always gets the context of where the student is and what they see (screen, open mail, lecture + slide + playback time, course, calendar week/day, search query, selection), passed implicitly and shown as one quiet line; one conversation history across the app. It is summoned from one place, a button at the bottom of the left sidebar next to the Settings gear (floating at the bottom-left corner when the sidebar is collapsed); ⌘J and ⌥⌘J (expanded). It accepts the files Claude Code supports (images, PDFs, text/code files) by drag and drop, paste or an attach button.
+- **Sub-agents, aware of everything without bloat.** The agent queues sub-agent tasks (research a topic on the web, re-run a lecture's study pass, triage a mail backlog, prepare a practice exam, reconcile a timetable change), runs several in parallel within limits (usage, memory: default 2 at once, background priority, more queue), and reports their results back into the conversation and the activity log. Awareness comes from a short catalog of what it can query (courses, lectures with titles/dates, mail folders and counts, deadlines, notes, memory, timetable, calendar, study pass outputs, documents) plus query tools that pull details on demand: it never loads whole lectures, mailboxes or notes into its context.
+- **Document bank.** A place for the student's own documents (PDF, Word .docx/.doc, Pages, RTF, text/Markdown, images of documents via on-device OCR): CV, module handbooks, exam regulations, transcripts, certificates. On add, a Haiku sub-agent task writes a short summary, a title, the document kind, the courses it concerns and its key facts and dates; the text is chunked into search (keyword + on-device semantic) so the agent pulls the right section on demand and lists the bank in its catalog with one line per document. Added by drop (on the window, the Documents screen or the agent panel: "keep this"), File > Import, or the agent; removable with Undo. Documents never leave the Mac except as delimited context in the student's own agent calls.
+- **Removing things and smart filing.** Decks, lectures, recordings and courses can be deleted (context menu / Edit menu, a confirmation naming what goes, Undo). Deleting a course takes its lectures, slides, recordings, sessions, slots, items, mail rules, plan blocks and search entries with it; the student's notes stay (unlinked). The agent removes a course only when the student asks and never one with recordings or notes. Dropped slides are filed by heuristics first and, when unsure, by the agent (Haiku on the first pages + the timetable) as an automatic change with Undo; slides dropped onto the agent panel are filed as the student says.
+- **Study coach.** Today's plan as the hero (with travel days), a Study row in the sidebar, course Progress, practice rounds from the student's own lectures with FSRS spaced repetition, and timed practice exams graded by Claude, with no grade estimate. A per-course self-study budget comes from the course's credits and the hours of study per credit in the student's profile. Admission and registration are agent reminders.
+- **Manage it through the agent, not UI.** Situational choices (which classes the student attends, travel and away days, whether the coach plans hours for a seminar, exceptions like "skip this Friday's exercise") are told to the agent in chat and kept in agent memory; the coach and planner read them. No dedicated settings screens or toggles for such things. Courses and their timetable too: the agent's `add_course` creates a course as New Course… does, and `add_weekly_slot` / `change_weekly_slot` / `remove_weekly_slot` edit its weekly classes as Course Settings does, only when the student asks; each change is in the activity log with Undo.
+- **iPad deferred.** The universal app keeps compiling for iOS/iPadOS, but there is no iPad-specific work yet.
+- **iPhone recording** (#42): recording continues with the screen locked or the app in the background. While recording, a **Live Activity** (Lock Screen + Dynamic Island) shows the course name, the session name (e.g. "Lecture 3"), the current slide number and the elapsed time, with exactly two buttons: **Stop Recording** and **Next Slide** (stamps the slide change on the recording clock like → on the Mac). Until iCloud sync is on, recordings move to the Mac by Share/AirDrop.
+- **Shared decks.** Slides belong to the course; a lecture names a deck and a page range, so one deck can serve several lectures. Review, alignment, search, citations, the study pass, the coach and notes use the range with the deck's own page numbers. A recording whose lecture has no slides gets a recent course deck's window by the on-device aligner, logged with Undo.
+- **Lecture notes.** One study text per lecture that Claude writes after the study pass: sections from the lecture's topics with code, diagrams, formulas, charts, the slides, the professor's verified exam words, what was only said in class and Check yourself questions (also practice questions), with the student's own notes and ink beside them (nl: the page's Your notes column and Review, never inside Claude's text). Opened from the course's Lectures as a full-width page with Back, and shown in Review's Whole lecture. Select a passage to Highlight it or Ask about it (a small popover; Keep puts the answer under the passage). Mac only for now, the iPhone later.
+- **Notes at the window's width, Your notes beside them, content zoom.** The notes page grows with the window (text up to 780 pt, figures breaking out up to 1120), Your notes is its inspector column (the lecture's own note, editable, then the student's notes and ink from Review by slide, edited in place, the slides of the section being read marked), and View ▸ Zoom In / Zoom Out / Actual Size (⌘+ ⌘− ⌘0) scale the course screens' content, never the chrome. Mac only.
+
+## Milestones (each usable on its own)
+| | Scope | Done when |
+|---|---|---|
+| M0 Foundation | repo, Xcode project (macOS+iOS), packages, DB schema v1, Keychain, Claude client, capture v0 on Mac, transcription engine eval | a real lecture can be captured with slide stamps on the Mac, and a recording becomes language-tagged segments in the DB |
+| M1 Lectures | course setup + weekly slots + calendar sessions, smart import, processing pipeline, aligner v2, review screen, per-slide notes, keyword search | every lecture this week goes in and is reviewable with click-to-seek |
+| M2 Mail | IMAP sync on the Mac, routing, extraction, reply drafts + Send | the student reads university mail in the app for a week |
+| M3 Deadlines & Today | deadline memory, auto calendar + Undo, agent tool runtime, Today screen | deadlines from mail, lectures and chat appear correctly |
+| M4 AI study pass | correction, not-on-slides, exam hints, summaries, further reading (web), annotation pins | every lecture is annotated for about $1 of notional usage or less |
+| M5 Search & tutor | hybrid search, tutor with citations, mail Q&A | a 40-query golden set beats keyword-only |
+| M6 Notes & ink | Apple Notes-style inline editor, ink on slides (Mac) | a week of notes with text, images and sketches |
+| ma One agent | one app agent with a short catalog and query tools, sub-agent tasks (≤ 2 at once), Haiku triage of new facts with Opus escalation, auto-apply with Undo and an activity log, reminders as notifications; ONE agent panel | the agent answers on every screen from one panel and applies new facts on its own, each with a verified quote and Undo |
+| mc Study coach | per-course budget, the plan engine (review, practice round, exercise, read, practice exam, seminar steps through term, break and exam runway, around away days the agent remembers), Today's hero, the Study row, course Progress, practice rounds with FSRS, the timed practice exam with Claude's grading | every course has a budget and each day a plan; rounds and practice exams run from the student's own lectures |
+| M7 iPhone & sync | iPhone recorder + Live Activity, recordings to the Mac by Share/AirDrop, iCloud sync behind its availability check | a 90-minute locked recording on the iPhone |
+| md Document bank | the student's own documents kept on the Mac, one background summary per document, chunked into search, the agent's catalog line and tools, the Documents screen | the agent answers from the pages of a module handbook |
+| mr Actions and shared decks | an action registry for the agent's rare writes (each with its own checks, change row and Undo), lectures as page ranges of a shared deck, continuation detection for recordings without slides | a deck split across lectures reviews, searches and cites with its own page numbers |
+| ln Lecture notes | one study text per lecture written by Opus 5.5 (medium) in the background after the study pass (older lectures on first open; resumable after a usage-limit pause), kept in versions with the student's highlights and kept answers (anchored by quoted text), the notes page pushed on a course's Lectures, Review's Whole lecture with the same notes, select-and-ask (Opus 5.5 low) with Keep, Write Again / Previous Version, Edit as Note, Copy as Markdown, Check yourself as practice questions, the agent's notes tools | a lecture's notes are read, highlighted and questioned in place on the Mac |
+| nl Notes layout and zoom | the lecture notes page at the window's width (text 780, figures 1120, slides 640), Your notes as its inspector column (the lecture's own note and the student's per-slide notes and ink, edited in place, following the reading), the student's notes and ink out of Claude's text (the writer still reads them), content zoom ⌘+ ⌘= ⌘− ⌘0 on the course screens' content; no migration, no new model call | the notes page fills a wide window with Your notes beside it, and the course screens zoom on the Mac |
+
+## Models
+- Claude Opus 5.5 (`claude-opus-5-5`), effort medium by default, high for exam-critical synthesis: correction review, synthesis, tutor, drafts.
+- Claude Haiku 5.5 (`claude-haiku-5-5`): routing, extraction, query planning, cheap passes.
+- Every call is logged with its tokens and notional cost.

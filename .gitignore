@@ -1,0 +1,16 @@
+.data/
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+.DS_Store
+*.xcuserstate
+Models/
+*.wav
+*.m4a
+*.caf
+*.mp4
+*.qta
+.env
