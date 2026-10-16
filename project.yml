@@ -1,0 +1,100 @@
+# XcodeGen spec. Run `xcodegen generate`; the .xcodeproj is generated and not committed.
+# Only the integrator edits this file (see CLAUDE.md).
+name: StudyPortal
+
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    macOS: "26.0"
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  xcodeVersion: "26.5"
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    DEAD_CODE_STRIPPING: YES
+
+packages:
+  StudyCore:
+    path: Packages/StudyCore
+  Capture:
+    path: Packages/Capture
+  Transcription:
+    path: Packages/Transcription
+  ClaudeKit:
+    path: Packages/ClaudeKit
+  Alignment:
+    path: Packages/Alignment
+
+targets:
+  StudyPortal:
+    type: application
+    supportedDestinations: [macOS, iOS]
+    sources:
+      - path: App/Shared
+      - path: App/macOS
+        destinationFilters: [macOS]
+      - path: App/iOS
+        destinationFilters: [iOS]
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Study Portal
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.education
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: Records lectures you choose to record.
+        NSSpeechRecognitionUsageDescription: Shows live captions while a lecture is recorded.
+        NSCalendarsFullAccessUsageDescription: Shows your classes and deadlines and keeps the Study Portal calendar up to date.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UILaunchScreen: {}
+        UIBackgroundModes: [audio]
+        UISupportedInterfaceOrientations~iphone:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_NAME: StudyPortal
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.studyportal
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: YES
+        # macOS: unsandboxed personal build, hardened runtime with mic + calendars.
+        ENABLE_APP_SANDBOX: NO
+        "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": YES
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": App/macOS/StudyPortal.entitlements
+        "COMBINE_HIDPI_IMAGES[sdk=macosx*]": YES
+      configs:
+        # No "Apple Development" certificate on this Mac yet, so automatic signing cannot sign
+        # the macOS Debug build. Sign to Run Locally (ad-hoc) until Xcode is signed in to the
+        # team account; then delete this override. See docs/decisions.md.
+        Debug:
+          "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
+    dependencies:
+      - package: StudyCore
+      - package: Capture
+      - package: Transcription
+      - package: ClaudeKit
+      - package: Alignment
