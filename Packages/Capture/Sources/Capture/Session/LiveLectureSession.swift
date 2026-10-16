@@ -83,7 +83,7 @@ public final class LiveLectureSession {
     public private(set) var inputName: String?
     public private(set) var isInputAvailable = true
     /// Provisional captions; nil while captions are not running.
-    public private(set) var captions: CaptionTranscript?
+    public internal(set) var captions: CaptionTranscript?
     /// Wall clock at sample 0.
     public private(set) var startedAt: Date?
     public private(set) var endedAt: Date?
@@ -243,6 +243,13 @@ public final class LiveLectureSession {
         self.startedAt = start.startedAt
         self.inputName = start.device?.name
         self.isInputAvailable = true
+        // Stamp from here on, before any suspension point, so no key press goes unstamped.
+        phase = .recording
+        record(.start, page: hasDeck ? currentPage : nil, hostTime: start.hostTimeAtStart, sampleTime: 0)
+        observe(statusUpdates, writer: writer)
+        startMeter()
+        startCaptions(clock: start.clock)
+        if !notes.isEmpty { scheduleNotesSave(after: .zero) }
         do {
             try await writer.updateManifest { manifest in
                 manifest.startedAt = start.startedAt
@@ -252,12 +259,6 @@ public final class LiveLectureSession {
         } catch {
             CaptureLog.capture.error("Manifest update failed: \(error.localizedDescription, privacy: .public)")
         }
-        phase = .recording
-        record(.start, page: hasDeck ? currentPage : nil, hostTime: start.hostTimeAtStart, sampleTime: 0)
-        observe(statusUpdates, writer: writer)
-        startMeter()
-        startCaptions(clock: start.clock)
-        if !notes.isEmpty { scheduleNotesSave(after: .zero) }
         CaptureLog.capture.info("Recording \(id.uuidString, privacy: .public)")
     }
 

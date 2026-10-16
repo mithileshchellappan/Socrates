@@ -127,14 +127,20 @@ public actor MicrophoneCapture: AudioCaptureSource {
         broadcaster.finish()
         await writerTask?.value
         writerTask = nil
-        defer {
-            if let activity { ProcessInfo.processInfo.endActivity(activity) }
-            activity = nil
-            #if os(iOS)
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            #endif
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
+
+        // Closing the last file can fail (disk full); the files on disk stay readable and the
+        // package reader recovers their lengths, so report what is known and carry on.
+        var segments = writer?.segments ?? []
+        do {
+            segments = try writer?.finish() ?? segments
+        } catch {
+            CaptureLog.capture.fault("Closing the last segment failed: \(error.localizedDescription, privacy: .public)")
         }
-        let segments = try writer?.finish() ?? []
         status.continuation.yield(.segmentsChanged(segments))
         status.continuation.finish()
         return segments
@@ -253,7 +259,8 @@ public actor MicrophoneCapture: AudioCaptureSource {
     }
 
     private func handleConfigurationChange(_ engineID: ObjectIdentifier?) async {
-        guard state == .recording, isCurrentEngine(engineID) else { return }
+        // The engine stops itself when the hardware changes; a change it survived needs nothing.
+        guard state == .recording, isCurrentEngine(engineID), engine?.isRunning == false else { return }
         await restartEngine(reason: "configuration change")
     }
 
