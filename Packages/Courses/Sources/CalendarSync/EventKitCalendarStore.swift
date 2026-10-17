@@ -148,8 +148,19 @@ public actor EventKitCalendarStore: CalendarStore {
             id: calendar.calendarIdentifier,
             title: calendar.title,
             sourceID: calendar.source?.sourceIdentifier ?? "",
-            allowsModifications: calendar.allowsContentModifications
+            allowsModifications: calendar.allowsContentModifications,
+            colorHex: calendar.cgColor.flatMap(hex) ?? CalendarInfo.defaultColorHex
         )
+    }
+
+    /// `#rrggbb` of a colour, converted to sRGB.
+    static func hex(_ color: CGColor) -> String? {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let srgb = color.converted(to: space, intent: .defaultIntent, options: nil),
+              let components = srgb.components, components.count >= 3
+        else { return nil }
+        func byte(_ value: CGFloat) -> Int { Int((min(max(value, 0), 1) * 255).rounded()) }
+        return String(format: "#%02x%02x%02x", byte(components[0]), byte(components[1]), byte(components[2]))
     }
 
     private static func kind(of source: EKSource) -> CalendarSource.Kind {
