@@ -3,8 +3,8 @@ import StudyCore
 import SwiftUI
 
 // Sources as one quiet affordance (docs/DESIGN.md §4.6, §5.2): a faint glyph after a row's last
-// line (`waveform` = a recording, `envelope` = a mail, both when they agree) that opens the
-// full trail in a popover on hover (tap on iPad and iPhone), with the in-calendar check and Undo
+// line (`waveform` = a recording, `envelope` = a mail, `calendar` = a timetable file, together
+// when they agree) that opens the full trail in a popover on hover (tap on iPad and iPhone), with the in-calendar check and Undo
 // in its footer. Today and Calendar use the same pieces.
 
 /// Words for source trail rows.
@@ -16,9 +16,12 @@ public enum SourceTrailText {
 
     /// The row's name: "Lecture 2, Example" for a numbered lecture, a seminar meeting or an
     /// untitled lecture by its title ("Seminar intro"); the sender of a mail; "You" for what the
-    /// student told the agent.
+    /// student told the agent; the file's name for a timetable.
     public static func name(_ entry: SourceTrailEntry) -> String {
         switch entry.kind {
+        case .timetable:
+            let file = entry.source.rfcMessageID.trimmingCharacters(in: .whitespaces)
+            return file.isEmpty ? String(localized: "Timetable") : file
         case .mail:
             let name = entry.senderName?.trimmingCharacters(in: .whitespaces) ?? ""
             return name.isEmpty ? (entry.senderAddress ?? String(localized: "Mail")) : name
@@ -70,13 +73,14 @@ public enum SourceTrailText {
         return "“\(shown)\(words.count > maxWords ? "…" : "")”"
     }
 
-    /// The glyphs a row shows for these sources: a recording first, then a mail; undone sources
-    /// and what the student typed have none.
+    /// The glyphs a row shows for these sources: a recording first, then a mail, then a timetable
+    /// file; undone sources and what the student typed have none.
     public static func glyphKinds(_ entries: [SourceTrailEntry]) -> [SourceRef.Kind] {
         let active = entries.filter(\.isActive)
         var kinds: [SourceRef.Kind] = []
         if active.contains(where: { $0.kind == .transcript }) { kinds.append(.transcript) }
         if active.contains(where: { $0.kind == .mail }) { kinds.append(.mail) }
+        if active.contains(where: { $0.kind == .timetable }) { kinds.append(.timetable) }
         return kinds
     }
 }
@@ -96,7 +100,7 @@ public struct SourceGlyph: View {
     public var body: some View {
         HStack(spacing: 2) {
             ForEach(kinds, id: \.self) { kind in
-                Image(systemName: kind == .mail ? "envelope" : "waveform")
+                Image(systemName: Self.symbol(kind))
                     .font(.system(size: 11.5))
                     .frame(width: 14, height: 14)
             }
@@ -112,8 +116,17 @@ public struct SourceGlyph: View {
         .accessibilityLabel(Text(label))
     }
 
+    static func symbol(_ kind: SourceRef.Kind) -> String {
+        switch kind {
+        case .mail: "envelope"
+        case .timetable: "calendar"
+        default: "waveform"
+        }
+    }
+
     private var label: String {
-        switch (kinds.contains(.transcript), kinds.contains(.mail)) {
+        if kinds == [.timetable] { return String(localized: "Source: timetable") }
+        return switch (kinds.contains(.transcript), kinds.contains(.mail)) {
         case (true, true): String(localized: "Sources: recording and mail")
         case (true, false): String(localized: "Source: recording")
         case (false, true): String(localized: "Source: mail")
@@ -198,6 +211,24 @@ public struct SourceTrailPopover: View {
         switch entry.kind {
         case .mail:
             mailRow(entry)
+        case .timetable:
+            HStack(alignment: .center, spacing: 9) {
+                Image(systemName: "calendar")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(SourceTrailText.name(entry))
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(SourceTrailText.quote(entry.source.quote))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
         case .chat:
             HStack(alignment: .center, spacing: 9) {
                 ProvenancePin(.user)

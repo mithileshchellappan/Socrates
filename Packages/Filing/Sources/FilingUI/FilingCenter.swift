@@ -107,6 +107,10 @@ public final class FilingCenter {
     /// Called after every drop, import or row drop has been filed (the app takes a second look
     /// at unsure recordings once new slides are in).
     @ObservationIgnored public var didFile: (@MainActor ([FilingOutcome]) -> Void)?
+    /// Timetable files (`.ics`) among a drop, a row drop or File ▸ Import… go here instead of
+    /// being filed, with the row's (or the course's Import's) destination. Nil: they are filed
+    /// (and fail as neither slides nor a recording).
+    @ObservationIgnored public var timetableDrop: (@MainActor ([URL], FilingDestination?) -> Void)?
 
     /// Seconds a confident toast stays (while not hovered).
     @ObservationIgnored var toastLifetime: Duration = .seconds(8)
@@ -253,6 +257,15 @@ public final class FilingCenter {
     }
 
     private func file(_ urls: [URL], to destination: FilingDestination?, openChange: Bool) async {
+        var urls = urls
+        if let timetableDrop {
+            let timetables = urls.filter(FilingTypes.isTimetable)
+            if !timetables.isEmpty {
+                timetableDrop(timetables, destination)
+                urls.removeAll(where: FilingTypes.isTimetable)
+                guard !urls.isEmpty else { return }
+            }
+        }
         let outcomes = await service.file(urls, to: destination)
         for outcome in outcomes { show(outcome, wantsChange: openChange && outcome.filing != nil) }
         didFile?(outcomes)
