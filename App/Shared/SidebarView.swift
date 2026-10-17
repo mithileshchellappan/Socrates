@@ -42,6 +42,10 @@ struct SidebarView: View {
     ) private var unreadMail = 0
     /// The courses opened with their chevron, as comma-separated IDs (kept per window).
     @SceneStorage("sidebar.openCourses") private var openCourses = ""
+    /// The Courses section, folded with its header's chevron (kept per window).
+    @SceneStorage("sidebar.coursesExpanded") private var coursesExpanded = true
+    /// Mail's lists under the Mail row, folded with the row's chevron (kept per window).
+    @SceneStorage("sidebar.mailListsExpanded") private var mailListsExpanded = true
     /// Courses the open screen opened that were closed with their chevron (until the screen changes).
     @State private var closedCourses: Set<Course.ID> = []
     /// The course files were just dropped into: open, showing where they went, until the screen
@@ -83,15 +87,31 @@ struct SidebarView: View {
         let showsDates = !isDragging
         List(selection: $selection) {
             ForEach(SidebarItem.destinations, id: \.self) { item in
+                let foldsMail = item == .mail && selection?.isMail == true
                 NavigationLink(value: item) {
-                    SidebarRowLabel(item.title) {
-                        Image(systemName: item.systemImage)
-                            .foregroundStyle(.tint)
+                    HStack(spacing: 0) {
+                        SidebarRowLabel(item.title) {
+                            Image(systemName: item.systemImage)
+                                .foregroundStyle(.tint)
+                        }
+                        if foldsMail {
+                            Spacer(minLength: 4)
+                            foldChevron(isOpen: mailListsExpanded, open: "Show Mailboxes", close: "Hide Mailboxes") {
+                                mailListsExpanded.toggle()
+                            }
+                        }
                     }
                 }
                 // On Mail the Inbox row below carries the count.
                 .badge(item == .mail && selection?.isMail != true ? unreadMail : 0)
-                if item == .mail, selection?.isMail == true {
+                .contextMenu {
+                    if foldsMail {
+                        Button(mailListsExpanded ? LocalizedStringKey("Hide Mailboxes") : "Show Mailboxes") {
+                            withAnimation(.snappy(duration: 0.2)) { mailListsExpanded.toggle() }
+                        }
+                    }
+                }
+                if foldsMail, mailListsExpanded {
                     // Mockup 05: Mail's lists under the Mail row while one shows.
                     ForEach(mailScopes, id: \.self) { scope in
                         NavigationLink(value: SidebarItem.mailScope(scope)) {
@@ -102,7 +122,8 @@ struct SidebarView: View {
                 }
             }
 
-            Section {
+            // The header's chevron folds the courses; a drag of files opens them for their rows.
+            Section(isExpanded: Binding(get: { coursesExpanded || isDragging }, set: { coursesExpanded = $0 })) {
                 ForEach(courses) { course in
                     let children = childrenOf[course.id] ?? ([], nil)
                     let isOpen = open.contains(course.id)
@@ -214,6 +235,26 @@ struct SidebarView: View {
                 Button(isOpen ? LocalizedStringKey("Hide Lectures") : "Show Lectures") { setOpen(course.id, !isOpen) }
             }
         }
+    }
+
+    /// A small trailing chevron that folds a row's children (Mail's lists).
+    private func foldChevron(
+        isOpen: Bool,
+        open: LocalizedStringKey,
+        close: LocalizedStringKey,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            withAnimation(.snappy(duration: 0.2)) { action() }
+        } label: {
+            Image(systemName: isOpen ? "chevron.down" : "chevron.right")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .frame(width: 16, height: 16)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(isOpen ? close : open))
     }
 
     @ViewBuilder
