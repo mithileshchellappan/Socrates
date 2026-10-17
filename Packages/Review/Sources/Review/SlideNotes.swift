@@ -83,15 +83,15 @@ public enum NoteText {
     }
 }
 
-/// Where a slide's notes are anchored.
+/// Where a slide's notes are anchored. `page` nil: the lecture without a deck.
 public struct NoteAnchor: Sendable, Hashable {
     public var courseID: Course.ID?
     public var lectureID: Lecture.ID
     public var deckID: Deck.ID?
-    public var page: Int
+    public var page: Int?
     public var recordingID: Recording.ID?
 
-    public init(courseID: Course.ID?, lectureID: Lecture.ID, deckID: Deck.ID?, page: Int, recordingID: Recording.ID?) {
+    public init(courseID: Course.ID?, lectureID: Lecture.ID, deckID: Deck.ID?, page: Int?, recordingID: Recording.ID?) {
         self.courseID = courseID
         self.lectureID = lectureID
         self.deckID = deckID
