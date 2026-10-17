@@ -44,8 +44,9 @@ extension Color {
     /// secondary), and AI pins. Purple is reserved for it (the mockups' #8a56d1, #bf8cff dark).
     public static let ai = Color(light: CourseColor.RGB(0x8a56d1), dark: CourseColor.RGB(0xbf8cff))
 
-    /// The accent at 12 % (light) or 24 % (dark), as the mockups' accent-soft: time chips.
-    static func accentSoft(_ colorScheme: ColorScheme) -> Color {
+    /// The accent at 12 % (light) or 24 % (dark), as the mockups' accent-soft: time chips, toggled
+    /// toolbar buttons drawn inline (MailUI's snapshot toolbar).
+    public static func accentSoft(_ colorScheme: ColorScheme) -> Color {
         Color.accentColor.opacity(colorScheme == .dark ? 0.24 : 0.12)
     }
 }

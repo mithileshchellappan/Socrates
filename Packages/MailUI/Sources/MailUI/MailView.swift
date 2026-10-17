@@ -31,6 +31,8 @@ public struct MailView: View {
     @State private var clock = Date()
     @State private var focus = MailFocus()
     @FocusState private var listFocused: Bool
+    /// Translate / Show Original per message (the reader finds which mail offers it).
+    private let translations = MailTranslations.shared
 
     @Environment(\.mailActions) private var actions
     /// The database the screen was created with (SQLiteData's default): child views read it too.
@@ -114,7 +116,7 @@ public struct MailView: View {
         case true?:
             VStack(spacing: 0) {
                 if chrome == .snapshot {
-                    SnapshotToolbar(title: title, isFlagged: selectedMessage?.isFlagged == true)
+                    SnapshotToolbar(title: title, isFlagged: selectedMessage?.isFlagged == true, translation: translationState)
                 }
                 split
             }
@@ -216,6 +218,13 @@ public struct MailView: View {
                 if let row = selectedMessage { toggleFlag(row) }
             }
             .disabled(selectedMessage == nil)
+            if let id = selectedMessage?.id, translations.canTranslate(id) {
+                Toggle("Translate", systemImage: "translate", isOn: Binding {
+                    translations.isShowingTranslation(id)
+                } set: { _ in
+                    translations.toggle(id)
+                })
+            }
         }
         ToolbarSpacer(.fixed, placement: .primaryAction)
         ToolbarItem(placement: .primaryAction) {
@@ -228,8 +237,15 @@ public struct MailView: View {
         selectedMessage != nil && scope != .sent && scope != .drafts
     }
 
+    /// nil: the selected message does not offer Translate; else whether it is shown translated.
+    private var translationState: Bool? {
+        guard let id = selectedMessage?.id, translations.canTranslate(id) else { return nil }
+        return translations.isShowingTranslation(id)
+    }
+
     private var commands: MailScreenCommands {
         let row = selectedMessage
+        let translations = translations
         return MailScreenCommands(
             canCompose: list.accountID != nil,
             canReply: row != nil && scope != .sent,
@@ -237,13 +253,16 @@ public struct MailView: View {
             hasSelection: row != nil,
             isFlagged: row?.isFlagged == true,
             isUnread: row?.isUnread == true,
+            canTranslate: translationState != nil,
+            isTranslated: translationState == true,
             isEditingText: focus.isEditingText || isSearchFieldFocused,
             newMessage: newMessage,
             getMail: { Task { await actions.syncNow() } },
             reply: { if let id = row?.id { reply(to: id) } },
             archive: { if let id = row?.id { archive(id) } },
             toggleFlag: { if let row { toggleFlag(row) } },
-            toggleSeen: { if let row { toggleSeen(row) } }
+            toggleSeen: { if let row { toggleSeen(row) } },
+            toggleTranslation: { if let id = row?.id, translations.canTranslate(id) { translations.toggle(id) } }
         )
     }
 
@@ -460,11 +479,14 @@ private struct DraftReader: View {
     }
 }
 
-/// The window toolbar drawn inline for snapshots (title, Reply / Archive / Flag, New Message,
-/// the app's search field).
+/// The window toolbar drawn inline for snapshots (title, Reply / Archive / Flag / Translate, New
+/// Message, the app's search field).
 private struct SnapshotToolbar: View {
     let title: String
     let isFlagged: Bool
+    /// nil: no Translate; true: on (accent soft with an accent glyph, DESIGN §6.3).
+    let translation: Bool?
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 10) {
@@ -475,6 +497,11 @@ private struct SnapshotToolbar: View {
                 glyph("arrowshape.turn.up.left")
                 glyph("archivebox")
                 glyph(isFlagged ? "flag.slash" : "flag")
+                if let translation {
+                    glyph("translate")
+                        .foregroundStyle(translation ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                        .background(translation ? Color.accentSoft(colorScheme) : .clear, in: Capsule())
+                }
             }
             .modifier(MailGlass(shape: Capsule()))
             glyph("square.and.pencil")
