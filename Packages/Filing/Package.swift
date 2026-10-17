@@ -33,7 +33,8 @@ let package = Package(
             dependencies: [
                 "Filing",
                 .product(name: "StudyCore", package: "StudyCore"),
-                .product(name: "StudyUI", package: "StudyUI")
+                .product(name: "StudyUI", package: "StudyUI"),
+                .product(name: "Processing", package: "Processing")
             ]
         ),
     ],
