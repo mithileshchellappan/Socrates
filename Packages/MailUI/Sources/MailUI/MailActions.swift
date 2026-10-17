@@ -42,6 +42,14 @@ public struct MailActions: Sendable {
     /// Logs in to IMAP and SMTP with `account` and `password` without sending anything (account
     /// settings). Throws a readable error; the password is never stored by this call.
     public var verifyAccount: @Sendable (MailAccount, String) async throws -> Void
+    /// Change… in the lecture menu of an LMS "New file" mail: smart import's change sheet for
+    /// that filing (added by MailUI; the app wires it to `FilingCenter.presentChange`).
+    public var changeFiling: @Sendable (Filing.ID) async -> Void
+    /// The account settings saved an account and its password (the app lets the sync engine
+    /// log in again: `MailSyncEngine.retry()`).
+    public var accountSaved: @Sendable (MailAccount.ID) async -> Void
+    /// "Set Up Mail…": opens the mail account settings. Nil: the Settings window (macOS).
+    public var openAccountSettings: (@MainActor @Sendable () -> Void)?
 
     public init(
         syncNow: @escaping @Sendable () async -> Void = {},
@@ -59,7 +67,10 @@ public struct MailActions: Sendable {
         discardProposal: @escaping @Sendable (TrackedItem.ID) async throws -> Void = { _ in },
         openAttachment: @escaping @Sendable (MailAttachment.ID) async throws -> URL = { _ in throw MailActionUnavailable() },
         search: @escaping @Sendable (String, MailScope) async throws -> [MailMessage.ID] = { _, _ in [] },
-        verifyAccount: @escaping @Sendable (MailAccount, String) async throws -> Void = { _, _ in throw MailActionUnavailable() }
+        verifyAccount: @escaping @Sendable (MailAccount, String) async throws -> Void = { _, _ in throw MailActionUnavailable() },
+        changeFiling: @escaping @Sendable (Filing.ID) async -> Void = { _ in },
+        accountSaved: @escaping @Sendable (MailAccount.ID) async -> Void = { _ in },
+        openAccountSettings: (@MainActor @Sendable () -> Void)? = nil
     ) {
         self.syncNow = syncNow
         self.setSeen = setSeen
@@ -77,12 +88,17 @@ public struct MailActions: Sendable {
         self.openAttachment = openAttachment
         self.search = search
         self.verifyAccount = verifyAccount
+        self.changeFiling = changeFiling
+        self.accountSaved = accountSaved
+        self.openAccountSettings = openAccountSettings
     }
 }
 
 /// An action the app has not wired (previews, a device without the sync engine).
-public struct MailActionUnavailable: Error, Hashable, Sendable {
+public struct MailActionUnavailable: Error, Hashable, Sendable, LocalizedError {
     public init() {}
+
+    public var errorDescription: String? { String(localized: "Not available on this device") }
 }
 
 extension EnvironmentValues {
