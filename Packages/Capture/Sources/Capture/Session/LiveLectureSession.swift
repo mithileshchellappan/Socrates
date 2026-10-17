@@ -564,3 +564,96 @@ public final class LiveLectureSession {
         return text
     }
 }
+
+#if DEBUG
+// MARK: - Preview (debug builds)
+
+extension LiveLectureSession {
+    /// A slide stamp for `showPreview`: `page` came on screen `time` seconds into the recording.
+    public struct PreviewStamp: Sendable, Hashable {
+        public var page: Int
+        public var time: TimeInterval
+
+        public init(page: Int, time: TimeInterval) {
+            self.page = page
+            self.time = time
+        }
+    }
+
+    /// Debug builds only: a session for `deckURL` that never records (its audio source refuses to
+    /// start). Pair with `showPreview` for screenshots of the live screen.
+    public static func openPreview(
+        deckURL: URL?,
+        deckSHA256: String? = nil,
+        cacheDirectory: URL,
+        pageTexts: [String]? = nil,
+        captionLocale: Locale? = nil
+    ) async throws -> LiveLectureSession {
+        try await open(
+            configuration: Configuration(
+                directory: URL.temporaryDirectory.appending(path: "StudyPortal-preview", directoryHint: .isDirectory),
+                captionLocale: captionLocale
+            ),
+            deckURL: deckURL,
+            deckSHA256: deckSHA256,
+            cacheDirectory: cacheDirectory,
+            pageTexts: pageTexts,
+            capture: PreviewAudioSource()
+        )
+    }
+
+    /// Debug builds only: shows the session as if it had been recording for `elapsed` seconds,
+    /// on `page`, with these slide stamps, captions, input level and quick note. Nothing is
+    /// recorded or written (there is no package); the timer keeps running from `now`.
+    public func showPreview(
+        page: Int,
+        elapsed: TimeInterval,
+        stamps: [PreviewStamp],
+        captions: CaptionTranscript?,
+        level: Float,
+        inputName: String?,
+        note: String? = nil,
+        now: Date = Date()
+    ) {
+        guard phase == .ready, writer == nil else { return }
+        let started = now.addingTimeInterval(-max(0, elapsed))
+        if hasDeck { currentPage = min(max(1, page), pageCount) }
+        startedAt = started
+        self.inputName = inputName
+        isInputAvailable = true
+        self.level = level
+        self.captions = captions
+        var previous: Int?
+        events = stamps.sorted { $0.time < $1.time }.enumerated().map { index, stamp in
+            defer { previous = stamp.page }
+            return LectureEvent(
+                kind: index == 0 ? .start : .slide,
+                page: stamp.page,
+                fromPage: index == 0 ? nil : previous,
+                sampleTime: Int64(stamp.time * sampleRate),
+                hostTime: 0,
+                wallClock: started.addingTimeInterval(stamp.time)
+            )
+        }
+        if let note, !note.allSatisfy(\.isWhitespace) {
+            notes[currentPage] = QuickNote(page: currentPage, text: note, createdAt: now)
+        }
+        phase = .recording
+    }
+}
+
+/// Audio that never arrives: preview sessions cannot record.
+private final class PreviewAudioSource: AudioCaptureSource {
+    func requestPermission() async -> Bool { false }
+
+    func start(in directory: URL, format: RecordingFormat, segmentDuration: Duration) async throws -> CaptureStart {
+        throw CaptureError.noInputDevice
+    }
+
+    func stop() async throws -> [AudioSegmentInfo] { [] }
+
+    func statusUpdates() -> AsyncStream<CaptureStatus> { AsyncStream { $0.finish() } }
+
+    func audio(bufferingNewest limit: Int?) -> AsyncStream<AudioChunk> { AsyncStream { $0.finish() } }
+}
+#endif

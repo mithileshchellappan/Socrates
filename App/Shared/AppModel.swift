@@ -108,6 +108,15 @@ final class AppModel {
         if SnapshotRunner.directory != nil {
             return AppModel(services: try? StudyServices.live(), startsProcessing: false)
         }
+        // Parity screenshots (`ParityMode`): a throwaway library, nothing is started.
+        if let options = ParityMode.options {
+            do {
+                return AppModel(services: try ParityMode.services(options), startsProcessing: false)
+            } catch {
+                ParityMode.fail(error.localizedDescription)
+                return AppModel(services: nil, launchError: error.localizedDescription, startsProcessing: false)
+            }
+        }
         #endif
         do {
             let model = AppModel(services: try StudyServices.live())
@@ -290,6 +299,14 @@ final class AppModel {
             await filingCenter.file([package.url])
         }
     }
+
+    #if DEBUG
+    /// Debug builds (parity screenshots): shows a preview session as the live lecture. It never
+    /// records, so nothing is ever filed from it.
+    func showPreviewCapture(_ capture: LiveCapture) {
+        live = capture
+    }
+    #endif
 
     /// Lets go of the live session once its screen is closed, unless it is starting, recording or
     /// stopping (it must stay owned until the package is final).

@@ -10,6 +10,9 @@ struct StudyPortalApp: App {
     @State private var model: AppModel
 
     init() {
+        #if DEBUG && os(macOS)
+        ParityMode.prepareApp()
+        #endif
         let model = AppModel.launch()
         if let database = model.services?.database {
             prepareDependencies { $0.defaultDatabase = database }
@@ -22,6 +25,8 @@ struct StudyPortalApp: App {
             #if DEBUG && os(macOS)
             if SnapshotRunner.directory != nil {
                 SnapshotRunnerView(model: model)
+            } else if ParityMode.options != nil {
+                ParityRootView(model: model)
             } else {
                 RootView()
                     .environment(model)
@@ -32,6 +37,9 @@ struct StudyPortalApp: App {
             #endif
         }
         .defaultSize(width: 1180, height: 760)
+        #if DEBUG && os(macOS)
+        .restorationBehavior(ParityMode.options == nil ? .automatic : .disabled)
+        #endif
         .commands {
             SidebarCommands()
             InspectorCommands()

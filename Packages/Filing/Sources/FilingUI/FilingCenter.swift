@@ -322,13 +322,15 @@ public final class FilingCenter {
         dragExited()
     }
 
-    /// Shows a drag prediction without a drag (snapshots, previews).
-    func preview(predictions: [FilingPrediction], at location: CGPoint, targeted: HUDTarget? = nil) {
+    /// Shows a drag prediction without a drag (snapshots, previews, the app's parity screenshots).
+    /// `endPreviewDrag()` hides it.
+    public func preview(predictions: [FilingPrediction], at location: CGPoint, targeted: HUDTarget? = nil) {
         drag = Drag(location: location, anchor: hudAnchor(for: location), predictions: predictions, targeted: targeted, isOverRow: false)
     }
 
-    /// Shows a toast without filing anything (snapshots, previews); it stays until dismissed.
-    func preview(toast outcome: FilingOutcome) {
+    /// Shows a toast without filing anything (snapshots, previews, the app's parity screenshots);
+    /// it stays until dismissed.
+    public func preview(toast outcome: FilingOutcome) {
         toasts.append(Toast(outcome: outcome))
     }
 }

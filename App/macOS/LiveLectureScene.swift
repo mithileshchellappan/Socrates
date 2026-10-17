@@ -11,6 +11,11 @@ struct LiveLectureScene: Scene {
             LiveLectureScreen()
                 .environment(model)
                 .onDisappear { model.closeLiveLecture() }
+                #if DEBUG
+                .background {
+                    if ParityMode.options != nil { ParityWindowReader(role: .live) }
+                }
+                #endif
         }
         .defaultSize(width: 1280, height: 820)
         .restorationBehavior(.disabled)
