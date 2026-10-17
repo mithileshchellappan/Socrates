@@ -3,9 +3,9 @@ import Foundation
 import Observation
 import StudyCore
 
-/// The window's smart import state: the drag prediction the HUD shows, the toasts after a drop,
-/// the change sheet and the file importer. One per main window; the app owns it next to its
-/// `FilingService`.
+/// The window's smart import state: the drag prediction the HUD shows, the toasts after a drop
+/// (whose Change… is a menu of places, mockup 10), the change sheet (File menu, Course Settings)
+/// and the file importer. One per main window; the app owns it next to its `FilingService`.
 @MainActor
 @Observable
 public final class FilingCenter {
@@ -36,6 +36,8 @@ public final class FilingCenter {
         public var outcome: FilingOutcome
         /// Undo or Change is running.
         public var isWorking = false
+        /// Dropped on the HUD's Change…: the toast stays, its Change… lit, until a place is chosen.
+        public var wantsChange = false
 
         public init(id: UUID = UUID(), outcome: FilingOutcome) {
             self.id = id
@@ -44,9 +46,10 @@ public final class FilingCenter {
 
         /// Filed for sure (or failed): goes away on its own. Unsure ones wait for the user.
         var dismissesItself: Bool {
+            guard !wantsChange else { return false }
             switch outcome.status {
-            case .filed, .known, .failed: true
-            case .review, .needsCourse: false
+            case .filed, .known, .failed: return true
+            case .review, .needsCourse: return false
             }
         }
     }
@@ -54,6 +57,32 @@ public final class FilingCenter {
     /// Identifies the filing the change sheet edits.
     public struct ChangeRequest: Identifiable, Hashable {
         public let id: Filing.ID
+    }
+
+    /// One course in a toast's Change… menu: its lectures and the sessions around now.
+    public struct ChangeSection: Identifiable, Hashable {
+        public var course: Course
+        public var places: [FilingPlace]
+        public var id: Course.ID { course.id }
+    }
+
+    /// What a Change… menu item does.
+    public enum ChangeChoice: Hashable {
+        case place(FilingDestination)
+        case newLecture(Course.ID)
+    }
+
+    /// The file a previewed drag shows under the cursor (parity screenshots and snapshots only; a
+    /// real drag's image is the system's).
+    public struct DragGhost: Equatable, Sendable {
+        /// A PDF whose first page is the thumbnail.
+        public var url: URL
+        public var fileName: String
+
+        public init(url: URL, fileName: String) {
+            self.url = url
+            self.fileName = fileName
+        }
     }
 
     public internal(set) var drag: Drag?
@@ -71,6 +100,8 @@ public final class FilingCenter {
     public var changing: ChangeRequest?
     /// File ▸ Import… presents the file importer.
     public var isImporterPresented = false
+    /// A previewed drag's file (`preview(predictions:at:targeted:ghost:)`); never set by a drag.
+    public private(set) var previewGhost: DragGhost?
     /// Where the importer's files go (nil: wherever smart import puts them).
     @ObservationIgnored var importDestination: FilingDestination?
     /// Called after every drop, import or row drop has been filed (the app takes a second look
@@ -137,6 +168,7 @@ public final class FilingCenter {
     func dragExited() {
         predictTask?.cancel()
         drag = nil
+        previewGhost = nil
         hudFrames = [:]
         syncPrediction()
     }
@@ -222,15 +254,15 @@ public final class FilingCenter {
 
     private func file(_ urls: [URL], to destination: FilingDestination?, openChange: Bool) async {
         let outcomes = await service.file(urls, to: destination)
-        for outcome in outcomes { show(outcome) }
+        for outcome in outcomes { show(outcome, wantsChange: openChange && outcome.filing != nil) }
         didFile?(outcomes)
-        if openChange, let filing = outcomes.first(where: { $0.filing != nil })?.filing {
-            changing = ChangeRequest(id: filing.id)
-        }
     }
 
-    func show(_ outcome: FilingOutcome) {
-        let toast = Toast(outcome: outcome)
+    /// A toast for `outcome`; one dropped on the HUD's Change… stays with its Change… lit (no
+    /// dialog: the menu is one click away).
+    func show(_ outcome: FilingOutcome, wantsChange: Bool = false) {
+        var toast = Toast(outcome: outcome)
+        toast.wantsChange = wantsChange
         toasts.append(toast)
         while toasts.count > Self.maximumToasts, let oldest = toasts.first(where: \.dismissesItself) ?? toasts.first {
             dismiss(oldest.id)
@@ -293,6 +325,39 @@ public final class FilingCenter {
         guard let filing = toasts.first(where: { $0.id == id })?.outcome.filing else { return }
         update(id) { $0.isWorking = true }
         await change(filing.id, to: place.destination, newLectureIn: nil)
+    }
+
+    /// The Change… menu of a toast: each course with its lectures and the sessions from two weeks
+    /// back to two weeks ahead, the toast's course first. Empty when the file has no filing.
+    func changeSections(for toast: Toast, now: Date = Date()) async -> [ChangeSection] {
+        guard toast.outcome.filing != nil, let courses = try? await service.courses() else { return [] }
+        let window = now.addingTimeInterval(-14 * 86_400)...now.addingTimeInterval(14 * 86_400)
+        let first = toast.outcome.place?.course.id
+        var sections: [ChangeSection] = []
+        for course in courses.sorted(by: { ($0.id == first ? 0 : 1) < ($1.id == first ? 0 : 1) }) {
+            let places = ((try? await service.places(courseID: course.id)) ?? []).filter { place in
+                place.lectureID != nil || place.date.map(window.contains) == true
+            }
+            if !places.isEmpty { sections.append(ChangeSection(course: course, places: places)) }
+        }
+        return sections
+    }
+
+    /// A Change… menu item: moves the toast's file there.
+    func choose(_ id: Toast.ID, _ choice: ChangeChoice) async {
+        guard let filing = toasts.first(where: { $0.id == id })?.outcome.filing else { return }
+        update(id) { toast in
+            toast.isWorking = true
+            toast.wantsChange = false
+        }
+        switch choice {
+        case .place(let destination):
+            await change(filing.id, to: destination, newLectureIn: nil)
+        case .newLecture(let courseID):
+            await change(filing.id, to: nil, newLectureIn: courseID)
+        }
+        update(id) { $0.isWorking = false }
+        scheduleDismissal(id)
     }
 
     /// Opens the change sheet for a filing.
@@ -367,10 +432,12 @@ public final class FilingCenter {
         dragExited()
     }
 
-    /// Shows a drag prediction without a drag (snapshots, previews, the app's parity screenshots).
-    /// `endPreviewDrag()` hides it.
-    public func preview(predictions: [FilingPrediction], at location: CGPoint, targeted: HUDTarget? = nil) {
+    /// Shows a drag prediction without a drag (snapshots, previews, the app's parity screenshots),
+    /// with `ghost` drawn as the dragged file under the cursor at `location` (the system draws a
+    /// real drag's image). `endPreviewDrag()` hides it.
+    public func preview(predictions: [FilingPrediction], at location: CGPoint, targeted: HUDTarget? = nil, ghost: DragGhost? = nil) {
         drag = Drag(location: location, anchor: hudAnchor(for: location), predictions: predictions, targeted: targeted, isOverRow: false)
+        previewGhost = ghost
         syncPrediction()
     }
 

@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 
 extension View {
     /// Smart import on a window: files dropped anywhere are filed on their own, with the
-    /// destination HUD while dragging, toasts after the drop (Undo, Change…), the change sheet and
-    /// the File ▸ Import… panel.
+    /// destination HUD while dragging, toasts after the drop (Undo, the Change… menu), the change
+    /// sheet (File menu, Course Settings) and the File ▸ Import… panel.
     public func smartImport(_ center: FilingCenter) -> some View {
         modifier(SmartImportModifier(center: center))
     }
@@ -37,6 +37,12 @@ struct SmartImportModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.overlayInsets, insets)
+            .overlay(alignment: .topLeading) {
+                // A previewed drag's file (screenshots); a real drag's image is the system's.
+                if let ghost = center.previewGhost, let drag = center.drag {
+                    DropGhostPreview(ghost: ghost, location: drag.location)
+                }
+            }
             .overlay(alignment: .topLeading) {
                 if let drag = center.drag, !drag.isOverRow, !drag.predictions.isEmpty {
                     DropHUD(predictions: drag.predictions, targeted: drag.targeted) { target, frame in

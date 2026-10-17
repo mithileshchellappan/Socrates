@@ -163,6 +163,9 @@ struct ReviewScreen: View {
                     #if os(macOS)
                     .navigationSubtitle(subtitle)
                     .toolbar(removing: .title)
+                    // No line under the toolbar across the content (mockup 03: the slide's top
+                    // edge is the first thing under the title), as on the live screen.
+                    .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                     #endif
                     .toolbar {
                         ToolbarItem(placement: .navigation) {

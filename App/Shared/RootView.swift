@@ -124,15 +124,13 @@ struct RootView: View {
                     target: reviewTarget,
                     record: record
                 )
+                #if os(iOS)
                 // The search field (mockups 01, 07), not on a lecture or a course (03, 08: the
                 // slide stepper and inspector header, Import, own the toolbar there; ⌘F still
-                // searches). Here, not on the split view: there it shows on every screen.
-                .modifier(SearchFieldModifier(isShown: showsSearchField, text: $query, focused: $searchFocused) {
-                    let text = query.trimmingCharacters(in: .whitespaces)
-                    guard !text.isEmpty else { return }
-                    selection = .search
-                    searchSubmits += 1
-                })
+                // searches). Here, not on the split view: there it shows on every screen. (The Mac
+                // draws its own field in `trailingItems`.)
+                .modifier(SearchFieldModifier(isShown: showsSearchField, text: $query, focused: $searchFocused, submit: submitSearch))
+                #endif
                 #if os(macOS)
                 .toolbar {
                     sidebarToggle
@@ -160,10 +158,15 @@ struct RootView: View {
 
     /// The toolbar search field shows on the top-level screens, not on a lecture or a course.
     private var showsSearchField: Bool {
-        switch selection ?? .today {
-        case .today, .calendar, .mail, .search: true
-        case .course, .courseSettings, .lecture: false
-        }
+        (selection ?? .today).isTopLevel
+    }
+
+    /// ↩ in the search field: the Search screen opens its selected (or first) hit.
+    private func submitSearch() {
+        let text = query.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return }
+        selection = .search
+        searchSubmits += 1
     }
 
     /// Back or Forward through the screens this window showed.
@@ -172,24 +175,35 @@ struct RootView: View {
         selection = item
     }
 
-    /// The content toolbar's trailing end (mockup 01): [● Record] […] in their own glass, then the
-    /// search field, which macOS keeps at the trailing edge. Record is Today's while idle (File ▸
-    /// New Lecture Capture, ⇧⌘N, starts one from anywhere); a running recording shows on every
-    /// screen, so it is never forgotten, and brings the live screen back.
+    /// The content toolbar's trailing end (mockups 01, 10): [search] [● Record] […], each in its
+    /// own glass. The search field shows on the top-level screens (not on a lecture or a course,
+    /// mockups 03 and 08, where ⌘F still opens Search). Record is Today's while idle (File ▸ New
+    /// Lecture Capture, ⇧⌘N, starts one from anywhere); a running recording shows on every screen,
+    /// so it is never forgotten, and brings the live screen back.
     @ToolbarContentBuilder
     private func trailingItems(center: FilingCenter) -> some ToolbarContent {
-        if isToday || selection == .search {
-            // Today's and Search's titles are toolbar items (`screenTitle`), not the flexible
-            // system title: this keeps Record, More and the search field at the trailing end.
+        if showsSearchField {
+            // The top-level screens' titles are toolbar items (`screenTitle`), not the flexible
+            // system title: this keeps the field, Record and More at the trailing end.
             ToolbarSpacer(.flexible, placement: .primaryAction)
         }
+        #if os(macOS)
+        if showsSearchField {
+            ToolbarItem(placement: .primaryAction) {
+                // "Search lectures, notes, mail" once mail is searchable (M2).
+                ToolbarSearchField(text: $query, prompt: "Search lectures and notes", focused: $searchFocused, submit: submitSearch)
+            }
+        }
+        #endif
         if let session = model.live?.session, session.isCapturing, session.startedAt != nil {
+            ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 Button(action: record) {
                     RecordingIndicator(session: session)
                 }
             }
         } else if isToday {
+            ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 Button(action: record) {
                     Label {
@@ -206,13 +220,20 @@ struct RootView: View {
         if isToday {
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button("Import…") { center.importFiles() }
-                    Button("New Course…") { model.sheet = .newCourse }
-                } label: {
-                    Label("More", systemImage: "ellipsis")
+                // A plain view around the menu: the toolbar then keeps the glyph's room (a Menu
+                // item alone is drawn as the system's near-circle).
+                HStack(spacing: 0) {
+                    Menu {
+                        Button("Import…") { center.importFiles() }
+                        Button("New Course…") { model.sheet = .newCourse }
+                    } label: {
+                        ToolbarGlyph("More", systemImage: "ellipsis")
+                    }
+                    .menuIndicator(.hidden)
+                    .menuStyle(.button)
+                    .buttonStyle(.borderless)
                 }
-                .menuIndicator(.hidden)
+                .frame(width: ToolbarGlyph.pillWidth)
             }
         }
     }
@@ -225,12 +246,20 @@ struct RootView: View {
     private var sidebarToggle: some ToolbarContent {
         if isToday || columns == .detailOnly {
             ToolbarItem(placement: .navigation) {
-                Button(columns == .detailOnly ? LocalizedStringKey("Show Sidebar") : "Hide Sidebar", systemImage: "sidebar.left") {
+                Button {
                     withAnimation {
                         columns = columns == .detailOnly ? .all : .detailOnly
                     }
+                } label: {
+                    ToolbarGlyph(columns == .detailOnly ? LocalizedStringKey("Show Sidebar") : "Hide Sidebar", systemImage: "sidebar.left")
+                        .frame(width: ToolbarGlyph.pillWidth, height: 34)
+                        .contentShape(.capsule)
                 }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .padding(.leading, 9)
             }
+            .sharedBackgroundVisibility(.hidden)
         }
     }
 
@@ -238,14 +267,18 @@ struct RootView: View {
     /// (⌘[ ⌘]) work on every screen.
     @ToolbarContentBuilder
     private var historyButtons: some ToolbarContent {
-        if selection?.settingsCourseID != nil {
+        if selection?.courseScreenID != nil {
             ToolbarItemGroup(placement: .navigation) {
-                Button("Back", systemImage: "chevron.left") { go(back: true) }
-                    .disabled(!history.canGoBack)
-                    .help("Back")
-                Button("Forward", systemImage: "chevron.right") { go(back: false) }
-                    .disabled(!history.canGoForward)
-                    .help("Forward")
+                Button { go(back: true) } label: {
+                    ToolbarGlyph("Back", systemImage: "chevron.left")
+                }
+                .disabled(!history.canGoBack)
+                .help("Back")
+                Button { go(back: false) } label: {
+                    ToolbarGlyph("Forward", systemImage: "chevron.right")
+                }
+                .disabled(!history.canGoForward)
+                .help("Forward")
             }
         }
     }
@@ -285,6 +318,35 @@ struct RootView: View {
     }
 }
 
+/// An icon-only toolbar button's label as the mockups draw it: a small glyph in a wide glass pill
+/// (57 × 34 pt) rather than the system's near-circle.
+struct ToolbarGlyph: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+
+    /// The glyph's room inside the pill: the system adds its padding on both sides of a button.
+    static let glyphWidth: CGFloat = 43
+    /// The mockups' pill, for a view the toolbar's glass hugs (no padding of its own).
+    static let pillWidth: CGFloat = 57
+
+    init(_ title: LocalizedStringKey, systemImage: String) {
+        self.title = title
+        self.systemImage = systemImage
+    }
+
+    var body: some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: systemImage)
+                .imageScale(.small)
+                .frame(width: Self.glyphWidth)
+        }
+        .labelStyle(.iconOnly)
+    }
+}
+
+#if os(iOS)
 /// The window's search field (in the toolbar), on the screens that have one; ↩ runs `submit`.
 private struct SearchFieldModifier: ViewModifier {
     let isShown: Bool
@@ -303,6 +365,7 @@ private struct SearchFieldModifier: ViewModifier {
         }
     }
 }
+#endif
 
 /// The detail column's stack identity: one for the top-level screens, one per course or lecture.
 private enum DetailIdentity: Hashable {
@@ -310,10 +373,7 @@ private enum DetailIdentity: Hashable {
     case screen(SidebarItem)
 
     init(_ item: SidebarItem) {
-        switch item {
-        case .today, .calendar, .mail, .search: self = .topLevel
-        case .course, .courseSettings, .lecture: self = .screen(item)
-        }
+        self = item.isTopLevel ? .topLevel : .screen(item)
     }
 }
 

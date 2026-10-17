@@ -6,32 +6,46 @@ import SwiftUI
 /// The toasts at the bottom right after a drop, newest at the bottom.
 struct FilingToastStack: View {
     let center: FilingCenter
+    /// Each toast's Change… menu, loaded when it shows and after its file moved.
+    @State private var sections: [FilingCenter.Toast.ID: [FilingCenter.ChangeSection]] = [:]
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
             ForEach(center.toasts) { toast in
                 FilingToastView(
                     toast: toast,
+                    changeSections: sections[toast.id] ?? [],
                     undo: { Task { await center.undo(toast.id) } },
                     change: { if let id = toast.outcome.filing?.id { center.presentChange(id) } },
+                    changeTo: { choice in Task { await center.choose(toast.id, choice) } },
                     choose: { place in Task { await center.move(toast.id, to: place) } },
                     dismiss: { center.dismiss(toast.id) }
                 )
                 .onHover { center.setHovering(toast.id, $0) }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
+                .task(id: toast.outcome.filing) {
+                    sections[toast.id] = await center.changeSections(for: toast)
+                }
             }
         }
         .animation(.smooth(duration: 0.25), value: center.toasts.map(\.id))
+        .onChange(of: center.toasts.map(\.id)) { _, ids in
+            sections = sections.filter { ids.contains($0.key) }
+        }
     }
 }
 
 /// One filed file (mockup 10): file tile, course, "Lecture 1 · Tue 13 Oct", "file · 44:34", and
-/// Undo / Change…. A file filed on a guess offers its runner-up. A live capture offers Change…
-/// only (it was filed after Stop, not dropped).
+/// Undo / Change…. Change… is a pull-down of places (each course with its lectures and sessions,
+/// the current one checked, then New Lecture): no dialog. A file filed on a guess offers its
+/// runner-up. A live capture offers Change… only (it was filed after Stop, not dropped).
 struct FilingToastView: View {
     let toast: FilingCenter.Toast
+    /// The Change… menu; while it is empty (loading, or nothing filed) Change… opens the sheet.
+    var changeSections: [FilingCenter.ChangeSection] = []
     var undo: () -> Void = {}
     var change: () -> Void = {}
+    var changeTo: (FilingCenter.ChangeChoice) -> Void = { _ in }
     var choose: (FilingPlace) -> Void = { _ in }
     var dismiss: () -> Void = {}
     @State private var isHovering = false
@@ -156,7 +170,7 @@ struct FilingToastView: View {
 
     private func sizeText(_ text: String) -> some View {
         Text(text)
-            .font(outcome.duration != nil ? .system(.callout, design: .monospaced) : .callout)
+            .font(outcome.duration != nil ? FilingFont.inlineMono : .callout)
             .monospacedDigit()
             .foregroundStyle(.secondary)
     }
@@ -170,18 +184,65 @@ struct FilingToastView: View {
             case _ where outcome.status == .known || outcome.kind == .capture:
                 // A capture was not dropped by the user and its audio exists only here: nothing
                 // to undo, only to file elsewhere.
-                Button("Change…", action: change)
+                changeButton
             default:
                 Button(action: undo) {
-                    Label("Undo", systemImage: "arrow.uturn.backward")
-                        .labelStyle(.titleAndIcon)
+                    UndoLabel()
                 }
-                Button("Change…", action: change)
+                .buttonStyle(FilingSmallButtonStyle())
+                changeButton
             }
         }
-        .controlSize(.small)
-        .buttonStyle(.bordered)
         .fixedSize()
+    }
+
+    /// Change…: the menu of places once loaded, else the sheet.
+    @ViewBuilder
+    private var changeButton: some View {
+        if changeSections.isEmpty {
+            Button("Change…", action: change)
+                .buttonStyle(FilingSmallButtonStyle(isHighlighted: toast.wantsChange))
+        } else {
+            Menu {
+                ForEach(changeSections) { section in
+                    Section {
+                        Picker(selection: currentChoice) {
+                            ForEach(section.places, id: \.destination) { place in
+                                Text(FilingText.line(place))
+                                    .tag(Optional(FilingCenter.ChangeChoice.place(place.destination)))
+                            }
+                        } label: {
+                            EmptyView()
+                        }
+                        .pickerStyle(.inline)
+                    } header: {
+                        Text(section.course.name)
+                    }
+                }
+                if let courseID = outcome.place?.course.id {
+                    Divider()
+                    Button("New Lecture") { changeTo(.newLecture(courseID)) }
+                }
+            } label: {
+                Text("Change…")
+                    .filingSmallButtonChrome(isHighlighted: toast.wantsChange)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+
+    /// The file's lecture, checked in the Change… menu; choosing another moves the file there.
+    private var currentChoice: Binding<FilingCenter.ChangeChoice?> {
+        Binding(
+            get: { outcome.place.map { .place($0.destination) } },
+            set: { choice in
+                guard let choice, choice != outcome.place.map({ .place($0.destination) }) else { return }
+                changeTo(choice)
+            }
+        )
     }
 }
 

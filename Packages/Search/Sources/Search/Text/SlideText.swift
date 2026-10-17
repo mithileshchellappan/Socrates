@@ -78,6 +78,10 @@ enum SlideText {
                 let joiner = flat.hasSuffix("-") && flat.dropLast().last?.isLetter == true ? "" : " "
                 flat += joiner + line
                 item += joiner + line
+            } else if isHeading(item) {
+                // A list's heading ("Pros", "Cons", "Vorteile") reads as one: "Cons: Requires …".
+                flat += ": " + line
+                item = line
             } else {
                 // After a colon, or a sentence a plain line follows, the item needs no " · ".
                 let closes = flat.hasSuffix(":") || (!bullet && flat.last.map { ".!?".contains($0) } == true)
@@ -123,6 +127,18 @@ enum SlideText {
         let lastWord = item.reversed().prefix { $0.isLetter }.reversed()
         return !lastWord.isEmpty && joiningWords.contains(String(lastWord).lowercased())
     }
+
+    /// A line that only names the list under it ("Pros", "Cons", "Examples", "Nachteile").
+    static func isHeading(_ item: String) -> Bool {
+        headingWords.contains(item.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    /// The headings slides put over a list (English and German), on a line of their own.
+    private static let headingWords: Set<String> = [
+        "pros", "cons", "pro", "con", "advantages", "disadvantages", "benefits", "drawbacks",
+        "examples", "example", "goals", "goal", "idea", "problem", "problems", "solution",
+        "vorteile", "nachteile", "beispiele", "beispiel", "ziele", "ziel", "idee", "lösung"
+    ]
 
     /// Words a line does not end on unless the sentence goes on (English and German).
     private static let joiningWords: Set<String> = [

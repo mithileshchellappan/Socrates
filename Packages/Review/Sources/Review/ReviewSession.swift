@@ -123,9 +123,14 @@ public final class ReviewSession {
     // MARK: - Opening
 
     /// Opens at a slide and/or a time (the time wins for the player, the page for the slide when
-    /// they disagree), else at `resume` (where review left off), else at the start.
+    /// they disagree), else at `resume` (where review left off), else at the start. A time just
+    /// before the page's first visit (under a second: a line that starts a beat early) opens that
+    /// visit, following.
     public func open(page: Int?, time: Double?, plays: Bool, resume: Double?) async {
-        if let time = time ?? (page == nil ? resume : nil) {
+        if var time = time ?? (page == nil ? resume : nil) {
+            if let page, let visit = timeline.firstVisit(of: page), visit.start > time, visit.start - time < 1 {
+                time = visit.start
+            }
             await player?.seek(to: time)
             if let page, page != player?.currentPage {
                 show(page: page)

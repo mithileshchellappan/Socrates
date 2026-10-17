@@ -58,12 +58,12 @@ public struct LiveLectureView: View {
         VStack(spacing: 0) {
             canvas
             if let deck = session.deck {
-                Divider()
+                Hairline()
                 FilmstripView(session: session, deck: deck)
             }
         }
         // The canvas colour runs up behind the toolbar's glass, with no toolbar band or hairline.
-        .background(.background.secondary, ignoresSafeAreaEdges: .all)
+        .background(Color.liveCanvasBackground, ignoresSafeAreaEdges: .all)
         .toolbar { toolbar }
         #if os(macOS)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
@@ -181,7 +181,15 @@ public struct LiveLectureView: View {
         if let showSidebar = context?.onShowSidebar {
             ToolbarItem(placement: .navigation) {
                 Button(action: showSidebar) {
-                    Label("Show Sidebar", systemImage: "sidebar.leading")
+                    // The main window's toggle: a small glyph in a wide pill (mockups 01, 02).
+                    Label {
+                        Text("Show Sidebar")
+                    } icon: {
+                        Image(systemName: "sidebar.left")
+                            .imageScale(.small)
+                            .frame(width: 43)
+                    }
+                    .labelStyle(.iconOnly)
                 }
                 .help("Show Sidebar")
             }
@@ -203,19 +211,38 @@ public struct LiveLectureView: View {
         ToolbarSpacer(.flexible)
         #endif
         ToolbarItemGroup(placement: Self.controlsPlacement) {
+            // The mockup's 16 pt glyph boxes: an 8 pt chevron, a 12 pt pennant.
             Button { session.previous() } label: {
-                Label("Previous Slide", systemImage: "chevron.left")
+                Label {
+                    Text("Previous Slide")
+                } icon: {
+                    Image(systemName: "chevron.left")
+                        .imageScale(.small)
+                        .fontWeight(.medium)
+                }
+                .labelStyle(.iconOnly)
             }
             .disabled(!session.canGoPrevious)
             Button { session.next() } label: {
-                Label("Next Slide", systemImage: "chevron.right")
+                Label {
+                    Text("Next Slide")
+                } icon: {
+                    Image(systemName: "chevron.right")
+                        .imageScale(.small)
+                        .fontWeight(.medium)
+                }
+                .labelStyle(.iconOnly)
             }
             .disabled(!session.canGoNext)
             Button { session.flag() } label: {
                 Label {
-                    Text("Flag").fontWeight(.regular)
+                    Text("Flag")
+                        .font(.system(size: 13, weight: .regular))
                 } icon: {
-                    Image(systemName: "flag")
+                    PennantShape()
+                        .stroke(style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+                        .frame(width: 16, height: 16)
+                        .accessibilityHidden(true)
                 }
                 .labelStyle(.titleAndIcon)
             }
@@ -262,26 +289,31 @@ public struct LiveLectureView: View {
             Button {
                 confirmsStop = true
             } label: {
-                stopLabel
-                    .foregroundStyle(.red)
+                stopLabel(tint: .red)
             }
             .disabled(session.phase == .stopping)
         case .finished:
             Button {} label: {
-                stopLabel
+                stopLabel(tint: .secondary)
             }
             .disabled(true)
         }
     }
 
-    /// A small rounded stop square and "Stop" in regular weight (mockup 02). A shape, not the
-    /// stop.fill symbol, which the toolbar draws at its own (twice the size) icon scale.
-    private var stopLabel: some View {
+    /// A small rounded stop square in a 16 pt box and "Stop" in 13 pt regular (mockup 02). A
+    /// shape, not the stop.fill symbol, which the toolbar draws at its own (twice the size) icon
+    /// scale. Text and square are tinted each: a tint on the whole label makes the toolbar set the
+    /// title semibold.
+    private func stopLabel(tint: some ShapeStyle) -> some View {
         Label {
-            Text("Stop").fontWeight(.regular)
+            Text("Stop")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(tint)
         } icon: {
             RoundedRectangle(cornerRadius: 1.75, style: .continuous)
+                .fill(tint)
                 .frame(width: 7.5, height: 7.5)
+                .frame(width: 16, height: 16)
                 .accessibilityHidden(true)
         }
         .labelStyle(.titleAndIcon)

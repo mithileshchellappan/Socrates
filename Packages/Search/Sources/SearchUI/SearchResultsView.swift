@@ -58,7 +58,7 @@ public struct SearchResultsView: View {
 
     public var body: some View {
         content
-            .screenTitle(String(localized: "Search"), subtitle: subtitle)
+            .screenTitle(String(localized: "Search"), subtitle: subtitle, leadingInset: ScreenTitleInset.firstItem)
             .task(id: SearchKey(query: searchQuery, chunks: chunkCount, indexedAt: indexedAt)) {
                 await search()
             }
@@ -92,11 +92,10 @@ public struct SearchResultsView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, SearchMetrics.margin)
+                    .padding(.leading, SearchMetrics.margin)
+                    .padding(.trailing, SearchMetrics.trailingMargin)
                     .padding(.top, 2)
                     .padding(.bottom, 12)
-                    .frame(maxWidth: SearchMetrics.columnWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .focusable()
                 .focused($resultsFocused)

@@ -143,3 +143,22 @@ struct RecordingDot: View {
         }
     }
 }
+
+/// The mockups' flag (02): a pole and a pennant with a notched tail, drawn in a 24-unit box like
+/// their icons (`M5 21V4`, `M5 4h11l-2 4 2 4H5`). SF's flag is a wavy banner.
+struct PennantShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let scale = min(rect.width, rect.height) / 24
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * scale, y: rect.minY + y * scale)
+        }
+        var path = Path()
+        path.move(to: point(5, 21))
+        path.addLine(to: point(5, 4))
+        path.addLine(to: point(16, 4))
+        path.addLine(to: point(14, 8))
+        path.addLine(to: point(16, 12))
+        path.addLine(to: point(5, 12))
+        return path
+    }
+}

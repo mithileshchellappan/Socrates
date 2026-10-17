@@ -13,12 +13,15 @@ public struct CourseSettingsView: View {
     private let courseID: Course.ID
     private let changeDeck: (Deck.ID) -> Void
     private let importFiles: (() -> Void)?
+    private let importDropped: (([URL]) -> Void)?
     private let newCourse: (() -> Void)?
 
     @FetchOne private var course: Course?
     @FetchAll private var slots: [WeeklySlot]
     @FetchAll private var lectures: [Lecture]
     @FetchAll private var oneOffSessions: [LectureSession]
+    /// From yesterday on, for the next class an empty Slides group stands for.
+    @FetchAll private var upcomingSessions: [LectureSession]
     @FetchAll private var mailRules: [MailRule]
     @Fetch private var decks: [CourseDeck]
     @Fetch private var vocabulary: GlossaryVocabulary
@@ -47,21 +50,29 @@ public struct CourseSettingsView: View {
     ///   - changeDeck: Change… on a deck (the filing change sheet).
     ///   - importFiles: Import in the toolbar and in an empty Slides group (the file importer for
     ///     this course). Nil: the app shows its own Import.
+    ///   - importDropped: Files dropped on an empty Slides group, filed into this course.
     ///   - newCourse: New Course… in the toolbar's More menu.
     public init(
         courseID: Course.ID,
         changeDeck: @escaping (Deck.ID) -> Void = { _ in },
         importFiles: (() -> Void)? = nil,
+        importDropped: (([URL]) -> Void)? = nil,
         newCourse: (() -> Void)? = nil
     ) {
         self.courseID = courseID
         self.changeDeck = changeDeck
         self.importFiles = importFiles
+        self.importDropped = importDropped
         self.newCourse = newCourse
         _course = FetchOne(Course.find(courseID))
         _slots = FetchAll(WeeklySlot.where { $0.courseID.eq(courseID) }.order { ($0.weekday, $0.startMinute) })
         _lectures = FetchAll(Lecture.where { $0.courseID.eq(courseID) })
         _oneOffSessions = FetchAll(LectureSession.where { $0.courseID.eq(courseID) && $0.weeklySlotID.is(nil) })
+        // Rounded to the day, so the request stays the same while the view is re-created.
+        let since = Calendar.current.startOfDay(for: Date()).addingTimeInterval(-86_400)
+        _upcomingSessions = FetchAll(
+            LectureSession.where { $0.courseID.eq(courseID) && !$0.isCancelled && $0.endsAt.gte(since) }.order(by: \.startsAt)
+        )
         _mailRules = FetchAll(MailRule.where { $0.courseID.eq(courseID) }.order { ($0.sortOrder, $0.createdAt) })
         _decks = Fetch(wrappedValue: [], CourseDecksRequest(courseID: courseID))
         _vocabulary = Fetch(wrappedValue: .empty, GlossaryVocabularyRequest(courseID: courseID))
@@ -160,7 +171,7 @@ public struct CourseSettingsView: View {
 
         SettingsGroup("Slides") {
             if decks.isEmpty {
-                EmptySlidesRow(importFiles: importFiles)
+                GhostDeckRow(tag: nextClassTag, importFiles: importFiles, importDropped: importDropped)
             } else {
                 ForEach(decks) { item in
                     DeckRow(item: item, text: sessionText) { changeDeck(item.deck.id) }
@@ -244,6 +255,9 @@ public struct CourseSettingsView: View {
             if let newMailRule {
                 MailRuleRow(rule: newMailRule, focusesOnAppear: true, save: saveMailRule, delete: deleteMailRule)
                     .id(newMailRule.id)
+            } else if orderedMailRules.isEmpty {
+                let ghost = GhostMailRuleRow.rule(for: course.wrappedValue, sortOrder: 0)
+                GhostMailRuleRow(rule: ghost) { saveMailRule(ghost) }
             }
         }
     }
@@ -315,6 +329,17 @@ public struct CourseSettingsView: View {
     }
 
     private var sessionText: SessionText { SessionText(locale: locale, timeZone: timeZone) }
+
+    /// "Lecture 3 · Wed 21 Oct", "Seminar 2 · Thu 29 Oct": the next class without a lecture yet
+    /// (any kind for a course without lectures), as the sidebar shows it.
+    private var nextClassTag: String? {
+        let filed = Set(lectures.compactMap(\.lectureSessionID))
+        let now = Date()
+        let numbered = upcomingSessions.contains { $0.kind == .lecture } ? upcomingSessions.filter { $0.kind == .lecture } : upcomingSessions
+        guard let next = numbered.first(where: { $0.endsAt > now && !filed.contains($0.id) }) else { return nil }
+        let name = [next.kind.displayName, next.number.map(String.init)].compactMap(\.self).joined(separator: " ")
+        return "\(name) · \(sessionText.day(next.startsAt))"
+    }
 
     private var calendarTypes: [UTType] {
         [UTType(filenameExtension: "ics"), .calendarEvent].compactMap(\.self)
@@ -480,42 +505,18 @@ struct CourseDecksRequest: FetchKeyRequest {
     }
 }
 
-/// A filed deck: its title, the lecture it is tagged with, and Change.
-private struct DeckRow: View {
+/// A filed deck: its title, the lecture it is tagged with, and Change (mockup 08: 50 pt rows).
+struct DeckRow: View {
     let item: CourseDeck
     let text: SessionText
     let change: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "doc")
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.deck.title.isEmpty ? item.deck.fileName : item.deck.title)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                if let tag {
-                    HStack(spacing: 5) {
-                        Image(systemName: "tag")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                            .accessibilityHidden(true)
-                        Text(tag)
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        DeckRowLayout(title: item.deck.title.isEmpty ? item.deck.fileName : item.deck.title, tag: tag) {
             Button("Change", action: change)
-                .headerActionStyle()
+                .headerActionStyle(inset: 4)
                 .controlSize(.small)
         }
-        .frame(minHeight: 32)
-        .padding(.vertical, 7)
-        .padding(.horizontal, 12)
     }
 
     private var tag: String? {
@@ -531,24 +532,82 @@ private struct DeckRow: View {
     }
 }
 
-/// The Slides group of a course without decks: the deck glyph and Import.
-private struct EmptySlidesRow: View {
-    let importFiles: (() -> Void)?
+/// A deck row's layout: the PDF glyph, the title over its tag line, the trailing action.
+private struct DeckRowLayout<Action: View>: View {
+    let title: String
+    let tag: String?
+    /// A ghost row: everything tertiary.
+    var isGhost = false
+    @ViewBuilder var action: Action
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "doc")
-                .foregroundStyle(.tertiary)
+            PDFGlyph()
+                .foregroundStyle(isGhost ? .tertiary : .secondary)
                 .frame(width: 16)
                 .accessibilityHidden(true)
-            Spacer(minLength: 8)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let tag {
+                    HStack(spacing: 5) {
+                        Image(systemName: "tag")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
+                        Text(tag)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(isGhost ? .tertiary : .secondary)
+                }
+            }
+            .foregroundStyle(isGhost ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            action
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 50)
+    }
+}
+
+/// The Slides group of a course without decks: a deck row in tertiary for the next class ("–",
+/// "Seminar 2 · Thu 29 Oct") with Import; PDFs dropped on it are filed into this course.
+struct GhostDeckRow: View {
+    let tag: String?
+    let importFiles: (() -> Void)?
+    let importDropped: (([URL]) -> Void)?
+    @State private var isTargeted = false
+
+    var body: some View {
+        DeckRowLayout(title: "–", tag: tag, isGhost: true) {
             if let importFiles {
                 Button("Import", action: importFiles)
-                    .headerActionStyle()
+                    .headerActionStyle(inset: 4)
+                    .controlSize(.small)
             }
         }
-        .frame(minHeight: 32)
-        .padding(.vertical, 7)
-        .padding(.horizontal, 12)
+        .background(isTargeted ? AnyShapeStyle(.tint.opacity(0.12)) : AnyShapeStyle(.clear))
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let importDropped, !urls.isEmpty else { return false }
+            importDropped(urls)
+            return true
+        } isTargeted: {
+            isTargeted = $0
+        }
+    }
+}
+
+/// The mockup's deck glyph (i-pdf): a page outline with a tiny "PDF" low inside it.
+struct PDFGlyph: View {
+    var body: some View {
+        Image(systemName: "doc")
+            .overlay(alignment: .bottom) {
+                Text(verbatim: "PDF")
+                    .font(.system(size: 4.5, weight: .heavy))
+                    .fixedSize()
+                    .padding(.bottom, 2.5)
+            }
     }
 }

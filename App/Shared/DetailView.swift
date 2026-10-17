@@ -30,9 +30,24 @@ struct DetailView: View {
                 courseID: id,
                 changeDeck: changeDeck,
                 importFiles: { model.filingCenter?.importFiles(to: .course(id)) },
+                importDropped: { file($0, into: id) },
                 newCourse: { model.sheet = .newCourse }
             )
             .id(id)
+        case .courseLectures(let id):
+            CourseLecturesView(courseID: id)
+                .id(id)
+        case .courseSlides(let id):
+            CourseSlidesView(
+                courseID: id,
+                changeDeck: changeDeck,
+                importFiles: { model.filingCenter?.importFiles(to: .course(id)) },
+                importDropped: { file($0, into: id) }
+            )
+            .id(id)
+        case .courseNotes(let id):
+            CourseNotesView(courseID: id)
+                .id(id)
         case .lecture(let id):
             if let services = model.services {
                 LectureReviewView(
@@ -44,6 +59,12 @@ struct DetailView: View {
                 .id(id)
             }
         }
+    }
+
+    /// Files dropped on a course's empty Slides group: filed into that course.
+    private func file(_ urls: [URL], into courseID: Course.ID) {
+        guard let center = model.filingCenter else { return }
+        Task { await center.file(urls, to: .course(courseID)) }
     }
 
     /// Course Settings' Change… on a deck: the change sheet for the deck's latest filing.
@@ -85,6 +106,6 @@ struct PlaceholderScreen: View {
         ContentUnavailableView {
             Image(systemName: item.systemImage)
         }
-        .screenTitle(item.title)
+        .screenTitle(item.title, leadingInset: ScreenTitleInset.firstItem)
     }
 }

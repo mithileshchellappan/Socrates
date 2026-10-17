@@ -79,9 +79,10 @@ private struct PlayerButton: View {
 
     var body: some View {
         Button(action: action) {
+            // ±15: the mockup's 16 pt icon box, lighter than the play glyph between them.
             Label(title, systemImage: systemImage)
                 .labelStyle(.iconOnly)
-                .font(.system(size: 14, weight: .light))
+                .font(.system(size: 12, weight: .regular))
                 .frame(minWidth: 40, minHeight: 28)
                 .contentShape(Rectangle())
         }
@@ -292,8 +293,10 @@ private struct FollowButton: View {
             Label {
                 Text("Follow")
             } icon: {
+                // The mockup's outline monitor: one flat layer, no filled screen.
                 Image(systemName: "display")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
+                    .symbolRenderingMode(.monochrome)
             }
             .font(.body)
             .padding(.horizontal, 9)

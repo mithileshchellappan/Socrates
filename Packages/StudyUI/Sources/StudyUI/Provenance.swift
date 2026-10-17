@@ -48,7 +48,8 @@ public struct ProvenancePin: View {
     private var symbol: String {
         switch layer {
         case .user: "person"
-        case .professor: "graduationcap"
+        // The mockups' plain mortarboard: SF's outline cap adds a tassel that blurs at 9 pt.
+        case .professor: "graduationcap.fill"
         case .ai: "sparkle"
         }
     }

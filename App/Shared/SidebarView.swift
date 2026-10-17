@@ -7,14 +7,16 @@ import StudyUI
 import SwiftUI
 
 /// The main window's sidebar (mockups 01, 03, 07, 08, 10): Today, Calendar, Mail (unread count),
-/// Search; then the courses as flat rows. A course opens to its lectures ("L2 · Virtualization &
-/// IaaS", Tue 13 Oct) and its next session in secondary text ("L3", "Mon 19 Oct, 12:15"), and on
-/// its screen to a selected "Course Settings" row (08). Courses start closed (01, 07); the course
-/// of the open lecture or course opens itself (03), and while files are dragged in, the predicted
-/// course opens with the predicted row lit (10, `filingDropTarget`). Small disclosure chevrons show
-/// once any course is open. Recent searches on the Search screen (07). The semester and Settings at
-/// the bottom (New Course on a course's screen, 08). Files dropped on a course, lecture or session
-/// row are filed exactly there.
+/// Search; then the courses as flat rows, on the mockups' 29 pt pitch. Courses start closed (01,
+/// 07). On a lecture's screen every course with lectures opens to them ("L2 · Virtualization &
+/// IaaS", Tue 13 Oct) and its next session in secondary text ("L3", "Mon 19 Oct, 12:15") (03); on a
+/// course's screen that course shows its own screens instead: Lectures (count), Slides, Notes,
+/// Course Settings, with no chevrons (08). While files are dragged in, the predicted course opens
+/// with the predicted row lit (10, `filingDropTarget`). Courses opened that way close again on the
+/// top-level screens; a course opened with its chevron stays open. Small disclosure chevrons show
+/// once any course is open. Recent searches on the Search screen (07). The semester and Settings
+/// at the bottom (New Course on a course's screen, 08). Files dropped on a course, lecture or
+/// session row are filed exactly there.
 struct SidebarView: View {
     @Binding var selection: SidebarItem?
     let center: FilingCenter
@@ -35,8 +37,13 @@ struct SidebarView: View {
             }
             .count()
     ) private var unreadMail = 0
-    /// The open courses, as comma-separated IDs (kept per window).
+    /// The courses opened with their chevron, as comma-separated IDs (kept per window).
     @SceneStorage("sidebar.openCourses") private var openCourses = ""
+    /// Courses the open screen opened that were closed with their chevron (until the screen changes).
+    @State private var closedCourses: Set<Course.ID> = []
+    /// The course files were just dropped into: open, showing where they went, until the screen
+    /// changes.
+    @State private var droppedCourseID: Course.ID?
     /// The course files being dragged in would go to: open while they are dragged, and a little
     /// longer, since moving from the window onto a sidebar row ends one drop target's drag a
     /// moment before the row's begins.
@@ -61,15 +68,20 @@ struct SidebarView: View {
     var body: some View {
         let latestJobs = Self.latestJobs(jobs)
         let now = Date()
-        let open = openCourseIDs.union(dragCourseID.map { [$0] } ?? [])
+        let isDragging = center.drag != nil || dragCourseID != nil
+        // The course whose screen shows lists its screens (08), unless files are dragged onto it.
+        let screenCourseID = selection?.courseScreenID.flatMap { $0 == dragCourseID ? nil : $0 }
+        let childrenOf = Dictionary(uniqueKeysWithValues: courses.map { course in
+            let courseLectures = lectures.filter { $0.courseID == course.id }.sorted(by: Self.inOrder)
+            return (course.id, (lectures: courseLectures, next: nextSession(course.id, now: now)))
+        })
+        let open = openCourseIDs(withChildren: Set(childrenOf.compactMap { !$1.lectures.isEmpty || $1.next != nil ? $0 : nil }))
         // While files are dragged in, lecture rows are titles only (mockup 10).
-        let showsDates = center.drag == nil && dragCourseID == nil
+        let showsDates = !isDragging
         List(selection: $selection) {
             ForEach(SidebarItem.destinations, id: \.self) { item in
                 NavigationLink(value: item) {
-                    Label {
-                        Text(item.title)
-                    } icon: {
+                    SidebarRowLabel(item.title) {
                         Image(systemName: item.systemImage)
                             .foregroundStyle(.tint)
                     }
@@ -77,19 +89,26 @@ struct SidebarView: View {
                 .badge(item == .mail ? unreadMail : 0)
             }
 
-            Section("Courses") {
+            Section {
                 ForEach(courses) { course in
-                    let courseLectures = lectures.filter { $0.courseID == course.id }.sorted(by: Self.inOrder)
-                    let next = nextSession(course.id, now: now)
+                    let children = childrenOf[course.id] ?? ([], nil)
                     let isOpen = open.contains(course.id)
-                    let hasChildren = !courseLectures.isEmpty || next != nil
+                    let hasChildren = !children.lectures.isEmpty || children.next != nil
                     courseRow(
                         course,
-                        disclosure: open.isEmpty ? .none : (hasChildren ? .shown(isOpen: isOpen) : .hidden),
-                        canOpen: hasChildren
+                        disclosure: screenCourseID != nil || open.isEmpty ? .none : (hasChildren ? .shown(isOpen: isOpen) : .hidden),
+                        canOpen: hasChildren && screenCourseID == nil
                     )
-                    if isOpen {
-                        ForEach(courseLectures) { lecture in
+                    if course.id == screenCourseID {
+                        // Mockup 08: the course's own screens, its settings among them.
+                        ForEach(SidebarItem.courseScreens(course.id), id: \.self) { item in
+                            NavigationLink(value: item) {
+                                CourseScreenSidebarRow(item: item, isSelected: selection == item)
+                            }
+                            .badge(item == .courseLectures(course.id) ? children.lectures.count : 0)
+                        }
+                    } else if isOpen {
+                        ForEach(children.lectures) { lecture in
                             NavigationLink(value: SidebarItem.lecture(lecture.id)) {
                                 LectureSidebarRow(lecture: lecture, job: latestJobs[lecture.id], showsDate: showsDates)
                             }
@@ -100,18 +119,14 @@ struct SidebarView: View {
                                 }
                             }
                         }
-                        if let next {
+                        if let next = children.next {
                             SessionSidebarRow(session: next, showsDate: showsDates)
                                 .filingDropTarget(.session(next.id), center: center)
                         }
-                        if selection == .courseSettings(course.id) {
-                            // Mockup 08: the course's screen is its settings, selected in its course.
-                            NavigationLink(value: SidebarItem.courseSettings(course.id)) {
-                                CourseSettingsSidebarRow()
-                            }
-                        }
                     }
                 }
+            } header: {
+                SidebarSectionTitle("Courses")
             }
 
             if selection == .search {
@@ -119,6 +134,11 @@ struct SidebarView: View {
                 RecentSearchesSection()
             }
         }
+        #if os(macOS)
+        // The mockups' rows, whatever System Settings' sidebar size: the small row (24 pt, 11 pt
+        // text) with each row's 13 pt content 21 pt high gives their 29 pt pitch (`.medium` is 32).
+        .environment(\.sidebarRowSize, .small)
+        #endif
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footer
         }
@@ -128,16 +148,10 @@ struct SidebarView: View {
         #else
         .toolbar { SettingsToolbarItem() }
         #endif
-        .onChange(of: selection, initial: true) { _, item in
-            // The open lecture or course shows in its course (from the sidebar, search or Today).
-            switch item {
-            case .lecture(let id):
-                if let courseID = lectures.first(where: { $0.id == id })?.courseID { setOpen(courseID, true) }
-            case .course(let id), .courseSettings(let id):
-                setOpen(id, true)
-            default:
-                break
-            }
+        .onChange(of: selection) {
+            // A course closed with its chevron stays closed only on the screen that opened it.
+            closedCourses = []
+            droppedCourseID = nil
         }
         .onChange(of: center.predictedCourseID) { _, courseID in
             followDrag(to: courseID)
@@ -163,13 +177,15 @@ struct SidebarView: View {
                 }
                 CourseDot(hex: course.colorHex, size: 9)
                 Text(course.name)
+                    .font(.body)
                     .lineLimit(1)
             }
+            .frame(minHeight: SidebarRowLabel<EmptyView>.minHeight)
         }
         .filingDropTarget(.course(course.id), center: center)
         .contextMenu {
             if canOpen {
-                let isOpen = openCourseIDs.contains(course.id)
+                let isOpen = disclosure == .shown(isOpen: true)
                 Button(isOpen ? LocalizedStringKey("Hide Lectures") : "Show Lectures") { setOpen(course.id, !isOpen) }
             }
         }
@@ -199,7 +215,7 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 8) {
-                if selection?.settingsCourseID != nil {
+                if selection?.courseScreenID != nil {
                     // Mockup 08: New Course on a course's screen, the semester at the right.
                     Button {
                         model.sheet = .newCourse
@@ -214,8 +230,15 @@ struct SidebarView: View {
                     Spacer(minLength: 0)
                     #if os(macOS)
                     SettingsLink {
-                        Label("Settings", systemImage: "gearshape")
-                            .labelStyle(.iconOnly)
+                        // The mockups' small, light gear.
+                        Label {
+                            Text("Settings")
+                        } icon: {
+                            Image(systemName: "gearshape")
+                                .imageScale(.small)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.borderless)
                     .help("Settings")
@@ -244,13 +267,40 @@ struct SidebarView: View {
 
     // MARK: - State
 
-    private var openCourseIDs: Set<Course.ID> {
+    /// The courses opened with their chevron (or by a drop).
+    private var chevronOpenIDs: Set<Course.ID> {
         Set(openCourses.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
     }
 
+    /// The courses that show their lectures: on a lecture's screen every course that has some
+    /// (03), on a course's screen none (08 lists that course's screens), and those opened with
+    /// their chevron; plus the course files being dragged in would go to (10).
+    private func openCourseIDs(withChildren: Set<Course.ID>) -> Set<Course.ID> {
+        var open: Set<Course.ID>
+        switch selection {
+        case .lecture?:
+            open = withChildren.union(chevronOpenIDs).subtracting(closedCourses)
+        case let item? where item.courseScreenID != nil:
+            open = []
+        default:
+            open = chevronOpenIDs
+        }
+        if let dragCourseID { open.insert(dragCourseID) }
+        if let droppedCourseID, selection?.courseScreenID == nil { open.insert(droppedCourseID) }
+        return open
+    }
+
+    /// The chevron (or Show/Hide Lectures): open stays open on every screen (kept per window);
+    /// closing a course the screen opened lasts while that screen shows.
     private func setOpen(_ id: Course.ID, _ isOpen: Bool) {
-        var ids = openCourseIDs
-        if isOpen { ids.insert(id) } else { ids.remove(id) }
+        var ids = chevronOpenIDs
+        if isOpen {
+            ids.insert(id)
+            closedCourses.remove(id)
+        } else {
+            ids.remove(id)
+            closedCourses.insert(id)
+        }
         let text = ids.map(\.uuidString).sorted().joined(separator: ",")
         if text != openCourses { openCourses = text }
     }
@@ -270,7 +320,7 @@ struct SidebarView: View {
         dragEnding = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            if let course = dragCourseID, center.dropCount != dropsBeforeDrag { setOpen(course, true) }
+            if let course = dragCourseID, center.dropCount != dropsBeforeDrag { droppedCourseID = course }
             dragCourseID = nil
             dragEnding = nil
         }
@@ -317,6 +367,7 @@ struct LectureSidebarRow: View {
         HStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(Self.title(lecture))
+                    .font(.body)
                     .lineLimit(1)
                 if showsDate, let heldAt = lecture.heldAt {
                     Text(heldAt.formatted(DayText.style()))
@@ -329,7 +380,9 @@ struct LectureSidebarRow: View {
             ProcessingMark(job: job)
         }
         .padding(.leading, childIndent)
-        .padding(.vertical, 3)
+        // Two-line rows breathe; title-only rows (during a drag, mockup 10) keep the 29 pt pitch.
+        .padding(.vertical, showsDate ? 3 : 0)
+        .frame(minHeight: showsDate ? nil : SidebarRowLabel<EmptyView>.minHeight)
     }
 
     /// "L2 · Virtualization & IaaS", "L2", "Virtualization & IaaS" or "Lecture".
@@ -356,6 +409,7 @@ struct SessionSidebarRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(Self.title(session))
+                .font(.body)
                 .lineLimit(1)
             if showsDate {
                 Text(verbatim: "\(DayText.day(session.startsAt)), \(SessionText().time(session.startsAt))")
@@ -367,7 +421,9 @@ struct SessionSidebarRow: View {
         .foregroundStyle(isFilingTarget ? .primary : .secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, childIndent)
-        .padding(.vertical, 3)
+        // Two-line rows breathe; title-only rows (during a drag, mockup 10) keep the 29 pt pitch.
+        .padding(.vertical, showsDate ? 3 : 0)
+        .frame(minHeight: showsDate ? nil : SidebarRowLabel<EmptyView>.minHeight)
     }
 
     static func title(_ session: LectureSession) -> String {
@@ -378,19 +434,26 @@ struct SessionSidebarRow: View {
     }
 }
 
-/// A course's "Course Settings" row, under its lectures while its settings are open (mockup 08).
-struct CourseSettingsSidebarRow: View {
+/// One of a course's screens under it while one of them shows (mockup 08): Lectures, Slides,
+/// Notes, Course Settings. The glyph is secondary, accent on the selected row; the text sits 66 pt
+/// into the window, under the course name's indent.
+struct CourseScreenSidebarRow: View {
+    let item: SidebarItem
+    let isSelected: Bool
+
     var body: some View {
-        Label {
-            Text("Course Settings")
-                .lineLimit(1)
-        } icon: {
-            Image(systemName: "gearshape")
-                .foregroundStyle(.tint)
+        SidebarRowLabel(item.title) {
+            // Outline glyphs (08): "display" would otherwise fill its screen.
+            Image(systemName: item.systemImage)
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
         }
-        .padding(.leading, childIndent)
+        .padding(.leading, courseScreenIndent)
     }
 }
+
+/// A course screen row's glyph sits under the course's name (mockup 08: centre 50 pt, text 66 pt).
+private let courseScreenIndent: CGFloat = 17.5
 
 /// Processing state in a sidebar row: a determinate ring while queued or running, a warning glyph
 /// (with the error as help) when it failed, nothing when done.
@@ -429,3 +492,4 @@ extension Job {
         }
     }
 }
+

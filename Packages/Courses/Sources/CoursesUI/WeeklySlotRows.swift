@@ -86,9 +86,19 @@ struct SlotRow: View {
             }
             .accessibilityLabel(Text("Time"))
 
-            TextField("Room", text: $room, prompt: Text("Add room").foregroundStyle(.tertiary))
+            // The prompt drawn here in tertiary, as the column header and the ghost row: a Mac
+            // field's own placeholder ignores its style.
+            TextField("Room", text: $room, prompt: Text(verbatim: ""))
                 .labelsHidden()
                 .textFieldStyle(.plain)
+                .background(alignment: .leading) {
+                    if room.isEmpty {
+                        Text("Add room")
+                            .foregroundStyle(.tertiary)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
                 .focused($roomFocused)
                 .onSubmit(commitRoom)
                 .onChange(of: roomFocused) {

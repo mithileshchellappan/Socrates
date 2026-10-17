@@ -56,21 +56,20 @@ public struct RecentSearchesSection: View {
     public var body: some View {
         let recent = RecentSearches(storage: storage).queries
         if !recent.isEmpty {
-            Section("Recent searches") {
+            Section {
                 ForEach(recent, id: \.self) { query in
                     Button {
                         openDestination(.search(query))
                     } label: {
-                        Label {
-                            Text(verbatim: query)
-                                .lineLimit(1)
-                        } icon: {
+                        SidebarRowLabel(query) {
                             Image(systemName: "clock")
                                 .foregroundStyle(.secondary)
                         }
                     }
                     .buttonStyle(.plain)
                 }
+            } header: {
+                SidebarSectionTitle("Recent searches")
             }
         }
     }

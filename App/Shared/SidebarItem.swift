@@ -1,8 +1,8 @@
 import StudyCore
 import SwiftUI
 
-/// What the main window shows: a top-level screen, a course's settings or a lecture (its review
-/// screen).
+/// What the main window shows: a top-level screen, one of a course's screens (mockup 08: its
+/// lectures, slides, notes and settings) or a lecture (its review screen).
 enum SidebarItem: Hashable {
     case today
     case calendar
@@ -11,10 +11,18 @@ enum SidebarItem: Hashable {
     /// The course's row. Choosing it shows the course's screen, `courseSettings` (mockup 08: the
     /// course's own "Course Settings" row is the one selected).
     case course(Course.ID)
+    case courseLectures(Course.ID)
+    case courseSlides(Course.ID)
+    case courseNotes(Course.ID)
     case courseSettings(Course.ID)
     case lecture(Lecture.ID)
 
     static let destinations: [SidebarItem] = [.today, .calendar, .mail, .search]
+
+    /// A course's own screens, in sidebar order (mockup 08).
+    static func courseScreens(_ id: Course.ID) -> [SidebarItem] {
+        [.courseLectures(id), .courseSlides(id), .courseNotes(id), .courseSettings(id)]
+    }
 
     var title: String {
         switch self {
@@ -23,6 +31,9 @@ enum SidebarItem: Hashable {
         case .mail: String(localized: "Mail")
         case .search: String(localized: "Search")
         case .course: String(localized: "Course")
+        case .courseLectures: String(localized: "Lectures")
+        case .courseSlides: String(localized: "Slides")
+        case .courseNotes: String(localized: "Notes")
         case .courseSettings: String(localized: "Course Settings")
         case .lecture: String(localized: "Lecture")
         }
@@ -34,10 +45,20 @@ enum SidebarItem: Hashable {
         return self
     }
 
-    /// The course whose screen this is.
-    var settingsCourseID: Course.ID? {
-        if case .courseSettings(let id) = self { return id }
-        return nil
+    /// The course whose screen this is (its lectures, slides, notes or settings).
+    var courseScreenID: Course.ID? {
+        switch self {
+        case .course(let id), .courseLectures(let id), .courseSlides(let id), .courseNotes(let id), .courseSettings(let id): id
+        case .today, .calendar, .mail, .search, .lecture: nil
+        }
+    }
+
+    /// Today, Calendar, Mail and Search: the screens with the toolbar search field.
+    var isTopLevel: Bool {
+        switch self {
+        case .today, .calendar, .mail, .search: true
+        case .course, .courseLectures, .courseSlides, .courseNotes, .courseSettings, .lecture: false
+        }
     }
 
     var systemImage: String {
@@ -47,6 +68,9 @@ enum SidebarItem: Hashable {
         case .mail: "envelope"
         case .search: "magnifyingglass"
         case .course: "books.vertical"
+        case .courseLectures: "waveform"
+        case .courseSlides: "display"
+        case .courseNotes: "doc.text"
         case .courseSettings: "gearshape"
         case .lecture: "display"
         }

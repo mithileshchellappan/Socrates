@@ -21,9 +21,9 @@ import SwiftUI
 /// `lecture/<course>/<number>?slide=N&t=SECONDS`; `search?q=TEXT`;
 /// `live-preview/<course>/<lecture number>?slide=N` (the live lecture window in a static
 /// recording state: running timer, a fixed input level, the lecture's own captions and slide
-/// stamps up to that slide; nothing is recorded); `import-preview` (Today with the drop HUD for a
-/// deck of the next lecture and the toast of the latest recording filed). Path parts may be
-/// percent-encoded.
+/// stamps up to that slide; nothing is recorded); `import-preview` (Today with a dragged deck
+/// under the cursor, its drop HUD for the next lecture, and the toast of the latest recording
+/// filed). Path parts may be percent-encoded.
 ///
 /// The library comes from `-StudyPortalDataRoot` (or `STUDYPORTAL_DATA_ROOT`); without either,
 /// or pointed at the real library, the app opens nothing. Nothing runs in the background (no
@@ -283,7 +283,7 @@ enum ParityMode {
 
     // MARK: - Lookups
 
-    private static func course(_ name: String, services: StudyServices) throws -> Course {
+    static func course(_ name: String, services: StudyServices) throws -> Course {
         let courses = try services.database.read { db in try Course.order { ($0.sortOrder, $0.name) }.fetchAll(db) }
         let wanted = name.lowercased()
         guard let course = courses.first(where: { $0.name.lowercased() == wanted || $0.shortName.lowercased() == wanted }) else {
@@ -292,7 +292,7 @@ enum ParityMode {
         return course
     }
 
-    private static func lecture(_ courseName: String, _ number: Int, services: StudyServices) throws -> (Course, Lecture) {
+    static func lecture(_ courseName: String, _ number: Int, services: StudyServices) throws -> (Course, Lecture) {
         let course = try course(courseName, services: services)
         let courseID = course.id
         let lectures = try services.database.read { db in try Lecture.where { $0.courseID.eq(courseID) }.fetchAll(db) }
@@ -307,7 +307,7 @@ enum ParityMode {
     /// The lecture's deck on `slide`, `elapsed` a few seconds after the slide came up in its
     /// recording; the slide stamps up to then and the last lines said as captions (the newest
     /// still settling).
-    private static func livePreview(_ courseName: String, _ number: Int, slide: Int?, services: StudyServices) async throws -> AppModel.LiveCapture {
+    static func livePreview(_ courseName: String, _ number: Int, slide: Int?, services: StudyServices) async throws -> AppModel.LiveCapture {
         let (course, lecture) = try lecture(courseName, number, services: services)
         let lectures = LectureRepository(store: services.records)
         var deck: Deck?
@@ -341,7 +341,7 @@ enum ParityMode {
             }
             let said = try await TranscriptRepository(store: services.records).segments(recordingID: recording.id)
                 .filter { $0.startTime < elapsed }
-                .suffix(4)
+                .suffix(10)
             for (index, segment) in said.enumerated() {
                 let isLast = index == said.count - 1
                 captions.apply(runs: runs(segment, until: isLast ? elapsed : nil), start: segment.startTime, isFinal: !isLast)
@@ -393,10 +393,14 @@ enum ParityMode {
 
     /// The toast of the latest recording filed into a lecture, and the drop HUD for a deck of the
     /// first course's next lecture (a lecture session without a lecture yet).
-    private static func importPreview(model: AppModel, services: StudyServices, size: CGSize) async throws {
+    static func importPreview(model: AppModel, services: StudyServices, size: CGSize) async throws {
         guard let center = model.filingCenter, let filing = model.filing else { return }
+        let next = try await nextLecturePlace(services)
         let recent = try await FilingRepository(store: services.records).recent(limit: 50)
-        if let latest = recent.first(where: { $0.kind == .recording && $0.lectureID != nil }) {
+        // The toast shows another course than the HUD (mockup 10: a recording filed into CL while
+        // a DC deck is dragged), else the latest recording filed.
+        let recordings = recent.filter { $0.kind == .recording && $0.lectureID != nil }
+        if let latest = recordings.first(where: { $0.courseID != next?.course.id }) ?? recordings.first {
             var duration: Double?
             if let recordingID = latest.recordingID {
                 duration = try await services.records.fetch(Recording.self, id: recordingID)?.duration
@@ -406,14 +410,24 @@ enum ParityMode {
                 filing: latest, place: try await filing.place(of: latest), duration: duration
             ))
         }
-        if let place = try await nextLecturePlace(services) {
-            let name = String(format: "%02d_%@.pdf", place.number ?? 0, place.course.shortName)
+        if let place = next {
+            // Named as a lecturer's numbered deck is ("03_Cloud_Storage_v1.pdf" in the mockup).
+            let name = String(format: "%02d_%@.pdf", place.number ?? 0, place.course.name.replacingOccurrences(of: " ", with: "_"))
+            // The dragged file under the cursor: the course's latest deck (DC L2's in the parity
+            // library) stands in for the new one.
+            let courseID = place.course.id
+            let deck = try await services.database.read { db in
+                try Deck.where { $0.courseID.eq(courseID) }.order { $0.importedAt.desc() }.fetchOne(db)
+            }
+            let ghost = deck?.blob.map { FilingCenter.DragGhost(url: services.blobs.url(for: $0), fileName: name) }
             center.preview(
                 predictions: [FilingPrediction(
                     url: URL.temporaryDirectory.appending(path: name), fileName: name, kind: .deck, verdict: .file,
                     places: [place], pageCount: previewDeckPages
                 )],
-                at: CGPoint(x: (size.width * 0.42).rounded(), y: (size.height * 0.36).rounded())
+                // The mockup's cursor: 665 × 416 pt in the window, 52 pt of it the toolbar's.
+                at: CGPoint(x: (size.width * 0.462).rounded(), y: (size.height * 0.404).rounded()),
+                ghost: ghost
             )
         }
     }

@@ -49,13 +49,21 @@ struct FilmstripView: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
+        // The inset stays empty while scrolled: the thumbnail before the first whole one does
+        // not peek out (mockup 02's grid: tiles from 16 pt, images from 22 pt).
+        .overlay(alignment: .leading) {
+            Color.contentBackground
+                .frame(width: Self.inset)
+                .allowsHitTesting(false)
+        }
         // The strip ends at the main column; nothing scrolls on under the inspector.
         .clipped()
         .background(Color.contentBackground)
     }
 
     /// Scroll offset that puts the centre of `page` at about 65 % of the visible width, rounded
-    /// down to a whole thumbnail so the strip starts with a whole one at the inset.
+    /// down to a whole thumbnail so the strip starts with a whole one at the inset, on the same
+    /// grid as the unscrolled strip.
     private func offset(for page: Int, viewport: CGFloat) -> CGFloat {
         Self.offset(for: page, pageCount: session.pageCount, viewport: viewport)
     }
@@ -66,9 +74,8 @@ struct FilmstripView: View {
         let maxOffset = max(0, content - viewport)
         let first = ((center - viewport * 0.65) / stride).rounded(.down)
         guard first >= 1 else { return 0 }
-        // Just past the end of the thumbnail before it, so no sliver of that one shows.
-        let aligned = first * stride + max(0, inset - spacing - itemPadding)
-        return min(maxOffset, aligned)
+        // The first whole thumbnail's tile at the inset; the inset's overlay hides the one before.
+        return min(maxOffset, first * stride)
     }
 }
 

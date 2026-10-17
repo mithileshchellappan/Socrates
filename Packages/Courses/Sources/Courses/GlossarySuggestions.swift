@@ -482,11 +482,13 @@ public enum GlossarySuggestions {
     }
 
     /// Words: a letter, then letters and digits, hyphens inside ("AMD-V", "x86-32" → "x86-32").
+    /// Compatibility forms are folded first (NFKC): a formula's mathematical italic "𝑃𝑟𝑒𝑐𝑖𝑠𝑖𝑜𝑛" is
+    /// the word "Precision", ligatures ("ﬁ") are letters.
     static func tokens(in text: String) -> [String] {
         var tokens: [String] = []
         var current = ""
         var pendingHyphen = false
-        for character in text {
+        for character in text.precomposedStringWithCompatibilityMapping {
             if character.isLetter || (character.isNumber && !current.isEmpty) {
                 if pendingHyphen {
                     current.append("-")
@@ -506,7 +508,7 @@ public enum GlossarySuggestions {
     }
 
     static func words(_ text: String) -> [String] {
-        text.split(whereSeparator: { !$0.isLetter && $0 != "-" }).map(String.init)
+        text.precomposedStringWithCompatibilityMapping.split(whereSeparator: { !$0.isLetter && $0 != "-" }).map(String.init)
     }
 
     /// The text without URLs, mail addresses and host names ("(http://wiki.example.org/)").

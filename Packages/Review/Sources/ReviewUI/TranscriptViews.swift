@@ -53,8 +53,20 @@ struct TranscriptZone: View {
     }
 }
 
-/// The lines in a lazy list with slide dividers. While following, the current line stays in
-/// view; moving to a slide by hand scrolls to its first visit.
+/// A slide visit's lines: its segments joined into sentences (`TranscriptLines`).
+struct LinedSection: Identifiable {
+    var section: TranscriptSection
+    var lines: [TranscriptLine]
+    var id: UUID { section.id }
+
+    static func make(_ sections: [TranscriptSection]) -> [LinedSection] {
+        sections.map { LinedSection(section: $0, lines: TranscriptLines.lines($0.segments)) }
+    }
+}
+
+/// The lines in a lazy list with slide dividers: one row per sentence (mockup 03), its time the
+/// first segment's. While following, the playhead's line stays in view; moving to a slide by hand
+/// scrolls to its first visit.
 private struct TranscriptList: View {
     let model: ReviewModel
     let sections: [TranscriptSection]
@@ -63,25 +75,28 @@ private struct TranscriptList: View {
 
     var body: some View {
         let rate = model.recording?.sampleRate ?? 48_000
+        let lined = LinedSection.make(sections)
+        let lineIDs = TranscriptLines.lineIDs(lined.flatMap(\.lines))
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(sections) { section in
-                        if section.id != TranscriptSection.unalignedID {
-                            SectionDivider(section: section)
-                                .id(section.id)
+                    ForEach(lined) { item in
+                        if item.id != TranscriptSection.unalignedID {
+                            SectionDivider(section: item.section)
+                                .id(item.id)
                         }
-                        ForEach(section.segments) { segment in
+                        ForEach(item.lines) { line in
                             TranscriptRow(
                                 model: model,
-                                segment: segment,
+                                line: line,
+                                lineIDs: lineIDs,
                                 language: language,
                                 markers: AnchorEditor.markers(
-                                    in: markers, from: segment.startTime - 0.25, to: max(segment.endTime, segment.startTime + 0.5),
+                                    in: markers, from: line.start - 0.25, to: max(line.end, line.start + 0.5),
                                     sampleRate: rate
                                 )
                             )
-                            .id(segment.id)
+                            .id(line.id)
                         }
                     }
                 }
@@ -89,15 +104,17 @@ private struct TranscriptList: View {
             .scrollIndicators(.automatic)
             // The edge under the slide stays crisp (no blur band).
             .scrollEdgeEffectHidden(true, for: .top)
-            // Rows are inset by their highlight's padding; the list reaches past the column so the
-            // times line up with the slide's edge.
-            .padding(.horizontal, -8)
-            // Nothing draws above the list, into the gap under the slide or behind it (clipped
-            // after the negative padding, so the rows' highlight keeps its overhang).
+            // Nothing draws above the list, into the gap under the slide or behind it. Clipped
+            // (and faded) before the negative padding: the padded view's frame is the column, and
+            // clipping it would cut the rows' highlight overhang.
             .clipped()
             .fadesAbovePlayer(model.player != nil)
+            // Rows are inset by their highlight's padding; the list reaches 8 pt past the column
+            // on both sides so the times line up with the slide's edge and the current line's
+            // highlight overhangs it (mockup 03).
+            .padding(.horizontal, -8)
             .background {
-                TranscriptFollower(model: model, sections: sections, proxy: proxy)
+                TranscriptFollower(model: model, sections: lined, lineIDs: lineIDs, proxy: proxy)
             }
         }
         .accessibilityLabel(Text("Transcript"))
@@ -108,12 +125,14 @@ private struct TranscriptList: View {
 /// itself, so the list does not re-render when they change.
 private struct TranscriptFollower: View {
     let model: ReviewModel
-    let sections: [TranscriptSection]
+    let sections: [LinedSection]
+    /// Each segment's line.
+    let lineIDs: [UUID: UUID]
     let proxy: ScrollViewProxy
 
     var body: some View {
         let session = model.session
-        let line = session.isFollowing ? model.player?.currentSegmentID : nil
+        let line = session.isFollowing ? model.player?.currentSegmentID.flatMap { lineIDs[$0] } : nil
         let page = session.isFollowing ? nil : session.shownPage
         Color.clear
             .task {
@@ -123,7 +142,7 @@ private struct TranscriptFollower: View {
                 if !session.isFollowing, let visit = openingVisit(session) {
                     // Opened on a slide the playhead is not in (yet): its divider is the first row.
                     proxy.scrollTo(visit, anchor: .top)
-                } else if let line = model.player?.currentSegmentID {
+                } else if let line = model.player?.currentSegmentID.flatMap({ lineIDs[$0] }) {
                     scroll(to: line)
                 }
             }
@@ -149,11 +168,11 @@ private struct TranscriptFollower: View {
         return visit?.id
     }
 
-    /// Near the start of a slide visit its divider goes to the top; further in, the line sits in
-    /// the upper third.
+    /// Within a slide visit's first three lines its divider goes to the top; further in, the line
+    /// sits in the upper third.
     private func scroll(to line: UUID) {
         for section in sections {
-            guard let index = section.segments.firstIndex(where: { $0.id == line }) else { continue }
+            guard let index = section.lines.firstIndex(where: { $0.id == line }) else { continue }
             if index < 3, section.id != TranscriptSection.unalignedID {
                 proxy.scrollTo(section.id, anchor: .top)
             } else {
@@ -164,8 +183,8 @@ private struct TranscriptFollower: View {
     }
 }
 
-/// "Slide 16 36:57–38:28", or only the times for an off-slide stretch; a tick when the stretch
-/// starts at a manual marker.
+/// "Slide 16 36:57–38:28", or only the times for an off-slide stretch, then a hairline (mockup
+/// 03). A stretch that starts at a manual marker shows nothing more: the line's menu removes it.
 private struct SectionDivider: View {
     let section: TranscriptSection
 
@@ -180,12 +199,6 @@ private struct SectionDivider: View {
                 .font(.caption.monospaced())
                 .monospacedDigit()
                 .foregroundStyle(.tertiary)
-            if section.startsAtMarker {
-                Capsule()
-                    .fill(.tint)
-                    .frame(width: 2, height: 9)
-                    .accessibilityLabel(Text("Marker"))
-            }
             Rectangle()
                 .fill(.separator)
                 .frame(height: 0.5)
@@ -195,38 +208,41 @@ private struct SectionDivider: View {
         .padding(.bottom, 4)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
+        .accessibilityValue(section.startsAtMarker ? Text("Marker") : Text(verbatim: ""))
     }
 }
 
-/// "36:57  text". The current line is tinted; low-confidence words are dotted; a language tag
-/// appears only when the line is not in the lecture's language. Click plays from the line.
+/// "36:57  So the hypervisor traps it, …" (a sentence; mockup 03). The current line is tinted;
+/// low-confidence words are dotted; a language tag appears only when the line is not in the
+/// lecture's language. Click plays from the line.
 private struct TranscriptRow: View {
     let model: ReviewModel
-    let segment: TranscriptSegment
+    let line: TranscriptLine
+    let lineIDs: [UUID: UUID]
     let language: String
     let markers: [SlideEvent]
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let isCurrent = model.player?.currentSegmentID == segment.id
+        let isCurrent = model.player?.currentSegmentID.flatMap { lineIDs[$0] } == line.id
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(TimeText.clock(segment.startTime))
+            Text(TimeText.clock(line.start))
                 .font(.subheadline.monospaced())
                 .monospacedDigit()
                 .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                 .frame(width: 54, alignment: .leading)
-            Text(TranscriptText.attributed(segment))
+            Text(TranscriptText.attributed(line))
                 .font(.body)
                 .lineSpacing(2.5)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if !segment.lang.isEmpty, !language.isEmpty, segment.lang != language {
-                Text(segment.lang.uppercased())
+            if !line.language.isEmpty, !language.isEmpty, line.language != language {
+                Text(line.language.uppercased())
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator, lineWidth: 0.5))
-                    .accessibilityLabel(Text(Locale.current.localizedString(forLanguageCode: segment.lang) ?? segment.lang))
+                    .accessibilityLabel(Text(Locale.current.localizedString(forLanguageCode: line.language) ?? line.language))
             }
         }
         .padding(.vertical, 4.5)
@@ -237,13 +253,13 @@ private struct TranscriptRow: View {
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            Task { await model.session.play(from: segment.startTime) }
+            Task { await model.session.play(from: line.start) }
         }
         .contextMenu { menu }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(named: Text("Play from Here")) {
-            Task { await model.session.play(from: segment.startTime) }
+            Task { await model.session.play(from: line.start) }
         }
     }
 
@@ -251,12 +267,12 @@ private struct TranscriptRow: View {
     private var menu: some View {
         if model.deck != nil, let page = model.session.shownPage {
             Button("Slide \(page) Starts Here") {
-                model.setSlideStart(page: page, at: segment.startTime)
+                model.setSlideStart(page: page, at: line.start)
             }
             .disabled(!model.canSetAnchor)
         }
         Button("Not on Slides From Here") {
-            model.setSlideStart(page: nil, at: segment.startTime)
+            model.setSlideStart(page: nil, at: line.start)
         }
         .disabled(!model.canSetAnchor)
         if !markers.isEmpty {
@@ -299,7 +315,40 @@ enum TranscriptText {
     static let doubtColor = Color(uiColor: .tertiaryLabel)
     #endif
 
-    static func attributed(_ segment: TranscriptSegment) -> AttributedString {
+    /// A line's segments one space apart, each keeping its dotted doubts, with the transcriber's
+    /// cut-off marks as prose (`cleaningCutOffs`).
+    static func attributed(_ line: TranscriptLine) -> AttributedString {
+        var result = AttributedString()
+        for segment in line.segments where !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !result.characters.isEmpty { result += AttributedString(" ") }
+            result += attributed(segment, trimmed: true)
+        }
+        cleanCutOffs(&result)
+        return result
+    }
+
+    /// Whisper marks a broken-off phrase with "--" ("the guest can-- on the other side"): a
+    /// spaced em dash inside the line ("the guest can — on the other side"), an ellipsis at its
+    /// end ("in order…"). Display only; the transcript keeps its text.
+    static func cleanCutOffs(_ text: inout AttributedString) {
+        while let range = text.range(of: "--") {
+            let afterSpace = range.lowerBound > text.startIndex
+                && text.characters[text.characters.index(before: range.lowerBound)].isWhitespace
+            text.replaceSubrange(range, with: AttributedString(afterSpace ? "—" : " —"))
+        }
+        guard let dash = text.range(of: "—", options: .backwards),
+              text.characters[dash.upperBound...].allSatisfy(\.isWhitespace)
+        else { return }
+        var start = dash.lowerBound
+        if start > text.startIndex, text.characters[text.characters.index(before: start)] == " " {
+            start = text.characters.index(before: start)
+        }
+        text.replaceSubrange(start..<text.endIndex, with: AttributedString("…"))
+    }
+
+    static func attributed(_ segment: TranscriptSegment, trimmed: Bool = false) -> AttributedString {
+        var segment = segment
+        if trimmed { segment.text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines) }
         var result = AttributedString(segment.text)
         guard let words = segment.words, words.contains(where: isDoubtful) else {
             return result

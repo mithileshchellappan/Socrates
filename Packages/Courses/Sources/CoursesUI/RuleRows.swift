@@ -37,7 +37,7 @@ struct RuleRow: View {
                 editing = true
             } label: {
                 ruleText
-                    .lineSpacing(1.5)
+                    .lineSpacing(3)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -53,8 +53,10 @@ struct RuleRow: View {
                     .controlSize(.small)
             }
         }
-        .padding(.vertical, 8)
+        // The mockup's `.rule`: 35 pt for one line, wrapped lines 18.5 pt apart.
+        .padding(.vertical, 9)
         .padding(.horizontal, 12)
+        .frame(minHeight: 35)
         .contextMenu {
             Button("Edit…") { editing = true }
             if !rule.isConfirmed {
@@ -220,7 +222,7 @@ struct MailRuleRow: View {
                 }
                 .tokenStyle()
                 .foregroundStyle(rule.origin == .learned ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-                .focusRing(focused, cornerRadius: 5)
+                .focusRing(focused, cornerRadius: 5, border: false)
 
             Spacer(minLength: 0)
             Button {
@@ -287,5 +289,61 @@ struct MailRuleRow: View {
             changed.origin = .user
         }
         save(changed)
+    }
+}
+
+/// The Mail group of a course without rules (mockup 08's rule rows, in tertiary): "Sender is" and
+/// the course's lecturer, or "LMS course is" and the course's name. Clicking it keeps that rule.
+struct GhostMailRuleRow: View {
+    let rule: MailRule
+    let add: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: add) {
+            HStack(spacing: 10) {
+                HStack(spacing: 3) {
+                    Text(rule.kind.settingsTitle)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .frame(width: 12)
+                }
+                .padding(.leading, 9)
+                .padding(.trailing, 4)
+                .frame(height: 22)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator, lineWidth: 0.5))
+                Text(rule.pattern)
+                    .tokenStyle()
+                Spacer(minLength: 0)
+                Image(systemName: "plus")
+                    .opacity(isHovered ? 1 : 0)
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(.tertiary)
+            .settingsRowPadding()
+            .background(isHovered ? Color.primary.opacity(0.06) : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .accessibilityLabel(Text("Add Rule"))
+        .accessibilityValue(Text(verbatim: "\(rule.kind.settingsTitle) \(rule.pattern)"))
+    }
+
+    /// The rule a course most likely wants: mail from its lecturer, else its LMS course.
+    static func rule(for course: Course, sortOrder: Int) -> MailRule {
+        if let lecturer = course.professors.first.map(Self.plainName), !lecturer.isEmpty {
+            return MailRule(courseID: course.id, kind: .sender, pattern: lecturer, sortOrder: sortOrder)
+        }
+        return MailRule(courseID: course.id, kind: .platformCourse, pattern: course.name, sortOrder: sortOrder)
+    }
+
+    /// "Prof. Dr. Ada Example" → "Ada Example" (a sender's display name has no titles).
+    static func plainName(_ name: String) -> String {
+        let titles: Set<String> = ["prof.", "dr.", "prof", "dr", "jun.-prof.", "apl.", "pd", "dipl.-inf."]
+        return name.split(whereSeparator: \.isWhitespace)
+            .filter { !titles.contains($0.lowercased()) }
+            .joined(separator: " ")
     }
 }

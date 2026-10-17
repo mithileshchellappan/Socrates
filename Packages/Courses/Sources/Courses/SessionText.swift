@@ -33,13 +33,21 @@ public struct SessionText: Sendable {
     }
 
     /// A session's name in lists that mix courses: "Data Centers Lecture 3" for numbered
-    /// lectures, else "Data Centers exercise".
-    public static func title(of session: LectureSession, courseName: String) -> String {
+    /// lectures, else "Data Centers exercise". A long course name gives way to its short name
+    /// when there is one ("CL tutorial", mockup 01; "Data Centers exercise" stays).
+    public static func title(of session: LectureSession, courseName: String, shortName: String = "") -> String {
+        let short = shortName.trimmingCharacters(in: .whitespaces)
+        let courseName = !short.isEmpty && isLong(courseName) ? short : courseName
         if session.kind == .lecture, let number = session.number {
             return courseName.isEmpty ? String(localized: "Lecture \(number)") : String(localized: "\(courseName) Lecture \(number)")
         }
         let kind = session.kind.displayName.lowercased(with: Locale(identifier: "en"))
         return courseName.isEmpty ? session.kind.displayName : "\(courseName) \(kind)"
+    }
+
+    /// Longer than "Data Centers": three words or more, or over 16 characters.
+    static func isLong(_ name: String) -> Bool {
+        name.count > 16 || name.split(whereSeparator: \.isWhitespace).count >= 3
     }
 
     /// "10:15" (24-hour, wall clock in `timeZone`).

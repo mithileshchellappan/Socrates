@@ -91,8 +91,9 @@ private struct RailThumbnail: View {
                     .monospacedDigit()
                 Spacer(minLength: 0)
                 if hasNotes {
+                    // The mockup's 11 pt outline pencil (at caption size SF's reads as a slash).
                     Image(systemName: "pencil")
-                        .imageScale(.small)
+                        .font(.system(size: 11))
                         .accessibilityLabel(Text("Notes"))
                 }
             }

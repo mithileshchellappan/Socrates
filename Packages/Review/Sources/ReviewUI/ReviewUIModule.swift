@@ -72,15 +72,15 @@ enum ReviewTint {
 }
 
 extension View {
-    /// A list that ends above the floating player fades out over its last points, so a line or
-    /// thumbnail cut by the edge never shows as a sliver over the player.
+    /// A list that ends above the floating player fades out over its last line's height (24 pt),
+    /// so a line or thumbnail cut by the edge never shows as a sliver over the player.
     func fadesAbovePlayer(_ isActive: Bool) -> some View {
         mask {
             VStack(spacing: 0) {
                 Rectangle()
                 if isActive {
                     LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 14)
+                        .frame(height: 24)
                 }
             }
         }

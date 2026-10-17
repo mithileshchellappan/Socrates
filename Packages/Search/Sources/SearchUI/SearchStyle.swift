@@ -22,10 +22,10 @@ struct MatchInk: ShapeStyle {
 
 /// The search screen's measures (mockup 07).
 enum SearchMetrics {
-    /// Results column: the content margin, and the width that keeps two-line snippets at a
-    /// readable measure (the mockup's column beside the tutor inspector).
+    /// Results column: from 18 pt after the sidebar to the toolbar's trailing inset (14 pt), so
+    /// the scope menu, time chips and thumbnails end under the search field's trailing edge.
     static let margin: CGFloat = 18
-    static let columnWidth: CGFloat = 868
+    static let trailingMargin: CGFloat = 14
     /// Between the filters and the groups, and between groups.
     static let groupSpacing: CGFloat = 14
     /// A hit's padding inside its (selection) block.

@@ -41,12 +41,12 @@ struct LiveInspector: View {
                 .padding(.horizontal, 12)
                 .frame(height: 52)
             #endif
-            Divider()
+            Hairline()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     LiveCaptions(session: session)
                     notes
-                    Divider()
+                    Hairline()
                     stamps
                 }
                 .padding(.horizontal, 14)
@@ -87,10 +87,11 @@ struct LiveInspector: View {
             SectionLabel("Notes")
             // As tall as the note plus a line for the caret (the hidden copy sets the height),
             // so Stamps follows closely; a long note scrolls inside the editor.
-            Text(verbatim: text.wrappedValue + "\n ")
+            // An empty note is one caret line (mockup 02: no placeholder, Stamps close below).
+            Text(verbatim: text.wrappedValue.isEmpty ? " " : text.wrappedValue + "\n ")
                 .font(Self.noteFont)
                 .lineSpacing(Self.noteLineSpacing)
-                .frame(maxWidth: .infinity, minHeight: 40, maxHeight: 320, alignment: .topLeading)
+                .frame(maxWidth: .infinity, minHeight: 19, maxHeight: 320, alignment: .topLeading)
                 .hidden()
                 .overlay {
                     TextEditor(text: text)
@@ -169,7 +170,7 @@ private struct LiveCaptions: View {
     var body: some View {
         if let captions = session.captions {
             CaptionsSection(transcript: captions)
-            Divider()
+            Hairline()
         }
     }
 }
@@ -182,8 +183,10 @@ private struct SlideStampRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // The mockup's thin outline monitor: SF's display at 10 pt, one flat layer.
             Image(systemName: "display")
-                .font(.system(size: 11))
+                .font(.system(size: 10))
+                .symbolRenderingMode(.monochrome)
                 .foregroundStyle(.secondary)
             label
                 .lineLimit(1)
@@ -317,7 +320,9 @@ private struct CaptionsSection: View {
                             .lineSpacing(2.75)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.vertical, 4)
+                    // The mockup's 1.42 line height at 12.5 pt puts half the leading above the
+                    // first line and below the last: one-line rows 25.75 pt, as tall as stamps.
+                    .padding(.vertical, 5.375)
                     .padding(.horizontal, 6)
                     .background(
                         isNow ? AnyShapeStyle(.accentSoft) : AnyShapeStyle(.clear),

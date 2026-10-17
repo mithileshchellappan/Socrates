@@ -36,8 +36,9 @@ extension Color {
         course.flatMap { Color(hex: $0.colorHex) } ?? .accentColor
     }
 
-    /// The professor's voice (pins, quote bars, exam stars). Orange is reserved for it.
-    public static let professor = Color.orange
+    /// The professor's voice (pins, quote bars, exam stars). Orange is reserved for it: the
+    /// mockups' deep amber (#f08a00, #ff9f0a dark), not the lighter system orange.
+    public static let professor = Color(light: CourseColor.RGB(0xf08a00), dark: CourseColor.RGB(0xff9f0a))
 
     /// The AI mark: the sparkle before AI text and on "Suggested" (the text itself stays
     /// secondary), and AI pins. Purple is reserved for it (the mockups' #8a56d1, #bf8cff dark).

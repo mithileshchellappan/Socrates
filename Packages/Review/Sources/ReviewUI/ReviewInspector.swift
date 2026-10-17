@@ -22,6 +22,9 @@ struct ReviewInspector: View {
 
     @Environment(\.reviewChrome) private var chrome
     @State private var columnWidth = ReviewInspector.width
+    /// The notes list's visible height: an empty slide's pane fills it, so a click anywhere under
+    /// "Your notes" starts the note.
+    @State private var listHeight: CGFloat = 0
     private let notesQuery: FetchAll<Note>
     private var notes: [Note] { notesQuery.wrappedValue }
 
@@ -48,13 +51,14 @@ struct ReviewInspector: View {
                 } else {
                     switch model.inspectorTab {
                     case .slide:
-                        SlideNotesPane(model: model, notes: notes)
+                        SlideNotesPane(model: model, notes: notes, minHeight: listHeight)
                     case .lecture:
                         LectureNotesPane(model: model, notes: notes)
                     }
                 }
             }
             .scrollIndicators(.automatic)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { InspectorBackground() }
@@ -90,7 +94,8 @@ private struct InspectorBackground: View {
     }
 }
 
-/// The header row: the tab picker on a glass track, then the hide button at the trailing edge.
+/// The header row: the tab picker (its own track, mockup 03's one segctl), then the hide button
+/// at the trailing edge.
 private struct InspectorHeader: View {
     let model: ReviewModel
 
@@ -98,8 +103,6 @@ private struct InspectorHeader: View {
         HStack(spacing: 8) {
             if model.deck != nil {
                 InspectorTabPicker(model: model)
-                    .padding(2)
-                    .reviewGlass(in: Capsule())
             }
             Spacer(minLength: 0)
             Button {
@@ -142,8 +145,12 @@ private struct InspectorTabPicker: View {
 private struct SlideNotesPane: View {
     let model: ReviewModel
     let notes: [Note]
+    /// The list's visible height, which the pane fills.
+    var minHeight: CGFloat = 0
     /// The slide whose notes are being typed (nil: follow the slide on screen).
     @State private var typingOn: TypingPage?
+    /// A click in the pane's empty room: the empty note takes the caret (no placeholder copy).
+    @State private var focusRequest = 0
 
     private struct TypingPage: Equatable {
         var page: Int?
@@ -153,12 +160,17 @@ private struct SlideNotesPane: View {
         let page = typingOn.map(\.page) ?? model.session.shownPage
         VStack(alignment: .leading, spacing: 7) {
             SectionLabel("Your notes")
-            SlideNoteEditorView(model: model, page: page, notes: notes.filter { $0.pageNumber == page })
+            SlideNoteEditorView(model: model, page: page, notes: notes.filter { $0.pageNumber == page }, focusRequest: focusRequest)
                 .id(page)
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture { focusRequest += 1 }
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
         .onChange(of: model.isEditingText) { _, editing in
             typingOn = editing ? TypingPage(page: typingOn.map(\.page) ?? model.session.shownPage) : nil
         }
@@ -167,10 +179,13 @@ private struct SlideNotesPane: View {
 
 private struct SlideNoteEditorView: View {
     let model: ReviewModel
+    /// Bumped to put the caret in the empty note.
+    var focusRequest = 0
     @State private var editor: SlideNoteEditor
 
-    init(model: ReviewModel, page: Int?, notes: [Note]) {
+    init(model: ReviewModel, page: Int?, notes: [Note], focusRequest: Int = 0) {
         self.model = model
+        self.focusRequest = focusRequest
         let player = model.player
         _editor = State(initialValue: SlideNoteEditor(
             anchor: NoteAnchor(
@@ -186,7 +201,7 @@ private struct SlideNoteEditorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(editor.drafts) { draft in
-                NoteDraftRow(model: model, editor: editor, draft: draft)
+                NoteDraftRow(model: model, editor: editor, draft: draft, focusRequest: focusRequest)
             }
         }
         .onDisappear {
@@ -196,11 +211,15 @@ private struct SlideNoteEditorView: View {
     }
 }
 
-/// One note: your pin, the text (editable), and a time chip when it is anchored to the recording.
+/// One note: your pin, the text, and a time chip when it is anchored to the recording. At rest
+/// the note reads as prose (mockup 03's `.mynote`): checklist lines with their box and the chip at
+/// the end of the last line. Clicking it edits the text (`- [ ] ` lines) with the chip below.
 private struct NoteDraftRow: View {
     let model: ReviewModel
     let editor: SlideNoteEditor
     let draft: NoteDraft
+    /// Bumped by a click in the pane's empty room: an empty note takes the caret.
+    var focusRequest = 0
 
     @FocusState private var isFocused: Bool
 
@@ -211,6 +230,11 @@ private struct NoteDraftRow: View {
     private static let insetCorrection: CGFloat = -4
     #endif
 
+    /// Shown read-only until it is clicked; an empty note is the editor (one quiet line).
+    private var isAtRest: Bool {
+        draft.isEditable && !isFocused && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 7) {
             // The pin marks your text: none beside an empty note, but its place is kept so typing
@@ -220,32 +244,45 @@ private struct NoteDraftRow: View {
                 .opacity(draft.text.isEmpty ? 0 : 1)
             VStack(alignment: .leading, spacing: 5) {
                 if draft.isEditable {
-                    // The hidden text sizes the editor to its content (a text view does not).
-                    Text(verbatim: draft.text.isEmpty ? " " : draft.text)
+                    // One structure at rest and while editing, so the editor (and its focus)
+                    // survives the swap: the hidden view sizes it (a text view does not size
+                    // itself), the prose covers it at rest.
+                    Group {
+                        if isAtRest {
+                            NoteAtRest(blocks: NoteText.blocks(from: draft.text), time: chipTime, play: play)
+                        } else {
+                            Text(verbatim: draft.text.isEmpty ? " " : draft.text)
+                                .font(.callout)
+                                .lineSpacing(2)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .hidden()
+                    .overlay {
+                        TextEditor(text: Binding(
+                            get: { draft.text },
+                            set: { editor.setText($0, for: draft.id) }
+                        ))
                         .font(.callout)
                         .lineSpacing(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .hidden()
-                        .overlay {
-                            TextEditor(text: Binding(
-                                get: { draft.text },
-                                set: { editor.setText($0, for: draft.id) }
-                            ))
-                            .font(.callout)
-                            .lineSpacing(2)
-                            .scrollContentBackground(.hidden)
-                            .scrollDisabled(true)
-                            .padding(.horizontal, Self.insetCorrection)
-                            .focused($isFocused)
-                            .accessibilityLabel(Text("Your notes"))
-                        }
-                } else {
-                    NoteBody(blocks: draft.note?.blocks ?? [])
-                }
-                if let time = draft.audioTime, model.player != nil {
-                    TimeChip(time) {
-                        Task { await model.session.play(from: time) }
+                        .scrollContentBackground(.hidden)
+                        .scrollDisabled(true)
+                        .padding(.horizontal, Self.insetCorrection)
+                        .focused($isFocused)
+                        .opacity(isAtRest ? 0 : 1)
+                        .allowsHitTesting(!isAtRest)
+                        .accessibilityLabel(Text("Your notes"))
                     }
+                    .overlay(alignment: .topLeading) {
+                        if isAtRest {
+                            NoteAtRest(blocks: NoteText.blocks(from: draft.text), time: chipTime, play: play)
+                        }
+                    }
+                    if !isAtRest, let time = chipTime {
+                        TimeChip(time, action: { play(time) })
+                    }
+                } else {
+                    NoteAtRest(blocks: draft.note?.blocks ?? [], time: chipTime, play: play)
                 }
             }
         }
@@ -257,10 +294,109 @@ private struct NoteDraftRow: View {
         .onChange(of: isFocused) { _, focused in
             model.isEditingText = focused
         }
+        .onChange(of: focusRequest) {
+            if draft.isEditable, draft.text.isEmpty { isFocused = true }
+        }
         .onDisappear {
             // Paging away while typing removes the editor without a focus change.
             if isFocused { model.isEditingText = false }
         }
+    }
+
+    private var chipTime: Double? {
+        model.player == nil ? nil : draft.audioTime
+    }
+
+    private func play(_ time: Double) {
+        Task { await model.session.play(from: time) }
+    }
+}
+
+/// A note as prose: its lines (checklist items with their box), and the time chip after the last
+/// word, on the last line when it fits, else on the next.
+private struct NoteAtRest: View {
+    let blocks: [NoteBlock]
+    let time: Double?
+    let play: (Double) -> Void
+
+    var body: some View {
+        if let time {
+            NoteFlowLayout {
+                ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                    if index > 0 {
+                        Color.clear.frame(width: 0, height: 0).layoutValue(key: NoteFlowLayout.LineBreak.self, value: true)
+                    }
+                    if block.type == .checklist {
+                        Text(Image(systemName: block.checked == true ? "checkmark.square" : "square"))
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(block.text.split(separator: " ").enumerated()), id: \.offset) { _, word in
+                        Text(verbatim: String(word))
+                    }
+                }
+                TimeChip(time) { play(time) }
+            }
+            .font(.callout)
+            .accessibilityElement(children: .combine)
+        } else {
+            NoteBody(blocks: blocks)
+        }
+    }
+}
+
+/// Words left to right, wrapping at the proposed width; a `LineBreak` view starts a new line.
+/// Each line is centred on its tallest item (the chip), lines `lineSpacing` apart.
+private struct NoteFlowLayout: Layout {
+    /// The note text's line pitch (callout with 2 pt line spacing) and a space's width.
+    var lineSpacing: CGFloat = 2
+    var wordSpacing: CGFloat = 3.3
+
+    struct LineBreak: LayoutValueKey {
+        static let defaultValue = false
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(width: proposal.width ?? .infinity, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let arrangement = arrange(width: bounds.width, subviews: subviews)
+        for (index, frame) in arrangement.frames.enumerated() {
+            subviews[index].place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                proposal: ProposedViewSize(frame.size)
+            )
+        }
+    }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> (frames: [CGRect], size: CGSize) {
+        var frames = Array(repeating: CGRect.zero, count: subviews.count)
+        var line: [(index: Int, size: CGSize, x: CGFloat)] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var widest: CGFloat = 0
+        func closeLine() {
+            let height = line.map(\.size.height).max() ?? 0
+            for item in line {
+                frames[item.index] = CGRect(x: item.x, y: y + (height - item.size.height) / 2, width: item.size.width, height: item.size.height)
+            }
+            if !line.isEmpty { y += height + lineSpacing }
+            line = []
+            x = 0
+        }
+        for (index, subview) in subviews.enumerated() {
+            if subview[LineBreak.self] {
+                closeLine()
+                continue
+            }
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { closeLine() }
+            line.append((index, size, x))
+            x += size.width + wordSpacing
+            widest = max(widest, x - wordSpacing)
+        }
+        closeLine()
+        return (frames, CGSize(width: min(widest, width), height: max(0, y - lineSpacing)))
     }
 }
 

@@ -13,7 +13,7 @@ struct DropHUD: View {
     var onFrame: (FilingCenter.HUDTarget, CGRect) -> Void = { _, _ in }
 
     static let width: CGFloat = 236
-    static let estimatedHeight: CGFloat = 92
+    static let estimatedHeight: CGFloat = 94
     /// The course name on the card (mockup 10: 14 pt semibold, a step above the lecture line).
     static let titleFont = Font.system(size: 14, weight: .semibold)
     nonisolated static let space = "FilingSmartImport"
@@ -49,25 +49,20 @@ struct DropHUD: View {
                     if let size = Self.size(predictions) {
                         Text(size)
                             .monospacedDigit()
-                            .font(lead.duration != nil && predictions.count == 1 ? .system(.callout, design: .monospaced) : .callout)
+                            .font(lead.duration != nil && predictions.count == 1 ? FilingFont.inlineMono : .callout)
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
-                    // Looks like a small button; it is a place to drop on (the HUD takes no clicks).
+                    // Looks like the toast's small button; it is a place to drop on (the HUD takes
+                    // no clicks): the file is filed and its toast keeps Change… lit.
                     Text("Change…")
-                        .font(.callout.weight(.medium))
-                        .padding(.horizontal, 9)
-                        .frame(height: 22)
-                        .background(
-                            targeted == .change ? AnyShapeStyle(Color.accentColor.opacity(0.22)) : AnyShapeStyle(.fill),
-                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        )
+                        .filingSmallButtonChrome(isHighlighted: targeted == .change)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { onFrame(.change, $0) }
                 }
                 .padding(.leading, 16)
-                .padding(.top, 5)
+                .padding(.top, 6)
             }
-            .padding(EdgeInsets(top: 14, leading: 14, bottom: 11, trailing: 12))
+            .padding(EdgeInsets(top: 14, leading: 14, bottom: 12, trailing: 12))
             .frame(width: Self.width, alignment: .leading)
             .filingGlass()
             .accessibilityElement(children: .combine)

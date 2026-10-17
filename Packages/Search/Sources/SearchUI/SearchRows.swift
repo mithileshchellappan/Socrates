@@ -18,7 +18,10 @@ struct SearchHitRow: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: Self.symbol(hit.kind))
                 .symbolRenderingMode(.monochrome)
-                .font(.system(size: 13))
+                // The mockup's slide glyph is a small outline screen (about 12 × 11 pt); SF's
+                // "display" draws larger and heavier at the waveform's 13 pt. Its pencil (a note)
+                // is an outline about 11 pt across: SF's reads as a thin slash below 14 pt medium.
+                .font(Self.glyphFont(hit.kind))
                 .foregroundStyle(hit.kind == .note ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.professor))
                 .frame(width: 16, height: 16)
                 .padding(.top, 1)
@@ -73,6 +76,14 @@ struct SearchHitRow: View {
 
     /// Spoken words (waveform), a slide (a screen on a stand, as for "Slides" elsewhere), the
     /// student's note (pencil).
+    static func glyphFont(_ kind: SearchChunkKind) -> Font {
+        switch kind {
+        case .transcript: .system(size: 13)
+        case .slide: .system(size: 11)
+        default: .system(size: 14, weight: .medium)
+        }
+    }
+
     static func symbol(_ kind: SearchChunkKind) -> String {
         switch kind {
         case .transcript: "waveform"

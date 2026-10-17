@@ -27,7 +27,9 @@ struct FilingGlass: ViewModifier {
     /// The frost over the glass: mockup 10's glass colour, a little denser in light, where the
     /// glass itself greys the page.
     private var frost: Color {
-        if isDark { return Color(red: 58 / 255, green: 58 / 255, blue: 62 / 255).opacity(opaque ? 1 : 0.62) }
+        // Dark: the glass under it brightens the frost, so a little darker and bluer than the
+        // mockup's rgba(58,58,62,.62) for its #2f2f33 body.
+        if isDark { return Color(red: 52 / 255, green: 52 / 255, blue: 58 / 255).opacity(opaque ? 1 : 0.62) }
         return Color.white.opacity(opaque ? 1 : 0.85)
     }
 
@@ -44,14 +46,18 @@ struct FilingGlass: ViewModifier {
                 }
             }
             .overlay {
-                // Hairline edge, lit along the top.
-                shape.strokeBorder(isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.1), lineWidth: 0.5)
+                // The pop shadow's ring just outside the card, the glass hairline on its edge
+                // (mockup 10: 12 % and 8 % black in light), and the top lit just inside it.
                 shape
-                    .inset(by: 0.5)
+                    .inset(by: -0.25)
+                    .stroke(isDark ? Color.white.opacity(0.14) : Color.black.opacity(0.12), lineWidth: 0.5)
+                shape.strokeBorder(isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.08), lineWidth: 0.5)
+                shape
+                    .inset(by: 1)
                     .strokeBorder(
                         LinearGradient(
                             colors: [.white.opacity(isDark ? 0.14 : 0.9), .white.opacity(0)],
-                            startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.12)
+                            startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.08)
                         ),
                         lineWidth: 1
                     )

@@ -24,12 +24,36 @@ struct SectionHeader<Actions: View>: View {
 }
 
 extension View {
-    /// Plain accent-coloured 12 pt buttons, as in group headers ("Import .ics", "Add Slot").
-    func headerActionStyle() -> some View {
-        buttonStyle(.plain)
+    /// Plain accent-coloured 12 pt buttons, as in group headers ("Import .ics", "Add Slot"),
+    /// padded `inset` on each side as the mockup's `.btn.plain` (6 pt; a row's "Change" 4 pt), so
+    /// their text ends inside the group's edge and neighbours keep their distance.
+    func headerActionStyle(inset: CGFloat = 6) -> some View {
+        buttonStyle(PlainActionButtonStyle(inset: inset))
             .foregroundStyle(.tint)
             .font(.callout)
             .fontWeight(.regular)
+    }
+}
+
+/// A borderless text button with horizontal room around its label (the whole room clicks).
+struct PlainActionButtonStyle: ButtonStyle {
+    var inset: CGFloat
+
+    func makeBody(configuration: ButtonStyleConfiguration) -> some View {
+        PlainActionBody(configuration: configuration, inset: inset)
+    }
+}
+
+private struct PlainActionBody: View {
+    let configuration: ButtonStyleConfiguration
+    let inset: CGFloat
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        configuration.label
+            .padding(.horizontal, inset)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.6 : (isEnabled ? 1 : 0.4))
     }
 }
 
@@ -54,7 +78,7 @@ struct SettingsGroup<Content: View, Actions: View>: View {
                     .font(.body.weight(.semibold))
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
-                HStack(spacing: 14) {
+                HStack(spacing: 4) {
                     actions
                 }
                 .headerActionStyle()
@@ -138,7 +162,8 @@ struct SwitchRow: View {
             Toggle(title, isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .controlSize(.mini)
+                // The mockup's 32 × 19 pt switch (`.mini` draws 36 × 17).
+                .controlSize(.small)
                 .tint(.green)
         }
         .settingsRowPadding()
@@ -164,11 +189,14 @@ extension View {
     }
 
     /// The field border, and while focused the accent border with a 3 pt ring.
-    func focusRing(_ isFocused: Bool, cornerRadius: CGFloat) -> some View {
+    /// `border`: the field's hairline at rest; a token field draws none (mockup 08's `.tok` rows).
+    func focusRing(_ isFocused: Bool, cornerRadius: CGFloat, border: Bool = true) -> some View {
         overlay {
-            RoundedRectangle(cornerRadius: cornerRadius)
-                .strokeBorder(isFocused ? AnyShapeStyle(.tint) : AnyShapeStyle(.separator), lineWidth: isFocused ? 1 : 0.5)
-                .allowsHitTesting(false)
+            if isFocused || border {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .strokeBorder(isFocused ? AnyShapeStyle(.tint) : AnyShapeStyle(.separator), lineWidth: isFocused ? 1 : 0.5)
+                    .allowsHitTesting(false)
+            }
         }
         .overlay {
             if isFocused {
@@ -283,7 +311,7 @@ struct SegmentedChoice<Value: Hashable>: View {
                         .font(.callout.weight(isOn ? .medium : .regular))
                         .lineLimit(1)
                         .padding(.horizontal, 10)
-                        .frame(height: 18)
+                        .frame(height: 22)
                         .background {
                             if isOn {
                                 RoundedRectangle(cornerRadius: 6)

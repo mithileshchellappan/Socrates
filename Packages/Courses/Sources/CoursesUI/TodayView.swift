@@ -19,6 +19,9 @@ public struct TodayView: View {
     @Environment(\.studyServices) private var services
     @Environment(\.calendarMirror) private var mirror
     @Environment(\.openDestination) private var openDestination
+    /// The Coming up row under the pointer (mockup 01: a fill bleeding past the column, the
+    /// separators beside it hidden).
+    @State private var hoveredID: LectureSession.ID?
 
     /// - Parameters:
     ///   - now: a fixed "now" (previews, snapshots); nil follows the clock.
@@ -68,12 +71,26 @@ public struct TodayView: View {
                         VStack(spacing: 0) {
                             ForEach(Array(plan.comingUp.enumerated()), id: \.element.id) { index, session in
                                 if index > 0 {
-                                    // From the title's leading edge to the column's trailing edge.
+                                    // From the title's leading edge to the column's trailing edge;
+                                    // none beside the hovered row (its room is kept).
+                                    let hidesDivider = hoveredID == session.id || hoveredID == plan.comingUp[index - 1].id
                                     Divider()
                                         .padding(.leading, 32)
                                         .padding(.trailing, 10)
+                                        .opacity(hidesDivider ? 0 : 1)
                                 }
                                 ComingUpRow(session: session, course: data.courses[session.courseID], text: text)
+                                    .background(
+                                        hoveredID == session.id ? AnyShapeStyle(.fill.quaternary) : AnyShapeStyle(.clear),
+                                        in: .rect(cornerRadius: 9, style: .continuous)
+                                    )
+                                    .onHover { inside in
+                                        if inside {
+                                            hoveredID = session.id
+                                        } else if hoveredID == session.id {
+                                            hoveredID = nil
+                                        }
+                                    }
                                     .contextMenu {
                                         if session.isCancelled {
                                             Button("Restore Session") { actions.restore(session.id) }
@@ -194,8 +211,9 @@ private struct HeroButtonLabel: View {
             Text(title)
                 .fontWeight(.medium)
         } icon: {
+            // The mockup's small play triangle (about 7 pt tall).
             Image(systemName: systemImage)
-                .imageScale(.small)
+                .font(.system(size: 9, weight: .bold))
         }
         .padding(.vertical, 2)
     }
@@ -244,8 +262,9 @@ private struct ReviewHero: View {
             Text(title)
                 .font(.title.weight(.semibold))
                 .tracking(-0.3)
-                .padding(.top, 2)
-                .padding(.bottom, 3)
+                // The mockup's rhythm: eyebrow, title and meta 27 pt apart.
+                .padding(.top, 3)
+                .padding(.bottom, 4)
             meta
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -262,7 +281,7 @@ private struct ReviewHero: View {
                         .lineLimit(1)
                 }
             }
-            .padding(.top, 11)
+            .padding(.top, 14)
         }
     }
 
@@ -327,8 +346,9 @@ private struct SessionHero: View {
             Text(title)
                 .font(.title.weight(.semibold))
                 .tracking(-0.3)
-                .padding(.top, 2)
-                .padding(.bottom, 3)
+                // The mockup's rhythm: eyebrow, title and meta 27 pt apart.
+                .padding(.top, 3)
+                .padding(.bottom, 4)
             meta
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -338,7 +358,7 @@ private struct SessionHero: View {
                 }
                 .heroButtonStyle()
                 .keyboardShortcut(.defaultAction)
-                .padding(.top, 11)
+                .padding(.top, 14)
             }
         }
     }
@@ -381,7 +401,7 @@ private struct ComingUpRow: View {
                 .frame(maxHeight: .infinity)
                 .padding(.vertical, 2)
                 .frame(width: 10)
-            Text(SessionText.title(of: session, courseName: course?.name ?? ""))
+            Text(SessionText.title(of: session, courseName: course?.name ?? "", shortName: course?.shortName ?? ""))
                 .fontWeight(.medium)
                 .frame(minHeight: 18)
                 .strikethrough(session.isCancelled)
@@ -405,6 +425,6 @@ private struct ComingUpRow: View {
         .padding(.horizontal, 10)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("\(course?.name ?? ""), \(SessionText.title(of: session, courseName: course?.name ?? "")), \(text.day(session.startsAt)), \(text.timeRange(session.startsAt, session.endsAt))"))
+        .accessibilityLabel(Text("\(course?.name ?? ""), \(SessionText.title(of: session, courseName: course?.name ?? "", shortName: course?.shortName ?? "")), \(text.day(session.startsAt)), \(text.timeRange(session.startsAt, session.endsAt))"))
     }
 }
