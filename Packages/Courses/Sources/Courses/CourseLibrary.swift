@@ -70,6 +70,33 @@ public struct CourseDraft: Hashable, Sendable {
             .filter { !$0.isEmpty }
     }
 
+    /// The mail rules a new course starts with: "Sender is" each lecturer's name (without
+    /// academic titles) and "LMS course is" "<name> (<semester>)", as LMS writes the course
+    /// path ("Data Centers (WS 2026/27)").
+    public static func mailRules(for course: Course, semester: Semester?) -> [MailRule] {
+        var rules: [MailRule] = []
+        for name in course.professors.map(plainName) where !name.isEmpty {
+            guard !rules.contains(where: { $0.pattern.caseInsensitiveCompare(name) == .orderedSame }) else { continue }
+            rules.append(MailRule(courseID: course.id, kind: .sender, pattern: name, sortOrder: rules.count, createdAt: course.createdAt))
+        }
+        let semesterName = semester?.name.trimmingCharacters(in: .whitespaces) ?? ""
+        let lms = semesterName.isEmpty ? course.name : "\(course.name) (\(semesterName))"
+        rules.append(MailRule(courseID: course.id, kind: .platformCourse, pattern: lms, sortOrder: rules.count, createdAt: course.createdAt))
+        return rules
+    }
+
+    /// "Prof. Dr. Ada Example" → "Ada Example": a name without academic titles.
+    public static func plainName(_ name: String) -> String {
+        let titles: Set<String> = [
+            "prof", "prof.", "dr", "dr.", "dr.-ing.", "dr.-ing", "dr.rer.nat.", "dr.phil.", "dipl.-inf.", "dipl.-ing.",
+            "pd", "apl.", "jun.-prof.", "juniorprof.", "m.sc.", "b.sc.", "msc", "bsc", "mr", "mr.", "ms", "ms.", "mrs", "mrs.",
+            "habil.", "h.c.", "em.",
+        ]
+        let words = name.split(whereSeparator: \.isWhitespace).map(String.init)
+        let kept = words.drop { titles.contains($0.lowercased()) }
+        return kept.joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+    }
+
     /// "Computational Linguistics" → "CL": the initials of the capitalised words.
     public static func shortName(for name: String) -> String {
         let words = name.split(whereSeparator: { $0.isWhitespace || $0 == "-" || $0 == "/" })
@@ -149,6 +176,10 @@ public struct CourseLibrary: Sendable {
             createdAt: now
         ))
         try Course.upsert { course }.execute(db)
+        for rule in CourseDraft.mailRules(for: course, semester: semester) {
+            let stamped = store.stamp(rule)
+            try MailRule.upsert { stamped }.execute(db)
+        }
         return course
     }
 

@@ -3,23 +3,31 @@ import Courses
 import StudyCore
 import StudyUI
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// Course setup (mockup 08): who teaches it and in which language, the glossary, its slides,
-/// when it meets, the exam and exercise rules, recording consent and mail routing. Two columns
-/// when there is room, one otherwise. Edits save as they happen; slot changes replan the
-/// sessions and update the calendar.
+/// Course setup (mockup 08): who teaches it and in which language, the glossary with its
+/// suggestions, its slides, when it meets, the exam and exercise rules, recording consent and
+/// mail routing. Two columns when there is room, one otherwise. Edits save as they happen; slot
+/// changes replan the sessions and update the calendar.
 public struct CourseSettingsView: View {
     private let courseID: Course.ID
     private let changeDeck: (Deck.ID) -> Void
+    private let importFiles: (() -> Void)?
+    private let newCourse: (() -> Void)?
 
     @FetchOne private var course: Course?
     @FetchAll private var slots: [WeeklySlot]
     @FetchAll private var lectures: [Lecture]
+    @FetchAll private var oneOffSessions: [LectureSession]
+    @FetchAll private var mailRules: [MailRule]
     @Fetch private var decks: [CourseDeck]
+    @Fetch private var vocabulary: GlossaryVocabulary
+    @AppStorage private var dismissedTerms: String
 
     @Environment(\.studyServices) private var services
     @Environment(\.calendarMirror) private var mirror
     @Environment(\.openDestination) private var openDestination
+    @Environment(\.undoManager) private var undoManager
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
 
@@ -28,14 +36,36 @@ public struct CourseSettingsView: View {
     @State private var isWide = true
     @State private var newSlotID: WeeklySlot.ID?
     @State private var newRuleID: CourseRule.ID?
+    @State private var newMailRule: MailRule?
+    @State private var importsCalendar = false
+    @State private var undoTarget = UndoTarget()
+    /// Stands in for the exam form until the course has one (saved once it is edited).
+    @State private var examFormPlaceholder = CourseRule(kind: .examForm, title: String(localized: "Exam form"))
+    @FocusState private var nameFocused: Bool
 
-    public init(courseID: Course.ID, changeDeck: @escaping (Deck.ID) -> Void = { _ in }) {
+    /// - Parameters:
+    ///   - changeDeck: Change… on a deck (the filing change sheet).
+    ///   - importFiles: Import in the toolbar and in an empty Slides group (the file importer for
+    ///     this course). Nil: the app shows its own Import.
+    ///   - newCourse: New Course… in the toolbar's More menu.
+    public init(
+        courseID: Course.ID,
+        changeDeck: @escaping (Deck.ID) -> Void = { _ in },
+        importFiles: (() -> Void)? = nil,
+        newCourse: (() -> Void)? = nil
+    ) {
         self.courseID = courseID
         self.changeDeck = changeDeck
+        self.importFiles = importFiles
+        self.newCourse = newCourse
         _course = FetchOne(Course.find(courseID))
         _slots = FetchAll(WeeklySlot.where { $0.courseID.eq(courseID) }.order { ($0.weekday, $0.startMinute) })
         _lectures = FetchAll(Lecture.where { $0.courseID.eq(courseID) })
+        _oneOffSessions = FetchAll(LectureSession.where { $0.courseID.eq(courseID) && $0.weeklySlotID.is(nil) })
+        _mailRules = FetchAll(MailRule.where { $0.courseID.eq(courseID) }.order { ($0.sortOrder, $0.createdAt) })
         _decks = Fetch(wrappedValue: [], CourseDecksRequest(courseID: courseID))
+        _vocabulary = Fetch(wrappedValue: .empty, GlossaryVocabularyRequest(courseID: courseID))
+        _dismissedTerms = AppStorage(wrappedValue: "", "GlossaryDismissed-\(courseID.uuidString)")
     }
 
     public var body: some View {
@@ -48,6 +78,10 @@ public struct CourseSettingsView: View {
         }
         .navigationTitle("Course Settings")
         .navigationSubtitle(draft?.name ?? course?.name ?? "")
+        .toolbar { toolbar }
+        .fileImporter(isPresented: $importsCalendar, allowedContentTypes: calendarTypes, allowsMultipleSelection: true) { result in
+            importCalendar(result)
+        }
         .onAppear { adopt(course) }
         .onChange(of: course) { adopt(course) }
         .task(id: draft) { await saveSoon() }
@@ -58,62 +92,77 @@ public struct CourseSettingsView: View {
 
     @ViewBuilder
     private func layout(_ course: Binding<Course>) -> some View {
-        Group {
-            if isWide {
-                HStack(alignment: .top, spacing: 0) {
-                    Form { leftSections(course) }
-                        .formStyle(.grouped)
-                    Form { rightSections(course) }
-                        .formStyle(.grouped)
+        ScrollView {
+            Group {
+                if isWide {
+                    HStack(alignment: .top, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 14) { leftGroups(course) }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 14) { rightGroups(course) }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 14) {
+                        leftGroups(course)
+                        rightGroups(course)
+                    }
                 }
-            } else {
-                Form {
-                    leftSections(course)
-                    rightSections(course)
-                }
-                .formStyle(.grouped)
             }
+            .padding(.horizontal, 22)
+            .padding(.top, 2)
+            .padding(.bottom, 22)
         }
+        .background(Color.fieldBackground)
         .onGeometryChange(for: Bool.self) { $0.size.width >= 760 } action: { isWide = $0 }
     }
 
     @ViewBuilder
-    private func leftSections(_ course: Binding<Course>) -> some View {
-        Section("Course") {
-            LabeledContent("Name") {
-                HStack(spacing: 6) {
+    private func leftGroups(_ course: Binding<Course>) -> some View {
+        SettingsGroup("Course") {
+            FormRow("Name") {
+                HStack(spacing: 7) {
                     CourseColorMenu(hex: course.colorHex)
                     TextField("Name", text: course.name)
                         .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: 236)
+                        .textFieldStyle(.plain)
+                        .focused($nameFocused)
                 }
+                .fieldChrome(isFocused: nameFocused)
             }
-            LabeledContent(course.wrappedValue.professors.count > 1 ? "Lecturers" : "Lecturer") {
-                NamesField(title: "Lecturer", names: course.professors)
-                    .labelsHidden()
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: 236)
+            FormRow(course.wrappedValue.professors.count > 1 ? Text("Lecturers") : Text("Lecturer")) {
+                NamesField(title: "Lecturer", names: course.professors, chrome: true)
             }
-            LabeledContent("Language") {
-                HStack(spacing: 6) {
-                    languagePicker("Language", selection: course.language, current: course.wrappedValue.language)
-                    Text("admin parts in")
-                        .foregroundStyle(.secondary)
-                        .fixedSize()
-                    languagePicker("Admin Language", selection: course.adminLanguage, current: course.wrappedValue.adminLanguage)
+            FormRow("Language") {
+                languagePicker("Language", selection: course.language, current: course.wrappedValue.language)
+                Text("admin parts in")
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                languagePicker("Admin Language", selection: course.adminLanguage, current: course.wrappedValue.adminLanguage)
+            }
+        }
+
+        SettingsGroup("Glossary") {
+            GlossaryField(terms: course.glossaryTerms) { prefix in
+                vocabulary.completion(for: prefix, excluding: course.wrappedValue.glossaryTerms)
+            }
+            let suggestions = glossarySuggestions(for: course.wrappedValue)
+            if !suggestions.isEmpty {
+                SuggestedHeader()
+                ForEach(suggestions) { suggestion in
+                    GlossarySuggestionRow(
+                        suggestion: suggestion,
+                        add: { addTerm(suggestion.term) },
+                        dismiss: { dismiss(suggestion.term) },
+                        open: { openDestination(.lecture($0, $1)) }
+                    )
                 }
             }
         }
 
-        Section("Glossary") {
-            GlossaryField(terms: course.glossaryTerms)
-        }
-
-        if !decks.isEmpty {
-            Section("Slides") {
+        SettingsGroup("Slides") {
+            if decks.isEmpty {
+                EmptySlidesRow(importFiles: importFiles)
+            } else {
                 ForEach(decks) { item in
                     DeckRow(item: item, text: sessionText) { changeDeck(item.deck.id) }
                 }
@@ -122,11 +171,12 @@ public struct CourseSettingsView: View {
     }
 
     @ViewBuilder
-    private func rightSections(_ course: Binding<Course>) -> some View {
-        Section {
-            if !orderedSlots.isEmpty {
-                SlotHeaderRow()
-            }
+    private func rightGroups(_ course: Binding<Course>) -> some View {
+        SettingsGroup("Weekly slots") {
+            Button("Import .ics") { importsCalendar = true }
+            Button("Add Slot", action: addSlot)
+        } content: {
+            SlotHeaderRow()
             ForEach(orderedSlots) { slot in
                 SlotRow(
                     slot: slot, text: sessionText,
@@ -135,79 +185,102 @@ public struct CourseSettingsView: View {
                     editsTimeInitially: slot.id == newSlotID
                 )
             }
-            Toggle("Show in Calendar", isOn: course.showsInCalendar)
-        } header: {
-            SectionHeader("Weekly slots") {
-                Button("Add Slot", action: addSlot)
+            if orderedSlots.isEmpty {
+                let guess = SlotGuess.slot(courseID: courseID, sessions: oneOffSessions, timeZone: timeZone)
+                GhostSlotRow(guess: guess, text: sessionText) {
+                    if let guess {
+                        actions.adopt(guess)
+                    } else {
+                        addSlot()
+                    }
+                }
             }
+            SwitchRow(title: "Show in Calendar", isOn: course.showsInCalendar)
         }
 
-        Section {
-            ForEach(course.wrappedValue.rules) { rule in
+        SettingsGroup("Exam & exercises") {
+            ForEach(displayedRules(of: course.wrappedValue)) { rule in
                 RuleRow(
                     rule: rule,
                     lectureNumber: rule.source?.lectureID.flatMap { id in lectures.first { $0.id == id }?.number },
                     editing: rule.id == newRuleID,
                     update: { changed in
-                        guard let index = draft?.rules.firstIndex(where: { $0.id == changed.id }) else { return }
-                        draft?.rules[index] = changed
+                        if let index = draft?.rules.firstIndex(where: { $0.id == changed.id }) {
+                            draft?.rules[index] = changed
+                        } else {
+                            draft?.rules.append(changed)
+                        }
                     },
                     delete: { id in draft?.rules.removeAll { $0.id == id } },
-                    play: { lectureID, time in
-                        openDestination(.lecture(lectureID, ReviewTarget(time: time, plays: true)))
-                    }
+                    open: { openDestination(.lecture($0, $1)) }
                 )
             }
-        } header: {
-            SectionHeader("Exam & exercises") {
-                Button("Add Rule", action: addRule)
-            }
+        }
+        .contextMenu {
+            Button("Add Rule", action: addRule)
         }
 
-        Section("Recording") {
-            Toggle("Record this course", isOn: Binding(
+        SettingsGroup("Recording") {
+            SwitchRow(title: "Record this course", isOn: Binding(
                 get: { course.wrappedValue.recordsLectures },
                 set: { on in course.wrappedValue.recordingConsentAt = on ? (course.wrappedValue.recordingConsentAt ?? Date()) : nil }
             ))
-            Picker("Scope", selection: course.recordingScope) {
-                Text("Lecturer only").tag(RecordingScope.lecturer)
-                Text("Whole room").tag(RecordingScope.room)
+            HStack(spacing: 10) {
+                Text("Scope")
+                Spacer(minLength: 8)
+                SegmentedChoice(title: "Scope", selection: course.recordingScope, options: [
+                    ChoiceOption(value: RecordingScope.lecturer, label: String(localized: "Lecturer only")),
+                    ChoiceOption(value: RecordingScope.room, label: String(localized: "Whole room")),
+                ])
             }
-            .pickerStyle(.segmented)
+            .settingsRowPadding()
         }
 
-        Section {
-            ForEach(Array(course.wrappedValue.mailRules.enumerated()), id: \.offset) { index, rule in
-                MailRuleRow(
-                    rule: rule,
-                    update: { changed in
-                        guard let count = draft?.mailRules.count, index < count else { return }
-                        draft?.mailRules[index] = changed
-                    },
-                    delete: {
-                        guard let count = draft?.mailRules.count, index < count else { return }
-                        draft?.mailRules.remove(at: index)
-                    }
-                )
+        SettingsGroup("Mail") {
+            Button("Add Rule", action: addMailRule)
+        } content: {
+            ForEach(orderedMailRules) { rule in
+                MailRuleRow(rule: rule, save: saveMailRule, delete: deleteMailRule)
             }
-        } header: {
-            SectionHeader("Mail") {
-                Button("Add Rule") { draft?.mailRules.append(MailRoutingRule(field: .from, contains: "")) }
+            if let newMailRule {
+                MailRuleRow(rule: newMailRule, focusesOnAppear: true, save: saveMailRule, delete: deleteMailRule)
+                    .id(newMailRule.id)
             }
         }
     }
 
     private func languagePicker(_ title: LocalizedStringKey, selection: Binding<String>, current: String) -> some View {
-        Picker(title, selection: selection) {
-            ForEach(languageChoices(including: current), id: \.code) { language in
-                Text(language.name).tag(language.code)
-            }
-        }
-        .labelsHidden()
-        .fixedSize()
+        PopUpPicker(
+            title: title, selection: selection,
+            options: languageChoices(including: current).map { ChoiceOption(value: $0.code, label: $0.name) }
+        )
     }
 
-    // MARK: - Actions
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if let importFiles {
+                Button("Import", systemImage: "plus", action: importFiles)
+                    .labelStyle(.titleAndIcon)
+            }
+            Menu {
+                Button("Import .ics…") { importsCalendar = true }
+                Button("Add Slot", action: addSlot)
+                Divider()
+                Button("Add Exam Rule", action: addRule)
+                Button("Add Mail Rule", action: addMailRule)
+                if let newCourse {
+                    Divider()
+                    Button("New Course…", action: newCourse)
+                }
+            } label: {
+                Label("More", systemImage: "ellipsis")
+            }
+            .menuIndicator(.hidden)
+        }
+    }
+
+    // MARK: - Derived
 
     private var actions: ScheduleActions { ScheduleActions(services: services, mirror: mirror) }
 
@@ -219,7 +292,32 @@ public struct CourseSettingsView: View {
         }
     }
 
+    /// The student's rules, then learned ones.
+    private var orderedMailRules: [MailRule] {
+        mailRules.filter { $0.origin == .user } + mailRules.filter { $0.origin != .user }
+    }
+
+    /// The course's rules, with "Exam form · Not announced" until it has one.
+    private func displayedRules(of course: Course) -> [CourseRule] {
+        course.rules.contains { $0.kind == .examForm } ? course.rules : course.rules + [examFormPlaceholder]
+    }
+
+    private func glossarySuggestions(for course: Course) -> [GlossarySuggestion] {
+        let names = course.professors.flatMap { $0.split(whereSeparator: \.isWhitespace).map(String.init) }
+        return vocabulary.suggestions(excluding: course.glossaryTerms + names, dismissed: dismissed)
+    }
+
+    private var dismissed: Set<String> {
+        Set(dismissedTerms.split(separator: "\n").map(String.init))
+    }
+
     private var sessionText: SessionText { SessionText(locale: locale, timeZone: timeZone) }
+
+    private var calendarTypes: [UTType] {
+        [UTType(filenameExtension: "ics"), .calendarEvent].compactMap(\.self)
+    }
+
+    // MARK: - Actions
 
     private func addSlot() {
         let slot = WeeklySlot(
@@ -234,6 +332,73 @@ public struct CourseSettingsView: View {
         let rule = CourseRule(kind: .other, title: "", provenance: .user)
         newRuleID = rule.id
         draft?.rules.append(rule)
+    }
+
+    private func addMailRule() {
+        let order = (mailRules.map(\.sortOrder).max() ?? -1) + 1
+        newMailRule = MailRule(courseID: courseID, kind: .sender, pattern: "", sortOrder: order)
+    }
+
+    private func saveMailRule(_ rule: MailRule) {
+        if rule.id == newMailRule?.id {
+            if rule.pattern.isEmpty {
+                newMailRule = rule
+                return
+            }
+            newMailRule = nil
+        }
+        guard !rule.pattern.isEmpty else { return }
+        actions.save(rule)
+    }
+
+    private func deleteMailRule(_ rule: MailRule) {
+        if rule.id == newMailRule?.id {
+            newMailRule = nil
+        } else {
+            actions.delete(rule)
+        }
+    }
+
+    private func addTerm(_ term: String) {
+        guard let terms = draft?.glossaryTerms,
+              !terms.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) else { return }
+        draft?.glossaryTerms = terms + [term]
+    }
+
+    private func dismiss(_ term: String) {
+        var terms = dismissed
+        terms.insert(term.lowercased())
+        dismissedTerms = terms.sorted().joined(separator: "\n")
+    }
+
+    /// Weekly slots from .ics files; slots the course has already are skipped. Undo removes them.
+    private func importCalendar(_ result: Result<[URL], any Error>) {
+        guard case .success(let urls) = result else { return }
+        var imported: [WeeklySlot] = []
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                CoursesUILog.ui.error("Could not read \(url.lastPathComponent, privacy: .public)")
+                continue
+            }
+            imported += ICSSlotImporter.slots(from: text, courseID: courseID, existing: slots + imported, timeZone: timeZone)
+        }
+        guard !imported.isEmpty else { return }
+        actions.save(imported)
+        Self.registerUndo(of: imported, manager: undoManager, target: undoTarget, actions: actions)
+    }
+
+    /// Undo removes the imported slots; Redo adds them again.
+    private static func registerUndo(of imported: [WeeklySlot], manager: UndoManager?, target: UndoTarget, actions: ScheduleActions) {
+        manager?.registerUndo(withTarget: target) { target in
+            actions.deleteSlots(imported.map(\.id))
+            manager?.registerUndo(withTarget: target) { target in
+                actions.save(imported)
+                registerUndo(of: imported, manager: manager, target: target, actions: actions)
+            }
+        }
+        manager?.setActionName(String(localized: "Import Slots"))
     }
 
     // MARK: - Saving
@@ -270,6 +435,10 @@ public struct CourseSettingsView: View {
         }
     }
 }
+
+/// The object Undo registrations hang on.
+@MainActor
+final class UndoTarget {}
 
 // MARK: - Slides
 
@@ -308,6 +477,7 @@ struct CourseDecksRequest: FetchKeyRequest {
     }
 }
 
+/// A filed deck: its title, the lecture it is tagged with, and Change.
 private struct DeckRow: View {
     let item: CourseDeck
     let text: SessionText
@@ -315,9 +485,10 @@ private struct DeckRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "doc.richtext")
+            Image(systemName: "doc")
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.deck.title.isEmpty ? item.deck.fileName : item.deck.title)
                     .lineLimit(1)
@@ -325,20 +496,23 @@ private struct DeckRow: View {
                 if let tag {
                     HStack(spacing: 5) {
                         Image(systemName: "tag")
-                            .imageScale(.small)
+                            .font(.system(size: 10))
                             .foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
                         Text(tag)
                     }
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                 }
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button("Change", action: change)
-                .buttonStyle(.borderless)
+                .headerActionStyle()
                 .controlSize(.small)
         }
-        .padding(.vertical, 2)
+        .frame(minHeight: 32)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 12)
     }
 
     private var tag: String? {
@@ -351,5 +525,27 @@ private struct DeckRow: View {
         }
         if let held = lecture.heldAt { parts.append(text.day(held)) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// The Slides group of a course without decks: the deck glyph and Import.
+private struct EmptySlidesRow: View {
+    let importFiles: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "doc")
+                .foregroundStyle(.tertiary)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            Spacer(minLength: 8)
+            if let importFiles {
+                Button("Import", action: importFiles)
+                    .headerActionStyle()
+            }
+        }
+        .frame(minHeight: 32)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 12)
     }
 }

@@ -12,6 +12,7 @@ enum SlotColumns {
     static let spacing: CGFloat = 8
 }
 
+/// Type, Day, Time, Room: 11 pt tertiary in a 24 pt row.
 struct SlotHeaderRow: View {
     var body: some View {
         HStack(spacing: SlotColumns.spacing) {
@@ -21,14 +22,16 @@ struct SlotHeaderRow: View {
             Text("Room").frame(maxWidth: .infinity, alignment: .leading)
             Color.clear.frame(width: SlotColumns.more, height: 1)
         }
-        .font(.caption)
+        .font(.subheadline)
         .foregroundStyle(.tertiary)
+        .padding(.horizontal, 12)
+        .frame(height: 24)
         .accessibilityHidden(true)
     }
 }
 
 /// One weekly slot, edited in place: type and day menus, the time opens a popover, the room is a
-/// plain field, more actions behind the trailing ellipsis.
+/// plain field, more actions behind the trailing ellipsis. The hovered row is filled.
 struct SlotRow: View {
     let slot: WeeklySlot
     let text: SessionText
@@ -113,7 +116,9 @@ struct SlotRow: View {
             .opacity(isHovered || roomFocused ? 1 : 0)
             .accessibilityLabel(Text("More"))
         }
-        .frame(minHeight: 22)
+        .padding(.horizontal, 12)
+        .frame(height: 31)
+        .background(isHovered ? Color.primary.opacity(0.06) : .clear)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onAppear {
@@ -138,6 +143,44 @@ struct SlotRow: View {
         let trimmed = room.trimmingCharacters(in: .whitespacesAndNewlines)
         room = trimmed
         update { $0.room = trimmed }
+    }
+}
+
+/// The table's row while the course has no slots, in tertiary: the slot its one-off sessions
+/// suggest ("Seminar Wed 16:15–17:45"), or dashes. Clicking it adds the slot.
+struct GhostSlotRow: View {
+    let guess: WeeklySlot?
+    let text: SessionText
+    let add: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: add) {
+            HStack(spacing: SlotColumns.spacing) {
+                Text(guess?.kind.displayName ?? "–")
+                    .frame(width: SlotColumns.kind, alignment: .leading)
+                Text(guess.map { text.shortWeekday($0.weekday) } ?? "–")
+                    .frame(width: SlotColumns.day, alignment: .leading)
+                Text(guess.map { SessionText.minutes($0.startMinute, $0.endMinute) } ?? "–:––")
+                    .font(.system(size: 12, design: .monospaced))
+                    .monospacedDigit()
+                    .frame(width: SlotColumns.time, alignment: .leading)
+                Text(guess.map { $0.room.isEmpty ? String(localized: "Add room") : $0.room } ?? "")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "plus")
+                    .frame(width: SlotColumns.more)
+                    .opacity(isHovered ? 1 : 0)
+            }
+            .lineLimit(1)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 12)
+            .frame(height: 31)
+            .background(isHovered ? Color.primary.opacity(0.06) : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .accessibilityLabel(Text("Add Slot"))
     }
 }
 

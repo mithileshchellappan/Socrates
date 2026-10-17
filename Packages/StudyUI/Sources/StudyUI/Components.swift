@@ -22,6 +22,10 @@ extension Color {
 
     /// The professor's voice (pins, quote bars, exam stars). Orange is reserved for it.
     public static let professor = Color.orange
+
+    /// The AI mark: the sparkle before AI text and on "Suggested" (the text itself stays
+    /// secondary). Purple is reserved for it.
+    public static let ai = Color.purple
 }
 
 /// Times on a recording clock as "m:ss" or "h:mm:ss" (shown in SF Mono).
