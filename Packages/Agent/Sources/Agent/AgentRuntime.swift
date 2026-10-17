@@ -27,6 +27,8 @@ public actor AgentRuntime {
     let now: @Sendable () -> Date
     let additionalSpecs: [ConversationKind: SpecProvider]
     private var tasks: [AgentConversation.ID: Task<Void, Never>] = [:]
+    /// The answer being written, per conversation (M3.5: the chat streams it into place).
+    private let live = LiveReplies()
 
     public init(
         services: StudyServices,
@@ -170,6 +172,18 @@ public actor AgentRuntime {
         return nil
     }
 
+    /// The answer the agent is writing in conversation `id`, about ten times a second: the text of
+    /// the API call in flight, shown after `LiveReply.afterTurns` stored turns. Nil when nothing
+    /// streams. Never stored: `agent_turn` gets the complete turn when the call ends.
+    public nonisolated func liveReplies(_ id: AgentConversation.ID) -> AsyncStream<LiveReply?> {
+        live.stream(id)
+    }
+
+    /// Whether conversation `id` is running in this process.
+    public func isRunning(_ id: AgentConversation.ID) -> Bool {
+        tasks[id] != nil
+    }
+
     /// Waits until the conversation's current run ends; the conversation as it ended.
     public func outcome(_ id: AgentConversation.ID) async -> AgentConversation? {
         if let task = tasks[id] { await task.value }
@@ -188,13 +202,14 @@ public actor AgentRuntime {
 
     private func finished(_ id: AgentConversation.ID) {
         tasks[id] = nil
+        live.end(id)
     }
 
     private func run(_ conversation: AgentConversation, spec: ConversationSpec, history: [MessageParam], context: ToolContext) async {
         let id = conversation.id
         let recorder = TurnRecorder(
             conversations: conversations, apiCalls: APICallRepository(store: services.records), conversationID: id,
-            purpose: spec.purpose
+            purpose: spec.purpose, live: live, storedTurns: history.count
         )
         do {
             let courses = CourseList(tokens: try await CourseTokens.load(services.database))
@@ -254,16 +269,38 @@ actor TurnRecorder {
     let apiCalls: APICallRepository
     let conversationID: AgentConversation.ID
     let purpose: String
+    let live: LiveReplies
+    /// Turns stored so far (the history the run started with, then every appended turn).
+    private var storedTurns: Int
     private var requestID: String?
     private var stopReason: String?
+    /// The text blocks of the call in flight, and when they were last published.
+    private var liveText = ""
+    private var lastPublish: ContinuousClock.Instant?
+    private let clock = ContinuousClock()
     /// The first storage error; the run ends `failed` with it.
     private(set) var failure: (any Error)?
 
-    init(conversations: ConversationRepository, apiCalls: APICallRepository, conversationID: AgentConversation.ID, purpose: String) {
+    /// Live text is published at most this often (about ten times a second).
+    static let publishInterval: Duration = .milliseconds(100)
+
+    init(
+        conversations: ConversationRepository, apiCalls: APICallRepository, conversationID: AgentConversation.ID, purpose: String,
+        live: LiveReplies, storedTurns: Int
+    ) {
         self.conversations = conversations
         self.apiCalls = apiCalls
         self.conversationID = conversationID
         self.purpose = purpose
+        self.live = live
+        self.storedTurns = storedTurns
+    }
+
+    private func publishLive(force: Bool) {
+        let now = clock.now
+        if !force, let lastPublish, now - lastPublish < Self.publishInterval { return }
+        lastPublish = now
+        live.publish(conversationID, LiveReply(afterTurns: storedTurns, text: liveText))
     }
 
     func handle(_ event: ToolLoopEvent) async {
@@ -271,6 +308,16 @@ actor TurnRecorder {
         case .stream(_, .messageStart(let message)):
             requestID = message.requestID
             stopReason = nil
+            liveText = ""
+            lastPublish = nil
+        case .stream(_, .contentBlockStart(_, .text)):
+            // A second text block of one answer starts a new paragraph.
+            if !liveText.isEmpty, !liveText.hasSuffix("\n\n") { liveText += "\n\n" }
+        case .stream(_, .contentBlockDelta(_, .text(let delta))):
+            liveText += delta
+            publishLive(force: false)
+        case .stream(_, .contentBlockStop), .stream(_, .messageStop):
+            if !liveText.isEmpty { publishLive(force: true) }
         case .stream(_, .messageDelta(let delta, _)):
             if let reason = delta["stop_reason"]?.stringValue { stopReason = reason }
         case .appended(let turn):
@@ -284,6 +331,15 @@ actor TurnRecorder {
                     )
                 } else {
                     try await conversations.append(to: conversationID, role: .user, message: try AgentRuntime.encode(turn))
+                }
+                storedTurns += 1
+                if turn.role == .assistant {
+                    // Its text is stored now; the next call starts a new live text.
+                    liveText = ""
+                } else if !liveText.isEmpty {
+                    // A tool-result turn stored while the next call streams (a backend may report
+                    // it late): the live text now follows one more turn.
+                    publishLive(force: true)
                 }
             } catch {
                 failure = error
