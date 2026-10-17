@@ -25,13 +25,31 @@ public struct ReviewActions {
     public var slideStartsHere: () -> Void
     public var toggleReviewed: () -> Void
 
+    /// The thumbnails (there with a deck) and the transcript under the slide (there with a deck
+    /// and a recording) collapse; typing does not turn these off.
+    public var canToggleThumbnails: Bool
+    public var areThumbnailsCollapsed: Bool
+    public var canToggleTranscript: Bool
+    public var isTranscriptCollapsed: Bool
+    public var toggleThumbnails: () -> Void
+    public var toggleTranscript: () -> Void
+
     public init(
         hasAudio: Bool, isPlaying: Bool, canGoPrevious: Bool, canGoNext: Bool, canFollow: Bool, isFollowing: Bool,
         canSetSlideStart: Bool, isReviewed: Bool, isEditingText: Bool,
         playPause: @escaping () -> Void, back: @escaping () -> Void, forward: @escaping () -> Void,
         previousSlide: @escaping () -> Void, nextSlide: @escaping () -> Void, toggleFollow: @escaping () -> Void,
-        slideStartsHere: @escaping () -> Void, toggleReviewed: @escaping () -> Void
+        slideStartsHere: @escaping () -> Void, toggleReviewed: @escaping () -> Void,
+        canToggleThumbnails: Bool = false, areThumbnailsCollapsed: Bool = false,
+        canToggleTranscript: Bool = false, isTranscriptCollapsed: Bool = false,
+        toggleThumbnails: @escaping () -> Void = {}, toggleTranscript: @escaping () -> Void = {}
     ) {
+        self.canToggleThumbnails = canToggleThumbnails
+        self.areThumbnailsCollapsed = areThumbnailsCollapsed
+        self.canToggleTranscript = canToggleTranscript
+        self.isTranscriptCollapsed = isTranscriptCollapsed
+        self.toggleThumbnails = toggleThumbnails
+        self.toggleTranscript = toggleTranscript
         self.hasAudio = hasAudio
         self.isPlaying = isPlaying
         self.canGoPrevious = canGoPrevious
@@ -66,7 +84,8 @@ extension FocusedValues {
 
 /// The Review menu: Play/Pause (Space), Back/Forward 15 Seconds (⌥← / ⌥→), Previous/Next Slide
 /// (← / →), Follow Playback (⇧⌘F), Slide Starts Here (⌘\), Mark as Reviewed (⇧⌘R). Reads the
-/// focused review screen's actions; everything is disabled while a text field has focus.
+/// focused review screen's actions; everything is disabled while a text field has focus. In the
+/// View menu after the sidebar: Hide/Show Thumbnails (⌥⌘1) and Hide/Show Transcript (⌥⌘2).
 ///
 ///     WindowGroup { … }.commands { ReviewCommands() }
 public struct ReviewCommands: Commands {
@@ -115,6 +134,18 @@ public struct ReviewCommands: Commands {
             .keyboardShortcut(focused ? KeyboardShortcut("r", modifiers: [.command, .shift]) : nil)
             .disabled(review?.reviewedEnabled != true)
         }
+        CommandGroup(after: .sidebar) {
+            Button(review?.areThumbnailsCollapsed == true ? LocalizedStringKey("Show Thumbnails") : "Hide Thumbnails") {
+                review?.toggleThumbnails()
+            }
+            .keyboardShortcut(focused ? KeyboardShortcut("1", modifiers: [.command, .option]) : nil)
+            .disabled(review?.canToggleThumbnails != true)
+            Button(review?.isTranscriptCollapsed == true ? LocalizedStringKey("Show Transcript") : "Hide Transcript") {
+                review?.toggleTranscript()
+            }
+            .keyboardShortcut(focused ? KeyboardShortcut("2", modifiers: [.command, .option]) : nil)
+            .disabled(review?.canToggleTranscript != true)
+        }
     }
 }
 
@@ -129,6 +160,8 @@ struct ReviewActionsPublisher: View {
     /// stays true until the search is cancelled, which would detach the review keys while a
     /// search hit plays).
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
+    /// The screen's layout (`ReviewContent` reads the same value and animates the change).
+    @AppStorage(ReviewLayout.storageKey) private var layout = ReviewLayout()
 
     init(model: ReviewModel) {
         self.model = model
@@ -148,6 +181,7 @@ struct ReviewActionsPublisher: View {
         let session = model.session
         let player = model.player
         let isReviewed = (lecture.first ?? model.lecture).reviewedAt != nil
+        let layout = $layout
         return ReviewActions(
             hasAudio: player?.hasAudio == true,
             isPlaying: player?.isPlaying == true,
@@ -165,7 +199,13 @@ struct ReviewActionsPublisher: View {
             nextSlide: { session.nextSlide() },
             toggleFollow: { session.toggleFollowing() },
             slideStartsHere: { model.slideStartsHere() },
-            toggleReviewed: { model.toggleReviewed(isReviewed: isReviewed) }
+            toggleReviewed: { model.toggleReviewed(isReviewed: isReviewed) },
+            canToggleThumbnails: model.deck != nil,
+            areThumbnailsCollapsed: layout.wrappedValue.isRailCollapsed,
+            canToggleTranscript: model.deck != nil && model.recording != nil,
+            isTranscriptCollapsed: layout.wrappedValue.isTranscriptCollapsed,
+            toggleThumbnails: { layout.wrappedValue.isRailCollapsed.toggle() },
+            toggleTranscript: { layout.wrappedValue.isTranscriptCollapsed.toggle() }
         )
     }
 }

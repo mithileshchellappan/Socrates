@@ -29,6 +29,9 @@ struct DeadlinesInspector: View {
     let composer: ComposerModel
     let composerFocused: FocusState<Bool>.Binding
     let handlers: InspectorHandlers
+    /// The inspector is shown. SwiftUI keeps a hidden inspector's content alive, and with it the
+    /// header's toolbar item, which would stay in the toolbar beside Show Inspector.
+    var isShown = true
 
     @Environment(\.calendarChrome) private var chrome
     @Environment(\.locale) private var locale
@@ -70,7 +73,7 @@ struct DeadlinesInspector: View {
         .background { InspectorBackground() }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
         .toolbar {
-            if chrome == .window {
+            if chrome == .window, isShown {
                 ToolbarItem(placement: .automatic) {
                     header
                         .frame(width: max(0, columnWidth - Self.toolbarTrailingInset), alignment: .leading)

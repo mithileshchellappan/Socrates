@@ -11,7 +11,8 @@ import SwiftUI
 /// In the window the header is a toolbar item: macOS 26 lays the toolbar out as one row whose
 /// trailing items pack against the window's edge, with no section of its own over the inspector.
 /// The item is as wide as the inspector (less the toolbar's trailing inset), so it sits exactly
-/// over the column and keeps the slide stepper beside it, over the content.
+/// over the column and keeps the slide stepper beside it, over the content. It is there only while
+/// the inspector is shown; then the toolbar's Show Inspector takes its place.
 struct ReviewInspector: View {
     static let width: CGFloat = 336
     static let headerHeight: CGFloat = 52
@@ -64,7 +65,9 @@ struct ReviewInspector: View {
         .background { InspectorBackground() }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
         .toolbar {
-            if chrome == .window {
+            // Only while the inspector is shown: SwiftUI keeps a hidden inspector's content (and
+            // with it this item) alive, so the header stayed in the toolbar beside Show Inspector.
+            if chrome == .window, model.showsInspector {
                 ToolbarItem(placement: .automatic) {
                     InspectorHeader(model: model)
                         .frame(width: max(0, columnWidth - Self.toolbarTrailingInset))
