@@ -2,6 +2,11 @@ import Review
 import StudyCore
 import StudyUI
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 /// The transcript zone: the recording's lines grouped by slide visit, or, before the transcript
 /// exists, the transcription job's progress.
@@ -80,12 +85,17 @@ private struct TranscriptList: View {
                         }
                     }
                 }
-                .padding(.bottom, 72)
             }
             .scrollIndicators(.automatic)
+            // The edge under the slide stays crisp (no blur band).
+            .scrollEdgeEffectHidden(true, for: .top)
             // Rows are inset by their highlight's padding; the list reaches past the column so the
             // times line up with the slide's edge.
             .padding(.horizontal, -8)
+            // Nothing draws above the list, into the gap under the slide or behind it (clipped
+            // after the negative padding, so the rows' highlight keeps its overhang).
+            .clipped()
+            .fadesAbovePlayer(model.player != nil)
             .background {
                 TranscriptFollower(model: model, sections: sections, proxy: proxy)
             }
@@ -110,7 +120,12 @@ private struct TranscriptFollower: View {
                 // Opened at a moment (search hit, Today, saved position): go there once the list
                 // has laid out; a scroll asked for while it appears is dropped.
                 try? await Task.sleep(for: .milliseconds(60))
-                if let line = model.player?.currentSegmentID { scroll(to: line) }
+                if !session.isFollowing, let visit = openingVisit(session) {
+                    // Opened on a slide the playhead is not in (yet): its divider is the first row.
+                    proxy.scrollTo(visit, anchor: .top)
+                } else if let line = model.player?.currentSegmentID {
+                    scroll(to: line)
+                }
             }
             .onChange(of: line) { _, line in
                 guard let line else { return }
@@ -122,6 +137,16 @@ private struct TranscriptFollower: View {
                 else { return }
                 withAnimation(.smooth) { proxy.scrollTo(visit.id, anchor: .top) }
             }
+    }
+
+    /// The visit of the slide on screen to open at: the one holding the playhead, else the next one
+    /// after it, else the first.
+    private func openingVisit(_ session: ReviewSession) -> UUID? {
+        guard let page = session.shownPage else { return nil }
+        let visits = session.timeline.visits(of: page).filter { visit in sections.contains { $0.id == visit.id } }
+        let time = model.player?.time ?? 0
+        let visit = visits.first { $0.start <= time && time < $0.end } ?? visits.first { $0.start >= time } ?? visits.first
+        return visit?.id
     }
 
     /// Near the start of a slide visit its divider goes to the top; further in, the line sits in
@@ -166,7 +191,7 @@ private struct SectionDivider: View {
                 .frame(height: 0.5)
         }
         .padding(.horizontal, 8)
-        .padding(.top, 10)
+        .padding(.top, 7)
         .padding(.bottom, 4)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
@@ -181,6 +206,8 @@ private struct TranscriptRow: View {
     let language: String
     let markers: [SlideEvent]
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         let isCurrent = model.player?.currentSegmentID == segment.id
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -188,7 +215,7 @@ private struct TranscriptRow: View {
                 .font(.subheadline.monospaced())
                 .monospacedDigit()
                 .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
-                .frame(width: 46, alignment: .leading)
+                .frame(width: 54, alignment: .leading)
             Text(TranscriptText.attributed(segment))
                 .font(.body)
                 .lineSpacing(2.5)
@@ -202,10 +229,10 @@ private struct TranscriptRow: View {
                     .accessibilityLabel(Text(Locale.current.localizedString(forLanguageCode: segment.lang) ?? segment.lang))
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 4.5)
         .padding(.horizontal, 8)
         .background(
-            isCurrent ? AnyShapeStyle(.tint.opacity(0.12)) : AnyShapeStyle(.clear),
+            isCurrent ? AnyShapeStyle(.tint.opacity(ReviewTint.soft(colorScheme))) : AnyShapeStyle(.clear),
             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
         )
         .contentShape(Rectangle())
@@ -265,6 +292,13 @@ enum TranscriptText {
         return letters.count >= 3 && !functionWords.contains(letters)
     }
 
+    /// The dotted underline: a fine line in the tertiary label colour.
+    #if canImport(AppKit)
+    static let doubtColor = Color(nsColor: .tertiaryLabelColor)
+    #else
+    static let doubtColor = Color(uiColor: .tertiaryLabel)
+    #endif
+
     static func attributed(_ segment: TranscriptSegment) -> AttributedString {
         var result = AttributedString(segment.text)
         guard let words = segment.words, words.contains(where: isDoubtful) else {
@@ -280,7 +314,7 @@ enum TranscriptText {
                   let lower = AttributedString.Index(range.lowerBound, within: result),
                   let upper = AttributedString.Index(range.upperBound, within: result)
             else { continue }
-            result[lower..<upper].underlineStyle = Text.LineStyle(pattern: .dot, color: .secondary)
+            result[lower..<upper].underlineStyle = Text.LineStyle(pattern: .dot, color: doubtColor)
         }
         return result
     }

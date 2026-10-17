@@ -3,12 +3,25 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// The inspector: "This slide | Whole lecture". This slide holds your notes for the slide on
-/// screen (editable, autosaved); Whole lecture lists every note of the lecture by slide. AI blocks
-/// (summary, further reading, exam hints, only said in class) arrive in M4.
+/// The inspector: "This slide | Whole lecture" and the hide button in one 52 pt header row level
+/// with the window toolbar, a hairline, then the pane. This slide holds your notes for the slide
+/// on screen (editable, autosaved); Whole lecture lists every note of the lecture by slide. AI
+/// blocks (summary, further reading, exam hints, only said in class) arrive in M4.
+///
+/// In the window the header is a toolbar item: macOS 26 lays the toolbar out as one row whose
+/// trailing items pack against the window's edge, with no section of its own over the inspector.
+/// The item is as wide as the inspector (less the toolbar's trailing inset), so it sits exactly
+/// over the column and keeps the slide stepper beside it, over the content.
 struct ReviewInspector: View {
+    static let width: CGFloat = 336
+    static let headerHeight: CGFloat = 52
+    /// The toolbar's inset from the window's trailing edge.
+    static let toolbarTrailingInset: CGFloat = 11
+
     let model: ReviewModel
 
+    @Environment(\.reviewChrome) private var chrome
+    @State private var columnWidth = ReviewInspector.width
     private let notesQuery: FetchAll<Note>
     private var notes: [Note] { notesQuery.wrappedValue }
 
@@ -22,39 +35,102 @@ struct ReviewInspector: View {
     }
 
     var body: some View {
-        if model.deck == nil {
-            ScrollView {
-                LectureOnlyNotesPane(model: model, notes: notes)
+        VStack(alignment: .leading, spacing: 0) {
+            if chrome == .snapshot {
+                InspectorHeader(model: model)
+                    .padding(.trailing, Self.toolbarTrailingInset)
+                    .frame(height: Self.headerHeight)
             }
-            .scrollIndicators(.automatic)
-        } else {
-            tabs
-        }
-    }
-
-    private var tabs: some View {
-        @Bindable var model = model
-        return VStack(alignment: .leading, spacing: 0) {
-            Picker("Notes", selection: $model.inspectorTab) {
-                Text("This slide").tag(ReviewModel.InspectorTab.slide)
-                Text("Whole lecture").tag(ReviewModel.InspectorTab.lecture)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
             Divider()
             ScrollView {
-                switch model.inspectorTab {
-                case .slide:
-                    SlideNotesPane(model: model, notes: notes)
-                case .lecture:
-                    LectureNotesPane(model: model, notes: notes)
+                if model.deck == nil {
+                    LectureOnlyNotesPane(model: model, notes: notes)
+                } else {
+                    switch model.inspectorTab {
+                    case .slide:
+                        SlideNotesPane(model: model, notes: notes)
+                    case .lecture:
+                        LectureNotesPane(model: model, notes: notes)
+                    }
                 }
             }
             .scrollIndicators(.automatic)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background { InspectorBackground() }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
+        .toolbar {
+            if chrome == .window {
+                ToolbarItem(placement: .automatic) {
+                    InspectorHeader(model: model)
+                        .frame(width: max(0, columnWidth - Self.toolbarTrailingInset))
+                }
+                .sharedBackgroundVisibility(.hidden)
+            }
+        }
+    }
+}
+
+/// The inspector column's background: the system's as is in light mode; in dark mode lifted a
+/// little above the content (which it otherwise matches) so it reads as a panel of its own.
+/// Snapshots have no inspector column, so they draw the secondary background.
+private struct InspectorBackground: View {
+    @Environment(\.reviewChrome) private var chrome
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        switch chrome {
+        case .window:
+            if colorScheme == .dark {
+                Rectangle().fill(.white.opacity(0.025)).ignoresSafeArea()
+            }
+        case .snapshot:
+            Rectangle().fill(.background.secondary)
+        }
+    }
+}
+
+/// The header row: the tab picker on a glass track, then the hide button at the trailing edge.
+private struct InspectorHeader: View {
+    let model: ReviewModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if model.deck != nil {
+                InspectorTabPicker(model: model)
+                    .padding(2)
+                    .reviewGlass(in: Capsule())
+            }
+            Spacer(minLength: 0)
+            Button {
+                model.showsInspector = false
+            } label: {
+                Label("Hide Inspector", systemImage: "sidebar.trailing")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .help(Text("Hide Inspector"))
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 18)
+    }
+}
+
+/// "This slide | Whole lecture": a small segmented control (on a toolbar glass track its
+/// selection is neutral, not accent-filled).
+private struct InspectorTabPicker: View {
+    let model: ReviewModel
+
+    var body: some View {
+        @Bindable var model = model
+        Picker("Notes", selection: $model.inspectorTab) {
+            Text("This slide").tag(ReviewModel.InspectorTab.slide)
+            Text("Whole lecture").tag(ReviewModel.InspectorTab.lecture)
+        }
+        .pickerStyle(.segmented)
+        .controlSize(.small)
+        .labelsHidden()
+        .fixedSize()
     }
 }
 
@@ -137,12 +213,15 @@ private struct NoteDraftRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 7) {
+            // The pin marks your text: none beside an empty note, but its place is kept so typing
+            // does not shift the line.
             ProvenancePin(.user)
                 .padding(.top, 1)
+                .opacity(draft.text.isEmpty ? 0 : 1)
             VStack(alignment: .leading, spacing: 5) {
                 if draft.isEditable {
                     // The hidden text sizes the editor to its content (a text view does not).
-                    Text(verbatim: draft.text.isEmpty ? " \n \n " : draft.text)
+                    Text(verbatim: draft.text.isEmpty ? " " : draft.text)
                         .font(.callout)
                         .lineSpacing(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -160,14 +239,6 @@ private struct NoteDraftRow: View {
                             .focused($isFocused)
                             .accessibilityLabel(Text("Your notes"))
                         }
-                        .background {
-                            // An empty note still shows where to type.
-                            if draft.text.isEmpty {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(.quaternary.opacity(isFocused ? 0.35 : 0.6))
-                                    .padding(-4)
-                            }
-                        }
                 } else {
                     NoteBody(blocks: draft.note?.blocks ?? [])
                 }
@@ -177,6 +248,11 @@ private struct NoteDraftRow: View {
                     }
                 }
             }
+        }
+        // The whole row takes a click into the note (an empty one is a single quiet line).
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if draft.isEditable { isFocused = true }
         }
         .onChange(of: isFocused) { _, focused in
             model.isEditingText = focused

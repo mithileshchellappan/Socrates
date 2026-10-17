@@ -28,25 +28,61 @@ extension EnvironmentValues {
 }
 
 extension View {
-    /// The floating capsule: Liquid Glass in the window, material in snapshots.
-    func reviewGlass<S: Shape>(in shape: S) -> some View {
-        modifier(ReviewGlass(shape: shape))
+    /// A glass capsule: Liquid Glass in the window, material in snapshots. `floating` (the player
+    /// over the content) adds a hairline edge and a soft drop shadow, and in dark mode a slightly
+    /// lighter fill: plain glass over the flat dark background would not show at all.
+    func reviewGlass<S: Shape>(in shape: S, floating: Bool = false) -> some View {
+        modifier(ReviewGlass(shape: shape, floating: floating))
     }
 }
 
 private struct ReviewGlass<S: Shape>: ViewModifier {
     let shape: S
+    let floating: Bool
     @Environment(\.reviewChrome) private var chrome
+    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         switch chrome {
         case .window:
-            content.glassEffect(.regular, in: shape)
+            if floating {
+                content
+                    .background(colorScheme == .dark ? AnyShapeStyle(.fill.quaternary) : AnyShapeStyle(.clear), in: shape)
+                    .glassEffect(.regular, in: shape)
+                    .overlay(shape.stroke(.separator, lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.12), radius: 12, y: 8)
+            } else {
+                content.glassEffect(.regular, in: shape)
+            }
         case .snapshot:
             content
                 .background(.regularMaterial, in: shape)
                 .overlay(shape.stroke(.separator, lineWidth: 0.5))
                 .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
+        }
+    }
+}
+
+/// The accent's soft fill (mockup `--accent-soft`): the current line and Follow. Stronger in dark
+/// mode, where 12 % barely shows.
+enum ReviewTint {
+    static func soft(_ colorScheme: ColorScheme) -> Double {
+        colorScheme == .dark ? 0.24 : 0.12
+    }
+}
+
+extension View {
+    /// A list that ends above the floating player fades out over its last points, so a line or
+    /// thumbnail cut by the edge never shows as a sliver over the player.
+    func fadesAbovePlayer(_ isActive: Bool) -> some View {
+        mask {
+            VStack(spacing: 0) {
+                Rectangle()
+                if isActive {
+                    LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 14)
+                }
+            }
         }
     }
 }

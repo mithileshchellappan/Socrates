@@ -2,6 +2,11 @@ import Review
 import StudyCore
 import StudyUI
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 /// The floating glass player: back 15, play/pause, forward 15, "37:27 / 1:08:13", the scrubber
 /// with slide ticks and flag / off-slide marks, the speed menu and Follow.
@@ -32,7 +37,7 @@ struct PlayerBar: View {
     var body: some View {
         let session = model.session
         let rate = model.recording?.sampleRate ?? 48_000
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             PlayerButton("Back 15 Seconds", systemImage: "gobackward.15") {
                 session.skip(by: -LecturePlayer.skipInterval)
             }
@@ -41,7 +46,6 @@ struct PlayerBar: View {
                 session.skip(by: LecturePlayer.skipInterval)
             }
             PlayerTime(player: player)
-                .padding(.leading, 4)
             Scrubber(
                 session: session,
                 player: player,
@@ -56,9 +60,9 @@ struct PlayerBar: View {
             }
         }
         .padding(.leading, 8)
-        .padding(.trailing, 8)
+        .padding(.trailing, 10)
         .frame(height: Self.height)
-        .reviewGlass(in: Capsule())
+        .reviewGlass(in: Capsule(), floating: true)
     }
 }
 
@@ -77,8 +81,8 @@ private struct PlayerButton: View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .labelStyle(.iconOnly)
-                .font(.title3)
-                .frame(minWidth: 30, minHeight: 28)
+                .font(.system(size: 14, weight: .light))
+                .frame(minWidth: 40, minHeight: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -97,8 +101,8 @@ private struct PlayPauseButton: View {
         } label: {
             Label(playing ? "Pause" : "Play", systemImage: playing ? "pause.fill" : "play.fill")
                 .labelStyle(.iconOnly)
-                .font(.title2)
-                .frame(minWidth: 30, minHeight: 28)
+                .font(.title3)
+                .frame(minWidth: 40, minHeight: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -184,7 +188,9 @@ private struct ScrubberMarks: View {
                     .frame(width: 1, height: 7)
                     .offset(x: x(time), y: 6)
             }
-            ForEach(Array(offStretches.enumerated()), id: \.offset) { _, time in
+            // An off-slide stretch at the very start (the room settling before the first slide)
+            // is no moment worth a mark, and would sit on the track's end.
+            ForEach(Array(offStretches.filter { $0 > duration * 0.01 }.enumerated()), id: \.offset) { _, time in
                 mark(.gray, at: time)
             }
             ForEach(Array(flags.enumerated()), id: \.offset) { _, time in
@@ -220,7 +226,7 @@ private struct ScrubberProgress: View {
                 .frame(width: max(0, width * progress), height: 3)
                 .offset(y: 8)
             Circle()
-                .fill(.white)
+                .fill(Self.knob)
                 .frame(width: 13, height: 13)
                 .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
                 .overlay(Circle().stroke(.separator, lineWidth: 0.5))
@@ -228,6 +234,13 @@ private struct ScrubberProgress: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
+
+    /// The head is the window's colour (white in light, near-black in dark), not always white.
+    #if canImport(AppKit)
+    static let knob = Color(nsColor: .windowBackgroundColor)
+    #else
+    static let knob = Color(uiColor: .systemBackground)
+    #endif
 }
 
 /// "1×" with a menu of speeds.
@@ -269,19 +282,25 @@ private struct SpeedMenu: View {
 /// Follow playback: tinted while the slide tracks the playhead; click to re-sync.
 private struct FollowButton: View {
     let session: ReviewSession
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let on = session.isFollowing
         Button {
             session.toggleFollowing()
         } label: {
-            Label("Follow", systemImage: "rectangle.on.rectangle")
-                .font(.body)
-                .padding(.horizontal, 9)
-                .frame(height: 28)
-                .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-                .background(on ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(.clear), in: Capsule())
-                .contentShape(Capsule())
+            Label {
+                Text("Follow")
+            } icon: {
+                Image(systemName: "display")
+                    .font(.system(size: 12))
+            }
+            .font(.body)
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+            .background(on ? AnyShapeStyle(.tint.opacity(ReviewTint.soft(colorScheme))) : AnyShapeStyle(.clear), in: Capsule())
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text("Follow Playback"))
