@@ -1,8 +1,8 @@
 import Filing
 import SwiftUI
 
-/// File ▸ Import… (⇧⌘I): picks slides, recordings or captured lectures and files them like a
-/// drop. The panel is presented by the window that has `.smartImport(center)`.
+/// File ▸ Import… (⇧⌘I): picks slides, recordings, captured lectures or timetables (`.ics`) and
+/// handles them like a drop. The panel is presented by the window that has `.smartImport(center)`.
 public struct ImportCommands: Commands {
     let center: FilingCenter
 

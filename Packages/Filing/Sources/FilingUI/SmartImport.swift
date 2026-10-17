@@ -20,9 +20,18 @@ extension View {
 }
 
 enum FilingTypes {
-    /// What the importer accepts: slide PDFs, audio and video, captured lectures.
+    /// What the importer accepts: slide PDFs, audio and video, captured lectures, timetables.
     static var importable: [UTType] {
-        [.pdf, .audio, .audiovisualContent] + (lecturePackage.map { [$0] } ?? [])
+        [.pdf, .audio, .audiovisualContent] + (lecturePackage.map { [$0] } ?? []) + timetable
+    }
+
+    /// Timetable files (`.ics`), which the timetable import reads (`FilingCenter.timetableDrop`).
+    static var timetable: [UTType] {
+        [UTType(filenameExtension: "ics"), .calendarEvent].compactMap(\.self)
+    }
+
+    static func isTimetable(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == "ics"
     }
 
     /// `.lecture` packages (declared by the app).

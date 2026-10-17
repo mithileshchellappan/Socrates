@@ -29,6 +29,7 @@ public struct CourseSettingsView: View {
 
     @Environment(\.studyServices) private var services
     @Environment(\.calendarMirror) private var mirror
+    @Environment(\.importTimetable) private var importTimetable
     @Environment(\.openDestination) private var openDestination
     @Environment(\.undoManager) private var undoManager
     @Environment(\.locale) private var locale
@@ -399,9 +400,14 @@ public struct CourseSettingsView: View {
         dismissedTerms = terms.sorted().joined(separator: "\n")
     }
 
-    /// Weekly slots from .ics files; slots the course has already are skipped. Undo removes them.
+    /// Weekly slots from .ics files: the app's timetable import for this course (its confirm
+    /// sheet), else read here (slots the course has already are skipped; Undo removes them).
     private func importCalendar(_ result: Result<[URL], any Error>) {
         guard case .success(let urls) = result else { return }
+        if let importTimetable {
+            importTimetable(urls, courseID: courseID)
+            return
+        }
         var imported: [WeeklySlot] = []
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource()

@@ -77,6 +77,7 @@ struct RootView: View {
                     forward: { go(back: false) }
                 ))
                 .smartImport(center)
+                .timetableImport(center: center)
                 .environment(\.openDestination, OpenDestinationAction(open))
                 .environment(\.studyServices, model.services)
                 .environment(\.calendarMirror, model.calendarMirror)

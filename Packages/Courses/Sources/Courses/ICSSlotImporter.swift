@@ -46,7 +46,8 @@ public enum ICSSlotImporter {
 
     typealias Event = [String: Property]
 
-    /// VEVENT blocks as their properties (the last of a name wins), lines unfolded.
+    /// VEVENT blocks as their properties (the last of a name wins; several EXDATE lines join into
+    /// one list), lines unfolded.
     static func events(in text: String) -> [Event] {
         var events: [Event] = []
         var current: Event?
@@ -66,7 +67,13 @@ public enum ICSSlotImporter {
                 if current != nil { depth = max(0, depth - 1) }
             default:
                 // Properties of nested components (VALARM) are not the event's.
-                if depth == 0 { current?[property.name] = property }
+                guard depth == 0 else { continue }
+                if property.name == "EXDATE", var earlier = current?["EXDATE"] {
+                    earlier.value += "," + property.value
+                    current?["EXDATE"] = earlier
+                } else {
+                    current?[property.name] = property
+                }
             }
         }
         return events

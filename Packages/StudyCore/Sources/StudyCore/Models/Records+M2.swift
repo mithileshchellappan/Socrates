@@ -561,7 +561,8 @@ public struct TrackedItemSource: StudyRecord {
     public var kind: SourceRef.Kind
     /// The mail it was read from (nil once that row is gone; `rfcMessageID` stays).
     @Column("mail_message_id") public var mailMessageID: MailMessage.ID?
-    /// Message-ID of that mail (survives a re-sync that recreates the row).
+    /// Message-ID of that mail (survives a re-sync that recreates the row); for a `timetable`
+    /// source, the name of the `.ics` file it was read from.
     @Column("rfc_message_id") public var rfcMessageID: String
     /// Transcript sources (M3).
     @Column("lecture_id") public var lectureID: Lecture.ID?

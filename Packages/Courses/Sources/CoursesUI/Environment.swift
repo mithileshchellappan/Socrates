@@ -7,6 +7,24 @@ import SwiftUI
 extension EnvironmentValues {
     /// The calendar mirror the app installs; screens ask it to sync after they change sessions.
     @Entry public var calendarMirror: CalendarMirror?
+    /// The app's timetable import (its confirm sheet); nil: Course Settings reads `.ics` slots
+    /// on its own.
+    @Entry public var importTimetable: TimetableImportAction?
+}
+
+/// Hands timetable files (`.ics`) to the app's timetable import, for one course when they were
+/// picked or dropped for it.
+public struct TimetableImportAction: Sendable {
+    private let action: @MainActor @Sendable ([URL], Course.ID?) -> Void
+
+    public init(_ action: @escaping @MainActor @Sendable ([URL], Course.ID?) -> Void) {
+        self.action = action
+    }
+
+    @MainActor
+    public func callAsFunction(_ urls: [URL], courseID: Course.ID? = nil) {
+        action(urls, courseID)
+    }
 }
 
 /// File ▸ New Course… (⌥⌘N).
