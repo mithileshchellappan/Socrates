@@ -23,6 +23,9 @@ let package = Package(
     dependencies: [
         .package(path: "../StudyCore"),
         .package(path: "../ClaudeKit"),
+        // Already in the graph through SQLiteData (same pin as Search and MailIntelligence); used
+        // directly for `DatabaseRegionObservation` (transcript extraction follows new transcripts).
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0"),
         // Tests only: `DemoLibrary` (mockups 01 and 06 as rows).
         .package(path: "../StudyUI")
     ],
@@ -36,7 +39,8 @@ let package = Package(
             dependencies: [
                 "Deadlines",
                 .product(name: "StudyCore", package: "StudyCore"),
-                .product(name: "ClaudeKit", package: "ClaudeKit")
+                .product(name: "ClaudeKit", package: "ClaudeKit"),
+                .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),
     ],
