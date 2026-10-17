@@ -24,10 +24,21 @@ public enum StreamEvent: Sendable, Hashable {
         } catch {
             throw ClaudeError.decoding("stream event \(sse.event ?? "?"): data is not JSON")
         }
+        try self.init(json: json, requestID: requestID, eventName: sse.event)
+    }
+
+    /// Decodes one raw Messages API stream event (`{"type":"message_start",…}`), e.g. the `event`
+    /// of a Claude Code `stream_event` line (M3.5). `requestID` goes into `messageStart`'s message.
+    /// `error` events throw the matching `ClaudeError`.
+    public init(json: JSONValue, requestID: String?) throws {
+        try self.init(json: json, requestID: requestID, eventName: nil)
+    }
+
+    private init(json: JSONValue, requestID: String?, eventName: String?) throws {
         guard let object = json.objectValue else {
-            throw ClaudeError.decoding("stream event \(sse.event ?? "?"): data is not an object")
+            throw ClaudeError.decoding("stream event \(eventName ?? "?"): data is not an object")
         }
-        let type = object.string("type") ?? sse.event ?? ""
+        let type = object.string("type") ?? eventName ?? ""
         switch type {
         case "message_start":
             guard let message = object["message"] else {
