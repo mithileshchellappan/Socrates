@@ -164,7 +164,20 @@ public actor LectureProcessor {
 
     /// Cancels the running job of a lecture (it is marked cancelled) and drops its queued ones.
     public func cancel(lectureID: Lecture.ID) async throws {
-        for job in try await jobs.jobs(lectureID: lectureID) where !job.state.isFinished {
+        try await cancel(try await jobs.jobs(lectureID: lectureID))
+    }
+
+    /// Cancels the running job of one recording and drops its queued ones; the jobs of the
+    /// lecture's other recordings go on. Works for a recording without a lecture too.
+    public func cancel(recordingID: Recording.ID) async throws {
+        let unfinished = try await services.database.read { db in
+            try Job.where { $0.recordingID.eq(recordingID) }.order(by: \.createdAt).fetchAll(db)
+        }
+        try await cancel(unfinished)
+    }
+
+    private func cancel(_ candidates: [Job]) async throws {
+        for job in candidates where !job.state.isFinished {
             if let currentJob, currentJob.id == job.id {
                 currentJob.task.cancel()
             } else if try await jobs.finish(job.id, .cancelled, onlyFrom: [.queued]) == nil {

@@ -24,6 +24,8 @@ public final class LiveLectureSession {
     }
 
     public enum Failure: Error, Sendable, Equatable {
+        /// Recording consent for the course was withdrawn after the lecture was opened.
+        case notConsented
         case microphoneDenied
         case noInputDevice
         /// The package or audio could not be written.
@@ -93,6 +95,11 @@ public final class LiveLectureSession {
     /// The owner (not the view) sets it to file the capture, so filing never depends on a screen
     /// being open.
     @ObservationIgnored public var onFinalized: (@MainActor (LecturePackage) -> Void)?
+
+    /// Asked right before recording starts (Record button, menu, toolbar): true while recording
+    /// consent for the course is recorded. Consent can be withdrawn after the lecture was opened
+    /// (Course Settings), so the check at opening is not enough. Nil: no check.
+    @ObservationIgnored public var consentCheck: (@MainActor () async -> Bool)?
 
     @ObservationIgnored private let capture: any AudioCaptureSource
     @ObservationIgnored private let host: HostClock
@@ -234,6 +241,11 @@ public final class LiveLectureSession {
     public func start() async {
         guard canStartRecording else { return }
         phase = .starting
+        if let consentCheck, await !consentCheck() {
+            CaptureLog.capture.notice("Recording not started: no consent for the course")
+            phase = .failed(.notConsented)
+            return
+        }
         guard await capture.requestPermission() else {
             phase = .failed(.microphoneDenied)
             return

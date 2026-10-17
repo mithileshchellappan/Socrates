@@ -124,7 +124,9 @@ public struct CourseSettingsView: View {
     @ViewBuilder
     private func rightSections(_ course: Binding<Course>) -> some View {
         Section {
-            SlotHeaderRow()
+            if !orderedSlots.isEmpty {
+                SlotHeaderRow()
+            }
             ForEach(orderedSlots) { slot in
                 SlotRow(
                     slot: slot, text: sessionText,

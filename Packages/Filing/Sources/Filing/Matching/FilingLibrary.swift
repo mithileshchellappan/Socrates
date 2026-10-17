@@ -33,8 +33,16 @@ struct FilingLibrary: Sendable {
     func session(_ id: LectureSession.ID) -> LectureSession? { sessions.first { $0.id == id } }
     func sessions(courseID: Course.ID) -> [LectureSession] { sessions.filter { $0.courseID == courseID } }
     func lectures(courseID: Course.ID) -> [LectureInfo] { lectures.filter { $0.lecture.courseID == courseID } }
+    /// The lecture filed to the session; else a lecture of its course without a session that
+    /// was held in it (filed before the slots existed), which an import into the session adopts.
     func lecture(sessionID: LectureSession.ID) -> LectureInfo? {
-        lectures.first { $0.lecture.lectureSessionID == sessionID }
+        if let linked = lectures.first(where: { $0.lecture.lectureSessionID == sessionID }) { return linked }
+        guard let session = session(sessionID) else { return nil }
+        let adopted = SessionLectures.adoptable(
+            for: session, among: lectures(courseID: session.courseID).map(\.lecture),
+            sessions: sessions(courseID: session.courseID), zone: zone
+        )
+        return adopted.flatMap { lecture($0.id) }
     }
 
     func day(_ date: Date) -> CalendarDay { CalendarDay(date, in: zone) }

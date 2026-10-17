@@ -125,7 +125,10 @@ struct ReviewActionsPublisher: View {
 
     private let lectureQuery: FetchAll<Lecture>
     private var lecture: [Lecture] { lectureQuery.wrappedValue }
-    @Environment(\.isSearching) private var isSearching
+    /// The window's search field has keyboard focus (not merely a query in it: `isSearching`
+    /// stays true until the search is cancelled, which would detach the review keys while a
+    /// search hit plays).
+    @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
 
     init(model: ReviewModel) {
         self.model = model
@@ -154,7 +157,7 @@ struct ReviewActionsPublisher: View {
             isFollowing: session.isFollowing,
             canSetSlideStart: model.canSetAnchor && session.shownPage != nil,
             isReviewed: isReviewed,
-            isEditingText: model.isEditingText || isSearching,
+            isEditingText: model.isEditingText || isSearchFieldFocused,
             playPause: { session.togglePlayPause() },
             back: { session.skip(by: -LecturePlayer.skipInterval) },
             forward: { session.skip(by: LecturePlayer.skipInterval) },

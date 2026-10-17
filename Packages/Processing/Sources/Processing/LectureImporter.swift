@@ -47,6 +47,10 @@ public struct ImportedLecture: Sendable, Hashable {
     public var wasAlreadyImported: Bool
     /// The import created `lecture` (false when it attached to an existing one).
     public var createdLecture: Bool = false
+    /// The import dated an existing lecture (undated, or dated by day only) with the recording's
+    /// start; `previousHeldAt` is what it said before (what Undo puts back).
+    public var redatedLecture: Bool = false
+    public var previousHeldAt: Date?
 }
 
 /// A deck linked to a lecture by `LectureImporter.attachDeck`.
@@ -58,6 +62,10 @@ public struct AttachedDeck: Sendable, Hashable {
     public var createdLecture: Bool
     /// `align` jobs queued for the lecture's recordings that already had a transcript.
     public var alignJobs: [Job]
+    /// The deck belonged to another course (or none) before and was moved to the lecture's;
+    /// `previousDeckCourseID` is that course (what Undo puts back).
+    public var movedDeck: Bool = false
+    public var previousDeckCourseID: Course.ID?
 }
 
 /// Brings a lecture into the library and queues its processing.
@@ -126,12 +134,16 @@ public struct LectureImporter: Sendable {
         // A package from elsewhere is never marked imported, so its recording row says it was.
         let existingRecording = try await store.fetch(Recording.self, id: manifest.id)
         let alreadyImported = manifest.importedAt != nil || (!ownsPackage && existingRecording != nil)
+        // Its audio is gone and nothing in the library has it: fail before writing anything.
+        if alreadyImported, existingRecording == nil {
+            throw LectureImportError.packageAlreadyImported(package.name)
+        }
         var filedLecture: Lecture?
         if alreadyImported, let lectureID = existingRecording?.lectureID {
             filedLecture = try await store.fetch(Lecture.self, id: lectureID)
         }
         let lecture: Lecture
-        var createdLecture = false
+        var committed: CommittedLecture?
         if let filedLecture {
             lecture = filedLecture
         } else {
@@ -139,9 +151,14 @@ public struct LectureImporter: Sendable {
                 for: target, course: course, newID: manifest.lectureID,
                 title: title ?? deck?.title ?? "", heldAt: manifest.startedAt ?? now()
             )
-            lecture = plan.needsSave ? try await store.save(plan.lecture) : plan.lecture
-            createdLecture = plan.isNew
+            let store = store
+            let written = try await services.database.write { db in
+                try Self.commit(plan, target: target, in: db, store: store)
+            }
+            lecture = written.lecture
+            committed = written
         }
+        let createdLecture = committed?.created ?? false
 
         if alreadyImported {
             guard var recording = existingRecording else {
@@ -159,7 +176,8 @@ public struct LectureImporter: Sendable {
             return ImportedLecture(
                 lecture: lecture, recording: recording, deck: deck,
                 job: jobCount == 0 ? try await enqueueTranscription(lecture: lecture, recording: recording) : nil,
-                wasAlreadyImported: true, createdLecture: createdLecture
+                wasAlreadyImported: true, createdLecture: createdLecture,
+                redatedLecture: committed?.redated ?? false, previousHeldAt: committed?.previousHeldAt
             )
         }
 
@@ -182,7 +200,8 @@ public struct LectureImporter: Sendable {
         )
         return ImportedLecture(
             lecture: lecture, recording: result.recording, deck: deck, job: job,
-            wasAlreadyImported: false, createdLecture: createdLecture
+            wasAlreadyImported: false, createdLecture: createdLecture,
+            redatedLecture: committed?.redated ?? false, previousHeldAt: committed?.previousHeldAt
         )
     }
 
@@ -238,49 +257,47 @@ public struct LectureImporter: Sendable {
             title: title ?? deck?.title ?? url.deletingPathExtension().lastPathComponent,
             heldAt: started
         )
-        let lecture = plan.lecture
-        let recording = Recording(
-            lectureID: lecture.id,
-            courseID: course.id,
-            source: .file,
-            state: .finished,
-            startedAt: started,
-            sampleRate: info.sampleRate,
-            channelCount: info.channelCount,
-            duration: info.duration
-        )
-        let segment = RecordingSegment(
-            recordingID: recording.id,
-            sequence: 0,
-            startSample: 0,
-            frameCount: info.frameCount,
-            blobSHA256: ref.sha256,
-            blobPath: ref.relativePath,
-            byteCount: ref.byteCount ?? 0,
-            fileFormat: ref.fileExtension
-        )
-        let span = deck.map {
-            LectureDeckSpan(lectureID: lecture.id, deckID: $0.id, firstPage: 1, lastPage: $0.pageCount, source: .manual)
-        }
-        let job = Job(stage: .transcribe, lectureID: lecture.id, recordingID: recording.id, createdAt: now())
-
         let store = store
-        let rows = (
-            lecture: store.stamp(lecture), recording: store.stamp(recording), segment: store.stamp(segment),
-            span: span.map(store.stamp), job: store.stamp(job)
-        )
-        let imported = ImportedLecture(
-            lecture: rows.lecture, recording: rows.recording, deck: deck, job: rows.job,
-            wasAlreadyImported: false, createdLecture: plan.isNew
-        )
-        let writesLecture = plan.needsSave
-        try await services.database.write { db in
-            if writesLecture { try Lecture.upsert { rows.lecture }.execute(db) }
-            try Recording.upsert { rows.recording }.execute(db)
-            try RecordingSegment.upsert { rows.segment }.execute(db)
-            if let span = rows.span { try LectureDeckSpan.upsert { span }.execute(db) }
-            try Job.upsert { rows.job }.execute(db)
+        let createdAt = now()
+        // The rows are built inside the transaction: a session's lecture is only known there.
+        let imported = try await services.database.write { db -> ImportedLecture in
+            let committed = try Self.commit(plan, target: target, in: db, store: store)
+            let lecture = committed.lecture
+            let recording = store.stamp(Recording(
+                lectureID: lecture.id,
+                courseID: course.id,
+                source: .file,
+                state: .finished,
+                startedAt: started,
+                sampleRate: info.sampleRate,
+                channelCount: info.channelCount,
+                duration: info.duration
+            ))
+            let segment = store.stamp(RecordingSegment(
+                recordingID: recording.id,
+                sequence: 0,
+                startSample: 0,
+                frameCount: info.frameCount,
+                blobSHA256: ref.sha256,
+                blobPath: ref.relativePath,
+                byteCount: ref.byteCount ?? 0,
+                fileFormat: ref.fileExtension
+            ))
+            let span = deck.map {
+                store.stamp(LectureDeckSpan(lectureID: lecture.id, deckID: $0.id, firstPage: 1, lastPage: $0.pageCount, source: .manual))
+            }
+            let job = store.stamp(Job(stage: .transcribe, lectureID: lecture.id, recordingID: recording.id, createdAt: createdAt))
+            try Recording.upsert { recording }.execute(db)
+            try RecordingSegment.upsert { segment }.execute(db)
+            if let span { try LectureDeckSpan.upsert { span }.execute(db) }
+            try Job.upsert { job }.execute(db)
+            let imported = ImportedLecture(
+                lecture: lecture, recording: recording, deck: deck, job: job,
+                wasAlreadyImported: false, createdLecture: committed.created,
+                redatedLecture: committed.redated, previousHeldAt: committed.previousHeldAt
+            )
             try companion?(db, imported)
+            return imported
         }
         Log.importer.info(
             "Imported \(url.lastPathComponent, privacy: .public): \(info.duration, privacy: .public) s at \(info.sampleRate, privacy: .public) Hz"
@@ -338,15 +355,17 @@ public struct LectureImporter: Sendable {
         guard let course = try await fetchCourse(targetCourse ?? courseID) else { throw LectureImportError.courseMissing }
         let plan = try await lecturePlan(for: target, course: course, newID: nil, title: title ?? deck.title, heldAt: nil)
         let store = store
-        let lecture = store.stamp(plan.lecture)
-        var deck = deck
-        deck.courseID = course.id
-        let stampedDeck = store.stamp(deck)
-        let writesLecture = plan.needsSave
-        let created = plan.isNew
         let now = now()
+        let deckCourse = course.id
         return try await services.database.write { db in
-            if writesLecture { try Lecture.upsert { lecture }.execute(db) }
+            let committed = try Self.commit(plan, target: target, in: db, store: store)
+            let lecture = committed.lecture
+            let created = committed.created
+            // The deck as it is now (not as the caller read it); only its course changes.
+            var current = try Deck.find(deck.id).fetchOne(db) ?? deck
+            let previousCourse = current.courseID
+            current.courseID = deckCourse
+            let stampedDeck = store.stamp(current)
             try Deck.upsert { stampedDeck }.execute(db)
             let existing = try LectureDeckSpan
                 .where { $0.lectureID.eq(lecture.id) && $0.deckID.eq(stampedDeck.id) && $0.startTime.is(nil) }
@@ -359,7 +378,10 @@ public struct LectureImporter: Sendable {
             try LectureDeckSpan.upsert { span }.execute(db)
             let jobs = try Self.alignmentJobs(lectureID: lecture.id, in: db, now: now).map(store.stamp)
             for job in jobs { try Job.upsert { job }.execute(db) }
-            let attached = AttachedDeck(lecture: lecture, deck: stampedDeck, span: span, createdLecture: created, alignJobs: jobs)
+            let attached = AttachedDeck(
+                lecture: lecture, deck: stampedDeck, span: span, createdLecture: created, alignJobs: jobs,
+                movedDeck: previousCourse != deckCourse, previousDeckCourseID: previousCourse
+            )
             try companion?(db, attached)
             return attached
         }
@@ -449,41 +471,78 @@ public struct LectureImporter: Sendable {
         }
     }
 
-    private struct LecturePlan {
+    private struct LecturePlan: Sendable {
         var lecture: Lecture
         /// The lecture does not exist yet.
         var isNew: Bool
-        /// The row must be written (new, or an existing lecture that learned its date).
-        var needsSave: Bool
+        /// An existing lecture without a time takes the import's start (`heldAt`); it said
+        /// `previousHeldAt` before.
+        var heldAt: Date?
+        var previousHeldAt: Date?
     }
 
-    /// The lecture an import goes into, not yet written. An existing lecture without a session
-    /// whose date is unknown or only a day (a deck's title-slide date) takes `heldAt`.
+    /// The lecture an import went into, as written by `commit`.
+    struct CommittedLecture: Sendable {
+        var lecture: Lecture
+        var created: Bool
+        var redated = false
+        var previousHeldAt: Date?
+    }
+
+    /// Writes the planned lecture inside the import's transaction and returns it.
+    ///
+    /// A session's lecture is resolved here, not when planning: two imports for one session
+    /// (a drop while a capture is being filed) never create two lectures, and a lecture filed
+    /// before the session existed is adopted and linked (`SessionLectures`). An existing
+    /// lecture's date is the only column written, and only when nobody dated it meanwhile.
+    private static func commit(_ plan: LecturePlan, target: LectureTarget, in db: Database, store: RecordStore) throws -> CommittedLecture {
+        if case .session(let id) = target, let lecture = try SessionLectures.resolve(sessionID: id, in: db, stamp: store.currentDate) {
+            return CommittedLecture(lecture: lecture, created: false)
+        }
+        if plan.isNew {
+            let lecture = store.stamp(plan.lecture)
+            try Lecture.upsert { lecture }.execute(db)
+            return CommittedLecture(lecture: lecture, created: true)
+        }
+        let id = plan.lecture.id
+        guard let current = try Lecture.find(id).fetchOne(db) else { throw LectureImportError.lectureMissing }
+        guard let heldAt = plan.heldAt, current.heldAt == plan.previousHeldAt else {
+            return CommittedLecture(lecture: current, created: false)
+        }
+        let stamp = store.currentDate
+        let dated: Date? = heldAt
+        try Lecture.find(id).update { $0.heldAt = dated; $0.updatedAt = stamp }.execute(db)
+        return CommittedLecture(
+            lecture: try Lecture.find(id).fetchOne(db) ?? current, created: false, redated: true, previousHeldAt: current.heldAt
+        )
+    }
+
+    /// The lecture an import goes into, not yet written (`commit` writes it). An existing lecture
+    /// without a session whose date is unknown or only a day (a deck's title-slide date) takes
+    /// `heldAt`.
     private func lecturePlan(for target: LectureTarget, course: Course, newID: Lecture.ID?, title: String, heldAt: Date?) async throws -> LecturePlan {
         func newLecture(number: Int?, heldAt: Date?, sessionID: LectureSession.ID?) async throws -> LecturePlan {
             if let newID, let existing = try await store.fetch(Lecture.self, id: newID) {
-                return LecturePlan(lecture: existing, isNew: false, needsSave: false)
+                return LecturePlan(lecture: existing, isNew: false)
             }
             return LecturePlan(
                 lecture: Lecture(
                     id: newID ?? UUID(), courseID: course.id, lectureSessionID: sessionID, number: number,
                     title: title, heldAt: heldAt, language: course.language, createdAt: now()
                 ),
-                isNew: true, needsSave: true
+                isNew: true
             )
         }
         func dated(_ lecture: Lecture) async throws -> LecturePlan {
-            var lecture = lecture
             guard let heldAt, lecture.lectureSessionID == nil else {
-                return LecturePlan(lecture: lecture, isNew: false, needsSave: false)
+                return LecturePlan(lecture: lecture, isNew: false)
             }
             let zone = try await SemesterRepository(store: store).semester(for: course, on: heldAt).zone
             let sameDay = lecture.heldAt.map { CalendarDay($0, in: zone) == CalendarDay(heldAt, in: zone) } ?? true
             guard lecture.heldAt == nil || (sameDay && Self.isWholeDay(lecture.heldAt, in: zone)) else {
-                return LecturePlan(lecture: lecture, isNew: false, needsSave: false)
+                return LecturePlan(lecture: lecture, isNew: false)
             }
-            lecture.heldAt = heldAt
-            return LecturePlan(lecture: lecture, isNew: false, needsSave: true)
+            return LecturePlan(lecture: lecture, isNew: false, heldAt: heldAt, previousHeldAt: lecture.heldAt)
         }
 
         switch target {
@@ -494,8 +553,9 @@ public struct LectureImporter: Sendable {
             return try await dated(lecture)
         case .session(let id):
             guard let session = try await store.fetch(LectureSession.self, id: id) else { throw LectureImportError.lectureMissing }
-            if let lecture = try await LectureRepository(store: store).lecture(sessionID: id) {
-                return LecturePlan(lecture: lecture, isNew: false, needsSave: false)
+            // Filed to the session, or held in it before it existed; `commit` resolves it again.
+            if let found = try await services.database.read({ db in try SessionLectures.lecture(forSession: id, in: db) }) {
+                return LecturePlan(lecture: found.lecture, isNew: false)
             }
             return try await newLecture(number: session.number, heldAt: session.startsAt, sessionID: session.id)
         }

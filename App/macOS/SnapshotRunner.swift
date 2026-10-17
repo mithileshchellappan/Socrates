@@ -49,6 +49,8 @@ enum SnapshotRunner {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             if let indexer = model.searchIndexer { _ = try await indexer.catchUp() }
+            // What a launch does to an older library before the window shows it.
+            await model.filing?.repairDeckTitles()
             let filed = files("STUDYPORTAL_SNAPSHOT_FILE")
 
             let (courses, lectures) = try await services.database.read { db in
@@ -150,6 +152,18 @@ enum SnapshotRunner {
         window.contentView = host
         window.setContentSize(shot.size)
         defer { window.close() }
+        // Vibrant dark (sidebar, toolbar) draws its text through compositing filters that an
+        // off-screen bitmap does not apply (black text on white glass): plain dark instead, set
+        // before the content first renders and again once it has settled.
+        func devibrant(_ view: NSView) {
+            if view.effectiveAppearance.name == .vibrantDark { view.appearance = NSAppearance(named: .darkAqua) }
+            view.subviews.forEach(devibrant)
+        }
+        if scheme == .dark {
+            let themeFrame = window.contentView?.superview ?? host
+            themeFrame.layoutSubtreeIfNeeded()
+            devibrant(themeFrame)
+        }
         try await Task.sleep(for: shot.settle)
         if !shot.drop.isEmpty, let center = model.filingCenter {
             await center.previewDrag(shot.drop, at: CGPoint(x: shot.size.width * 0.42, y: shot.size.height * 0.36))
@@ -157,6 +171,10 @@ enum SnapshotRunner {
         }
         defer { model.filingCenter?.endPreviewDrag() }
         let frame = window.contentView?.superview ?? host
+        if scheme == .dark {
+            devibrant(frame)
+            try await Task.sleep(for: .milliseconds(300))
+        }
         frame.layoutSubtreeIfNeeded()
         frame.display()
         guard let png = composite(frame) else { return }
@@ -167,32 +185,79 @@ enum SnapshotRunner {
     /// in Liquid Glass containers (the sidebar, the inspector) and the split view's columns, so
     /// each column's hosting view is drawn on its own over the window chrome, and the title bar
     /// (title, toolbar) last, on top.
+    ///
+    /// Everything is drawn in the window's appearance (`cacheDisplay` outside it draws light
+    /// colours into a dark window) over the window background colour (the cached window alone is
+    /// transparent where the columns are), so the dark shots show dark mode.
     static func composite(_ frame: NSView) -> Data? {
-        guard let canvas = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) else { return nil }
-        frame.cacheDisplay(in: frame.bounds, to: canvas)
-        guard let context = NSGraphicsContext(bitmapImageRep: canvas) else { return nil }
+        var png: Data?
+        (frame.window?.effectiveAppearance ?? frame.effectiveAppearance).performAsCurrentDrawingAppearance {
+            png = drawComposite(frame)
+        }
+        return png
+    }
+
+    private static func drawComposite(_ frame: NSView) -> Data? {
+        guard let chrome = frame.bitmapImageRepForCachingDisplay(in: frame.bounds),
+              let canvas = frame.bitmapImageRepForCachingDisplay(in: frame.bounds),
+              let context = NSGraphicsContext(bitmapImageRep: canvas)
+        else { return nil }
+        frame.cacheDisplay(in: frame.bounds, to: chrome)
+        let isDark = frame.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         // Hosting views in tree order (the window's, the columns', list cells'), then the title bar.
+        // Dark only: Liquid Glass (sidebar, toolbar platters) draws as white off screen, so its
+        // area is filled with a dark surface and what sits on it is drawn again on top.
         var hosts: [NSView] = []
         var titlebars: [NSView] = []
-        func collect(_ view: NSView) {
+        var sidebarGlass: [NSView] = []
+        var titlebarGlass: [NSView] = []
+        var overTitlebarGlass: [NSView] = []
+        func collect(_ view: NSView, inTitlebar: Bool) {
             let name = String(describing: type(of: view))
+            let titlebar = inTitlebar || name == "NSTitlebarContainerView"
             if name.hasPrefix("NSHostingView<") || name.hasPrefix("CellHostingView<") || name == "PlatformGroupContainer" {
                 hosts.append(view)
             } else if name == "NSTitlebarContainerView" {
                 titlebars.append(view)
             }
-            for sub in view.subviews where !sub.isHidden { collect(sub) }
+            if isDark {
+                if name.hasSuffix("GlassEffectView") {
+                    if titlebar { titlebarGlass.append(view) } else { sidebarGlass.append(view) }
+                } else if titlebar, name == "NSToolbarItemViewer" || name == "NSToolbarTitleView" || name.hasPrefix("_NSCoreHostingView<") {
+                    overTitlebarGlass.append(view)
+                }
+            }
+            for sub in view.subviews where !sub.isHidden { collect(sub, inTitlebar: titlebar) }
         }
-        collect(frame)
+        collect(frame, inTitlebar: false)
+
+        func draw(_ views: [NSView]) {
+            for view in views {
+                // Only what shows: rows scrolled under the title bar or out of the list stay clipped.
+                let rect = view.visibleRect
+                guard rect.width > 1, rect.height > 1, let piece = view.bitmapImageRepForCachingDisplay(in: rect) else { continue }
+                view.cacheDisplay(in: rect, to: piece)
+                piece.draw(in: view.convert(rect, to: frame), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
+        }
+        func fill(_ views: [NSView], _ color: NSColor) {
+            color.setFill()
+            for view in views {
+                let rect = view.convert(view.bounds, to: frame)
+                NSBezierPath(roundedRect: rect, xRadius: min(14, rect.height / 2), yRadius: min(14, rect.height / 2)).fill()
+            }
+        }
+
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
-        for view in hosts + titlebars {
-            // Only what shows: rows scrolled under the title bar or out of the list stay clipped.
-            let rect = view.visibleRect
-            guard rect.width > 1, rect.height > 1, let piece = view.bitmapImageRepForCachingDisplay(in: rect) else { continue }
-            view.cacheDisplay(in: rect, to: piece)
-            piece.draw(in: view.convert(rect, to: frame), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-        }
+        NSColor.windowBackgroundColor.setFill()
+        frame.bounds.fill()
+        chrome.draw(in: frame.bounds, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        fill(sidebarGlass, NSColor(white: 0.16, alpha: 1))
+        draw(hosts)
+        draw(titlebars)
+        fill(titlebarGlass, NSColor(white: 0.24, alpha: 1))
+        draw(overTitlebarGlass)
         NSGraphicsContext.restoreGraphicsState()
         return canvas.representation(using: .png, properties: [:])
     }

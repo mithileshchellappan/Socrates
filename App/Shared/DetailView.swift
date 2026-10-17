@@ -11,6 +11,7 @@ import SwiftUI
 struct DetailView: View {
     let item: SidebarItem
     let query: String
+    var searchSubmits = 0
     let target: (lectureID: Lecture.ID, target: ReviewTarget)?
     let record: () -> Void
 
@@ -23,7 +24,7 @@ struct DetailView: View {
         case .calendar, .mail:
             PlaceholderScreen(item: item)
         case .search:
-            SearchResultsView(query: query)
+            SearchResultsView(query: query, submits: searchSubmits)
         case .course(let id):
             CourseSettingsView(courseID: id, changeDeck: changeDeck)
                 .toolbar {

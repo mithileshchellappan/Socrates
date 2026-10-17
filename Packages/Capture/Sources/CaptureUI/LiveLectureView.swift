@@ -253,6 +253,7 @@ public struct LiveLectureView: View {
 
     static func title(for failure: LiveLectureSession.Failure) -> String {
         switch failure {
+        case .notConsented: String(localized: "Recording is off for this course")
         case .microphoneDenied: String(localized: "Microphone access is off")
         case .noInputDevice: String(localized: "No microphone")
         case .storage: String(localized: "Recording stopped")
@@ -262,7 +263,7 @@ public struct LiveLectureView: View {
 
     static func message(for failure: LiveLectureSession.Failure) -> String? {
         switch failure {
-        case .microphoneDenied, .noInputDevice: nil
+        case .notConsented, .microphoneDenied, .noInputDevice: nil
         case .storage(let detail), .engine(let detail): detail
         }
     }

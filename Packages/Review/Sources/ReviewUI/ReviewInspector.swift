@@ -59,12 +59,22 @@ struct ReviewInspector: View {
 }
 
 /// "Your notes" for the slide on screen. A new editor per slide; leaving the slide saves.
+///
+/// While a note is being typed the pane stays on the slide the typing started on: playback with
+/// Follow moving to the next slide must not take the editor (and its focus) away mid-word. It
+/// catches up with the slide on screen once the editor lets go of focus.
 private struct SlideNotesPane: View {
     let model: ReviewModel
     let notes: [Note]
+    /// The slide whose notes are being typed (nil: follow the slide on screen).
+    @State private var typingOn: TypingPage?
+
+    private struct TypingPage: Equatable {
+        var page: Int?
+    }
 
     var body: some View {
-        let page = model.session.shownPage
+        let page = typingOn.map(\.page) ?? model.session.shownPage
         VStack(alignment: .leading, spacing: 7) {
             SectionLabel("Your notes")
             SlideNoteEditorView(model: model, page: page, notes: notes.filter { $0.pageNumber == page })
@@ -73,6 +83,9 @@ private struct SlideNotesPane: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: model.isEditingText) { _, editing in
+            typingOn = editing ? TypingPage(page: typingOn.map(\.page) ?? model.session.shownPage) : nil
+        }
     }
 }
 
@@ -130,7 +143,7 @@ private struct NoteDraftRow: View {
                 if draft.isEditable {
                     // The hidden text sizes the editor to its content (a text view does not).
                     Text(verbatim: draft.text.isEmpty ? " \n \n " : draft.text)
-                        .font(.system(size: 12.5))
+                        .font(.callout)
                         .lineSpacing(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .hidden()
@@ -139,7 +152,7 @@ private struct NoteDraftRow: View {
                                 get: { draft.text },
                                 set: { editor.setText($0, for: draft.id) }
                             ))
-                            .font(.system(size: 12.5))
+                            .font(.callout)
                             .lineSpacing(2)
                             .scrollContentBackground(.hidden)
                             .scrollDisabled(true)
@@ -234,7 +247,7 @@ private struct NoteBody: View {
             let box = Text(Image(systemName: block.checked == true ? "checkmark.square" : "square")).foregroundStyle(.secondary)
             return Text("\(text)\(separator)\(box) \(block.text)")
         }
-        .font(.system(size: 12.5))
+        .font(.callout)
         .lineSpacing(2)
         .textSelection(.enabled)
     }

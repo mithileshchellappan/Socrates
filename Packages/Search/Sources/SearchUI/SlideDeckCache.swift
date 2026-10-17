@@ -2,22 +2,16 @@ import Capture
 import Foundation
 import StudyCore
 
-/// Opened slide PDFs for the result thumbnails, one per deck for the life of the screen.
-///
-/// Not observable on purpose: filling it while a row is drawn must not invalidate the view.
-@MainActor
-final class SlideDeckCache {
-    private var decks: [Deck.ID: SlideDeck?] = [:]
-
-    func deck(_ deck: Deck, services: StudyServices?) -> SlideDeck? {
-        if let known = decks[deck.id] { return known }
-        guard let services, let blob = deck.blob else { return nil }
-        let opened = try? SlideDeck(
+/// Opens slide PDFs for the result thumbnails off the main actor: opening reads every page's box
+/// (88 pages for DC L2), which must not stall the first render of a result list.
+enum SlideDeckOpener {
+    @concurrent
+    static func open(_ deck: Deck, services: StudyServices) async -> SlideDeck? {
+        guard let blob = deck.blob else { return nil }
+        return try? SlideDeck(
             url: services.blobs.url(for: blob),
             sha256: deck.blobSHA256,
             cacheDirectory: services.paths.caches.appending(path: "Slides", directoryHint: .isDirectory)
         )
-        decks[deck.id] = opened
-        return opened
     }
 }

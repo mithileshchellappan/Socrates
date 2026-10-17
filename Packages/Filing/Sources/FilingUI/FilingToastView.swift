@@ -26,8 +26,8 @@ struct FilingToastStack: View {
 }
 
 /// One filed file (mockup 10): file tile, course, "Lecture 1 · Tue 13 Oct", "file · 44:34", and
-/// Undo / Change…. A file filed on a guess offers its runner-up; one without a course offers
-/// Change… only until it has one.
+/// Undo / Change…. A file filed on a guess offers its runner-up. A live capture offers Change…
+/// only (it was filed after Stop, not dropped).
 struct FilingToastView: View {
     let toast: FilingCenter.Toast
     var undo: () -> Void = {}
@@ -168,7 +168,9 @@ struct FilingToastView: View {
             switch outcome.status {
             case .failed:
                 EmptyView()
-            case .known:
+            case _ where outcome.status == .known || outcome.kind == .capture:
+                // A capture was not dropped by the user and its audio exists only here: nothing
+                // to undo, only to file elsewhere.
                 Button("Change…", action: change)
             default:
                 Button(action: undo) {

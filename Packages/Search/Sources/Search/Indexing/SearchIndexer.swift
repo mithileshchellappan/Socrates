@@ -36,6 +36,18 @@ public actor SearchIndexer {
     /// Tables whose changes can make chunks stale.
     static let observedTables = ["transcript_segment", "deck_page", "note", "lecture_deck_span", "lecture", "deck", "recording"]
 
+    /// What the indexer watches: every column of the tables above, except that of `lecture` only
+    /// the columns chunks are built from (rows added or deleted always count). The review screen
+    /// writes `lecture.review_position` every few seconds while playing; that must not start a
+    /// staleness scan.
+    static var observedRegions: [any DatabaseRegionConvertible] {
+        observedTables.map { table in
+            table == "lecture"
+                ? SQLRequest<Row>(sql: "SELECT id, course_id, language FROM lecture")
+                : SQLRequest<Row>(sql: "SELECT * FROM \"\(table)\"")
+        }
+    }
+
     public init(services: StudyServices, debounce: Duration = .seconds(1)) {
         self.init(database: services.database, debounce: debounce)
     }
@@ -52,8 +64,7 @@ public actor SearchIndexer {
         guard loop == nil else { return }
         let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let changes = changes
-        let regions: [any DatabaseRegionConvertible] = Self.observedTables.map { SQLRequest<Row>(sql: "SELECT * FROM \"\($0)\"") }
-        observation = DatabaseRegionObservation(tracking: regions).start(
+        observation = DatabaseRegionObservation(tracking: Self.observedRegions).start(
             in: database,
             onError: { error in
                 Log.search.error("Search index observation failed: \(String(describing: error), privacy: .public)")

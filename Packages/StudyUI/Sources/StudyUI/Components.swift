@@ -34,6 +34,18 @@ public enum TimeText {
     }
 }
 
+/// A day as every screen writes it ("Wed, Oct 14" or "Mi., 14. Okt.", the locale's own order):
+/// sidebar, Today, review, search, filing toasts and Course Settings share this skeleton.
+public enum DayText {
+    public static func day(_ date: Date, locale: Locale = .current, timeZone: TimeZone = .current) -> String {
+        date.formatted(style(locale: locale, timeZone: timeZone))
+    }
+
+    public static func style(locale: Locale = .current, timeZone: TimeZone = .current) -> Date.FormatStyle {
+        Date.FormatStyle(locale: locale, timeZone: timeZone).weekday(.abbreviated).day().month(.abbreviated)
+    }
+}
+
 /// The course colour dot used in lists, headers and the sidebar.
 public struct CourseDot: View {
     private let color: Color

@@ -312,6 +312,11 @@ public struct FilingMatcher: Sendable {
             choice.place.isWholeDay = false
             choice.place.number = info.lecture.number ?? session.number
             choice.place.sessionKind = session.kind
+            choice.place.sessionID = session.id
+            if info.lecture.lectureSessionID != session.id {
+                // Held in the session before it existed: the import links it (never a second lecture).
+                choice.target = .session(session.id)
+            }
             return choice
         }
         return FilingChoice(

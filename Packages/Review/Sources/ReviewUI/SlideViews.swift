@@ -39,8 +39,11 @@ struct SlideRail: View {
                 .padding(.bottom, 64)
             }
             .scrollIndicators(.never)
-            .onAppear {
-                if let shown { proxy.scrollTo(shown, anchor: .center) }
+            .task {
+                // The slide the review opens on: once the lazy list has laid out (a scroll asked
+                // for while it appears is dropped, as for the transcript).
+                try? await Task.sleep(for: .milliseconds(60))
+                if let page = model.session.shownPage { proxy.scrollTo(page, anchor: .center) }
             }
             .onChange(of: shown) { _, page in
                 guard let page else { return }
@@ -77,7 +80,7 @@ private struct RailThumbnail: View {
                         .accessibilityLabel(Text("Notes"))
                 }
             }
-            .font(.system(size: 10.5))
+            .font(.caption)
             .foregroundStyle(.secondary)
             .frame(minHeight: 14)
         }

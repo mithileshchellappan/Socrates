@@ -24,8 +24,10 @@ struct SidebarView: View {
     init(selection: Binding<SidebarItem?>, center: FilingCenter) {
         _selection = selection
         self.center = center
-        // Sessions from yesterday on: enough to find each course's next one.
-        let since = Date().addingTimeInterval(-86_400)
+        // Sessions from yesterday on: enough to find each course's next one. Rounded to the day,
+        // so the request stays the same while the window re-creates the sidebar (each keystroke
+        // in the search field) and its observation is not restarted.
+        let since = Calendar.current.startOfDay(for: Date()).addingTimeInterval(-86_400)
         _sessions = FetchAll(LectureSession.where { !$0.isCancelled && $0.endsAt.gte(since) }.order(by: \.startsAt))
     }
 
@@ -157,7 +159,7 @@ struct LectureSidebarRow: View {
                 Text(Self.title(lecture))
                     .lineLimit(1)
                 if let heldAt = lecture.heldAt {
-                    Text(heldAt.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))
+                    Text(heldAt.formatted(DayText.style()))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -191,7 +193,7 @@ struct SessionSidebarRow: View {
             Text(Self.title(session))
                 .lineLimit(1)
             HStack(spacing: 0) {
-                Text(session.startsAt.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))
+                Text(session.startsAt.formatted(DayText.style()))
                 Text(verbatim: ", ")
                 Text(SessionText().time(session.startsAt))
                     .font(.caption.monospaced())

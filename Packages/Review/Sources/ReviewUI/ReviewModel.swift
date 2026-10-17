@@ -18,6 +18,9 @@ final class ReviewModel {
     let lecture: Lecture
     let course: Course?
     let recording: Recording?
+    /// Every recording of the lecture, oldest first (a second recording of the same class, a
+    /// backup recorder); the screen shows one at a time.
+    let recordings: [Recording]
     let deckID: Deck.ID?
     /// Nil without a deck (or when its PDF cannot be read): no rail, no slide.
     let deck: SlideDeck?
@@ -36,18 +39,24 @@ final class ReviewModel {
 
     var player: LecturePlayer? { session.player }
 
+    /// Another of the lecture's recordings was picked; the screen loads it.
+    var requestedRecordingID: Recording.ID?
+
     init(
-        lecture: Lecture, course: Course?, recording: Recording?, deckID: Deck.ID?, deck: SlideDeck?,
+        lecture: Lecture, course: Course?, recording: Recording?, recordings: [Recording] = [], deckID: Deck.ID?, deck: SlideDeck?,
         session: ReviewSession, services: StudyServices, realign: @escaping AnchorEditor.Realign
     ) {
         self.lecture = lecture
         self.course = course
         self.recording = recording
+        self.recordings = recordings.isEmpty ? recording.map { [$0] } ?? [] : recordings
         self.deckID = deckID
         self.deck = deck
         self.session = session
         self.services = services
-        keeper = ReviewStateKeeper(lecture: lecture, store: services.records)
+        // `review_position` is on the first recording's clock; another one never moves it.
+        let isFirst = recording == nil || recording?.id == self.recordings.first?.id
+        keeper = ReviewStateKeeper(lecture: lecture, store: services.records, savesPosition: isFirst)
         anchors = AnchorEditor(store: services.records, realign: realign)
         let keeper = keeper
         session.player?.onTick = { [weak session] time in
@@ -61,8 +70,9 @@ final class ReviewModel {
 
     // MARK: - Loading
 
-    /// Reads the lecture, its first recording and its deck, opens the deck and the audio, and
-    /// moves to `target` (else where review left off). Nil when the lecture is gone.
+    /// Reads the lecture, the recording `target` names (else its first) and its deck, opens the
+    /// deck and the audio, and moves to `target` (else where review left off). Nil when the
+    /// lecture is gone or the task was cancelled (a newer load replaced it): then nothing plays.
     static func load(
         lectureID: Lecture.ID,
         services: StudyServices,
@@ -74,7 +84,8 @@ final class ReviewModel {
             guard let lecture = try await store.fetch(Lecture.self, id: lectureID) else { return nil }
             let course = try await store.fetch(Course.self, id: lecture.courseID)
             let recordings = RecordingRepository(store: store)
-            let recording = try await recordings.recordings(lectureID: lectureID).first
+            let all = try await recordings.recordings(lectureID: lectureID)
+            let recording = target.recordingID.flatMap { id in all.first { $0.id == id } } ?? all.first
             let deckID = try await deckID(lectureID: lectureID, database: services.database)
             var deckRow: Deck?
             if let deckID { deckRow = try await store.fetch(Deck.self, id: deckID) }
@@ -97,12 +108,14 @@ final class ReviewModel {
                 timeline = SlideTimeline(try await LectureRepository(store: store).timedSpans(lectureID: lectureID, recordingID: recording.id))
                 player = newPlayer
             }
+            guard !Task.isCancelled else { return nil }
             let session = ReviewSession(player: player, pageCount: deck?.pageCount ?? 0, timeline: timeline)
             let model = ReviewModel(
-                lecture: lecture, course: course, recording: recording, deckID: deckRow?.id, deck: deck,
+                lecture: lecture, course: course, recording: recording, recordings: all, deckID: deckRow?.id, deck: deck,
                 session: session, services: services, realign: realign
             )
-            await session.open(page: target.page, time: target.time, plays: target.plays, resume: lecture.reviewPosition)
+            let resume = recording?.id == all.first?.id ? lecture.reviewPosition : nil
+            await session.open(page: target.page, time: target.time, plays: target.plays && !Task.isCancelled, resume: resume)
             return model
         } catch {
             ReviewLog.logger.error("Opening lecture review failed: \(String(describing: error), privacy: .public)")
@@ -198,6 +211,11 @@ final class ReviewModel {
             player.pause()
             keeper.close(time: player.time)
         }
+    }
+
+    /// A load that was replaced before it was shown: stop it without writing anything.
+    func discard() {
+        player?.pause()
     }
 }
 

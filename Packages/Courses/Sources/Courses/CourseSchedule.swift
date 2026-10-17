@@ -23,7 +23,8 @@ public struct CourseSchedule: Sendable {
     // MARK: - Planning
 
     /// Reconciles the course's sessions with its slots (see `SessionPlanner`) and writes the
-    /// result in one transaction. A replan that changes nothing writes nothing.
+    /// result in one transaction, linking lectures without a session to the session they were
+    /// held in (`SessionLectures`). A replan that changes nothing writes nothing.
     @discardableResult
     public func replan(courseID: Course.ID, now: Date = Date()) async throws -> SessionPlan {
         let planner = planner
@@ -204,6 +205,12 @@ public struct CourseSchedule: Sendable {
             CoursesLog.schedule.info(
                 "Replanned course \(courseID, privacy: .public): +\(plan.inserted.count) ~\(plan.updated.count) -\(plan.deleted.count)"
             )
+        }
+        // Lectures filed before the slots existed belong to the sessions they were held in; linked
+        // now, the next file for that session goes into them instead of a second lecture.
+        let linked = try SessionLectures.linkAdoptable(courseID: courseID, in: db, stamp: store.currentDate)
+        if linked > 0 {
+            CoursesLog.schedule.info("Linked \(linked) lecture(s) of course \(courseID, privacy: .public) to their sessions")
         }
         return plan
     }

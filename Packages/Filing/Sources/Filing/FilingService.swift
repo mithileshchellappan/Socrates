@@ -32,18 +32,18 @@ public enum FilingError: Error, Equatable, Sendable, LocalizedError {
 public actor FilingService {
     public nonisolated let services: StudyServices
     let afterImport: @Sendable () async -> Void
-    let cancelJobs: @Sendable (Lecture.ID) async -> Void
+    let cancelJobs: @Sendable (Recording.ID) async -> Void
     let now: @Sendable () -> Date
     private var evidenceCache: [URL: (stamp: FileStamp, evidence: FileEvidence)] = [:]
 
     /// - Parameters:
     ///   - afterImport: called after every filing that wrote something (wake the processor).
-    ///   - cancelJobs: stops a lecture's running jobs before Undo deletes its recording
-    ///     (`LectureProcessor.cancel(lectureID:)`); queued jobs are removed here either way.
+    ///   - cancelJobs: stops a recording's running job before Undo deletes the recording
+    ///     (`LectureProcessor.cancel(recordingID:)`); queued jobs are removed here either way.
     public init(
         services: StudyServices,
         afterImport: @escaping @Sendable () async -> Void = {},
-        cancelJobs: @escaping @Sendable (Lecture.ID) async -> Void = { _ in },
+        cancelJobs: @escaping @Sendable (Recording.ID) async -> Void = { _ in },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
@@ -161,7 +161,9 @@ public actor FilingService {
         if let existingDeck {
             deck = existingDeck
         } else {
-            deck = try await DeckImporter(services: services).importDeck(at: url, courseID: decision.best?.place.course.id).0
+            deck = try await DeckImporter(services: services).importDeck(
+                at: url, courseID: decision.best?.place.course.id, title: evidence.deckTitle
+            ).0
         }
         let reused = existingDeck.map { _ in [FilingSignal(kind: .knownFile, evidence: evidence.fileName, weight: 1)] } ?? []
         let createdAt = now()
@@ -177,7 +179,8 @@ public actor FilingService {
                 id: filingID, kind: .deck, fileName: evidence.fileName, blobSHA256: sha,
                 courseID: attached.lecture.courseID, lectureID: attached.lecture.id,
                 lectureSessionID: attached.lecture.lectureSessionID, deckID: attached.deck.id, source: source,
-                confidence: best.confidence, signals: best.signals + reused,
+                confidence: best.confidence,
+                signals: best.signals + reused + (attached.movedDeck ? [.priorDeckCourse(attached.previousDeckCourseID)] : []),
                 candidates: decision.alternatives.map(Self.candidate), createdLecture: attached.createdLecture,
                 createdAt: createdAt
             )
@@ -249,7 +252,9 @@ public actor FilingService {
                 id: filingID, kind: .recording, fileName: evidence.fileName, blobSHA256: sha,
                 courseID: imported.lecture.courseID, lectureID: imported.lecture.id,
                 lectureSessionID: imported.lecture.lectureSessionID, recordingID: imported.recording.id, source: source,
-                confidence: best.confidence, signals: best.signals, candidates: decision.alternatives.map(Self.candidate),
+                confidence: best.confidence,
+                signals: best.signals + (imported.redatedLecture ? [.priorHeldAt(imported.previousHeldAt)] : []),
+                candidates: decision.alternatives.map(Self.candidate),
                 createdLecture: imported.createdLecture, createdAt: createdAt
             )
         }
@@ -283,7 +288,8 @@ public actor FilingService {
         guard let capture = evidence.capture else { throw FilingError.unreadable(evidence.fileName) }
         let recordingID = capture.recordingID
         if let filing = try await FilingRepository(store: store).latest(recordingID: recordingID) {
-            return try await outcome(evidence, filing: filing, status: .known)
+            // An un-filed capture still waits for its course.
+            return try await outcome(evidence, filing: filing, status: filing.lectureID == nil ? .needsCourse : .known)
         }
         if let existing = try await store.fetch(Recording.self, id: recordingID) {
             let filing = try await describeRecording(existing, kind: .capture, evidence: evidence, sha256: "")
@@ -307,11 +313,57 @@ public actor FilingService {
             kind: .capture, fileName: evidence.fileName, blobSHA256: "", courseID: imported.lecture.courseID,
             lectureID: imported.lecture.id, lectureSessionID: imported.lecture.lectureSessionID,
             deckID: imported.deck?.id, recordingID: imported.recording.id,
-            source: destination == nil ? .auto : .manual, confidence: best.confidence, signals: best.signals,
+            source: destination == nil ? .auto : .manual, confidence: best.confidence,
+            signals: best.signals + (imported.redatedLecture ? [.priorHeldAt(imported.previousHeldAt)] : []),
             candidates: decision.alternatives.map(Self.candidate), createdLecture: imported.createdLecture, createdAt: createdAt
         ))
         Log.importer.info("Filed capture \(evidence.fileName, privacy: .private) (\(best.confidence, privacy: .public))")
         return try await outcome(evidence, filing: filing, status: status(decision, destination: destination), decision: decision)
+    }
+
+    /// Capture packages in `directory` (the library's Recordings folder) that never reached a
+    /// filing: left behind by a crash mid-lecture, or by a filing that failed. Packages whose
+    /// recording has a filing are in the library already (un-filed ones wait in a toast), and
+    /// `excluding` (the package being recorded) is skipped. File them with `file(_:)`.
+    public func unfiledCaptures(in directory: URL, excluding: Set<URL> = []) async -> [URL] {
+        let excluded = Set(excluding.map(\.lastPathComponent))
+        var urls: [URL] = []
+        for package in (try? LecturePackageReader.pending(in: directory)) ?? [] where !excluded.contains(package.name) {
+            guard let manifest = try? LecturePackageReader.read(package).manifest else { continue }
+            let recordingID = manifest.id
+            let filed = (try? await services.database.read { db in
+                try Filing.where { $0.recordingID.eq(recordingID) }.fetchCount(db) > 0
+            }) ?? true
+            if !filed { urls.append(package.url) }
+        }
+        return urls
+    }
+
+    /// Gives decks stored under their file name ("02_Virtualization_Basics_…_v1", imported
+    /// before decks took their title slide's) their title from the stored slide text, as smart
+    /// import names new ones. Returns how many changed.
+    @discardableResult
+    public func repairDeckTitles() async -> Int {
+        do {
+            let decks = try await services.database.read { db in try Deck.all.fetchAll(db) }
+            var repaired = 0
+            for deck in decks where deck.title.isEmpty || deck.title == (deck.fileName as NSString).deletingPathExtension {
+                let filing = Filing(kind: .deck, fileName: deck.fileName, deckID: deck.id)
+                let title = try await storedEvidence(of: filing).deckTitle
+                guard !title.isEmpty, title != deck.title else { continue }
+                let id = deck.id
+                let stamp = store.currentDate
+                try await services.database.write { db in
+                    try Deck.find(id).update { $0.title = title; $0.updatedAt = stamp }.execute(db)
+                }
+                repaired += 1
+            }
+            if repaired > 0 { Log.importer.info("Named \(repaired) deck(s) by their title slides") }
+            return repaired
+        } catch {
+            Log.importer.error("Naming decks failed: \(String(describing: error), privacy: .public)")
+            return 0
+        }
     }
 
     // MARK: - Helpers

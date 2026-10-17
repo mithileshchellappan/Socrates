@@ -28,7 +28,9 @@ extension FilingService {
             courseID = info.lecture.courseID
         case .session(let id):
             guard let session = library.session(id) else { throw FilingError.missing }
-            target = library.lecture(sessionID: id).map { .lecture($0.lecture.id) } ?? .session(id)
+            // A lecture held in the session but not linked to it yet is linked by the move.
+            target = library.lecture(sessionID: id).flatMap { $0.lecture.lectureSessionID == id ? .lecture($0.lecture.id) : nil }
+                ?? .session(id)
             courseID = session.courseID
         case .course(let id):
             let evidence = try await storedEvidence(of: filing)
@@ -55,6 +57,12 @@ extension FilingService {
         case evidence([FilingSignal], confidence: Double)
     }
 
+    /// A second look found the filing changed since it read it (the user filed it meanwhile).
+    struct Superseded: Error {}
+
+    /// Moves `filing` (as the caller read it). The move itself works on the filing as it is when
+    /// the transaction runs: a move by evidence gives way (`Superseded`) to any change made since
+    /// it was read, and never touches a filing the user made.
     func move(_ filing: Filing, to target: LectureTarget, courseID: Course.ID, reason: MoveReason = .user) async throws -> Filing {
         guard let course = try await store.fetch(Course.self, id: courseID) else { throw FilingError.missing }
         let now = now()
@@ -62,27 +70,33 @@ extension FilingService {
         let recording: Recording? = try await filing.recordingID.asyncMap { try await store.fetch(Recording.self, id: $0) } ?? nil
         let zone = try await loadLibrary().zone
         let moved = try await services.database.write { db -> Filing in
+            guard let current = try Filing.find(filing.id).fetchOne(db) else { throw FilingError.missing }
+            if case .evidence = reason, current.source == .manual || current.updatedAt != filing.updatedAt || current.lectureID != filing.lectureID {
+                throw Superseded()
+            }
             // The destination lecture, created when needed.
             var created = false
+            var redated: Date?? = nil
             let lecture: Lecture
             switch target {
             case .lecture(let id):
                 guard var existing = try Lecture.find(id).fetchOne(db) else { throw FilingError.missing }
                 // A lecture without a session that is undated, or dated only by day (a title
                 // slide), takes the recording's start, as an import into it does.
-                if filing.kind != .deck, let started = recording?.startedAt, existing.lectureSessionID == nil {
+                if current.kind != .deck, let started = recording?.startedAt, existing.lectureSessionID == nil, existing.id != current.lectureID {
                     let sameDay = existing.heldAt.map { CalendarDay($0, in: zone) == CalendarDay(started, in: zone) } ?? true
                     if existing.heldAt == nil || (sameDay && LectureImporter.isWholeDay(existing.heldAt, in: zone)) {
-                        existing.heldAt = started
-                        existing = store.stamp(existing)
-                        let dated = existing
-                        try Lecture.upsert { dated }.execute(db)
+                        redated = .some(existing.heldAt)
+                        let dated: Date? = started
+                        try Lecture.find(id).update { $0.heldAt = dated; $0.updatedAt = now }.execute(db)
+                        existing = try Lecture.find(id).fetchOne(db) ?? existing
                     }
                 }
                 lecture = existing
             case .session(let id):
                 guard let session = try LectureSession.find(id).fetchOne(db) else { throw FilingError.missing }
-                if let existing = try Lecture.where({ $0.lectureSessionID.eq(id) }).fetchOne(db) {
+                // Filed to the session, or held in it before it existed (linked now).
+                if let existing = try SessionLectures.resolve(sessionID: id, in: db, stamp: now) {
                     lecture = existing
                 } else {
                     lecture = store.stamp(Lecture(
@@ -101,25 +115,37 @@ extension FilingService {
                 created = true
             }
 
-            var updated = filing
-            let oldLectureID = filing.lectureID
+            var updated = current
+            let oldLectureID = current.lectureID
             if oldLectureID != lecture.id {
-                switch filing.kind {
+                // The lecture it leaves gets back the date this filing gave it.
+                if let oldLectureID {
+                    try Self.restorePriorHeldAt(&updated, lectureID: oldLectureID, recordingStart: recording?.startedAt, in: db, stamp: now)
+                }
+                switch current.kind {
                 case .deck:
-                    if let deckID = filing.deckID {
+                    if let deckID = current.deckID {
+                        let before = try Deck.find(deckID).fetchOne(db)?.courseID
                         try Self.moveDeck(deckID, from: oldLectureID, to: lecture, in: db, store: store, now: now)
+                        if updated.priorDeckCourseID == nil, before != lecture.courseID {
+                            updated.signals.append(.priorDeckCourse(before))
+                        }
                     }
                 default:
-                    if let recordingID = filing.recordingID {
+                    if let recordingID = current.recordingID {
                         try Self.moveRecording(
-                            recordingID, kind: filing.kind, from: oldLectureID, to: lecture, in: db, store: store, now: now
+                            recordingID, kind: current.kind, from: oldLectureID, to: lecture, in: db, store: store, now: now
                         )
                     }
                 }
-                if filing.createdLecture, let oldLectureID, try Self.lectureIsUnused(oldLectureID, except: filing.id, in: db) {
+                if current.createdLecture, let oldLectureID, try Self.lectureIsUnused(oldLectureID, except: current.id, in: db) {
                     try Lecture.find(oldLectureID).delete().execute(db)
                 }
                 updated.createdLecture = created
+                if let redated {
+                    updated.signals.removeAll { $0.kind == .priorHeldAt }
+                    updated.signals.append(.priorHeldAt(redated))
+                }
             }
             updated.courseID = lecture.courseID
             updated.lectureID = lecture.id
@@ -134,7 +160,7 @@ extension FilingService {
             case .evidence(let signals, let confidence):
                 updated.source = .auto
                 updated.confidence = confidence
-                updated.signals = signals
+                updated.signals = signals + updated.signals.filter(\.isPrior)
                 updated.candidates = []
             }
             let stamped = store.stamp(updated)

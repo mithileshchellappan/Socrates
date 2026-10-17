@@ -100,18 +100,31 @@ public actor CalendarMirror {
         let dirty = Set(sessions.filter { Self.needsWork($0, course: courses[$0.courseID]) }.map(\.id))
         // A different set of events than after the last sync (a session deleted, a course renamed)
         // means every event gets checked.
-        let fullPass = full || Self.fingerprint(sessions, courses: courses) != defaults.string(forKey: key("fingerprint"))
+        var fullPass = full || Self.fingerprint(sessions, courses: courses) != defaults.string(forKey: key("fingerprint"))
         if dirty.isEmpty, !fullPass {
             return CalendarSyncReport(outcome: .upToDate)
         }
-        let work = fullPass ? sessions : sessions.filter { dirty.contains($0.id) }
         guard await store.access() == .fullAccess else {
             Log.calendar.info("Calendar sync skipped: no full access")
             return CalendarSyncReport(outcome: .noAccess)
         }
 
         var report = CalendarSyncReport(outcome: .synced)
-        let calendarID = try await resolveCalendar(&report)
+        // Nothing wants an event and nothing of ours can be in a calendar: no calendar to find,
+        // and above all none to create (a deleted calendar is not brought back empty).
+        let wantsAny = sessions.contains { Self.wantsEvent($0, course: courses[$0.courseID]) }
+        let knowsCalendar = defaults.string(forKey: key("calendar")) != nil
+        if !wantsAny, !knowsCalendar, !sessions.contains(where: { $0.calendarEventID != nil }) {
+            try await markSynced(sessions.filter { dirty.contains($0.id) }.map { ($0, nil) })
+            defaults.set(Self.fingerprint(sessions, courses: courses), forKey: key("fingerprint"))
+            return report
+        }
+
+        let (calendarID, calendarChanged) = try await resolveCalendar(&report)
+        // Another calendar than last time (the user deleted ours): every event id we hold points
+        // into the old one, so every session is written again.
+        if calendarChanged { fullPass = true }
+        let work = fullPass ? sessions : sessions.filter { dirty.contains($0.id) }
         let range = Self.scanRange(sessions, now: now)
         let existing = try await store.events(calendarID: calendarID, from: range.start, to: range.end)
         var byID: [String: CalendarEvent] = [:]
@@ -131,7 +144,11 @@ public actor CalendarMirror {
             }
         }
 
+        // What the pass wrote, applied in one transaction at the end.
+        var synced: [(LectureSession, String?)] = []
         for session in work {
+            // The session's event as found; kept (never swept) if writing it fails.
+            var found = session.calendarEventID
             do {
                 if let course = courses[session.courseID], Self.wantsEvent(session, course: course) {
                     var current = session.calendarEventID.flatMap { byID[$0] }
@@ -141,6 +158,7 @@ public actor CalendarMirror {
                     if current == nil {
                         current = bySession[session.id]?.first { owned[$0.id ?? ""] == nil }
                     }
+                    found = current?.id ?? found
                     var draft = Self.event(for: session, course: course)
                     let eventID: String
                     if let current, let id = current.id, current.hasSameContent(as: draft) {
@@ -153,7 +171,7 @@ public actor CalendarMirror {
                     }
                     owned[eventID] = session.id
                     if dirty.contains(session.id) || eventID != session.calendarEventID {
-                        try await markSynced(session, eventID: eventID)
+                        synced.append((session, eventID))
                     }
                 } else {
                     if let id = session.calendarEventID, byID[id] == nil,
@@ -162,11 +180,13 @@ public actor CalendarMirror {
                         report.removed += 1
                     }
                     if dirty.contains(session.id) || session.calendarEventID != nil {
-                        try await markSynced(session, eventID: nil)
+                        synced.append((session, nil))
                     }
                 }
             } catch {
                 report.failed += 1
+                // A failed write leaves the event as it was: never delete it as an orphan.
+                if let found, owned[found] == nil { owned[found] = session.id }
                 Log.calendar.error("Calendar sync of session \(session.id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
@@ -183,9 +203,17 @@ public actor CalendarMirror {
             }
         }
 
+        try await markSynced(synced)
         if report.failed == 0 {
-            let (after, afterCourses) = try await load()
-            defaults.set(Self.fingerprint(after, courses: afterCourses), forKey: key("fingerprint"))
+            // The state this pass worked on (with the events it wrote), not a fresh read: sessions
+            // deleted meanwhile still count, so the next sync sees the change and sweeps their events.
+            let written = Dictionary(synced.map { ($0.0.id, $0.1) }, uniquingKeysWith: { _, last in last })
+            let after = sessions.map { session in
+                var session = session
+                if let eventID = written[session.id] { session.calendarEventID = eventID }
+                return session
+            }
+            defaults.set(Self.fingerprint(after, courses: courses), forKey: key("fingerprint"))
         }
         Log.calendar.info(
             "Calendar sync: +\(report.created) ~\(report.updated) -\(report.removed) =\(report.unchanged) !\(report.failed)"
@@ -201,40 +229,48 @@ public actor CalendarMirror {
         }
     }
 
-    /// `SessionRepository.markCalendarSynced`, guarded against an edit that landed while the event
-    /// was written: the event identifier is kept either way, but such a session stays dirty.
-    private func markSynced(_ snapshot: LectureSession, eventID: String?) async throws {
+    /// `SessionRepository.markCalendarSynced` for every session the pass wrote, in one transaction
+    /// (one change for the screens that observe sessions, not one per session), guarded against
+    /// an edit that landed while the event was written: the event identifier is kept either way,
+    /// but such a session stays dirty.
+    private func markSynced(_ snapshots: [(LectureSession, String?)]) async throws {
+        guard !snapshots.isEmpty else { return }
         let store = services.records
+        let rows = snapshots.map { (session: $0.0, eventID: $0.1) }
         try await services.database.write { db in
-            guard var row = try LectureSession.find(snapshot.id).fetchOne(db) else { return }
-            let unchanged = row.updatedAt == snapshot.updatedAt
-            row.calendarEventID = eventID
-            row = store.stamp(row)
-            if unchanged { row.calendarSyncedAt = row.updatedAt }
-            let stamped = row
-            try LectureSession.upsert { stamped }.execute(db)
+            for (snapshot, eventID) in rows {
+                guard var row = try LectureSession.find(snapshot.id).fetchOne(db) else { continue }
+                let unchanged = row.updatedAt == snapshot.updatedAt
+                row.calendarEventID = eventID
+                row = store.stamp(row)
+                if unchanged { row.calendarSyncedAt = row.updatedAt }
+                let stamped = row
+                try LectureSession.upsert { stamped }.execute(db)
+            }
         }
     }
 
-    private func resolveCalendar(_ report: inout CalendarSyncReport) async throws -> String {
+    /// The calendar to write to, and whether it is another than the one remembered (adopted or
+    /// created now: the remembered one was deleted, or there was none).
+    private func resolveCalendar(_ report: inout CalendarSyncReport) async throws -> (id: String, changed: Bool) {
         let calendars = await store.calendars()
-        if let saved = defaults.string(forKey: key("calendar")),
-           calendars.contains(where: { $0.id == saved && $0.allowsModifications }) {
-            return saved
+        let saved = defaults.string(forKey: key("calendar"))
+        if let saved, calendars.contains(where: { $0.id == saved && $0.allowsModifications }) {
+            return (saved, false)
         }
         let sources = await store.sources()
         let preferred = Self.preferredSource(sources, defaultSourceID: await store.defaultSourceID())
         let named = calendars.filter { $0.title == title && $0.allowsModifications }
         if let adopted = named.first(where: { $0.sourceID == preferred?.id }) ?? named.first {
             defaults.set(adopted.id, forKey: key("calendar"))
-            return adopted.id
+            return (adopted.id, true)
         }
         guard let source = preferred else { throw CalendarMirrorError.noCalendarSource }
         let created = try await store.createCalendar(title: title, colorHex: nil, sourceID: source.id)
         defaults.set(created.id, forKey: key("calendar"))
         report.calendarCreated = true
         Log.calendar.info("Created the \(self.title, privacy: .public) calendar in \(source.title, privacy: .public)")
-        return created.id
+        return (created.id, true)
     }
 
     // MARK: - Rules

@@ -13,6 +13,8 @@ struct PlayerBar: View {
     let player: LecturePlayer
     let timeline: SlideTimeline
 
+    static let height: CGFloat = 44
+
     private let flagsQuery: FetchAll<SlideEvent>
     private var flags: [SlideEvent] { flagsQuery.wrappedValue }
 
@@ -55,7 +57,7 @@ struct PlayerBar: View {
         }
         .padding(.leading, 8)
         .padding(.trailing, 8)
-        .frame(height: 44)
+        .frame(height: Self.height)
         .reviewGlass(in: Capsule())
     }
 }
@@ -75,7 +77,7 @@ private struct PlayerButton: View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .labelStyle(.iconOnly)
-                .font(.system(size: 14))
+                .font(.title3)
                 .frame(minWidth: 30, minHeight: 28)
                 .contentShape(Rectangle())
         }
@@ -95,7 +97,7 @@ private struct PlayPauseButton: View {
         } label: {
             Label(playing ? "Pause" : "Play", systemImage: playing ? "pause.fill" : "play.fill")
                 .labelStyle(.iconOnly)
-                .font(.system(size: 17))
+                .font(.title2)
                 .frame(minWidth: 30, minHeight: 28)
                 .contentShape(Rectangle())
         }
@@ -111,7 +113,7 @@ private struct PlayerTime: View {
 
     var body: some View {
         Text(verbatim: "\(TimeText.clock(player.time)) / \(TimeText.clock(player.duration))")
-            .font(.system(size: 11, design: .monospaced))
+            .font(.subheadline.monospaced())
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .fixedSize()
@@ -247,7 +249,7 @@ private struct SpeedMenu: View {
             }
         } label: {
             Text(verbatim: Self.label(player.rate))
-                .font(.system(size: 11.5, design: .monospaced))
+                .font(.subheadline.monospaced())
                 .foregroundStyle(.secondary)
         }
         .menuStyle(.button)
@@ -274,7 +276,7 @@ private struct FollowButton: View {
             session.toggleFollowing()
         } label: {
             Label("Follow", systemImage: "rectangle.on.rectangle")
-                .font(.system(size: 13))
+                .font(.body)
                 .padding(.horizontal, 9)
                 .frame(height: 28)
                 .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))

@@ -40,7 +40,7 @@ public struct DeckImporter: Sendable {
 
         let deck = Deck(
             courseID: courseID,
-            title: title ?? text.title ?? url.deletingPathExtension().lastPathComponent,
+            title: title ?? text.title ?? Self.title(fromFileName: url.lastPathComponent),
             fileName: url.lastPathComponent,
             blobSHA256: ref.sha256,
             blobPath: ref.relativePath,
@@ -51,5 +51,20 @@ public struct DeckImporter: Sendable {
         }
         try await repository.save(deck: deck, pages: pages)
         return (deck, pages)
+    }
+
+    /// A title from a slide file's name when the PDF has none: "02_Virtualization_Basics_
+    /// Virtualization-IaaS_v1.pdf" → "Virtualization Basics IaaS" (no
+    /// underscores, no leading number, no version suffix).
+    public static func title(fromFileName fileName: String) -> String {
+        let stem = (fileName as NSString).deletingPathExtension
+        var words = stem.split(whereSeparator: { $0 == "_" || $0 == " " }).map(String.init)
+        if words.count > 1, let first = words.first, first.allSatisfy(\.isNumber) { words.removeFirst() }
+        if words.count > 1, let last = words.last, last.count > 1, last.lowercased().hasPrefix("v"),
+           last.dropFirst().allSatisfy({ $0.isNumber || $0 == "." }) {
+            words.removeLast()
+        }
+        let title = words.joined(separator: " ")
+        return title.isEmpty ? stem : title
     }
 }

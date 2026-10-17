@@ -50,8 +50,9 @@ public struct SearchQuery: Hashable, Sendable {
 
 /// Where a hit opens. SearchUI maps it to `StudyDestination`.
 public enum SearchTarget: Hashable, Sendable {
-    /// A lecture's review screen at a slide and/or second on its recording clock.
-    case lecture(Lecture.ID, page: Int?, time: Double?, plays: Bool)
+    /// A lecture's review screen at a slide and/or second on a recording's clock (`recording`;
+    /// nil: the lecture's first).
+    case lecture(Lecture.ID, page: Int?, time: Double?, plays: Bool, recording: Recording.ID? = nil)
     /// A course page (a slide of a deck no lecture uses yet, a course-level note).
     case course(Course.ID)
 }

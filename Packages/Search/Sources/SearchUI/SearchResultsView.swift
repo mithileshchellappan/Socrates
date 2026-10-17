@@ -7,17 +7,23 @@ import SwiftUI
 /// The search screen (mockup 07 without tutor, "Also searched" and web): All | Lectures | Notes
 /// and a course scope above the hits, grouped by course and lecture, notes last.
 ///
-/// The query comes from the window's search field. Keyboard: ↑/↓ select, ↩ opens the hit,
-/// Space plays it. An empty query shows nothing; no hits shows the system's no-results view.
+/// The query comes from the window's search field; ↩ there opens the selected (else first) hit.
+/// In the list: ↑/↓ select, ↩ opens the hit, Space plays it. An empty query shows nothing; no hits shows the system's no-results view.
 /// Results follow the index: a lecture processed or a note saved while the screen is open shows up.
 public struct SearchResultsView: View {
     private let query: String
+    /// Counts ↩ presses in the window's search field: each opens the selected (or first) hit.
+    private let submits: Int
+    /// ↩ came before the results: open the first hit when they land.
+    @State private var opensFirstHit = false
 
     @State private var scope: SearchQuery.Scope = .all
     @State private var courseID: Course.ID?
     @State private var results: SearchResults?
     @State private var selection: SearchHit.ID?
-    @State private var decks = SlideDeckCache()
+    /// Slide PDFs opened for thumbnails (off the main actor, once per deck for the screen's life);
+    /// a slide hit shows its thumbnail once its deck is open.
+    @State private var decks: [Deck.ID: SlideDeck] = [:]
 
     @FetchAll(Course.order { ($0.sortOrder, $0.name) }) private var courses
     @FetchOne(SearchChunk.select { $0.count() }) private var chunkCount = 0
@@ -26,8 +32,9 @@ public struct SearchResultsView: View {
     @Environment(\.openDestination) private var openDestination
     @Environment(\.studyServices) private var services
 
-    public init(query: String) {
+    public init(query: String, submits: Int = 0) {
         self.query = query
+        self.submits = submits
     }
 
     private var searchQuery: SearchQuery {
@@ -48,6 +55,14 @@ public struct SearchResultsView: View {
             #endif
             .task(id: SearchKey(query: searchQuery, chunks: chunkCount, indexedAt: indexedAt)) {
                 await search()
+            }
+            .onChange(of: submits) {
+                // Keyboard-first from the toolbar field: ↩ opens the hit without reaching for the list.
+                if let results, let hit = selection.flatMap(results.hit(id:)) ?? results.hits.first {
+                    open(hit)
+                } else {
+                    opensFirstHit = true
+                }
             }
     }
 
@@ -160,8 +175,19 @@ public struct SearchResultsView: View {
     }
 
     private func thumbnailDeck(_ hit: SearchHit, _ results: SearchResults) -> SlideDeck? {
-        guard hit.kind == .slide, let deckID = hit.deckID, let deck = results.decks[deckID] else { return nil }
-        return decks.deck(deck, services: services)
+        guard hit.kind == .slide, let deckID = hit.deckID else { return nil }
+        return decks[deckID]
+    }
+
+    /// Opens the decks of the slide hits that are not open yet, off the main actor.
+    private func openDecks(for results: SearchResults) async {
+        guard let services else { return }
+        var seen = Set(decks.keys)
+        for hit in results.hits where hit.kind == .slide {
+            guard let deckID = hit.deckID, seen.insert(deckID).inserted, let deck = results.decks[deckID] else { continue }
+            guard let opened = await SlideDeckOpener.open(deck, services: services), !Task.isCancelled else { continue }
+            decks[deckID] = opened
+        }
     }
 
     private func open(_ hit: SearchHit) {
@@ -183,6 +209,11 @@ public struct SearchResultsView: View {
             guard !Task.isCancelled else { return }
             results = found
             if selection.flatMap(found.hit(id:)) == nil { selection = found.hits.first?.id }
+            if opensFirstHit {
+                opensFirstHit = false
+                if let hit = found.hits.first { open(hit) }
+            }
+            await openDecks(for: found)
         } catch {
             Log.search.error("Search failed: \(String(describing: error), privacy: .public)")
         }

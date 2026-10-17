@@ -84,7 +84,7 @@ struct GlossaryField: View {
                 .font(.callout)
                 .lineLimit(1)
                 .hidden()
-                .frame(minWidth: 48, alignment: .leading)
+                .frame(minWidth: 72, alignment: .leading)
                 .overlay(alignment: .leading) { input }
         }
         .padding(5)
@@ -101,7 +101,9 @@ struct GlossaryField: View {
     }
 
     private var input: some View {
-        TextField("Glossary term", text: $text)
+        // A prompt, not a label: in a grouped Form the title would become the row's label and the
+        // empty field would show nothing to type into (the slot room field does the same).
+        TextField("Glossary term", text: $text, prompt: Text("Add term"))
                 .labelsHidden()
                 .textFieldStyle(.plain)
                 .font(.callout)

@@ -80,6 +80,17 @@ public struct FileEvidence: Sendable, Hashable {
         return ""
     }
 
+    /// The deck's own title, stored with it (Course Settings, search headers): the title slide's
+    /// numbered heading ("Virtualization Basics", "Introduction"), else the PDF's title unless it
+    /// is just the file name, else the cleaned file name.
+    public var deckTitle: String {
+        if let title = deck?.numberedTitle, !title.isEmpty { return title }
+        let stem = (fileName as NSString).deletingPathExtension
+        if let title = deck?.pdfTitle, !title.isEmpty, title != stem, !title.contains("_") { return title }
+        let cleaned = Self.cleanTitle(fileName)
+        return cleaned.isEmpty ? stem : cleaned
+    }
+
     /// "02_Virtualization_Basics_IaaS_v1.pdf" → "Virtualization Basics IaaS".
     static func cleanTitle(_ fileName: String) -> String {
         var words = ((fileName as NSString).deletingPathExtension)

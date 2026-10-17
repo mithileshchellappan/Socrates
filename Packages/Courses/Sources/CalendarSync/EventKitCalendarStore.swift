@@ -3,9 +3,11 @@ import EventKit
 import Foundation
 import StudyCore
 
-/// `CalendarStore` over EventKit. One `EKEventStore` per instance, used only from this actor.
+/// `CalendarStore` over EventKit. One `EKEventStore` per instance, used only from this actor and
+/// created on first use: it is slow to set up, and the app makes the mirror at launch, long
+/// before a course has sessions or access was asked for.
 public actor EventKitCalendarStore: CalendarStore {
-    private let store = EKEventStore()
+    private lazy var store = EKEventStore()
 
     /// EventKit's event predicates span at most four years; longer ranges are read in windows.
     private static let window: TimeInterval = 3 * 365 * 86_400

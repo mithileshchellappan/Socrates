@@ -68,13 +68,13 @@ public struct NewCourseView: View {
                 LabeledContent("Name") {
                     HStack(spacing: 8) {
                         CourseDot(hex: color, size: 9)
-                        TextField("Name", text: $draft.name, prompt: Text("Computational Linguistics"))
+                        TextField("Name", text: $draft.name)
                             .labelsHidden()
                             .focused($nameFocused)
                             .onSubmit(create)
                     }
                 }
-                TextField("Lecturer", text: $draft.lecturers, prompt: Text("Prof. Dr. Bo Sample"))
+                TextField("Lecturer", text: $draft.lecturers)
                 LabeledContent("Language") {
                     HStack(spacing: 6) {
                         Picker("Language", selection: $draft.language) {

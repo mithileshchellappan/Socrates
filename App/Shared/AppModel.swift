@@ -41,6 +41,8 @@ final class AppModel {
     /// Recordings whose transcription just finished (from the processor's observer).
     @ObservationIgnored private let transcribed: AsyncStream<Recording.ID>
     @ObservationIgnored private var didStartBackgroundWork = false
+    /// False in unit-test hosts and snapshot mode: nothing runs in the background.
+    @ObservationIgnored private let runsBackgroundWork: Bool
     @ObservationIgnored private var spokenContentPass: Task<Void, Never>?
     @ObservationIgnored private var calendarAccessAsked = false
 
@@ -49,6 +51,7 @@ final class AppModel {
         self.launchError = launchError
         let (transcribed, finishedTranscription) = AsyncStream.makeStream(of: Recording.ID.self)
         self.transcribed = transcribed
+        runsBackgroundWork = startsProcessing
         var processor: LectureProcessor?
         if startsProcessing, let services, let store = try? WhisperModelStore.shared() {
             let engine = WhisperKitEngine(store: store)
@@ -71,7 +74,7 @@ final class AppModel {
             let service = FilingService(
                 services: services,
                 afterImport: { [weak processor] in await processor?.wake() },
-                cancelJobs: { [weak processor] lectureID in try? await processor?.cancel(lectureID: lectureID) }
+                cancelJobs: { [weak processor] recordingID in try? await processor?.cancel(recordingID: recordingID) }
             )
             filing = service
             filingCenter = FilingCenter(service: service)
@@ -107,7 +110,11 @@ final class AppModel {
         }
         #endif
         do {
-            return AppModel(services: try StudyServices.live())
+            let model = AppModel(services: try StudyServices.live())
+            // App-lifetime work belongs to the app, not to a window: it runs even when the window
+            // closes during launch, and a view's cancelled task never stops it halfway.
+            Task { await model.startBackgroundWork() }
+            return model
         } catch {
             Log.app.fault("Could not open the library: \(error.localizedDescription, privacy: .public)")
             return AppModel(services: nil, launchError: error.localizedDescription)
@@ -116,12 +123,13 @@ final class AppModel {
 
     // MARK: - Background work
 
-    /// Runs once per launch: creates the student's courses in an empty library, imports captures
-    /// a crash left behind, re-queues interrupted jobs and starts processing, keeps the search
-    /// index current, gives unsure recordings their look by what was said, and brings the
-    /// calendar up to date.
+    /// Runs once per launch (started by `launch()`): creates the student's courses in an empty
+    /// library, keeps the search index current, re-queues interrupted jobs, files captures a crash
+    /// (or a failed filing) left behind through smart import, names decks stored under their file
+    /// name, starts processing, gives unsure recordings their look by what was said, and brings
+    /// the calendar up to date. Only the processing steps need the transcription engine.
     func startBackgroundWork() async {
-        guard !didStartBackgroundWork, let services, let processor else { return }
+        guard runsBackgroundWork, !didStartBackgroundWork, let services else { return }
         didStartBackgroundWork = true
         do {
             let seeded = try await StudentCourses.seedIfEmpty(services: services)
@@ -140,18 +148,26 @@ final class AppModel {
             }
         }
 
-        let recording = live?.session.package.map { Set([$0.url]) } ?? []
-        let recovered = await LectureImporter(services: services)
-            .importPendingCaptures(in: services.paths.recordings, excluding: recording)
-        if !recovered.isEmpty {
-            Log.app.notice("Recovered \(recovered.count) captured lecture(s)")
+        // Before anything new is queued: jobs left running by a crash go back in the queue.
+        if let processor {
+            do {
+                try await processor.recover()
+            } catch {
+                Log.jobs.error("Job recovery failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
-        do {
-            try await processor.recover()
-        } catch {
-            Log.jobs.error("Job recovery failed: \(error.localizedDescription, privacy: .public)")
+        if let filing, let filingCenter {
+            // Captures that never reached a filing go through smart import like a Stop: session
+            // match, a filing row, a toast with Change….
+            let recording = live?.session.package.map { Set([$0.url]) } ?? []
+            let pending = await filing.unfiledCaptures(in: services.paths.recordings, excluding: recording)
+            if !pending.isEmpty {
+                Log.app.notice("Filing \(pending.count) captured lecture(s) left behind")
+                await filingCenter.file(pending)
+            }
+            await filing.repairDeckTitles()
         }
-        await processor.wake()
+        await processor?.wake()
 
         if let filing {
             for changed in await filing.fileUnsureRecordingsBySpokenContent() {
@@ -240,6 +256,7 @@ final class AppModel {
             pages = try await DeckRepository(store: services.records).pages(deckID: deck.id)
         }
         let lectureID = UUID()
+        let courseID = course.id
         let session = try await LiveLectureSession.open(
             configuration: .init(
                 directory: services.paths.recordings,
@@ -257,6 +274,10 @@ final class AppModel {
         // not the screen is still open.
         session.onFinalized = { [weak self] package in
             self?.fileCapture(package)
+        }
+        // Consent can be withdrawn in Course Settings after the lecture was opened.
+        session.consentCheck = { [services] in
+            (try? await services.records.fetch(Course.self, id: courseID))?.recordsLectures ?? false
         }
         live = LiveCapture(session: session, course: course, deck: deck, lectureID: lectureID, openedAt: Date())
     }

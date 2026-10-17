@@ -221,13 +221,24 @@ public final class FilingCenter {
         }
     }
 
-    /// Undo from a toast: removes what the filing created.
+    /// Undo from a toast: removes what the filing created. A capture is un-filed instead (never
+    /// deleted); its toast then waits for a course.
     func undo(_ id: Toast.ID) async {
         guard let index = toasts.firstIndex(where: { $0.id == id }), let filing = toasts[index].outcome.filing else { return }
         toasts[index].isWorking = true
         do {
-            try await service.undo(filing.id)
-            dismiss(id)
+            if let kept = try await service.undo(filing.id) {
+                update(id) { toast in
+                    toast.outcome.filing = kept
+                    toast.outcome.place = nil
+                    toast.outcome.status = .needsCourse
+                    toast.outcome.alternatives = []
+                    toast.isWorking = false
+                }
+                dismissTasks.removeValue(forKey: id)?.cancel()
+            } else {
+                dismiss(id)
+            }
         } catch {
             update(id) { $0.isWorking = false }
         }

@@ -124,20 +124,27 @@ extension LectureRepository {
         }
     }
 
-    /// Marks a lecture reviewed (nil clears it).
+    /// Marks a lecture reviewed (nil clears it). Writes only `reviewed_at` and `updated_at`, so a
+    /// concurrent change of the lecture's other columns is never reverted, and observers of
+    /// other columns are not woken.
     @discardableResult
     public func setReviewed(_ lectureID: Lecture.ID, at date: Date?) async throws -> Lecture? {
-        guard var lecture = try await store.fetch(Lecture.self, id: lectureID) else { return nil }
-        lecture.reviewedAt = date
-        return try await store.save(lecture)
+        let stamp = store.currentDate
+        return try await store.database.write { db in
+            try Lecture.find(lectureID).update { $0.reviewedAt = date; $0.updatedAt = stamp }.execute(db)
+            return try Lecture.find(lectureID).fetchOne(db)
+        }
     }
 
-    /// Remembers where review left off (seconds on the recording clock).
+    /// Remembers where review left off (seconds on the recording clock). Writes only
+    /// `review_position` and `updated_at` (the review screen saves it every few seconds).
     @discardableResult
     public func setReviewPosition(_ lectureID: Lecture.ID, seconds: Double?) async throws -> Lecture? {
-        guard var lecture = try await store.fetch(Lecture.self, id: lectureID) else { return nil }
-        lecture.reviewPosition = seconds
-        return try await store.save(lecture)
+        let stamp = store.currentDate
+        return try await store.database.write { db in
+            try Lecture.find(lectureID).update { $0.reviewPosition = seconds; $0.updatedAt = stamp }.execute(db)
+            return try Lecture.find(lectureID).fetchOne(db)
+        }
     }
 }
 

@@ -361,21 +361,22 @@ struct Retrieval {
             switch meta.kind {
             case .transcript:
                 if let lectureID = meta.lectureID {
-                    hit.target = .lecture(lectureID, page: meta.page, time: meta.start, plays: true)
+                    hit.target = .lecture(lectureID, page: meta.page, time: meta.start, plays: true, recording: meta.recordingID)
                 }
             case .slide:
                 if let deckID = meta.deckID, let page = meta.page,
                    let visit = Self.firstVisit(deck: deckID, page: page, spans: spans, lectures: lectures) {
                     hit.lectureID = visit.lecture
                     hit.time = visit.time
+                    hit.recordingID = visit.recording
                     hit.courseID = hit.courseID ?? lectures[visit.lecture]?.courseID
-                    hit.target = .lecture(visit.lecture, page: page, time: visit.time, plays: false)
+                    hit.target = .lecture(visit.lecture, page: page, time: visit.time, plays: false, recording: visit.recording)
                 } else if let courseID = meta.courseID {
                     hit.target = .course(courseID)
                 }
             default:
                 if let lectureID = meta.lectureID {
-                    hit.target = .lecture(lectureID, page: meta.page, time: meta.start, plays: false)
+                    hit.target = .lecture(lectureID, page: meta.page, time: meta.start, plays: false, recording: meta.recordingID)
                 } else if let courseID = meta.courseID {
                     hit.target = .course(courseID)
                 }
@@ -394,7 +395,9 @@ struct Retrieval {
 
     /// The lecture that showed `page` of `deck` first (earliest lecture, then earliest visit) and
     /// when; a lecture whose deck range only covers the page (no timed visit) comes after those.
-    static func firstVisit(deck: Deck.ID, page: Int, spans: [LectureDeckSpan], lectures: [Lecture.ID: Lecture]) -> (lecture: Lecture.ID, time: Double?)? {
+    static func firstVisit(
+        deck: Deck.ID, page: Int, spans: [LectureDeckSpan], lectures: [Lecture.ID: Lecture]
+    ) -> (lecture: Lecture.ID, time: Double?, recording: Recording.ID?)? {
         let covering = spans.filter { span in
             guard span.deckID == deck, let first = span.firstPage else { return false }
             return first <= page && page <= (span.lastPage ?? first)
@@ -403,10 +406,10 @@ struct Retrieval {
             (lectures[span.lectureID]?.heldAt ?? .distantFuture, span.startTime ?? .infinity)
         }
         if let timed = covering.filter({ $0.startTime != nil }).min(by: { order($0) < order($1) }) {
-            return (timed.lectureID, timed.startTime)
+            return (timed.lectureID, timed.startTime, timed.recordingID)
         }
         if let coarse = covering.min(by: { order($0) < order($1) }) {
-            return (coarse.lectureID, nil)
+            return (coarse.lectureID, nil, nil)
         }
         return nil
     }

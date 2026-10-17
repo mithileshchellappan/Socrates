@@ -26,16 +26,27 @@ public enum StudyDestination: Hashable, Sendable {
 public struct ReviewTarget: Hashable, Sendable {
     /// 1-based deck page.
     public var page: Int?
-    /// Seconds on the lecture's recording clock.
+    /// Seconds on the recording clock (`recordingID`'s, else the lecture's first recording's).
     public var time: Double?
     /// Start playing from `time`.
     public var plays: Bool
+    /// The recording `time` is on, for a lecture with more than one (a second recording of the
+    /// same class, a backup recorder); nil: the lecture's first.
+    public var recordingID: Recording.ID?
+    /// Set by the app once per request to open (`openDestination`), so that opening the same
+    /// place again moves there again; nil for a plain open.
+    public var request: UUID?
 
-    public init(page: Int? = nil, time: Double? = nil, plays: Bool = false) {
+    public init(page: Int? = nil, time: Double? = nil, plays: Bool = false, recordingID: Recording.ID? = nil, request: UUID? = nil) {
         self.page = page
         self.time = time
         self.plays = plays
+        self.recordingID = recordingID
+        self.request = request
     }
+
+    /// Nothing to move to: the screen opens where review left off.
+    public var isEmpty: Bool { page == nil && time == nil && !plays }
 }
 
 /// Opens a `StudyDestination`; the app installs the real one (`.environment(\.openDestination, …)`).
@@ -59,4 +70,44 @@ extension EnvironmentValues {
     /// The library (database, blobs, paths) for writes. Views observe rows with `@FetchAll` /
     /// `@FetchOne` on SQLiteData's default database, which the app points at the same database.
     @Entry public var studyServices: StudyServices?
+
+    /// The window's toolbar search field has keyboard focus (the app sets it from its
+    /// `@FocusState`). Screens with plain-key shortcuts detach them while it is true.
+    @Entry public var isSearchFieldFocused = false
+}
+
+/// Room the window's floating overlays (smart import's toasts) keep free at the bottom, so they
+/// never cover a screen's own floating controls (the review player). The window that shows the
+/// overlays installs one (`\.overlayInsets`); a screen reserves space with `reservesBottomOverlaySpace`.
+@MainActor
+@Observable
+public final class OverlayInsets {
+    /// Points from the bottom edge the overlays stay above (0: none reserved).
+    public var bottom: CGFloat = 0
+
+    public init() {}
+}
+
+extension EnvironmentValues {
+    @Entry public var overlayInsets: OverlayInsets?
+}
+
+extension View {
+    /// While this view is on screen, the window's floating overlays stay above the bottom
+    /// `height` points (the top edge of this screen's own bottom controls).
+    public func reservesBottomOverlaySpace(_ height: CGFloat) -> some View {
+        modifier(BottomOverlaySpace(height: height))
+    }
+}
+
+private struct BottomOverlaySpace: ViewModifier {
+    let height: CGFloat
+    @Environment(\.overlayInsets) private var insets
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { insets?.bottom = height }
+            .onChange(of: height) { _, height in insets?.bottom = height }
+            .onDisappear { if insets?.bottom == height { insets?.bottom = 0 } }
+    }
 }

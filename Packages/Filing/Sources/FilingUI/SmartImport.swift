@@ -1,5 +1,6 @@
 import Filing
 import StudyCore
+import StudyUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -30,9 +31,12 @@ enum FilingTypes {
 
 struct SmartImportModifier: ViewModifier {
     @Bindable var center: FilingCenter
+    /// What the screen below needs kept free at the bottom (the review player).
+    @State private var insets = OverlayInsets()
 
     func body(content: Content) -> some View {
         content
+            .environment(\.overlayInsets, insets)
             .overlay(alignment: .topLeading) {
                 if let drag = center.drag, !drag.isOverRow, !drag.predictions.isEmpty {
                     DropHUD(predictions: drag.predictions, targeted: drag.targeted) { target, frame in
@@ -46,6 +50,8 @@ struct SmartImportModifier: ViewModifier {
             .overlay(alignment: .bottomTrailing) {
                 FilingToastStack(center: center)
                     .padding(16)
+                    .padding(.bottom, insets.bottom > 0 ? insets.bottom - 8 : 0)
+                    .animation(.smooth(duration: 0.2), value: insets.bottom)
             }
             .animation(.smooth(duration: 0.18), value: center.drag?.predictions.isEmpty)
             .coordinateSpace(.named(DropHUD.space))

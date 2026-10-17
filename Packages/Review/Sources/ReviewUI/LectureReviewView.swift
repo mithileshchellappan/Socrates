@@ -27,6 +27,10 @@ public struct LectureReviewView: View {
     private let deckLinksQuery: FetchAll<LectureDeckSpan>
     private var deckLinks: [LectureDeckSpan] { deckLinksQuery.wrappedValue }
     @State private var model: ReviewModel?
+    /// The target the screen has moved to already: it is applied once, not again on a reload.
+    @State private var appliedTarget: ReviewTarget?
+    /// The recording picked in the toolbar (a lecture with more than one).
+    @State private var chosenRecording: Recording.ID?
 
     public init(
         lectureID: Lecture.ID,
@@ -50,24 +54,78 @@ public struct LectureReviewView: View {
                 Color.clear
             }
         }
-        .task(id: LoadKey(lectureID: lectureID, recordingID: recordings.first?.id, deckID: deckLinks.last?.deckID)) {
+        .task(id: loadKey) {
             guard let services else { return }
+            let applying = target
+            let opening = openingTarget
             model?.close()
-            let loaded = await ReviewModel.load(lectureID: lectureID, services: services, target: target, realign: realign)
+            let loaded = await ReviewModel.load(lectureID: lectureID, services: services, target: opening, realign: realign)
+            // A newer load (another recording or deck arrived, the screen closed) replaced this one.
+            guard !Task.isCancelled else {
+                loaded?.discard()
+                return
+            }
             loaded?.inspectorTab = inspectorTab
+            appliedTarget = applying
             model = loaded
+            // Opened again while this load ran: move there now.
+            if target != applying { apply(target) }
         }
         .onChange(of: target) { _, target in
-            // Opened again at another slide or time (a search hit, Today): move there.
-            guard let session = model?.session else { return }
-            Task { await session.open(page: target.page, time: target.time, plays: target.plays, resume: nil) }
+            apply(target)
+        }
+        .onChange(of: model?.requestedRecordingID) { _, recordingID in
+            if let recordingID { chosenRecording = recordingID }
         }
     }
 
-    /// A new recording or deck (filing, Change) reopens the screen.
+    /// Opened again at another slide or time (a search hit, Today): move there, once.
+    private func apply(_ target: ReviewTarget) {
+        guard let model, appliedTarget != target else { return }
+        appliedTarget = target
+        if let recordingID = target.recordingID, recordingID != model.recording?.id {
+            // On another recording of the lecture: that one loads at the target.
+            appliedTarget = nil
+            chosenRecording = recordingID
+            return
+        }
+        let session = model.session
+        Task { await session.open(page: target.page, time: target.time, plays: target.plays, resume: nil) }
+    }
+
+    /// The recording on screen: the one picked (or moved to by a later target), else the one the
+    /// target names, else the lecture's first.
+    private var recordingID: Recording.ID? {
+        let ids = recordings.map(\.id)
+        if let chosenRecording, ids.contains(chosenRecording) { return chosenRecording }
+        if let targeted = target.recordingID, ids.contains(targeted) { return targeted }
+        return ids.first
+    }
+
+    private var loadKey: LoadKey {
+        LoadKey(lectureID: lectureID, recordingID: recordingID, recordingCount: recordings.count, deckID: deckLinks.last?.deckID)
+    }
+
+    /// Where a load opens: the target the first time; after that (a deck or recording filed into
+    /// the open lecture, another recording picked) where review is now, or the picked recording
+    /// from where review left off.
+    private var openingTarget: ReviewTarget {
+        guard let model, appliedTarget == target else {
+            var opening = target
+            opening.recordingID = recordingID
+            return opening
+        }
+        if model.recording?.id == recordingID {
+            return ReviewTarget(page: model.session.shownPage, time: model.player?.time, recordingID: recordingID)
+        }
+        return ReviewTarget(recordingID: recordingID)
+    }
+
+    /// A new recording or deck (filing, Change), or another recording picked, reloads the screen.
     private struct LoadKey: Hashable {
         var lectureID: Lecture.ID
         var recordingID: Recording.ID?
+        var recordingCount: Int
         var deckID: Deck.ID?
     }
 }
@@ -125,7 +183,7 @@ struct ReviewScreen: View {
     private var subtitle: Text {
         let course = model.course?.name ?? ""
         guard let held = model.lecture.heldAt else { return Text(course) }
-        let date = Text(held, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))
+        let date = Text(held, format: DayText.style())
         return course.isEmpty ? date : Text("\(course) · \(date)")
     }
 
@@ -166,11 +224,16 @@ struct ReviewScreen: View {
             if let player = model.player {
                 PlayerBar(model: model, player: player, timeline: timeline)
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 14)
+                    .padding(.bottom, Self.playerBottom)
+                    // Filing toasts stay above the player, never over Follow, speed or the scrubber.
+                    .reservesBottomOverlaySpace(Self.playerBottom + PlayerBar.height)
             }
         }
         .background(.background)
     }
+
+    /// The player's distance from the bottom edge.
+    static let playerBottom: CGFloat = 14
 
     /// The slide's height over the transcript: its full width, at most about half the column.
     private func stageHeight(_ deck: SlideDeck) -> CGFloat {
@@ -185,6 +248,12 @@ struct ReviewToolbar: ToolbarContent {
     let model: ReviewModel
 
     var body: some ToolbarContent {
+        if model.recordings.count > 1 {
+            // A second recording of the class (Stop and Record again, a backup recorder).
+            ToolbarItem(placement: .primaryAction) {
+                RecordingPicker(model: model)
+            }
+        }
         if model.deck != nil {
             ToolbarItemGroup(placement: .primaryAction) {
                 SlideStepper(session: model.session)
@@ -200,6 +269,28 @@ struct ReviewToolbar: ToolbarContent {
     }
 }
 
+/// Which of the lecture's recordings plays, by its start ("12:17").
+struct RecordingPicker: View {
+    let model: ReviewModel
+
+    var body: some View {
+        Picker(selection: Binding(
+            get: { model.recording?.id },
+            set: { id in if let id { model.requestedRecordingID = id } }
+        )) {
+            ForEach(model.recordings) { recording in
+                Text(recording.startedAt, format: .dateTime.hour().minute())
+                    .monospacedDigit()
+                    .tag(Optional(recording.id))
+            }
+        } label: {
+            Label("Recording", systemImage: "waveform")
+        }
+        .pickerStyle(.menu)
+        .fixedSize()
+    }
+}
+
 /// Previous slide, "16 / 88", next slide.
 struct SlideStepper: View {
     let session: ReviewSession
@@ -212,7 +303,7 @@ struct SlideStepper: View {
         }
         .disabled(!session.canGoPrevious)
         Text(verbatim: "\(session.shownPage ?? 0) / \(session.pageCount)")
-            .font(.system(size: 12))
+            .font(.callout)
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .fixedSize()
@@ -241,9 +332,9 @@ private struct SnapshotChrome<Content: View>: View {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(title)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.title3.weight(.semibold))
                         subtitle
-                            .font(.system(size: 11))
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     .lineLimit(1)

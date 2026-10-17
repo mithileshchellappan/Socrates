@@ -41,11 +41,17 @@ extension FilingService {
         // Already where the slides are: confirm.
         if filing.courseID == match.courseID, let lectureID = filing.lectureID,
            let info = library.lecture(lectureID), info.deckIDs.isEmpty || info.deckIDs.contains(match.deckID) {
-            var confirmed = filing
-            confirmed.signals.append(signal)
-            confirmed.confidence = 1 - (1 - filing.confidence) * (1 - signal.weight)
-            confirmed.candidates = []
-            return try await store.save(confirmed)
+            let store = store
+            return try await services.database.write { db -> Filing? in
+                // Only if nobody changed it while the transcript and slides were read.
+                guard var confirmed = try Filing.find(filing.id).fetchOne(db), confirmed.updatedAt == filing.updatedAt else { return nil }
+                confirmed.signals.append(signal)
+                confirmed.confidence = 1 - (1 - confirmed.confidence) * (1 - signal.weight)
+                confirmed.candidates = []
+                let stamped = store.stamp(confirmed)
+                try Filing.upsert { stamped }.execute(db)
+                return stamped
+            }
         }
 
         guard let course = library.course(match.courseID) else { return nil }
@@ -64,10 +70,15 @@ extension FilingService {
             target = choice.target
             fit = choice.place.confidence
         }
-        return try await move(
-            filing, to: target, courseID: course.id,
-            reason: .evidence([signal], confidence: signal.weight * fit)
-        )
+        do {
+            return try await move(
+                filing, to: target, courseID: course.id,
+                reason: .evidence([signal], confidence: signal.weight * fit)
+            )
+        } catch is Superseded {
+            Log.importer.info("Filing of \(recordingID, privacy: .public) changed meanwhile; the second look gives way")
+            return nil
+        }
     }
 
     /// Gives every unsure recording that has a transcript its look by spoken content (at launch,

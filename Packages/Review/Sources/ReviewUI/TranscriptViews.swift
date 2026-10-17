@@ -148,11 +148,11 @@ private struct SectionDivider: View {
         HStack(spacing: 8) {
             if let page = section.page {
                 Text("Slide \(page)")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
             Text(verbatim: "\(TimeText.clock(section.start))–\(TimeText.clock(section.end))")
-                .font(.system(size: 10.5, design: .monospaced))
+                .font(.caption.monospaced())
                 .monospacedDigit()
                 .foregroundStyle(.tertiary)
             if section.startsAtMarker {
@@ -185,17 +185,17 @@ private struct TranscriptRow: View {
         let isCurrent = model.player?.currentSegmentID == segment.id
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(TimeText.clock(segment.startTime))
-                .font(.system(size: 11, design: .monospaced))
+                .font(.subheadline.monospaced())
                 .monospacedDigit()
                 .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                 .frame(width: 46, alignment: .leading)
             Text(TranscriptText.attributed(segment))
-                .font(.system(size: 13))
+                .font(.body)
                 .lineSpacing(2.5)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if !segment.lang.isEmpty, !language.isEmpty, segment.lang != language {
                 Text(segment.lang.uppercased())
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator, lineWidth: 0.5))
@@ -241,13 +241,33 @@ private struct TranscriptRow: View {
     }
 }
 
-/// A transcript line as styled text: words below `lowConfidence` get a dotted underline.
+/// A transcript line as styled text: genuine doubts get a dotted underline, that is content
+/// words (3+ letters, not a function word) Whisper gave below `lowConfidence`. Calibrated on the
+/// M1 end-to-end lectures: at 0.5 63 % of lines had a dotted word (mostly "on", "the", "to"),
+/// now about 7 %.
 enum TranscriptText {
-    static let lowConfidence = 0.5
+    static let lowConfidence = 0.15
+
+    /// English and German function words: never a doubt worth marking.
+    static let functionWords: Set<String> = [
+        "the", "and", "but", "for", "with", "from", "this", "that", "these", "those", "are", "was", "were", "been",
+        "you", "they", "she", "not", "yes", "okay", "also", "again", "then", "there", "here", "what", "which", "who",
+        "how", "why", "when", "where", "does", "did", "can", "could", "would", "should", "will", "just", "like", "very",
+        "really", "one", "have", "has", "had", "all", "some", "our", "your", "their", "its", "now", "even", "still",
+        "der", "die", "das", "und", "oder", "aber", "ein", "eine", "einen", "dem", "den", "des", "ist", "sind", "war",
+        "mit", "von", "für", "auf", "aus", "bei", "nicht", "auch", "noch", "dann", "wenn", "wie", "was", "wer", "hier",
+    ]
+
+    /// A word to dot: a content word below `lowConfidence`.
+    static func isDoubtful(_ word: TranscriptWord) -> Bool {
+        guard let confidence = word.confidence, confidence < lowConfidence else { return false }
+        let letters = word.text.lowercased().filter(\.isLetter)
+        return letters.count >= 3 && !functionWords.contains(letters)
+    }
 
     static func attributed(_ segment: TranscriptSegment) -> AttributedString {
         var result = AttributedString(segment.text)
-        guard let words = segment.words, words.contains(where: { ($0.confidence ?? 1) < lowConfidence }) else {
+        guard let words = segment.words, words.contains(where: isDoubtful) else {
             return result
         }
         let text = segment.text
@@ -256,7 +276,7 @@ enum TranscriptText {
             let token = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !token.isEmpty, let range = text.range(of: token, range: searchStart..<text.endIndex) else { continue }
             searchStart = range.upperBound
-            guard (word.confidence ?? 1) < lowConfidence,
+            guard isDoubtful(word),
                   let lower = AttributedString.Index(range.lowerBound, within: result),
                   let upper = AttributedString.Index(range.upperBound, within: result)
             else { continue }
@@ -282,18 +302,18 @@ struct ProcessingProgress: View {
             case .queued, .running:
                 ProgressView(value: job.progress) {
                     Text(Self.title(of: job))
-                        .font(.system(size: 12))
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 } currentValueLabel: {
                     Text(job.progress, format: .percent.precision(.fractionLength(0)))
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.subheadline.monospaced())
                         .monospacedDigit()
                 }
                 .progressViewStyle(.linear)
                 .frame(maxWidth: 260)
             case .failed:
                 Label(job.error ?? String(localized: "Transcription failed"), systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12))
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .symbolRenderingMode(.multicolor)
             case .succeeded, .cancelled:

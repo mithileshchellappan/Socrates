@@ -60,6 +60,9 @@ public struct RecordStore: Sendable {
         }
     }
 
+    /// The store's clock (what `stamp` writes into `updatedAt`), for column-only updates.
+    public var currentDate: Date { now() }
+
     /// `record` with `updatedAt` set to now, for writes that batch several tables in one
     /// `database.write` transaction.
     public func stamp<Record: StudyRecord>(_ record: Record) -> Record {

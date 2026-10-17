@@ -14,9 +14,13 @@ struct RootView: View {
     #endif
     @State private var selection: SidebarItem?
     @State private var query = ""
-    /// Where the next review screen opens (a search hit, Today's hero).
+    /// Where the review screen opened from a search hit or Today's hero goes: one request, for
+    /// that opening only (the sidebar going elsewhere drops it, so a later visit resumes where
+    /// review left off).
     @State private var reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)?
     @FocusState private var searchFocused: Bool
+    /// ↩ in the search field: the search screen opens its selected (or first) hit.
+    @State private var searchSubmits = 0
 
     init(selection: SidebarItem? = .today, query: String = "", reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil) {
         _selection = State(initialValue: selection)
@@ -40,6 +44,7 @@ struct RootView: View {
                     DetailView(
                         item: selection ?? .today,
                         query: query,
+                        searchSubmits: searchSubmits,
                         target: reviewTarget,
                         record: record
                     )
@@ -51,7 +56,17 @@ struct RootView: View {
             .onChange(of: query) { _, text in
                 if !text.trimmingCharacters(in: .whitespaces).isEmpty, selection != .search { selection = .search }
             }
-            .onSubmit(of: .search) { selection = .search }
+            .onSubmit(of: .search) {
+                guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                selection = .search
+                searchSubmits += 1
+            }
+            .onChange(of: selection) { _, item in
+                // The target was for the lecture `open` showed; anywhere else drops it.
+                if case .lecture(let id) = item, id == reviewTarget?.lectureID { return }
+                reviewTarget = nil
+            }
+            .environment(\.isSearchFieldFocused, searchFocused)
             .focusedSceneValue(\.sidebarSelection, $selection)
             .focusedSceneValue(\.focusSearch) {
                 selection = .search
@@ -59,13 +74,15 @@ struct RootView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    // A recording keeps going with its screen closed; show it here so it is never
-                    // forgotten. Clicking brings the live screen back.
+                    // A recording keeps going with its screen closed; show it here, on every
+                    // screen, so it is never forgotten. Clicking brings the live screen back.
                     if let session = model.live?.session, session.isCapturing, session.startedAt != nil {
                         Button(action: record) {
                             RecordingIndicator(session: session)
                         }
-                    } else {
+                    } else if (selection ?? .today) == .today {
+                        // Idle, Record is Today's (mockups 01, 10); File ▸ New Lecture Capture
+                        // (⇧⌘N) starts one from anywhere.
                         Button("Record", systemImage: "record.circle", action: record)
                             .labelStyle(.titleAndIcon)
                     }
@@ -107,7 +124,6 @@ struct RootView: View {
             }
             #endif
             .background { CalendarSessionsWatcher() }
-            .task { await model.startBackgroundWork() }
         }
     }
 
@@ -120,7 +136,9 @@ struct RootView: View {
             query = text
             selection = .search
         case .course(let id): selection = .course(id)
-        case .lecture(let id, let target):
+        case .lecture(let id, var target):
+            // A fresh request: opening the same hit again moves there again.
+            target.request = UUID()
             reviewTarget = (id, target)
             selection = .lecture(id)
         }
