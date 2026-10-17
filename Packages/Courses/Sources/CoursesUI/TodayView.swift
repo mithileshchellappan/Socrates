@@ -4,8 +4,9 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// Today (mockup 01, light): one first thing — the newest lecture to review, else the next
-/// class — and the next seven days' sessions other than the weekly lectures in one dated list.
+/// Today (mockup 01): one first thing — the newest lecture to review, else the next class —
+/// then Coming up, one dated list of the week's sessions (not the weekly lectures) and the
+/// deadlines and events of the next three weeks, and the unread mail as one counting line.
 public struct TodayView: View {
     private let fixedNow: Date?
     private let record: (() -> Void)?
@@ -16,12 +17,7 @@ public struct TodayView: View {
     @Dependency(\.defaultDatabase) private var database
     @Environment(\.timeZone) private var timeZone
     @Environment(\.locale) private var locale
-    @Environment(\.studyServices) private var services
-    @Environment(\.calendarMirror) private var mirror
     @Environment(\.openDestination) private var openDestination
-    /// The Coming up row under the pointer (mockup 01: a fill bleeding past the column, the
-    /// separators beside it hidden).
-    @State private var hoveredID: LectureSession.ID?
 
     /// - Parameters:
     ///   - now: a fixed "now" (previews, snapshots); nil follows the clock.
@@ -65,43 +61,11 @@ public struct TodayView: View {
                 }
 
                 if !plan.comingUp.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Coming up")
-                            .font(.title3.weight(.semibold))
-                        VStack(spacing: 0) {
-                            ForEach(Array(plan.comingUp.enumerated()), id: \.element.id) { index, session in
-                                if index > 0 {
-                                    // From the title's leading edge to the column's trailing edge;
-                                    // none beside the hovered row (its room is kept).
-                                    let hidesDivider = hoveredID == session.id || hoveredID == plan.comingUp[index - 1].id
-                                    Divider()
-                                        .padding(.leading, 32)
-                                        .padding(.trailing, 10)
-                                        .opacity(hidesDivider ? 0 : 1)
-                                }
-                                ComingUpRow(session: session, course: data.courses[session.courseID], text: text)
-                                    .background(
-                                        hoveredID == session.id ? AnyShapeStyle(.fill.quaternary) : AnyShapeStyle(.clear),
-                                        in: .rect(cornerRadius: 9, style: .continuous)
-                                    )
-                                    .onHover { inside in
-                                        if inside {
-                                            hoveredID = session.id
-                                        } else if hoveredID == session.id {
-                                            hoveredID = nil
-                                        }
-                                    }
-                                    .contextMenu {
-                                        if session.isCancelled {
-                                            Button("Restore Session") { actions.restore(session.id) }
-                                        } else {
-                                            Button("Cancel Session") { actions.cancel(session.id) }
-                                        }
-                                    }
-                            }
-                        }
-                        .padding(.horizontal, -10)
-                    }
+                    ComingUpSection(entries: plan.comingUp, courses: data.courses, now: now, text: text)
+                }
+
+                if let mail = plan.mail {
+                    TodayMailLine(line: mail, courses: data.courses)
                 }
             }
             .frame(maxWidth: 600, alignment: .leading)
@@ -111,7 +75,7 @@ public struct TodayView: View {
             .padding(.horizontal, 20)
         }
         .overlay {
-            if plan.hero == nil, plan.comingUp.isEmpty {
+            if plan.isEmpty {
                 ContentUnavailableView {
                     Image(systemName: "sun.max")
                 }
@@ -130,52 +94,6 @@ public struct TodayView: View {
     private func subtitle(now: Date, plan: TodayPlan, text: SessionText) -> String {
         let date = text.fullDate(now)
         return plan.hasClassesToday ? date : String(localized: "\(date) · no classes")
-    }
-
-    private var actions: ScheduleActions { ScheduleActions(services: services, mirror: mirror) }
-}
-
-/// What Today puts where, for one moment.
-struct TodayPlan: Equatable {
-    enum Hero: Equatable {
-        case review(ReviewCandidate)
-        case session(LectureSession)
-    }
-
-    var hero: Hero?
-    /// The review course's next lecture (the hero's aside).
-    var nextLecture: LectureSession?
-    var comingUp: [LectureSession]
-    var hasClassesToday: Bool
-
-    /// A class this close lets the hero offer Record.
-    static let recordLead: TimeInterval = 30 * 60
-
-    init(data: TodayData, now: Date, timeZone: TimeZone) {
-        let today = CalendarDay(now, in: timeZone)
-        let horizon = today.adding(days: 8).start(in: timeZone)
-        let known = data.sessions.filter { data.courses[$0.courseID] != nil }
-        hasClassesToday = known.contains { !$0.isCancelled && CalendarDay($0.startsAt, in: timeZone) == today }
-
-        var shown: Set<LectureSession.ID> = []
-        if let review = data.review {
-            hero = .review(review)
-            nextLecture = data.nextLectures.first { $0.startsAt > now }
-            if let nextLecture { shown.insert(nextLecture.id) }
-        } else if let next = known.first(where: { !$0.isCancelled && $0.endsAt > now }) {
-            hero = .session(next)
-            shown.insert(next.id)
-        }
-        // Everything but the weekly lectures (mockup 01): exercises, tutorials, seminars and
-        // one-off sessions; a cancelled lecture stays, struck through, so it can be restored.
-        comingUp = known.filter {
-            $0.endsAt > now && $0.startsAt < horizon && !shown.contains($0.id) && ($0.kind != .lecture || $0.isCancelled)
-        }
-    }
-
-    func canRecord(_ session: LectureSession, courses: [Course.ID: Course], now: Date) -> Bool {
-        guard let course = courses[session.courseID], course.recordsLectures, !session.isCancelled else { return false }
-        return session.startsAt.addingTimeInterval(-Self.recordLead) <= now && now < session.endsAt
     }
 }
 
@@ -383,48 +301,5 @@ private struct SessionHero: View {
         let times = Text(text.timeRange(session.startsAt, session.endsAt)).monospaced()
         let room = session.room.trimmingCharacters(in: .whitespacesAndNewlines)
         return room.isEmpty ? times : Text("\(times) · \(room)")
-    }
-}
-
-// MARK: - Coming up
-
-private struct ComingUpRow: View {
-    let session: LectureSession
-    let course: Course?
-    let text: SessionText
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(Color.course(course))
-                .frame(width: 4)
-                .frame(maxHeight: .infinity)
-                .padding(.vertical, 2)
-                .frame(width: 10)
-            Text(SessionText.title(of: session, courseName: course?.name ?? "", shortName: course?.shortName ?? ""))
-                .fontWeight(.medium)
-                .frame(minHeight: 18)
-                .strikethrough(session.isCancelled)
-                .foregroundStyle(session.isCancelled ? .tertiary : .primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(text.day(session.startsAt))
-                    .frame(minHeight: 18)
-                Text(text.timeRange(session.startsAt, session.endsAt))
-                    .font(.system(.callout, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .frame(minHeight: 16)
-            }
-            .strikethrough(session.isCancelled)
-            .foregroundStyle(session.isCancelled ? .tertiary : .primary)
-            .lineLimit(1)
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(.vertical, 9)
-        .padding(.horizontal, 10)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("\(course?.name ?? ""), \(SessionText.title(of: session, courseName: course?.name ?? "", shortName: course?.shortName ?? "")), \(text.day(session.startsAt)), \(text.timeRange(session.startsAt, session.endsAt))"))
     }
 }
