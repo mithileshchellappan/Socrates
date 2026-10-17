@@ -10,9 +10,6 @@ let package = Package(
     platforms: [.macOS(.v26), .iOS(.v26)],
     products: [
         .library(name: "Mail", targets: ["Mail"]),
-        // A scripted in-memory IMAP/SMTP server behind `MailConnector`, for tests and the offline
-        // end-to-end run (tools/EndToEnd m2-e2e). Never linked into the app.
-        .library(name: "MailTesting", targets: ["MailTesting"])
     ],
     dependencies: [
         .package(path: "../StudyCore"),
@@ -34,10 +31,7 @@ let package = Package(
                 .product(name: "NIOIMAP", package: "swift-nio-imap")
             ]
         ),
-        .target(
-            name: "MailTesting",
-            dependencies: ["Mail", .product(name: "StudyCore", package: "StudyCore")]
-        ),
+
     ],
     swiftLanguageModes: [.v6]
 )

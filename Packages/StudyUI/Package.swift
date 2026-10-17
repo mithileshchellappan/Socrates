@@ -18,6 +18,7 @@ let package = Package(
             name: "StudyUI",
             dependencies: [.product(name: "StudyCore", package: "StudyCore")]
         ),
+
     ],
     swiftLanguageModes: [.v6]
 )
