@@ -267,20 +267,10 @@ public struct LecturePackageImporter: Sendable {
 
 /// The `note.blocks` JSON for a plain-text quick note: one paragraph block per line.
 /// The rich notes editor (M6) owns this format and may extend it.
+/// Quick notes become `note.blocks` in StudyCore's `NoteBlock` format: one paragraph per line.
 public enum QuickNoteBlocks {
-    struct Block: Codable, Hashable {
-        var type: String
-        var text: String
-    }
-
     public static func json(for text: String) -> String {
-        let blocks = text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { Block(type: "paragraph", text: String($0)) }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(blocks) else { return "[]" }
-        return String(decoding: data, as: UTF8.self)
+        NoteBlock.json(NoteBlock.paragraphs(from: text))
     }
 }
 

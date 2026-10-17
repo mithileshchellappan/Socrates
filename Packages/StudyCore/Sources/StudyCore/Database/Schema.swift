@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -22,15 +22,26 @@ public enum Schema {
         migrator.registerMigration("v3") { db in
             try db.execute(sql: v3)
         }
+        migrator.registerMigration("v4") { db in
+            try db.execute(sql: v4)
+        }
         return migrator
     }
 
-    /// Every table created by the migrations, in creation order.
+    /// Every library table created by the migrations, in creation order: UUID keys, synced in M7.
     public static let tableNames = [
         "course", "weekly_slot", "lecture_session", "deck", "deck_page", "lecture", "recording",
         "lecture_deck_span", "recording_segment", "slide_event", "transcript_segment", "api_call",
         "note", "annotation", "tracked_item", "job",
+        "semester", "filing",
     ]
+
+    /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
+    /// `search_chunk` has an INTEGER key (the FTS5 content rowid).
+    public static let localTableNames = ["search_chunk"]
+
+    /// FTS5 virtual tables over `search_chunk` (their shadow tables are named `<name>_…`).
+    public static let virtualTableNames = ["search_fts", "search_trigram"]
 
     static let v1 = """
         CREATE TABLE "course" (
@@ -324,5 +335,132 @@ public enum Schema {
     /// the transcription model), so its progress bar can say so. NULL = the stage itself.
     static let v3 = """
         ALTER TABLE "job" ADD COLUMN "phase" TEXT;
+        """
+
+    /// v4 (milestone 1): semesters, course setup fields, session planning + calendar sync state,
+    /// review state, filing provenance, and the search index.
+    ///
+    /// - `semester` (seeded with WS 2026/27 under a fixed id) and `course.semester_id`;
+    /// - `course`: `rules` (JSON `[CourseRule]`), `recording_scope`, `shows_in_calendar`,
+    ///   `slides_folder` + `slides_folder_bookmark`;
+    /// - `weekly_slot.week_interval`; `valid_from`/`valid_until` hold `YYYY-MM-DD` days from now on;
+    /// - `lecture_session`: `number`, `edited_at`, `calendar_synced_at`;
+    /// - `lecture`: `reviewed_at`, `review_position`;
+    /// - `filing`: one row per imported file with source, confidence, signals and candidates;
+    /// - `search_chunk` + FTS5 `search_fts` (unicode61, remove_diacritics 2, over text and
+    ///   lemma_text) and `search_trigram` (trigram over text), both external-content tables kept
+    ///   in step with `search_chunk` by triggers.
+    static let v4 = """
+        CREATE TABLE "semester" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "name" TEXT NOT NULL DEFAULT '',
+          "lecture_start" TEXT NOT NULL,
+          "lecture_end" TEXT NOT NULL,
+          "breaks" TEXT NOT NULL DEFAULT '[]',
+          "time_zone" TEXT NOT NULL DEFAULT '',
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        INSERT INTO "semester" ("id", "name", "lecture_start", "lecture_end", "breaks", "time_zone", "updated_at")
+          VALUES ('57532026-2700-4000-8000-000000000001', 'Semester', '2026-10-05', '2027-01-29',
+                  '[]', '',
+                  '1970-01-01 00:00:00.000');
+
+        ALTER TABLE "course" ADD COLUMN "semester_id" TEXT REFERENCES "semester"("id") ON DELETE SET NULL;
+        ALTER TABLE "course" ADD COLUMN "rules" TEXT NOT NULL ON CONFLICT REPLACE DEFAULT '[]';
+        ALTER TABLE "course" ADD COLUMN "recording_scope" TEXT NOT NULL ON CONFLICT REPLACE DEFAULT 'lecturer';
+        ALTER TABLE "course" ADD COLUMN "shows_in_calendar" INTEGER NOT NULL ON CONFLICT REPLACE DEFAULT 1;
+        ALTER TABLE "course" ADD COLUMN "slides_folder" TEXT;
+        ALTER TABLE "course" ADD COLUMN "slides_folder_bookmark" BLOB;
+        UPDATE "course" SET "semester_id" = '57532026-2700-4000-8000-000000000001';
+        CREATE INDEX "course_semester" ON "course"("semester_id");
+
+        ALTER TABLE "weekly_slot" ADD COLUMN "week_interval" INTEGER NOT NULL ON CONFLICT REPLACE DEFAULT 1;
+        UPDATE "weekly_slot" SET "valid_from" = substr("valid_from", 1, 10) WHERE "valid_from" IS NOT NULL;
+        UPDATE "weekly_slot" SET "valid_until" = substr("valid_until", 1, 10) WHERE "valid_until" IS NOT NULL;
+
+        ALTER TABLE "lecture_session" ADD COLUMN "number" INTEGER;
+        ALTER TABLE "lecture_session" ADD COLUMN "edited_at" TEXT;
+        ALTER TABLE "lecture_session" ADD COLUMN "calendar_synced_at" TEXT;
+        CREATE INDEX "lecture_session_slot" ON "lecture_session"("weekly_slot_id");
+
+        ALTER TABLE "lecture" ADD COLUMN "reviewed_at" TEXT;
+        ALTER TABLE "lecture" ADD COLUMN "review_position" REAL;
+
+        CREATE TABLE "filing" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT 'deck',
+          "file_name" TEXT NOT NULL DEFAULT '',
+          "blob_sha256" TEXT NOT NULL DEFAULT '',
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE CASCADE,
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE CASCADE,
+          "lecture_session_id" TEXT REFERENCES "lecture_session"("id") ON DELETE SET NULL,
+          "deck_id" TEXT REFERENCES "deck"("id") ON DELETE CASCADE,
+          "recording_id" TEXT REFERENCES "recording"("id") ON DELETE CASCADE,
+          "source" TEXT NOT NULL DEFAULT 'auto',
+          "confidence" REAL NOT NULL DEFAULT 0,
+          "signals" TEXT NOT NULL DEFAULT '[]',
+          "candidates" TEXT NOT NULL DEFAULT '[]',
+          "created_lecture" INTEGER NOT NULL DEFAULT 0,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "filing_course" ON "filing"("course_id");
+        CREATE INDEX "filing_lecture" ON "filing"("lecture_id");
+        CREATE INDEX "filing_session" ON "filing"("lecture_session_id");
+        CREATE INDEX "filing_deck" ON "filing"("deck_id");
+        CREATE INDEX "filing_recording" ON "filing"("recording_id");
+        CREATE INDEX "filing_created" ON "filing"("created_at");
+
+        CREATE TABLE "search_chunk" (
+          "id" INTEGER PRIMARY KEY,
+          "kind" TEXT NOT NULL,
+          "source_id" TEXT NOT NULL,
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE CASCADE,
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE CASCADE,
+          "deck_id" TEXT REFERENCES "deck"("id") ON DELETE CASCADE,
+          "page_number" INTEGER,
+          "recording_id" TEXT REFERENCES "recording"("id") ON DELETE CASCADE,
+          "note_id" TEXT REFERENCES "note"("id") ON DELETE CASCADE,
+          "start_time" REAL,
+          "end_time" REAL,
+          "lang" TEXT NOT NULL DEFAULT '',
+          "text" TEXT NOT NULL DEFAULT '',
+          "lemma_text" TEXT NOT NULL DEFAULT '',
+          "source_updated_at" TEXT,
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "search_chunk_source" ON "search_chunk"("kind", "source_id");
+        CREATE INDEX "search_chunk_course" ON "search_chunk"("course_id");
+        CREATE INDEX "search_chunk_lecture" ON "search_chunk"("lecture_id");
+        CREATE INDEX "search_chunk_deck" ON "search_chunk"("deck_id", "page_number");
+        CREATE INDEX "search_chunk_recording" ON "search_chunk"("recording_id", "start_time");
+        CREATE INDEX "search_chunk_note" ON "search_chunk"("note_id");
+
+        CREATE VIRTUAL TABLE "search_fts" USING fts5(
+          "text", "lemma_text",
+          content = 'search_chunk', content_rowid = 'id',
+          tokenize = 'unicode61 remove_diacritics 2',
+          prefix = '2 3'
+        );
+        CREATE VIRTUAL TABLE "search_trigram" USING fts5(
+          "text",
+          content = 'search_chunk', content_rowid = 'id',
+          tokenize = 'trigram'
+        );
+
+        CREATE TRIGGER "search_chunk_after_insert" AFTER INSERT ON "search_chunk" BEGIN
+          INSERT INTO "search_fts" ("rowid", "text", "lemma_text") VALUES (new."id", new."text", new."lemma_text");
+          INSERT INTO "search_trigram" ("rowid", "text") VALUES (new."id", new."text");
+        END;
+        CREATE TRIGGER "search_chunk_after_delete" AFTER DELETE ON "search_chunk" BEGIN
+          INSERT INTO "search_fts" ("search_fts", "rowid", "text", "lemma_text") VALUES ('delete', old."id", old."text", old."lemma_text");
+          INSERT INTO "search_trigram" ("search_trigram", "rowid", "text") VALUES ('delete', old."id", old."text");
+        END;
+        CREATE TRIGGER "search_chunk_after_update" AFTER UPDATE OF "text", "lemma_text" ON "search_chunk" BEGIN
+          INSERT INTO "search_fts" ("search_fts", "rowid", "text", "lemma_text") VALUES ('delete', old."id", old."text", old."lemma_text");
+          INSERT INTO "search_trigram" ("search_trigram", "rowid", "text") VALUES ('delete', old."id", old."text");
+          INSERT INTO "search_fts" ("rowid", "text", "lemma_text") VALUES (new."id", new."text", new."lemma_text");
+          INSERT INTO "search_trigram" ("rowid", "text") VALUES (new."id", new."text");
+        END;
         """
 }

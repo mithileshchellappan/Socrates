@@ -325,63 +325,26 @@ public actor LectureProcessor {
         guard let lectureID = job.lectureID ?? recording.lectureID,
               let lecture = try await store.fetch(Lecture.self, id: lectureID)
         else { throw ProcessingError.missingLecture }
-        guard let deckID = try await deckID(lectureID: lecture.id, recordingID: recording.id) else {
+        guard let plan = try await Realigner(services: services, aligner: aligner).plan(lecture: lecture, recording: recording) else {
             // Nothing to align against: done.
             try await store.save(finished(job))
             return
         }
-        let course = try await store.fetch(Course.self, id: lecture.courseID)
-        let pages = try await DeckRepository(store: store).pages(deckID: deckID)
-        let segments = try await TranscriptRepository(store: store).segments(recordingID: recording.id)
-        guard !segments.isEmpty else { throw ProcessingError.noTranscript }
-        let events = try await RecordingRepository(store: store).slideEvents(recordingID: recording.id)
-
-        let slides = AlignmentMapping.slides(pages)
-        let anchors = AlignmentMapping.anchors(
-            events: events, sampleRate: recording.sampleRate, deckID: deckID, validPages: Set(slides.map(\.page))
-        )
-        let duration = recording.duration > 0 ? recording.duration : nil
-        let result = aligner.align(
-            slides: slides,
-            transcript: AlignmentMapping.transcript(segments),
-            anchors: anchors,
-            duration: duration,
-            glossary: Glossary(text: course?.glossary ?? "")
-        )
-        let spans = AlignmentMapping.spans(result, lectureID: lecture.id, deckID: deckID, recordingID: recording.id)
-            .map(store.stamp)
         let done = finished(job)
         try await services.database.write { db in
-            try LectureDeckSpan
-                .where { $0.lectureID.eq(lecture.id) && $0.recordingID.eq(recording.id) && $0.startTime.isNot(nil) }
-                .delete()
-                .execute(db)
-            for span in spans { try LectureDeckSpan.upsert { span }.execute(db) }
+            try Realigner.write(plan, in: db)
             try Job.upsert { done }.execute(db)
         }
         Log.jobs.info(
-            "Aligned \(recording.id, privacy: .public): \(spans.count) spans, \(result.anchors.count) of \(anchors.count) anchors"
+            "Aligned \(recording.id, privacy: .public): \(plan.spans.count) spans, \(plan.anchorsUsed) of \(plan.anchorsGiven) anchors"
         )
     }
 
     // MARK: - Helpers
 
-    /// The deck a lecture's recording is aligned against: the lecture's coarse span, else the
-    /// deck its slide stamps were taken on.
+    /// The deck a lecture's recording is aligned against (see `Realigner.deckID`).
     func deckID(lectureID: Lecture.ID, recordingID: Recording.ID) async throws -> Deck.ID? {
-        try await services.database.read { db in
-            if let coarse = try LectureDeckSpan
-                .where({ $0.lectureID.eq(lectureID) && $0.startTime.is(nil) })
-                .order(by: \.updatedAt)
-                .fetchAll(db)
-                .last {
-                return coarse.deckID
-            }
-            return try SlideEvent
-                .where { $0.recordingID.eq(recordingID) && $0.deckID.isNot(nil) }
-                .fetchOne(db)?
-                .deckID
-        }
+        try await Realigner.deckID(lectureID: lectureID, recordingID: recordingID, database: services.database)
     }
 
     private func finished(_ job: Job) -> Job {

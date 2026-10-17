@@ -1,5 +1,6 @@
 import Processing
 import StudyCore
+import StudyUI
 import SwiftUI
 
 /// Minimal lecture view (M0): the transcript grouped by the slide on screen. The full review

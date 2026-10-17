@@ -1,6 +1,7 @@
 import CaptureUI
 import Processing
 import StudyCore
+import StudyUI
 import SwiftUI
 
 struct RootView: View {

@@ -39,6 +39,16 @@ packages:
     path: Packages/Alignment
   Processing:
     path: Packages/Processing
+  StudyUI:
+    path: Packages/StudyUI
+  Courses:
+    path: Packages/Courses
+  Filing:
+    path: Packages/Filing
+  Review:
+    path: Packages/Review
+  Search:
+    path: Packages/Search
 
 targets:
   StudyPortal:
@@ -114,3 +124,24 @@ targets:
       - package: Alignment
         product: Alignment
       - package: Processing
+      # M1 (docs/plan-m1.md). StudyUITesting is test-only and never linked here.
+      - package: StudyUI
+        product: StudyUI
+      - package: Courses
+        product: Courses
+      - package: Courses
+        product: CalendarSync
+      - package: Courses
+        product: CoursesUI
+      - package: Filing
+        product: Filing
+      - package: Filing
+        product: FilingUI
+      - package: Review
+        product: Review
+      - package: Review
+        product: ReviewUI
+      - package: Search
+        product: Search
+      - package: Search
+        product: SearchUI

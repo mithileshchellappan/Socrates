@@ -198,13 +198,15 @@ final class AppModel {
         guard let services else { return nil }
         do {
             let count = try await services.records.count(Course.self)
+            let semester = try await SemesterRepository(store: services.records).current()
             return try await services.records.save(Course(
                 name: draft.name.trimmingCharacters(in: .whitespacesAndNewlines),
                 language: draft.language,
                 adminLanguage: "de",
                 colorHex: CourseDraft.palette[count % CourseDraft.palette.count],
                 recordingConsentAt: draft.records ? Date() : nil,
-                sortOrder: count
+                sortOrder: count,
+                semesterID: semester.id
             ))
         } catch {
             failure = error.localizedDescription

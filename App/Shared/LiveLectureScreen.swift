@@ -1,5 +1,6 @@
 import CaptureUI
 import StudyCore
+import StudyUI
 import SwiftUI
 
 /// The live lecture for the session the app model owns, with its filing line under the slide.

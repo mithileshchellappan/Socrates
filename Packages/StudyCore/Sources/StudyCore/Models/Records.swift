@@ -1,7 +1,7 @@
 import Foundation
 import SQLiteData
 
-// Schema v1 record types. One struct per table; column names are snake_case.
+// Record types (schema v1 + later migrations). One struct per table; column names are snake_case.
 // Conventions (see docs/schema.md):
 //   - Primary keys are UUIDs stored as lowercase TEXT. Generate them in Swift (`UUID()`).
 //   - Every table has `updated_at`; `RecordStore.save` stamps it.
@@ -29,14 +29,29 @@ public struct Course: StudyRecord {
     @Column("admin_language") public var adminLanguage: String
     /// "#rrggbb"
     @Column("color_hex") public var colorHex: String
+    /// Terms the transcriber and aligner must get right, one per line (see `glossaryTerms`).
     public var glossary: String
+    /// Legacy free text (v1), never shown; `rules` is canonical since v4.
     @Column("exercise_rules") public var exerciseRules: String
+    /// Legacy free text (v1), never shown; `rules` is canonical since v4.
     @Column("exam_rules") public var examRules: String
     /// When recording consent was recorded; nil = recording disabled for this course.
     @Column("recording_consent_at") public var recordingConsentAt: Date?
     @Column("mail_rules", as: [MailRoutingRule].JSONRepresentation.self)
     public var mailRules: [MailRoutingRule]
     @Column("sort_order") public var sortOrder: Int
+    /// v4: the semester the course runs in (lecture period and breaks for its sessions).
+    @Column("semester_id") public var semesterID: Semester.ID?
+    /// v4: exam admission, bonus points, exam form, … in display order.
+    @Column(as: [CourseRule].JSONRepresentation.self) public var rules: [CourseRule]
+    /// v4: whose voices recordings keep.
+    @Column("recording_scope") public var recordingScope: RecordingScope
+    /// v4: mirror this course's sessions to the "Study Portal" calendar.
+    @Column("shows_in_calendar") public var showsInCalendar: Bool
+    /// v4: folder the course's slide PDFs are downloaded to (display path; smart import watches it).
+    @Column("slides_folder") public var slidesFolder: String?
+    /// v4: security-scoped bookmark of `slidesFolder` (needed on iOS/iPadOS).
+    @Column("slides_folder_bookmark") public var slidesFolderBookmark: Data?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
 
@@ -54,6 +69,12 @@ public struct Course: StudyRecord {
         recordingConsentAt: Date? = nil,
         mailRules: [MailRoutingRule] = [],
         sortOrder: Int = 0,
+        semesterID: Semester.ID? = nil,
+        rules: [CourseRule] = [],
+        recordingScope: RecordingScope = .lecturer,
+        showsInCalendar: Bool = true,
+        slidesFolder: String? = nil,
+        slidesFolderBookmark: Data? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -70,9 +91,35 @@ public struct Course: StudyRecord {
         self.recordingConsentAt = recordingConsentAt
         self.mailRules = mailRules
         self.sortOrder = sortOrder
+        self.semesterID = semesterID
+        self.rules = rules
+        self.recordingScope = recordingScope
+        self.showsInCalendar = showsInCalendar
+        self.slidesFolder = slidesFolder
+        self.slidesFolderBookmark = slidesFolderBookmark
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
+
+    /// Glossary entries (lines, or comma/semicolon separated, as Transcription and Alignment read
+    /// them). Setting writes one term per line; commas and semicolons inside a term become spaces.
+    public var glossaryTerms: [String] {
+        get {
+            glossary
+                .split(whereSeparator: { $0.isNewline || $0 == "," || $0 == ";" })
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        }
+        set {
+            glossary = newValue
+                .map { $0.replacing(",", with: " ").replacing(";", with: " ").trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+        }
+    }
+
+    /// Recording is allowed only once consent is recorded (PRD trust rule).
+    public var recordsLectures: Bool { recordingConsentAt != nil }
 }
 
 /// A recurring weekly class slot, e.g. "Mon 12:15–13:45, Room 115".
@@ -89,8 +136,13 @@ public struct WeeklySlot: StudyRecord {
     public var room: String
     /// IANA time zone identifier.
     @Column("time_zone") public var timeZone: String
-    @Column("valid_from") public var validFrom: Date?
-    @Column("valid_until") public var validUntil: Date?
+    /// First day the slot applies (inclusive); nil = the semester's lecture start. Also fixes the
+    /// week parity when `weekInterval` > 1.
+    @Column("valid_from") public var validFrom: CalendarDay?
+    /// Last day the slot applies (inclusive); nil = the semester's lecture end.
+    @Column("valid_until") public var validUntil: CalendarDay?
+    /// v4: 1 = every week, 2 = every other week ("14-täglich").
+    @Column("week_interval") public var weekInterval: Int
     @Column("updated_at") public var updatedAt: Date
 
     public init(
@@ -102,8 +154,9 @@ public struct WeeklySlot: StudyRecord {
         durationMinutes: Int = 90,
         room: String = "",
         timeZone: String = "Europe/Lisbon",
-        validFrom: Date? = nil,
-        validUntil: Date? = nil,
+        validFrom: CalendarDay? = nil,
+        validUntil: CalendarDay? = nil,
+        weekInterval: Int = 1,
         updatedAt: Date = Date()
     ) {
         self.id = id
@@ -116,8 +169,12 @@ public struct WeeklySlot: StudyRecord {
         self.timeZone = timeZone
         self.validFrom = validFrom
         self.validUntil = validUntil
+        self.weekInterval = weekInterval
         self.updatedAt = updatedAt
     }
+
+    /// Minutes after local midnight when the slot ends.
+    public var endMinute: Int { startMinute + durationMinutes }
 }
 
 /// One concrete class meeting (from a weekly slot or one-off), mirrored to the calendar.
@@ -133,6 +190,15 @@ public struct LectureSession: StudyRecord {
     @Column("is_cancelled") public var isCancelled: Bool
     /// EventKit `calendarItemExternalIdentifier` in the "Study Portal" calendar.
     @Column("calendar_event_id") public var calendarEventID: String?
+    /// v4: ordinal among the course's non-cancelled sessions of this kind ("Lecture 3"), kept up to
+    /// date by session planning; nil when unknown.
+    public var number: Int?
+    /// v4: when the user changed this session by hand (moved, cancelled, one-off); planning from
+    /// weekly slots never overwrites or deletes an edited session. Nil = generated.
+    @Column("edited_at") public var editedAt: Date?
+    /// v4: when the calendar event last matched this row (`updatedAt` at that moment). The event
+    /// needs writing when this is nil or older than `updatedAt`.
+    @Column("calendar_synced_at") public var calendarSyncedAt: Date?
     @Column("updated_at") public var updatedAt: Date
 
     public init(
@@ -145,6 +211,9 @@ public struct LectureSession: StudyRecord {
         room: String = "",
         isCancelled: Bool = false,
         calendarEventID: String? = nil,
+        number: Int? = nil,
+        editedAt: Date? = nil,
+        calendarSyncedAt: Date? = nil,
         updatedAt: Date = Date()
     ) {
         self.id = id
@@ -156,8 +225,14 @@ public struct LectureSession: StudyRecord {
         self.room = room
         self.isCancelled = isCancelled
         self.calendarEventID = calendarEventID
+        self.number = number
+        self.editedAt = editedAt
+        self.calendarSyncedAt = calendarSyncedAt
         self.updatedAt = updatedAt
     }
+
+    /// True when the calendar event must be written (or removed, when cancelled).
+    public var needsCalendarSync: Bool { calendarSyncedAt.map { $0 < updatedAt } ?? true }
 }
 
 // MARK: - Slides
@@ -246,6 +321,10 @@ public struct Lecture: StudyRecord {
     @Column("held_at") public var heldAt: Date?
     /// Main spoken language, BCP 47.
     public var language: String
+    /// v4: when the student finished reviewing it; nil = not reviewed (Today offers it).
+    @Column("reviewed_at") public var reviewedAt: Date?
+    /// v4: where review left off, seconds on the lecture's (first) recording clock.
+    @Column("review_position") public var reviewPosition: Double?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
 
@@ -257,6 +336,8 @@ public struct Lecture: StudyRecord {
         title: String = "",
         heldAt: Date? = nil,
         language: String = "",
+        reviewedAt: Date? = nil,
+        reviewPosition: Double? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -267,6 +348,8 @@ public struct Lecture: StudyRecord {
         self.title = title
         self.heldAt = heldAt
         self.language = language
+        self.reviewedAt = reviewedAt
+        self.reviewPosition = reviewPosition
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
