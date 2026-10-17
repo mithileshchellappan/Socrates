@@ -168,6 +168,10 @@ private struct NoteDraftRow: View {
         .onChange(of: isFocused) { _, focused in
             model.isEditingText = focused
         }
+        .onDisappear {
+            // Paging away while typing removes the editor without a focus change.
+            if isFocused { model.isEditingText = false }
+        }
     }
 }
 
