@@ -75,38 +75,44 @@ public struct ReviewCommands: Commands {
     public init() {}
 
     public var body: some Commands {
+        // A menu item with a key equivalent takes the key even while disabled: the plain and ⌥
+        // keys are attached only while the review screen is in the key window and no text field
+        // has focus (a note, the search field), and the ⌘ ones only while it is focused (Lecture ▸
+        // Record has ⇧⌘R in the live window).
+        let keys = review.map { !$0.isEditingText } ?? false
+        let focused = review != nil
         CommandMenu("Review") {
             Button(review?.isPlaying == true ? "Pause" : "Play") { review?.playPause() }
-                .keyboardShortcut(.space, modifiers: [])
+                .keyboardShortcut(keys ? KeyboardShortcut(.space, modifiers: []) : nil)
                 .disabled(review?.playbackEnabled != true)
             Button("Back 15 Seconds") { review?.back() }
-                .keyboardShortcut(.leftArrow, modifiers: [.option])
+                .keyboardShortcut(keys ? KeyboardShortcut(.leftArrow, modifiers: [.option]) : nil)
                 .disabled(review?.playbackEnabled != true)
             Button("Forward 15 Seconds") { review?.forward() }
-                .keyboardShortcut(.rightArrow, modifiers: [.option])
+                .keyboardShortcut(keys ? KeyboardShortcut(.rightArrow, modifiers: [.option]) : nil)
                 .disabled(review?.playbackEnabled != true)
             Divider()
             Button("Previous Slide") { review?.previousSlide() }
-                .keyboardShortcut(.leftArrow, modifiers: [])
+                .keyboardShortcut(keys ? KeyboardShortcut(.leftArrow, modifiers: []) : nil)
                 .disabled(review?.previousEnabled != true)
             Button("Next Slide") { review?.nextSlide() }
-                .keyboardShortcut(.rightArrow, modifiers: [])
+                .keyboardShortcut(keys ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
                 .disabled(review?.nextEnabled != true)
             Toggle("Follow Playback", isOn: Binding(
                 get: { review?.isFollowing == true },
                 set: { _ in review?.toggleFollow() }
             ))
-            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .keyboardShortcut(focused ? KeyboardShortcut("f", modifiers: [.command, .shift]) : nil)
             .disabled(review?.followEnabled != true)
             Divider()
             Button("Slide Starts Here") { review?.slideStartsHere() }
-                .keyboardShortcut("\\", modifiers: [.command])
+                .keyboardShortcut(focused ? KeyboardShortcut("\\", modifiers: [.command]) : nil)
                 .disabled(review?.slideStartEnabled != true)
             Toggle("Mark as Reviewed", isOn: Binding(
                 get: { review?.isReviewed == true },
                 set: { _ in review?.toggleReviewed() }
             ))
-            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .keyboardShortcut(focused ? KeyboardShortcut("r", modifiers: [.command, .shift]) : nil)
             .disabled(review?.reviewedEnabled != true)
         }
     }

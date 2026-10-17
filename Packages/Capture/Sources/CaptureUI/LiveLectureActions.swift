@@ -65,22 +65,28 @@ public struct LiveLectureCommands: Commands {
     public init() {}
 
     public var body: some Commands {
+        // A menu item with a key equivalent takes the key even while disabled, so the plain keys
+        // are attached only while the live screen is in the key window and no text field has
+        // focus (typing a note, or anywhere in the main window, never loses a keystroke), and
+        // Record's ⇧⌘R only while the live screen is focused (Review ▸ Mark as Reviewed has it in
+        // the main window).
+        let keys = live.map { !$0.isEditingText } ?? false
         CommandMenu("Lecture") {
             Button("Next Slide") { live?.next() }
-                .keyboardShortcut(.rightArrow, modifiers: [])
+                .keyboardShortcut(keys ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
                 .disabled(live?.nextEnabled != true)
             Button("Next Slide") { live?.next() }
-                .keyboardShortcut(.space, modifiers: [])
+                .keyboardShortcut(keys ? KeyboardShortcut(.space, modifiers: []) : nil)
                 .disabled(live?.nextEnabled != true)
             Button("Previous Slide") { live?.previous() }
-                .keyboardShortcut(.leftArrow, modifiers: [])
+                .keyboardShortcut(keys ? KeyboardShortcut(.leftArrow, modifiers: []) : nil)
                 .disabled(live?.previousEnabled != true)
             Button("Flag") { live?.flag() }
-                .keyboardShortcut("f", modifiers: [])
+                .keyboardShortcut(keys ? KeyboardShortcut("f", modifiers: []) : nil)
                 .disabled(live?.flagEnabled != true)
             Divider()
             Button(live?.isRecording == true ? "Stop Recording" : "Record") { live?.toggleRecording() }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .keyboardShortcut(live != nil ? KeyboardShortcut("r", modifiers: [.command, .shift]) : nil)
                 .disabled(live == nil || (live?.isRecording != true && live?.canRecord != true))
         }
     }

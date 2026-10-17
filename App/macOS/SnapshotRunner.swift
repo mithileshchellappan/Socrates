@@ -75,6 +75,8 @@ enum SnapshotRunner {
                 shots.append(Shot(name: "10-import", item: .today, drop: drop, file: filed, settle: .seconds(1.5)))
             }
 
+            try menuShortcuts().write(to: directory.appending(path: "menus.txt"), atomically: true, encoding: .utf8)
+
             for shot in shots {
                 // Confident toasts leave after 8 s: both pictures are taken before that.
                 if !shot.file.isEmpty, let center = model.filingCenter { await center.file(shot.file) }
@@ -88,6 +90,46 @@ enum SnapshotRunner {
             log.error("Snapshots failed: \(String(describing: error), privacy: .public)")
         }
         NSApp.terminate(nil)
+    }
+
+    /// Every menu item with a key equivalent ("Review ▸ Next Slide  →"), then the equivalents
+    /// two items share (they must never be enabled in the same window at once).
+    static func menuShortcuts() -> String {
+        var lines: [String] = []
+        var seen: [String: [String]] = [:]
+        func walk(_ menu: NSMenu, path: String) {
+            for item in menu.items {
+                let title = path.isEmpty ? item.title : "\(path) ▸ \(item.title)"
+                if let submenu = item.submenu { walk(submenu, path: title) }
+                guard !item.keyEquivalent.isEmpty else { continue }
+                let flags = item.keyEquivalentModifierMask
+                let key = (flags.contains(.control) ? "⌃" : "") + (flags.contains(.option) ? "⌥" : "")
+                    + (flags.contains(.shift) ? "⇧" : "") + (flags.contains(.command) ? "⌘" : "")
+                    + Self.keyName(item.keyEquivalent)
+                lines.append("\(title)  \(key)")
+                seen[key, default: []].append(title)
+            }
+        }
+        if let menu = NSApp.mainMenu { walk(menu, path: "") }
+        let shared = seen.filter { $0.value.count > 1 }.sorted { $0.key < $1.key }
+        lines.append("")
+        lines.append("Shared key equivalents:")
+        lines += shared.map { "  \($0.key): \($0.value.joined(separator: " | "))" }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    static func keyName(_ key: String) -> String {
+        switch key.unicodeScalars.first.map({ Int($0.value) }) {
+        case NSLeftArrowFunctionKey: "←"
+        case NSRightArrowFunctionKey: "→"
+        case NSUpArrowFunctionKey: "↑"
+        case NSDownArrowFunctionKey: "↓"
+        case 0x20: "Space"
+        case 0x1B: "⎋"
+        case 0x0D, 0x03: "↩"
+        case 0x7F, 0x08: "⌫"
+        default: key.uppercased()
+        }
     }
 
     /// Hosts the main window's content in a titled window off screen (never ordered in: an

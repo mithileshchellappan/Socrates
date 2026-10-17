@@ -63,8 +63,10 @@ struct TodayRequest: FetchKeyRequest {
         let lectureID = lecture.id
         let recording = try Recording.where { $0.lectureID.eq(lectureID) }.order(by: \.startedAt).fetchOne(db)
         let spans = try LectureDeckSpan.where { $0.lectureID.eq(lectureID) }.fetchAll(db)
+        // The slides that were discussed (aligned visits); before alignment, the deck's link.
+        let visits = spans.filter { $0.startTime != nil && $0.firstPage != nil }
         let coarse = spans.filter { $0.startTime == nil && $0.firstPage != nil }
-        let pageSpans = coarse.isEmpty ? spans.filter { $0.firstPage != nil } : coarse
+        let pageSpans = visits.isEmpty ? coarse : visits
         let deckID = pageSpans.first?.deckID
         let deck = try deckID.flatMap { id in try Deck.find(id).fetchOne(db) }
         let first = pageSpans.filter { $0.deckID == deckID }.compactMap(\.firstPage).min()
