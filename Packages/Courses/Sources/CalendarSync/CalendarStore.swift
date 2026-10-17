@@ -17,7 +17,8 @@ public protocol CalendarStore: Sendable {
     func createCalendar(title: String, colorHex: String?, sourceID: String) async throws -> CalendarInfo
     /// The event with this identifier in `calendarID`; nil when it is gone or in another calendar.
     func event(id: String, calendarID: String) async throws -> CalendarEvent?
-    /// Events of `calendarID` overlapping `[start, end)`.
+    /// Events of `calendarID` overlapping `[start, end)`: every occurrence of a recurring event
+    /// (they share its identifier).
     func events(calendarID: String, from start: Date, to end: Date) async throws -> [CalendarEvent]
     /// Creates (`event.id` nil) or updates an event in `calendarID`; returns its identifier.
     func save(_ event: CalendarEvent, calendarID: String) async throws -> String

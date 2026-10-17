@@ -73,6 +73,8 @@ public actor EventKitCalendarStore: CalendarStore {
 
     public func events(calendarID: String, from start: Date, to end: Date) -> [CalendarEvent] {
         guard start < end, let calendar = store.calendar(withIdentifier: calendarID) else { return [] }
+        // The occurrences of a recurring event share its identifier: one per start, so an event
+        // spanning a window edge is not read twice.
         var seen = Set<String>()
         var result: [CalendarEvent] = []
         var windowStart = start
@@ -81,7 +83,7 @@ public actor EventKitCalendarStore: CalendarStore {
             let predicate = store.predicateForEvents(withStart: windowStart, end: windowEnd, calendars: [calendar])
             for event in store.events(matching: predicate) {
                 let value = Self.value(event)
-                guard let id = value.id, seen.insert(id).inserted else { continue }
+                guard let id = value.id, seen.insert("\(id)|\(value.startsAt.timeIntervalSince1970)").inserted else { continue }
                 result.append(value)
             }
             windowStart = windowEnd

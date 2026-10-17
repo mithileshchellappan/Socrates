@@ -8,8 +8,8 @@ import StudyCore
 ///
 /// Rules (docs/plan-m3.md §3.1):
 /// - **Match** (dismissed and done items included, so Undo sticks): (1) the same source and quote
-///   (the same mail row or Message-ID; the same recording within ±30 s; the same conversation)
-///   → nothing new; (2) a session proposal: the same session and kind (and room); (3) an event
+///   (the same mail row or Message-ID; the same recording within ±30 s; the same conversation,
+///   or the composer, and then only for the same course, title and due day) → nothing new; (2) a session proposal: the same session and kind (and room); (3) an event
 ///   or announcement tied to the same session and kind; (4) a dated item: same course, kind
 ///   group (deadline/exercise/exam together), same day in Exampleton, times within an hour unless
 ///   one is all-day, similar titles. A match gets a new source row; otherwise a new item.
@@ -97,7 +97,7 @@ public struct DeadlineMemory: Sendable {
         try await write { writer in try writer.undo(sourceID) }
     }
 
-    /// Takes an Undo back.
+    /// Takes an Undo back. Through a source that was not undone, a dismissed item comes back.
     @discardableResult
     public func restore(_ sourceID: TrackedItemSource.ID) async throws -> TrackedItem? {
         try await write { writer in try writer.restore(sourceID) }
@@ -288,6 +288,10 @@ struct MemoryWriter {
         }
         for source in sameSource {
             guard let item = try TrackedItem.find(source.trackedItemID).fetchOne(db), ItemMatching.group(item.kind) == group else { continue }
+            // The student's words quote a whole turn, which can name several items (and a
+            // completion quotes them too); the composer's sentence typed again on another day
+            // means another date. A chat source repeats only the same item.
+            if finding.isChat, !ItemMatching.sameItem(item, draft, timeZone: timeZone) { continue }
             return .sameSource(item)
         }
 
@@ -471,7 +475,7 @@ struct MemoryWriter {
     func restore(_ sourceID: TrackedItemSource.ID) throws -> TrackedItem? {
         guard var source = try TrackedItemSource.find(sourceID).fetchOne(db),
               var item = try TrackedItem.find(source.trackedItemID).fetchOne(db) else { return nil }
-        guard source.undoneAt != nil else { return item }
+        guard source.undoneAt != nil else { return try reopen(item) }
         if let made = source.previous {
             source.previous = TrackedItemSnapshot(item)
             item = made.applied(to: item)
@@ -481,6 +485,26 @@ struct MemoryWriter {
         }
         source.undoneAt = nil
         return try save(item, source)
+    }
+
+    /// Restore through a source that was not undone (Mail's row of an item deleted in Calendar or
+    /// Today, or dismissed by another source's Undo): the item comes back, as in M2. The Undo that
+    /// dismissed it is taken back when there is one; else the item reopens, in the calendar when
+    /// a standing source had put it there.
+    private func reopen(_ found: TrackedItem) throws -> TrackedItem {
+        guard found.status == .dismissed, !found.kind.isSessionProposal else { return found }
+        let itemID = found.id
+        let sources = try TrackedItemSource.where { $0.trackedItemID.eq(itemID) }.fetchAll(db)
+        let dismissing = sources
+            .filter { $0.undoneAt != nil && $0.previous == nil }
+            .max { ($0.undoneAt ?? .distantPast) < ($1.undoneAt ?? .distantPast) }
+        if let dismissing { return try restore(dismissing.id) ?? found }
+        var item = found
+        item.status = .open
+        if item.dueAt != nil, sources.contains(where: { $0.undoneAt == nil && $0.calendarAdded }) { item.inCalendar = true }
+        let open = store.stamp(item)
+        try TrackedItem.upsert { open }.execute(db)
+        return open
     }
 
     func addToCalendar(_ itemID: TrackedItem.ID) throws -> TrackedItem? {
@@ -509,6 +533,18 @@ enum ItemMatching {
     /// Kinds that count as the same thing when deduplicating.
     static func group(_ kind: TrackedItemKind) -> String {
         kind.isDue ? "due" : kind.rawValue
+    }
+
+    /// The same item as `draft` describes: course, similar title, the due day in Exampleton (or both
+    /// undated) and, for a proposal, the session.
+    static func sameItem(_ item: TrackedItem, _ draft: DeadlineDraft, timeZone: TimeZone) -> Bool {
+        guard item.courseID == draft.courseID, similarTitles(item.title, draft.title) else { return false }
+        if draft.kind.isSessionProposal, item.lectureSessionID != draft.lectureSessionID { return false }
+        switch (item.dueAt, draft.dueAt) {
+        case (nil, nil): return true
+        case let (itemDue?, due?): return CalendarDay(itemDue, in: timeZone) == CalendarDay(due, in: timeZone)
+        default: return false
+        }
     }
 
     /// Word overlap of at least half the shorter title, and no contradicting numbers ("Sheet 1" ≠ "Sheet 2").

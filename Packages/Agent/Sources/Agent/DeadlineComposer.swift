@@ -6,10 +6,12 @@ import StudyCore
 ///
 /// - `preview`: the local parse (`DeadlineParser`) with cached courses; never touches the network.
 /// - `submit`: with an agent runtime and a saved API key the text goes to a `deadlines`
-///   conversation and `.agent(id)` returns at once; if that conversation fails, the local parse is
-///   added when it has a date (the student's words are never lost). Without a key the local parse
-///   is added directly (`created_by = user`, a `chat` source quoting the text, into the calendar
-///   when it is due work); no date → `.notUnderstood`.
+///   conversation and `.agent(id)` returns at once; when the run ends without writing anything
+///   (it failed, or only answered), the local parse is added when it has a date (the student's
+///   words are never lost; a quit mid-run is caught up at the next launch by
+///   `AgentRuntime.recoverInterrupted`). Without a key the local parse is added directly
+///   (`created_by = user`, a `chat` source quoting the text, into the calendar when it is due
+///   work); no date → `.notUnderstood`.
 public actor DeadlineComposer {
     let services: StudyServices
     let memory: DeadlineMemory
@@ -46,19 +48,32 @@ public actor DeadlineComposer {
         if let runtime, services.secrets.hasSecret(for: .anthropicAPIKey) {
             let id = try await runtime.start(.deadlines, text: trimmed)
             let memory = memory
+            let services = services
             Task {
-                guard let ended = await runtime.outcome(id), ended.state == .failed, let draft else { return }
-                do {
-                    _ = try await memory.record(Self.finding(draft, text: trimmed, conversationID: id))
-                } catch {
-                    AgentModule.log.error("Adding the composer's parse failed: \(String(describing: error), privacy: .public)")
-                }
+                guard let ended = await runtime.outcome(id), ended.state != .running, let draft else { return }
+                await Self.addUnlessWritten(draft, text: trimmed, conversationID: id, services: services, memory: memory)
             }
             return .agent(id)
         }
         guard let draft else { return .notUnderstood }
         let result = try await memory.record(Self.finding(draft, text: trimmed, conversationID: nil))
         return .added(result.item.id)
+    }
+
+    /// The local parse of what the student told a conversation that wrote nothing (no source
+    /// quotes it): added as their own words.
+    static func addUnlessWritten(
+        _ draft: DeadlineDraft, text: String, conversationID: AgentConversation.ID, services: StudyServices, memory: DeadlineMemory
+    ) async {
+        do {
+            let wrote = try await services.database.read { db in
+                try TrackedItemSource.where { $0.conversationID.eq(AgentConversation.ID?.some(conversationID)) }.fetchCount(db) > 0
+            }
+            guard !wrote else { return }
+            _ = try await memory.record(finding(draft, text: text, conversationID: conversationID))
+        } catch {
+            AgentModule.log.error("Adding the composer's parse failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     /// The student's own words, parsed deterministically: verified and trusted by construction.

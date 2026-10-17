@@ -251,8 +251,10 @@ public actor CalendarMirror {
 
         // Our events nothing owns: deleted or cancelled sessions, hidden courses, undone or done
         // deadlines, duplicates. Events without our URL prefixes are never touched.
+        var swept = Set<String>()
         for event in existing {
-            guard let id = event.id, Self.owner(of: event.url) != nil, pass.owned[id] == nil else { continue }
+            // Once per event, not per occurrence.
+            guard let id = event.id, Self.owner(of: event.url) != nil, pass.owned[id] == nil, swept.insert(id).inserted else { continue }
             do {
                 try await store.removeEvent(id: id, calendarID: calendarID)
                 pass.report.removed += 1

@@ -13,7 +13,8 @@ import StudyCore
 /// - `send` rebuilds the history from the stored turns byte for byte and appends; nothing is ever
 ///   edited. The model, effort, system prompt and tools of a conversation never change.
 /// - The end: `finished`; an error, a refusal, truncation or the call limit: `failed` with a
-///   readable error. `recoverInterrupted()` fails what a quit left `running`.
+///   readable error. `recoverInterrupted()` fails what a quit left `running` and adds the
+///   composer's parse of what such a `deadlines` conversation was told when it wrote nothing.
 /// - Requests always state `effort`, never force `tool_choice`, never disable thinking.
 public actor AgentRuntime {
     let services: StudyServices
@@ -112,15 +113,40 @@ public actor AgentRuntime {
         await task.value
     }
 
-    /// At launch: conversations a quit left `running` end `failed`.
+    /// At launch: conversations a quit left `running` end `failed`. A `deadlines` conversation
+    /// that wrote nothing gets the composer's parse of the student's last words (relative to when
+    /// it started), as a failed run does.
     public func recoverInterrupted() async {
+        let interrupted: [AgentConversation]
         do {
-            for conversation in try await conversations.running() where tasks[conversation.id] == nil {
-                try await conversations.setState(conversation.id, .failed, error: "The app quit while the agent was working.")
-            }
+            interrupted = try await conversations.running().filter { tasks[$0.id] == nil }
         } catch {
             AgentModule.log.error("Recovering conversations failed: \(String(describing: error), privacy: .public)")
+            return
         }
+        for conversation in interrupted {
+            do {
+                try await conversations.setState(conversation.id, .failed, error: "The app quit while the agent was working.")
+                guard conversation.kind == .deadlines, let text = try await lastStudentText(conversation.id) else { continue }
+                let courses = try await services.database.read { db in try Course.order(by: \.sortOrder).fetchAll(db) }
+                guard let draft = DeadlineParser.parse(text, now: conversation.createdAt, courses: courses) else { continue }
+                await DeadlineComposer.addUnlessWritten(draft, text: text, conversationID: conversation.id, services: services, memory: memory)
+            } catch {
+                AgentModule.log.error("Recovering a conversation failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// The text of the conversation's last user turn that has some (tool results have none).
+    private func lastStudentText(_ id: AgentConversation.ID) async throws -> String? {
+        let turns = try await conversations.turns(id).filter { $0.role == .user }
+        for turn in turns.reversed() {
+            let message = try MessageParam(json: JSONValue.parse(turn.message))
+            let text = message.content.blocks.compactMap(\.textValue).joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { return text }
+        }
+        return nil
     }
 
     /// Waits until the conversation's current run ends; the conversation as it ended.
