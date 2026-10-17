@@ -86,6 +86,6 @@ struct PlaceholderScreen: View {
         ContentUnavailableView {
             Image(systemName: item.systemImage)
         }
-        .navigationTitle(item.title)
+        .screenTitle(item.title)
     }
 }

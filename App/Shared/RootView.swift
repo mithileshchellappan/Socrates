@@ -13,7 +13,11 @@ struct RootView: View {
     @Environment(\.openWindow) private var openWindow
     #endif
     @State private var selection: SidebarItem?
+    @State private var columns: NavigationSplitViewVisibility = .all
     @State private var query = ""
+    /// The last three queries submitted, newest first, one per line (the sidebar lists them on
+    /// the Search screen).
+    @AppStorage("recentSearches") private var recentSearchText = ""
     /// Where the review screen opened from a search hit or Today's hero goes: one request, for
     /// that opening only (the sidebar going elsewhere drops it, so a later visit resumes where
     /// review left off).
@@ -37,8 +41,17 @@ struct RootView: View {
                 description: Text(launchError)
             )
         } else if let center = model.filingCenter {
-            NavigationSplitView {
-                SidebarView(selection: $selection, center: center)
+            NavigationSplitView(columnVisibility: $columns) {
+                SidebarView(selection: $selection, center: center, recentSearches: recentSearches) { text in
+                    query = text
+                    selection = .search
+                }
+                    #if os(macOS)
+                    // The toggle is the content toolbar's (`sidebarToggle`), as in mockups 01 and
+                    // 10. Removing the system one drops the sidebar's column width: set it again.
+                    .toolbar(removing: .sidebarToggle)
+                    .navigationSplitViewColumnWidth(min: 200, ideal: SidebarView.idealWidth, max: 320)
+                    #endif
             } detail: {
                 NavigationStack {
                     DetailView(
@@ -48,8 +61,12 @@ struct RootView: View {
                         target: reviewTarget,
                         record: record
                     )
+                    #if os(macOS)
+                    .toolbar { sidebarToggle }
+                    #endif
                 }
                 .id(selection)
+                .toolbar { trailingItems(center: center) }
             }
             .searchable(text: $query, placement: .toolbar, prompt: Text("Search lectures and notes"))
             .searchFocused($searchFocused)
@@ -57,9 +74,11 @@ struct RootView: View {
                 if !text.trimmingCharacters(in: .whitespaces).isEmpty, selection != .search { selection = .search }
             }
             .onSubmit(of: .search) {
-                guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                let text = query.trimmingCharacters(in: .whitespaces)
+                guard !text.isEmpty else { return }
                 selection = .search
                 searchSubmits += 1
+                remember(text)
             }
             .onChange(of: selection) { _, item in
                 // The target was for the lecture `open` showed; anywhere else drops it.
@@ -71,22 +90,6 @@ struct RootView: View {
             .focusedSceneValue(\.focusSearch) {
                 selection = .search
                 searchFocused = true
-            }
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    // A recording keeps going with its screen closed; show it here, on every
-                    // screen, so it is never forgotten. Clicking brings the live screen back.
-                    if let session = model.live?.session, session.isCapturing, session.startedAt != nil {
-                        Button(action: record) {
-                            RecordingIndicator(session: session)
-                        }
-                    } else if (selection ?? .today) == .today {
-                        // Idle, Record is Today's (mockups 01, 10); File ▸ New Lecture Capture
-                        // (⇧⌘N) starts one from anywhere.
-                        Button("Record", systemImage: "record.circle", action: record)
-                            .labelStyle(.titleAndIcon)
-                    }
-                }
             }
             .smartImport(center)
             .environment(\.openDestination, OpenDestinationAction(open))
@@ -126,6 +129,80 @@ struct RootView: View {
             .background { CalendarSessionsWatcher() }
         }
     }
+
+    private var isToday: Bool { (selection ?? .today) == .today }
+
+    private var recentSearches: [String] {
+        recentSearchText.split(separator: "\n").map(String.init)
+    }
+
+    private func remember(_ text: String) {
+        let recent = [text] + recentSearches.filter { $0.localizedCaseInsensitiveCompare(text) != .orderedSame }
+        recentSearchText = recent.prefix(3).joined(separator: "\n")
+    }
+
+    /// The content toolbar's trailing end (mockup 01): [● Record] […] in their own glass, then the
+    /// search field, which macOS keeps at the trailing edge. Record is Today's while idle (File ▸
+    /// New Lecture Capture, ⇧⌘N, starts one from anywhere); a running recording shows on every
+    /// screen, so it is never forgotten, and brings the live screen back.
+    @ToolbarContentBuilder
+    private func trailingItems(center: FilingCenter) -> some ToolbarContent {
+        if isToday {
+            // Today's title is a toolbar item (`screenTitle`), not the flexible system title: this
+            // keeps Record and More at the trailing end.
+            ToolbarSpacer(.flexible, placement: .primaryAction)
+        }
+        if let session = model.live?.session, session.isCapturing, session.startedAt != nil {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: record) {
+                    RecordingIndicator(session: session)
+                }
+            }
+        } else if isToday {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: record) {
+                    Label {
+                        Text("Record")
+                    } icon: {
+                        Image(systemName: "circle.fill")
+                            .imageScale(.small)
+                    }
+                }
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(.red)
+            }
+        }
+        if isToday {
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Import…") { center.importFiles() }
+                    Button("New Course…") { model.sheet = .newCourse }
+                } label: {
+                    Label("More", systemImage: "ellipsis")
+                }
+                .menuIndicator(.hidden)
+            }
+        }
+    }
+
+    #if os(macOS)
+    /// The sidebar toggle in its own glass at the content toolbar's leading end, before the
+    /// screen's title: on Today (mockups 01, 10), and on any screen while the sidebar is hidden so
+    /// it can come back. View ▸ Show/Hide Sidebar (⌃⌘S) works everywhere.
+    @ToolbarContentBuilder
+    private var sidebarToggle: some ToolbarContent {
+        if isToday || columns == .detailOnly {
+            ToolbarItem(placement: .navigation) {
+                Button(columns == .detailOnly ? LocalizedStringKey("Show Sidebar") : "Hide Sidebar", systemImage: "sidebar.left") {
+                    withAnimation {
+                        columns = columns == .detailOnly ? .all : .detailOnly
+                    }
+                }
+            }
+        }
+    }
+    #endif
 
     /// Routes a feature screen's request: the sidebar selection, plus where a lecture opens.
     private func open(_ destination: StudyDestination) {

@@ -61,9 +61,15 @@ public struct SessionText: Sendable {
         return "\(clock(start))–\(clock(end))"
     }
 
-    /// "Wed 21 Oct".
+    /// "Wed 21 Oct" (German "Mo. 19 Okt."): weekday, day, month whatever the region, the pattern
+    /// of StudyUI's `DayText` that the sidebar and the other screens use.
     public func day(_ date: Date) -> String {
-        date.formatted(Date.FormatStyle(locale: locale, timeZone: timeZone).weekday(.abbreviated).day().month(.abbreviated))
+        date.formatted(Date.VerbatimFormatStyle(
+            format: "\(weekday: .abbreviated) \(day: .defaultDigits) \(month: .abbreviated)",
+            locale: locale,
+            timeZone: timeZone,
+            calendar: Calendar(identifier: .gregorian)
+        ))
     }
 
     /// "Wednesday".
