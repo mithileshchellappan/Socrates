@@ -1,18 +1,30 @@
 import StudyCore
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 extension Color {
-    /// `#rrggbb` (sRGB). Returns nil for anything else.
+    /// A course colour from `#rrggbb` (sRGB): the hex itself in light appearance, a brighter
+    /// variant in dark (`CourseColor.dark`, mockups: #0a84ff → #409cff). Nil for anything else.
     public init?(hex: String) {
-        var digits = Substring(hex)
-        if digits.hasPrefix("#") { digits = digits.dropFirst() }
-        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
-        self.init(
-            .sRGB,
-            red: Double((value >> 16) & 0xFF) / 255,
-            green: Double((value >> 8) & 0xFF) / 255,
-            blue: Double(value & 0xFF) / 255
-        )
+        guard let light = CourseColor.rgb(hex: hex) else { return nil }
+        let dark = CourseColor.dark(light)
+        #if canImport(AppKit)
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            let rgb = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+        })
+        #elseif canImport(UIKit)
+        self.init(uiColor: UIColor { traits in
+            let rgb = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+        })
+        #else
+        self.init(.sRGB, red: light.red, green: light.green, blue: light.blue)
+        #endif
     }
 
     /// A course's colour, or the accent colour when its hex is unreadable.
@@ -22,6 +34,96 @@ extension Color {
 
     /// The professor's voice (pins, quote bars, exam stars). Orange is reserved for it.
     public static let professor = Color.orange
+}
+
+/// Course colours as sRGB components, and their dark-appearance variants.
+enum CourseColor {
+    struct RGB: Equatable, Sendable {
+        var red: Double
+        var green: Double
+        var blue: Double
+
+        init(red: Double, green: Double, blue: Double) {
+            self.red = red
+            self.green = green
+            self.blue = blue
+        }
+
+        init(_ value: UInt32) {
+            self.init(
+                red: Double((value >> 16) & 0xFF) / 255,
+                green: Double((value >> 8) & 0xFF) / 255,
+                blue: Double(value & 0xFF) / 255
+            )
+        }
+
+        /// "#409cff".
+        var hex: String {
+            func byte(_ component: Double) -> Int { Int((min(max(component, 0), 1) * 255).rounded()) }
+            return String(format: "#%02x%02x%02x", byte(red), byte(green), byte(blue))
+        }
+    }
+
+    /// `#rrggbb` or `rrggbb`; nil for anything else.
+    static func rgb(hex: String) -> RGB? {
+        var digits = Substring(hex)
+        if digits.hasPrefix("#") { digits = digits.dropFirst() }
+        guard digits.count == 6, digits.allSatisfy(\.isHexDigit), let value = UInt32(digits, radix: 16) else { return nil }
+        return RGB(value)
+    }
+
+    /// The mockups' dark course colours for the default palette's first three.
+    private static let darkPalette: [UInt32: UInt32] = [
+        0x0a84ff: 0x409cff,
+        0x2fae55: 0x3fd06b,
+        0xe0457b: 0xff6b9a
+    ]
+
+    /// The colour in dark appearance: the mockups' value for a palette colour, else the same hue
+    /// brighter and slightly less saturated (what the mockups do to the palette).
+    static func dark(_ light: RGB) -> RGB {
+        let key = UInt32((light.red * 255).rounded()) << 16 | UInt32((light.green * 255).rounded()) << 8 | UInt32((light.blue * 255).rounded())
+        if let dark = darkPalette[key] { return RGB(dark) }
+        var (hue, saturation, brightness) = hsb(light)
+        saturation *= 0.86
+        brightness = min(1, brightness + 0.14)
+        return rgb(hue: hue, saturation: saturation, brightness: brightness)
+    }
+
+    private static func hsb(_ color: RGB) -> (Double, Double, Double) {
+        let high = max(color.red, color.green, color.blue)
+        let low = min(color.red, color.green, color.blue)
+        let delta = high - low
+        var hue = 0.0
+        if delta > 0 {
+            if high == color.red {
+                hue = ((color.green - color.blue) / delta).truncatingRemainder(dividingBy: 6)
+            } else if high == color.green {
+                hue = (color.blue - color.red) / delta + 2
+            } else {
+                hue = (color.red - color.green) / delta + 4
+            }
+            hue /= 6
+            if hue < 0 { hue += 1 }
+        }
+        return (hue, high == 0 ? 0 : delta / high, high)
+    }
+
+    private static func rgb(hue: Double, saturation: Double, brightness: Double) -> RGB {
+        let sector = hue * 6
+        let chroma = brightness * saturation
+        let second = chroma * (1 - abs(sector.truncatingRemainder(dividingBy: 2) - 1))
+        let (red, green, blue): (Double, Double, Double) = switch Int(sector) % 6 {
+        case 0: (chroma, second, 0)
+        case 1: (second, chroma, 0)
+        case 2: (0, chroma, second)
+        case 3: (0, second, chroma)
+        case 4: (second, 0, chroma)
+        default: (chroma, 0, second)
+        }
+        let base = brightness - chroma
+        return RGB(red: red + base, green: green + base, blue: blue + base)
+    }
 }
 
 /// Times on a recording clock as "m:ss" or "h:mm:ss" (shown in SF Mono).
@@ -34,15 +136,22 @@ public enum TimeText {
     }
 }
 
-/// A day as every screen writes it ("Wed, Oct 14" or "Mi., 14. Okt.", the locale's own order):
-/// sidebar, Today, review, search, filing toasts and Course Settings share this skeleton.
+/// A day as every screen writes it: weekday, day, month, in that order and without commas ("Mon
+/// 12 Oct", German "Mo. 12 Okt."), the order of the toolbar's "Friday, 16 October 2026" whatever
+/// the region. Sidebar, Today, review, search, filing toasts and Course Settings use this pattern
+/// (`SessionText.day` in Courses writes the same).
 public enum DayText {
     public static func day(_ date: Date, locale: Locale = .current, timeZone: TimeZone = .current) -> String {
         date.formatted(style(locale: locale, timeZone: timeZone))
     }
 
-    public static func style(locale: Locale = .current, timeZone: TimeZone = .current) -> Date.FormatStyle {
-        Date.FormatStyle(locale: locale, timeZone: timeZone).weekday(.abbreviated).day().month(.abbreviated)
+    public static func style(locale: Locale = .current, timeZone: TimeZone = .current) -> Date.VerbatimFormatStyle {
+        Date.VerbatimFormatStyle(
+            format: "\(weekday: .abbreviated) \(day: .defaultDigits) \(month: .abbreviated)",
+            locale: locale,
+            timeZone: timeZone,
+            calendar: Calendar(identifier: .gregorian)
+        )
     }
 }
 
