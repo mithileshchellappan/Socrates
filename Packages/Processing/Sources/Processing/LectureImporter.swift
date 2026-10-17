@@ -6,6 +6,8 @@ import StudyCore
 public enum LectureImportError: Error, Equatable, Sendable, LocalizedError {
     /// The course does not exist (a lecture always belongs to a course).
     case courseMissing
+    /// The lecture or session to attach to does not exist (any more).
+    case lectureMissing
     /// The file is not audio this device can decode.
     case unreadableAudio(String)
     /// The package was imported before and its audio is gone, but no recording row exists.
@@ -14,10 +16,25 @@ public enum LectureImportError: Error, Equatable, Sendable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .courseMissing: String(localized: "Choose a course.")
+        case .lectureMissing: String(localized: "The lecture is gone.")
         case .unreadableAudio(let name): String(localized: "“\(name)” can’t be read as audio.")
         case .packageAlreadyImported(let name): String(localized: "“\(name)” was imported before.")
         }
     }
+}
+
+/// Which lecture an import goes into.
+public enum LectureTarget: Sendable, Hashable {
+    /// A new lecture. `number`, `heldAt` and `sessionID` fill in what the import does not know
+    /// (held-at defaults to the recording start).
+    case newLecture(number: Int? = nil, heldAt: Date? = nil, sessionID: LectureSession.ID? = nil)
+    /// An existing lecture (its course wins over the import's).
+    case lecture(Lecture.ID)
+    /// The lecture filed to this session; created, linked to the session, when there is none.
+    case session(LectureSession.ID)
+
+    /// A new lecture with nothing known in advance.
+    public static let new = LectureTarget.newLecture()
 }
 
 /// What an import created (or found, when the same recording was imported before).
@@ -28,6 +45,19 @@ public struct ImportedLecture: Sendable, Hashable {
     /// The transcription job; nil when the recording was imported before and already has one.
     public var job: Job?
     public var wasAlreadyImported: Bool
+    /// The import created `lecture` (false when it attached to an existing one).
+    public var createdLecture: Bool = false
+}
+
+/// A deck linked to a lecture by `LectureImporter.attachDeck`.
+public struct AttachedDeck: Sendable, Hashable {
+    public var lecture: Lecture
+    public var deck: Deck
+    /// The coarse, untimed span tying the deck to the lecture.
+    public var span: LectureDeckSpan
+    public var createdLecture: Bool
+    /// `align` jobs queued for the lecture's recordings that already had a transcript.
+    public var alignJobs: [Job]
 }
 
 /// Brings a lecture into the library and queues its processing.
@@ -38,10 +68,17 @@ public struct ImportedLecture: Sendable, Hashable {
 /// - `importRecording(audio:deck:courseID:)`: any audio file the system can decode (Voice
 ///   Memos `.qta`/`.m4a`, `.wav`, `.caf`, …) plus an optional slide PDF.
 ///
+/// Both create a new lecture by default; `into:` attaches to an existing lecture or to a
+/// session's lecture instead (smart import). `attachDeck` links a slide deck on its own, and
+/// queues alignment when the lecture's recordings are already transcribed.
+///
 /// The jobs run in `LectureProcessor`.
 public struct LectureImporter: Sendable {
     public let services: StudyServices
     private let now: @Sendable () -> Date
+
+    /// Extra rows written in the same transaction as the import (e.g. smart import's `filing`).
+    public typealias Companion = @Sendable (Database, ImportedLecture) throws -> Void
 
     public init(services: StudyServices, now: @escaping @Sendable () -> Date = { Date() }) {
         self.services = services
@@ -54,9 +91,11 @@ public struct LectureImporter: Sendable {
 
     /// Imports a lecture package written by live capture.
     ///
-    /// `courseID` and `deckURL` fill in what the manifest lacks; the manifest's lecture id is kept
-    /// so notes taken live stay attached. A package imported before (its audio already moved into
-    /// the library) resolves to its existing recording.
+    /// `courseID` and `deckURL` fill in what the manifest lacks. By default the manifest's
+    /// lecture id is kept so notes taken live stay attached; `into:` files the capture into an
+    /// existing lecture or a session's lecture instead (notes and stamps move with it). A package
+    /// imported before (its audio already moved into the library) resolves to its existing
+    /// recording.
     ///
     /// Only packages inside the library's Recordings folder (written by live capture here) lose
     /// their audio and are marked imported. A package picked anywhere else (a backup, a USB
@@ -67,12 +106,14 @@ public struct LectureImporter: Sendable {
         at url: URL,
         courseID: Course.ID? = nil,
         deckURL: URL? = nil,
-        title: String? = nil
+        title: String? = nil,
+        into target: LectureTarget = .new
     ) async throws -> ImportedLecture {
         let package = LecturePackage(url: url)
         let contents = try LecturePackageReader.read(package)
         let manifest = contents.manifest
-        guard let course = try await fetchCourse(courseID ?? manifest.courseID) else {
+        let targetCourse = try await targetCourseID(target)
+        guard let course = try await fetchCourse(targetCourse ?? courseID ?? manifest.courseID) else {
             throw LectureImportError.courseMissing
         }
 
@@ -90,15 +131,16 @@ public struct LectureImporter: Sendable {
             filedLecture = try await store.fetch(Lecture.self, id: lectureID)
         }
         let lecture: Lecture
+        var createdLecture = false
         if let filedLecture {
             lecture = filedLecture
         } else {
-            lecture = try await ensureLecture(
-                id: manifest.lectureID,
-                course: course,
-                title: title ?? deck?.title ?? "",
-                heldAt: manifest.startedAt
+            let plan = try await lecturePlan(
+                for: target, course: course, newID: manifest.lectureID,
+                title: title ?? deck?.title ?? "", heldAt: manifest.startedAt ?? now()
             )
+            lecture = plan.needsSave ? try await store.save(plan.lecture) : plan.lecture
+            createdLecture = plan.isNew
         }
 
         if alreadyImported {
@@ -117,7 +159,7 @@ public struct LectureImporter: Sendable {
             return ImportedLecture(
                 lecture: lecture, recording: recording, deck: deck,
                 job: jobCount == 0 ? try await enqueueTranscription(lecture: lecture, recording: recording) : nil,
-                wasAlreadyImported: true
+                wasAlreadyImported: true, createdLecture: createdLecture
             )
         }
 
@@ -138,7 +180,10 @@ public struct LectureImporter: Sendable {
         Log.importer.info(
             "Imported capture \(package.name, privacy: .public): \(result.segments.count) segments, \(result.slideEvents.count) events"
         )
-        return ImportedLecture(lecture: lecture, recording: result.recording, deck: deck, job: job, wasAlreadyImported: false)
+        return ImportedLecture(
+            lecture: lecture, recording: result.recording, deck: deck, job: job,
+            wasAlreadyImported: false, createdLecture: createdLecture
+        )
     }
 
     /// Imports every capture package in `directory` not imported yet (for example after a crash
@@ -161,19 +206,24 @@ public struct LectureImporter: Sendable {
 
     // MARK: - Audio file + slides
 
-    /// Imports an existing recording and, optionally, its slide PDF as a new lecture.
+    /// Imports an existing recording and, optionally, its slide PDF, into a new lecture or the
+    /// lecture `into` names.
     ///
     /// The audio file is copied into the BlobStore unchanged and becomes a one-segment recording.
-    /// Importing the same audio again returns the lecture it already belongs to.
+    /// Importing the same audio again returns the lecture it already belongs to (and `then` is
+    /// not called). `then` runs inside the import's write transaction.
     @concurrent
     public func importRecording(
         audio url: URL,
         deck deckURL: URL? = nil,
         courseID: Course.ID,
         title: String? = nil,
-        startedAt: Date? = nil
+        startedAt: Date? = nil,
+        into target: LectureTarget = .new,
+        then companion: Companion? = nil
     ) async throws -> ImportedLecture {
-        guard let course = try await fetchCourse(courseID) else { throw LectureImportError.courseMissing }
+        let targetCourse = try await targetCourseID(target)
+        guard let course = try await fetchCourse(targetCourse ?? courseID) else { throw LectureImportError.courseMissing }
         let info = try Self.audioInfo(url)
         let ref = try services.blobs.importFile(at: url, mode: .copy)
 
@@ -183,13 +233,12 @@ public struct LectureImporter: Sendable {
 
         let deck = try await deckURL.asyncMap { try await DeckImporter(services: services).importDeck(at: $0, courseID: course.id).0 }
         let started = startedAt ?? Self.creationDate(of: url) ?? now()
-        let lecture = Lecture(
-            courseID: course.id,
+        let plan = try await lecturePlan(
+            for: target, course: course, newID: nil,
             title: title ?? deck?.title ?? url.deletingPathExtension().lastPathComponent,
-            heldAt: started,
-            language: course.language,
-            createdAt: now()
+            heldAt: started
         )
+        let lecture = plan.lecture
         let recording = Recording(
             lectureID: lecture.id,
             courseID: course.id,
@@ -220,17 +269,120 @@ public struct LectureImporter: Sendable {
             lecture: store.stamp(lecture), recording: store.stamp(recording), segment: store.stamp(segment),
             span: span.map(store.stamp), job: store.stamp(job)
         )
+        let imported = ImportedLecture(
+            lecture: rows.lecture, recording: rows.recording, deck: deck, job: rows.job,
+            wasAlreadyImported: false, createdLecture: plan.isNew
+        )
+        let writesLecture = plan.needsSave
         try await services.database.write { db in
-            try Lecture.upsert { rows.lecture }.execute(db)
+            if writesLecture { try Lecture.upsert { rows.lecture }.execute(db) }
             try Recording.upsert { rows.recording }.execute(db)
             try RecordingSegment.upsert { rows.segment }.execute(db)
             if let span = rows.span { try LectureDeckSpan.upsert { span }.execute(db) }
             try Job.upsert { rows.job }.execute(db)
+            try companion?(db, imported)
         }
         Log.importer.info(
             "Imported \(url.lastPathComponent, privacy: .public): \(info.duration, privacy: .public) s at \(info.sampleRate, privacy: .public) Hz"
         )
-        return ImportedLecture(lecture: rows.lecture, recording: rows.recording, deck: deck, job: rows.job, wasAlreadyImported: false)
+        return imported
+    }
+
+    /// Stores a recording that belongs to no course yet (smart import found none): the audio in
+    /// the BlobStore and a `Recording` + one segment without lecture, course or job. Filing it
+    /// later (`Recording.lectureID`) and queuing its transcription is the caller's.
+    /// Returns the existing recording when the same audio was stored before.
+    @concurrent
+    public func storeRecording(audio url: URL, startedAt: Date? = nil) async throws -> Recording {
+        let info = try Self.audioInfo(url)
+        let ref = try services.blobs.importFile(at: url, mode: .copy)
+        let sha = ref.sha256
+        if let existing = try await services.database.read({ db in
+            try RecordingSegment.where { $0.blobSHA256.eq(sha) }.fetchOne(db)
+                .flatMap { try Recording.find($0.recordingID).fetchOne(db) }
+        }) {
+            return existing
+        }
+        let recording = store.stamp(Recording(
+            source: .file, state: .finished, startedAt: startedAt ?? Self.creationDate(of: url) ?? now(),
+            sampleRate: info.sampleRate, channelCount: info.channelCount, duration: info.duration
+        ))
+        let segment = store.stamp(RecordingSegment(
+            recordingID: recording.id, sequence: 0, startSample: 0, frameCount: info.frameCount,
+            blobSHA256: ref.sha256, blobPath: ref.relativePath, byteCount: ref.byteCount ?? 0, fileFormat: ref.fileExtension
+        ))
+        try await services.database.write { db in
+            try Recording.upsert { recording }.execute(db)
+            try RecordingSegment.upsert { segment }.execute(db)
+        }
+        return recording
+    }
+
+    // MARK: - Slides on their own
+
+    /// Links an imported deck to the lecture `target` names (creating it when needed) with a
+    /// coarse span over the whole deck, sets the deck's course, and queues `align` for the
+    /// lecture's recordings that already have a transcript, all in one transaction (with `then`).
+    @concurrent
+    public func attachDeck(
+        _ deck: Deck,
+        to target: LectureTarget,
+        courseID: Course.ID,
+        title: String? = nil,
+        then companion: (@Sendable (Database, AttachedDeck) throws -> Void)? = nil
+    ) async throws -> AttachedDeck {
+        let targetCourse = try await targetCourseID(target)
+        guard let course = try await fetchCourse(targetCourse ?? courseID) else { throw LectureImportError.courseMissing }
+        let plan = try await lecturePlan(for: target, course: course, newID: nil, title: title ?? deck.title, heldAt: nil)
+        let store = store
+        let lecture = store.stamp(plan.lecture)
+        var deck = deck
+        deck.courseID = course.id
+        let stampedDeck = store.stamp(deck)
+        let writesLecture = plan.needsSave
+        let created = plan.isNew
+        let now = now()
+        return try await services.database.write { db in
+            if writesLecture { try Lecture.upsert { lecture }.execute(db) }
+            try Deck.upsert { stampedDeck }.execute(db)
+            let existing = try LectureDeckSpan
+                .where { $0.lectureID.eq(lecture.id) && $0.deckID.eq(stampedDeck.id) && $0.startTime.is(nil) }
+                .fetchOne(db)
+            let span = store.stamp(LectureDeckSpan(
+                id: existing?.id ?? UUID(), lectureID: lecture.id, deckID: stampedDeck.id,
+                firstPage: existing?.firstPage ?? 1, lastPage: existing?.lastPage ?? stampedDeck.pageCount,
+                source: existing?.source ?? .manual
+            ))
+            try LectureDeckSpan.upsert { span }.execute(db)
+            let jobs = try Self.alignmentJobs(lectureID: lecture.id, in: db, now: now).map(store.stamp)
+            for job in jobs { try Job.upsert { job }.execute(db) }
+            let attached = AttachedDeck(lecture: lecture, deck: stampedDeck, span: span, createdLecture: created, alignJobs: jobs)
+            try companion?(db, attached)
+            return attached
+        }
+    }
+
+    /// `align` jobs (not saved) for the lecture's recordings that have a transcript and no queued
+    /// or running transcription or alignment: the deck/recording pairing changed, so alignment
+    /// must run again. Recordings still waiting for their transcript get alignment queued by
+    /// the transcription itself. For use inside a write transaction.
+    public static func alignmentJobs(lectureID: Lecture.ID, in db: Database, now: Date = Date()) throws -> [Job] {
+        let recordings = try Recording.where { $0.lectureID.eq(lectureID) }.fetchAll(db)
+        var jobs: [Job] = []
+        for recording in recordings {
+            let lines = try TranscriptSegment.where { $0.recordingID.eq(recording.id) }.fetchCount(db)
+            guard lines > 0 else { continue }
+            let pending = try Job
+                .where {
+                    $0.recordingID.eq(recording.id)
+                        && ($0.state.eq(JobState.queued) || $0.state.eq(JobState.running))
+                        && ($0.stage.eq(JobStage.align) || $0.stage.eq(JobStage.transcribe))
+                }
+                .fetchCount(db)
+            guard pending == 0 else { continue }
+            jobs.append(Job(stage: .align, lectureID: lectureID, recordingID: recording.id, createdAt: now))
+        }
+        return jobs
     }
 
     // MARK: - Helpers
@@ -280,24 +432,84 @@ public struct LectureImporter: Sendable {
         return try await store.fetch(Course.self, id: id)
     }
 
+    /// The course of an existing lecture or session target; nil for a new lecture.
+    private func targetCourseID(_ target: LectureTarget) async throws -> Course.ID? {
+        switch target {
+        case .newLecture:
+            return nil
+        case .lecture(let id):
+            guard let lecture = try await store.fetch(Lecture.self, id: id) else { throw LectureImportError.lectureMissing }
+            return lecture.courseID
+        case .session(let id):
+            guard let session = try await store.fetch(LectureSession.self, id: id) else { throw LectureImportError.lectureMissing }
+            return session.courseID
+        }
+    }
+
+    private struct LecturePlan {
+        var lecture: Lecture
+        /// The lecture does not exist yet.
+        var isNew: Bool
+        /// The row must be written (new, or an existing lecture that learned its date).
+        var needsSave: Bool
+    }
+
+    /// The lecture an import goes into, not yet written. An existing lecture without a session
+    /// whose date is unknown or only a day (a deck's title-slide date) takes `heldAt`.
+    private func lecturePlan(for target: LectureTarget, course: Course, newID: Lecture.ID?, title: String, heldAt: Date?) async throws -> LecturePlan {
+        func newLecture(number: Int?, heldAt: Date?, sessionID: LectureSession.ID?) async throws -> LecturePlan {
+            if let newID, let existing = try await store.fetch(Lecture.self, id: newID) {
+                return LecturePlan(lecture: existing, isNew: false, needsSave: false)
+            }
+            return LecturePlan(
+                lecture: Lecture(
+                    id: newID ?? UUID(), courseID: course.id, lectureSessionID: sessionID, number: number,
+                    title: title, heldAt: heldAt, language: course.language, createdAt: now()
+                ),
+                isNew: true, needsSave: true
+            )
+        }
+        func dated(_ lecture: Lecture) async throws -> LecturePlan {
+            var lecture = lecture
+            guard let heldAt, lecture.lectureSessionID == nil else {
+                return LecturePlan(lecture: lecture, isNew: false, needsSave: false)
+            }
+            let zone = try await SemesterRepository(store: store).semester(for: course, on: heldAt).zone
+            let sameDay = lecture.heldAt.map { CalendarDay($0, in: zone) == CalendarDay(heldAt, in: zone) } ?? true
+            guard lecture.heldAt == nil || (sameDay && Self.isWholeDay(lecture.heldAt, in: zone)) else {
+                return LecturePlan(lecture: lecture, isNew: false, needsSave: false)
+            }
+            lecture.heldAt = heldAt
+            return LecturePlan(lecture: lecture, isNew: false, needsSave: true)
+        }
+
+        switch target {
+        case .newLecture(let number, let date, let sessionID):
+            return try await newLecture(number: number, heldAt: date ?? heldAt, sessionID: sessionID)
+        case .lecture(let id):
+            guard let lecture = try await store.fetch(Lecture.self, id: id) else { throw LectureImportError.lectureMissing }
+            return try await dated(lecture)
+        case .session(let id):
+            guard let session = try await store.fetch(LectureSession.self, id: id) else { throw LectureImportError.lectureMissing }
+            if let lecture = try await LectureRepository(store: store).lecture(sessionID: id) {
+                return LecturePlan(lecture: lecture, isNew: false, needsSave: false)
+            }
+            return try await newLecture(number: session.number, heldAt: session.startsAt, sessionID: session.id)
+        }
+    }
+
+    /// True for local midnight in `zone`: a lecture dated by day only.
+    public static func isWholeDay(_ date: Date?, in zone: TimeZone) -> Bool {
+        guard let date else { return false }
+        return CalendarDay(date, in: zone).start(in: zone) == date
+    }
+
     private func existingDeck(id: Deck.ID?, sha256: String?) async throws -> Deck? {
         if let id, let deck = try await store.fetch(Deck.self, id: id) { return deck }
         guard let sha256, !sha256.isEmpty else { return nil }
         return try await services.database.read { db in
             try Deck.where { $0.blobSHA256.eq(sha256) }.fetchOne(db)
         }
-    }
-
-    private func ensureLecture(id: Lecture.ID?, course: Course, title: String, heldAt: Date?) async throws -> Lecture {
-        if let id, let lecture = try await store.fetch(Lecture.self, id: id) { return lecture }
-        return try await store.save(Lecture(
-            id: id ?? UUID(),
-            courseID: course.id,
-            title: title,
-            heldAt: heldAt ?? now(),
-            language: course.language,
-            createdAt: now()
-        ))
     }
 
     /// The coarse, untimed span that says which deck (and pages) a lecture uses. Alignment reads
