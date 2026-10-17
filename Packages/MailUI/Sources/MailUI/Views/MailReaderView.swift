@@ -8,6 +8,11 @@ import SwiftUI
 ///
 /// Observes only this message's rows; the body is rendered once per message version (a sync
 /// burst touching other mail re-reads the rows without parsing HTML again).
+///
+/// Translated (the toolbar's Translate, `MailTranslations`): the subject and the body's text in
+/// the student's language, the body grey (machine-written sentences, DESIGN §5.1); the original
+/// stays up until the translation lands. The found block, attachments and the draft stay as they
+/// are.
 struct MailReaderView: View {
     let messageID: MailMessage.ID
     let now: Date
@@ -15,6 +20,8 @@ struct MailReaderView: View {
 
     @Fetch private var data: MailReaderData
     private let database: (any DatabaseReader)?
+    @Environment(\.mailTranslator) private var translator
+    private let translations = MailTranslations.shared
 
     init(messageID: MailMessage.ID, blobRoot: URL?, now: Date, dates: MailDateText, database: (any DatabaseReader)?) {
         self.database = database
@@ -26,9 +33,11 @@ struct MailReaderView: View {
 
     var body: some View {
         if let message = data.message {
+            let translated = translations.translation(for: message.id, subject: message.subject, body: data.body)
+            let subject = translated?.subject ?? message.subject
             ReaderScroll {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(message.subject.isEmpty ? String(localized: "No Subject") : message.subject)
+                    Text(subject.isEmpty ? String(localized: "No Subject") : subject)
                         .font(.system(size: 17, weight: .semibold))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -36,7 +45,8 @@ struct MailReaderView: View {
                     if !data.found.isEmpty {
                         FoundBlock(rows: data.found, dates: dates)
                     }
-                    MailBodyView(mailBody: data.body)
+                    MailBodyView(mailBody: translated?.body ?? data.body)
+                        .foregroundStyle(translated == nil ? .primary : .secondary)
                     if !data.attachments.isEmpty {
                         FlowLayout(spacing: 8, lineSpacing: 8) {
                             ForEach(data.attachments) { attachment in
@@ -51,9 +61,33 @@ struct MailReaderView: View {
                 .padding(.bottom, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .modifier(MailTranslationRunner(
+                job: translations.job(for: message.id, subject: message.subject, body: data.body, target: translator.target),
+                translator: translator,
+                translations: translations
+            ))
+            .task(id: LanguageKey(messageID: message.id, html: message.htmlSHA256, text: message.bodyText.count)) {
+                await findLanguage(subject: message.subject, body: data.body)
+            }
         } else {
             Color.clear
         }
+    }
+
+    private struct LanguageKey: Hashable {
+        var messageID: MailMessage.ID
+        var html: String
+        var text: Int
+    }
+
+    /// Offers Translate when the mail is in another language than the student's (one the system
+    /// translates). The recognizer runs off the main actor; the reader never waits for it.
+    private func findLanguage(subject: String, body: MailBody) async {
+        let language = await MailLanguage.dominant(subject: subject, body: body)
+        var source = MailLanguage.translationSource(of: language, for: translator.target)
+        if let candidate = source, await !translations.supports(candidate, with: translator) { source = nil }
+        guard !Task.isCancelled else { return }
+        translations.setSource(source, for: messageID)
     }
 }
 

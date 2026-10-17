@@ -11,6 +11,10 @@ struct MailScreenCommands {
     var hasSelection: Bool
     var isFlagged: Bool
     var isUnread: Bool
+    /// The selected message is in another language than the student's.
+    var canTranslate: Bool
+    /// The selected message is shown translated.
+    var isTranslated: Bool
     /// A text field of the screen (the editor, the window's search field) has focus.
     var isEditingText: Bool
 
@@ -20,6 +24,7 @@ struct MailScreenCommands {
     var archive: () -> Void
     var toggleFlag: () -> Void
     var toggleSeen: () -> Void
+    var toggleTranslation: () -> Void
 }
 
 extension FocusedValues {
@@ -28,12 +33,13 @@ extension FocusedValues {
 }
 
 /// The Message menu: New Message, Get Mail, Reply (⌘R), Send (⇧⌘D, from the composer only),
-/// Archive (⌃⌘A), Flag (⇧⌘L), Mark as Read/Unread (⇧⌘U).
+/// Archive (⌃⌘A), Flag (⇧⌘L), Mark as Read/Unread (⇧⌘U), Translate / Show Original (⌃⌘T, only
+/// for a message in another language than the student's).
 ///
 /// A menu item takes its key equivalent even while disabled (docs/decisions.md), so the keys are
 /// attached only while the Mail screen is in the key window (Send only while a composer is on
-/// screen); Reply, Archive, Flag and Mark are off while text is being typed. New Message and Get
-/// Mail have no keys: ⌘N is File ▸ New Window and ⇧⌘N New Lecture Capture.
+/// screen); Reply, Archive, Flag, Mark and Translate are off while text is being typed. New
+/// Message and Get Mail have no keys: ⌘N is File ▸ New Window and ⇧⌘N New Lecture Capture.
 ///
 ///     WindowGroup { … }.commands { MailCommands() }
 public struct MailCommands: Commands {
@@ -67,6 +73,10 @@ public struct MailCommands: Commands {
             Button(mail?.isUnread == true ? "Mark as Read" : "Mark as Unread") { mail?.toggleSeen() }
                 .keyboardShortcut(keys ? KeyboardShortcut("u", modifiers: [.command, .shift]) : nil)
                 .disabled(mail?.hasSelection != true || editing)
+            Divider()
+            Button(mail?.isTranslated == true ? "Show Original" : "Translate") { mail?.toggleTranslation() }
+                .keyboardShortcut(keys ? KeyboardShortcut("t", modifiers: [.command, .control]) : nil)
+                .disabled(mail?.canTranslate != true || editing)
         }
     }
 }

@@ -190,8 +190,15 @@ enum MailBodyRenderer {
 
     /// `text` with http(s) and mailto links detected.
     static func linked(_ text: String, detector: NSDataDetector?) -> AttributedString {
-        var attributed = AttributedString(text)
-        guard let detector else { return attributed }
+        detectingLinks(in: AttributedString(text), detector: detector)
+    }
+
+    /// `text` with http(s) and mailto links detected, unless it already has links (a translation
+    /// that kept the original's).
+    static func detectingLinks(in attributed: AttributedString, detector: NSDataDetector?) -> AttributedString {
+        var attributed = attributed
+        guard let detector, !attributed.runs.contains(where: { $0.link != nil }) else { return attributed }
+        let text = String(attributed.characters)
         let matches = detector.matches(in: text, range: NSRange(text.startIndex..., in: text))
         for match in matches {
             guard let url = match.url, let safe = safeLink(url.absoluteString),
