@@ -20,6 +20,16 @@ public enum KeychainError: Error, Hashable, Sendable {
     case invalidData
 }
 
+extension KeychainError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .missingEntitlement: "The Keychain is not available to this build."
+        case .unexpectedStatus(let status): "The Keychain refused the change (\(status))."
+        case .invalidData: "The Keychain item could not be read."
+        }
+    }
+}
+
 /// Address of a generic-password item.
 public struct KeychainItem: Hashable, Sendable {
     public let service: String
@@ -80,21 +90,28 @@ public final class KeychainSecretStore: SecretStore {
 
     public func secret(for key: SecretKey) throws -> String? {
         let item = item(for: key)
-        let (data, backend) = try perform { backend in
+        // A read that finds nothing does not settle the backend: an ad-hoc build reads
+        // "not found" (-25300) from the data-protection keychain and only fails on writes.
+        let (data, backend) = try perform(settles: false) { backend in
             (try operations.read(item, backend: backend), backend)
         }
         if let data {
+            settle(on: backend)
             return try decode(data)
         }
-        if backend == .dataProtection, candidates.contains(.fileBased),
-            let legacy = try? operations.read(item, backend: .fileBased) {
+        guard backend == .dataProtection, candidates.contains(.fileBased),
+            let legacy = try? operations.read(item, backend: .fileBased)
+        else { return nil }
+        do {
             try operations.write(legacy, to: item, backend: .dataProtection)
             try? operations.delete(item, backend: .fileBased)
+            settle(on: .dataProtection)
             // The key name can hold the uni login name; keep it out of the readable log.
             Log.keychain.info("Moved \(key.rawValue, privacy: .private(mask: .hash)) to the data-protection keychain")
-            return try decode(legacy)
+        } catch KeychainError.missingEntitlement {
+            settle(on: .fileBased)
         }
-        return nil
+        return try decode(legacy)
     }
 
     public func setSecret(_ value: String, for key: SecretKey) throws {
@@ -125,16 +142,17 @@ public final class KeychainSecretStore: SecretStore {
         return string
     }
 
-    /// Runs `body` on the resolved backend, or tries candidates in order until one is entitled.
-    private func perform<Result>(_ body: (KeychainBackend) throws -> Result) throws -> Result {
-        if let backend = activeBackend {
-            return try body(backend)
-        }
-        for backend in candidates {
+    /// Runs `body` on the settled backend, or tries candidates in order until one is entitled.
+    /// A backend that turns out to be unentitled later (a write after an empty read) is skipped.
+    private func perform<Result>(
+        settles: Bool = true,
+        _ body: (KeychainBackend) throws -> Result
+    ) throws -> Result {
+        let start = activeBackend.flatMap { candidates.firstIndex(of: $0) } ?? candidates.startIndex
+        for backend in candidates[start...] {
             do {
                 let result = try body(backend)
-                resolved.withLock { $0 = backend }
-                Log.keychain.info("Using \(backend.rawValue, privacy: .public) keychain")
+                if settles { settle(on: backend) }
                 return result
             } catch KeychainError.missingEntitlement {
                 Log.keychain.info("\(backend.rawValue, privacy: .public) keychain unavailable (missing entitlement)")
@@ -142,6 +160,14 @@ public final class KeychainSecretStore: SecretStore {
             }
         }
         throw KeychainError.missingEntitlement
+    }
+
+    private func settle(on backend: KeychainBackend) {
+        let changed = resolved.withLock { current in
+            defer { current = backend }
+            return current != backend
+        }
+        if changed { Log.keychain.info("Using \(backend.rawValue, privacy: .public) keychain") }
     }
 }
 
