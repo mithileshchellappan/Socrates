@@ -55,16 +55,25 @@ public struct CalendarSource: Hashable, Sendable {
 }
 
 public struct CalendarInfo: Hashable, Sendable {
+    /// The colour of a calendar whose store does not say (system grey).
+    public static let defaultColorHex = "#8e8e93"
+
     public var id: String
     public var title: String
     public var sourceID: String
     public var allowsModifications: Bool
+    /// The calendar's colour as `#rrggbb` (sRGB): how Calendar draws its events.
+    public var colorHex: String
 
-    public init(id: String, title: String, sourceID: String, allowsModifications: Bool = true) {
+    public init(
+        id: String, title: String, sourceID: String, allowsModifications: Bool = true,
+        colorHex: String = CalendarInfo.defaultColorHex
+    ) {
         self.id = id
         self.title = title
         self.sourceID = sourceID
         self.allowsModifications = allowsModifications
+        self.colorHex = colorHex
     }
 }
 

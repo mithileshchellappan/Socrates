@@ -27,9 +27,10 @@ public actor CalendarMirror {
     public static let itemURLPrefix = "studyportal://item/"
 
     private let services: StudyServices
-    private let store: any CalendarStore
-    private let defaults: any CalendarMirrorDefaults
-    private let title: String
+    let store: any CalendarStore
+    let defaults: any CalendarMirrorDefaults
+    /// The app's own calendar's title ("Study Portal").
+    let title: String
     private let scope: String
     private var running: Task<CalendarSyncReport, any Error>?
 
@@ -470,7 +471,8 @@ public actor CalendarMirror {
         fnv1a(paths.root.standardizedFileURL.path(percentEncoded: false))
     }
 
-    private func key(_ name: String) -> String {
+    /// A device-local key of this library's mirror ("calendar": the own calendar's identifier).
+    func key(_ name: String) -> String {
         "StudyPortal.calendarMirror.\(scope).\(name)"
     }
 
