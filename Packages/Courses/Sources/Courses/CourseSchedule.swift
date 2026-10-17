@@ -50,6 +50,21 @@ public struct CourseSchedule: Sendable {
         }
     }
 
+    /// Saves a semester (lecture period, breaks) and replans every course, in one transaction.
+    @discardableResult
+    public func save(_ semester: Semester, now: Date = Date()) async throws -> Semester {
+        let planner = planner
+        let store = store
+        let stamped = store.stamp(semester)
+        try await services.database.write { db in
+            try Semester.upsert { stamped }.execute(db)
+            for course in try Course.all.fetchAll(db) {
+                try Self.replan(courseID: course.id, now: now, planner: planner, store: store, db: db)
+            }
+        }
+        return stamped
+    }
+
     // MARK: - Slots
 
     /// Saves a weekly slot (new or changed) and replans its course.
@@ -191,6 +206,14 @@ public struct CourseSchedule: Sendable {
             )
         }
         return plan
+    }
+}
+
+extension Semester {
+    /// The semester whose lecture period contains `date`, else the next to start, else the latest,
+    /// else WS 2026/27 (`SemesterRepository.current(on:)` for rows already in hand).
+    public static func current(among semesters: [Semester], on date: Date = Date()) -> Semester {
+        SemesterChoice.pick(from: semesters, on: date)
     }
 }
 

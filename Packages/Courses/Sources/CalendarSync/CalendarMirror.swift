@@ -97,11 +97,14 @@ public actor CalendarMirror {
     private func perform(full: Bool) async throws -> CalendarSyncReport {
         let now = Date()
         let (sessions, courses) = try await load()
-        let work = sessions.filter { full || Self.needsWork($0, course: courses[$0.courseID]) }
-        let fingerprint = Self.fingerprint(sessions)
-        if work.isEmpty, fingerprint == defaults.string(forKey: key("fingerprint")) {
+        let dirty = Set(sessions.filter { Self.needsWork($0, course: courses[$0.courseID]) }.map(\.id))
+        // A different set of events than after the last sync (a session deleted, a course renamed)
+        // means every event gets checked.
+        let fullPass = full || Self.fingerprint(sessions, courses: courses) != defaults.string(forKey: key("fingerprint"))
+        if dirty.isEmpty, !fullPass {
             return CalendarSyncReport(outcome: .upToDate)
         }
+        let work = fullPass ? sessions : sessions.filter { dirty.contains($0.id) }
         guard await store.access() == .fullAccess else {
             Log.calendar.info("Calendar sync skipped: no full access")
             return CalendarSyncReport(outcome: .noAccess)
@@ -149,14 +152,18 @@ public actor CalendarMirror {
                         if current == nil { report.created += 1 } else { report.updated += 1 }
                     }
                     owned[eventID] = session.id
-                    try await markSynced(session, eventID: eventID)
+                    if dirty.contains(session.id) || eventID != session.calendarEventID {
+                        try await markSynced(session, eventID: eventID)
+                    }
                 } else {
                     if let id = session.calendarEventID, byID[id] == nil,
                        try await store.event(id: id, calendarID: calendarID) != nil {
                         try await store.removeEvent(id: id, calendarID: calendarID)
                         report.removed += 1
                     }
-                    try await markSynced(session, eventID: nil)
+                    if dirty.contains(session.id) || session.calendarEventID != nil {
+                        try await markSynced(session, eventID: nil)
+                    }
                 }
             } catch {
                 report.failed += 1
@@ -177,8 +184,8 @@ public actor CalendarMirror {
         }
 
         if report.failed == 0 {
-            let (after, _) = try await load()
-            defaults.set(Self.fingerprint(after), forKey: key("fingerprint"))
+            let (after, afterCourses) = try await load()
+            defaults.set(Self.fingerprint(after, courses: afterCourses), forKey: key("fingerprint"))
         }
         Log.calendar.info(
             "Calendar sync: +\(report.created) ~\(report.updated) -\(report.removed) =\(report.unchanged) !\(report.failed)"
@@ -250,10 +257,15 @@ public actor CalendarMirror {
             ?? sources.first
     }
 
-    /// Changes whenever a session with an event appears, disappears or changes its event.
-    static func fingerprint(_ sessions: [LectureSession]) -> String {
+    /// Changes whenever a session with an event appears, disappears, changes its event, or its
+    /// course's name (the event title) changes.
+    static func fingerprint(_ sessions: [LectureSession], courses: [Course.ID: Course]) -> String {
         let text = sessions
-            .compactMap { session in session.calendarEventID.map { "\(session.id.uuidString.lowercased())=\($0)" } }
+            .compactMap { session -> String? in
+                guard let eventID = session.calendarEventID else { return nil }
+                let title = courses[session.courseID].map { SessionText.eventTitle(courseName: $0.name, kind: session.kind) } ?? ""
+                return "\(session.id.uuidString.lowercased())=\(eventID)=\(title)"
+            }
             .sorted()
             .joined(separator: "\n")
         return "\(sessions.count):" + fnv1a(text)

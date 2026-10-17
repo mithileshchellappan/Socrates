@@ -32,13 +32,14 @@ public struct SessionText: Sendable {
         kind == .lecture ? courseName : "\(courseName) · \(kind.displayName)"
     }
 
-    /// A session's name in lists: "Lecture 3" for numbered lectures, else "Data Centers
-    /// exercise".
+    /// A session's name in lists that mix courses: "Data Centers Lecture 3" for numbered
+    /// lectures, else "Data Centers exercise".
     public static func title(of session: LectureSession, courseName: String) -> String {
         if session.kind == .lecture, let number = session.number {
-            return String(localized: "Lecture \(number)")
+            return courseName.isEmpty ? String(localized: "Lecture \(number)") : String(localized: "\(courseName) Lecture \(number)")
         }
-        return "\(courseName) \(session.kind.displayName.lowercased(with: Locale(identifier: "en")))"
+        let kind = session.kind.displayName.lowercased(with: Locale(identifier: "en"))
+        return courseName.isEmpty ? session.kind.displayName : "\(courseName) \(kind)"
     }
 
     /// "10:15" (24-hour, wall clock in `timeZone`).
