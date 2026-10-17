@@ -1,3 +1,4 @@
+import CalendarUI
 import Courses
 import Filing
 import FilingUI
@@ -139,6 +140,13 @@ struct SidebarView: View {
                 }
             } header: {
                 SidebarSectionTitle("Courses")
+            }
+
+            if selection == .calendar {
+                // The student's calendars as checkboxes, as Calendar.app (mockup 06); loaded again
+                // when their calendars change.
+                CalendarSidebarSection()
+                    .id(model.calendarStoreRevision)
             }
 
             if selection == .search {

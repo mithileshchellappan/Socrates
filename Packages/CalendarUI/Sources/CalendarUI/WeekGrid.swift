@@ -18,7 +18,7 @@ struct GridTint {
     /// The course tint, opaque over the content surface.
     func fill(_ opacity: Double) -> some View {
         ZStack {
-            Color.calendarContent
+            Color.contentBackground
             base.opacity(opacity)
         }
     }
@@ -178,7 +178,7 @@ private struct PreviewPill: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 6)
             .frame(height: GridMetrics.pillHeight)
-            .background(Color.calendarContent, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .background(Color.contentBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .strokeBorder(tint.base.opacity(0.75), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
@@ -400,7 +400,7 @@ private struct PreviewMark: View {
                 .stroke(tint.base, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
                 .frame(height: 1.5)
             Circle()
-                .fill(Color.calendarContent)
+                .fill(Color.contentBackground)
                 .overlay { Circle().strokeBorder(tint.base, lineWidth: 1.5) }
                 .frame(width: 8, height: 8)
                 .offset(x: -4, y: -3.25)
@@ -411,7 +411,7 @@ private struct PreviewMark: View {
                 .padding(.vertical, 3)
                 .padding(.horizontal, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.calendarContent, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(Color.contentBackground, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .strokeBorder(tint.base.opacity(0.75), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))

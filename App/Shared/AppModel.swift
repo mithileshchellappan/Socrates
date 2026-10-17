@@ -1,7 +1,10 @@
+import Agent
 import CalendarSync
+import CalendarUI
 import Capture
 import ClaudeKit
 import Courses
+import Deadlines
 import Filing
 import FilingUI
 import Foundation
@@ -16,6 +19,7 @@ import StudyUI
 import Transcription
 #if os(macOS)
 import AppKit
+import EventKit
 #endif
 
 /// App-wide state and the services wired up at launch. Views read it from the environment.
@@ -51,6 +55,18 @@ final class AppModel {
     #endif
     /// What the Mail screen and the mail account settings ask the app to do (`\.mailActions`).
     @ObservationIgnored private(set) var mailActions = MailActions()
+    /// The deadline & exercise memory (PRD #37): the one write path for tracked items from mail,
+    /// lectures, the agent and the student; every change brings the calendar up to date.
+    let deadlines: DeadlineMemory?
+    /// Claude conversations with a fixed tool set per kind (M3: what the student tells the agent in
+    /// Calendar's composer). Without a key nothing is sent.
+    let agent: AgentRuntime?
+    /// Calendar's "New deadline" composer: the local parse, and the agent once a key is saved.
+    let composer: DeadlineComposer?
+    /// Deadlines and announcements from lecture transcripts, once a key is saved.
+    let transcriptItems: TranscriptItemPipeline?
+    /// What Today and Calendar ask the app to do (`\.deadlineActions`).
+    @ObservationIgnored private(set) var deadlineActions = DeadlineActions()
 
     /// The lecture being captured, owned here so recording outlives its window.
     private(set) var live: LiveCapture?
@@ -63,6 +79,13 @@ final class AppModel {
     /// A fixed "now" for screens that show times relative to today (off-screen renders of the
     /// sample library); nil follows the clock.
     var fixedNow: Date?
+    /// The week Calendar opens on (off-screen renders); nil: the week of "now".
+    var fixedCalendarWeek: CalendarDay?
+    /// Which calendars Calendar's grid draws (the sidebar's checkboxes), kept per device.
+    @ObservationIgnored let calendarVisibility = CalendarVisibility()
+    /// Counts changes to the student's calendars (EventKit), so the sidebar's calendar list loads
+    /// again (a calendar added, access granted).
+    private(set) var calendarStoreRevision = 0
 
     /// Recordings whose transcription just finished (from the processor's observer).
     @ObservationIgnored private let transcribed: AsyncStream<Recording.ID>
@@ -72,6 +95,9 @@ final class AppModel {
     @ObservationIgnored private var spokenContentPass: Task<Void, Never>?
     @ObservationIgnored private var calendarAccessAsked = false
     @ObservationIgnored private var wakeObserver: Task<Void, Never>?
+    @ObservationIgnored private var calendarStoreObserver: Task<Void, Never>?
+    /// Lets the services made in `init` call back into the model once it exists.
+    @ObservationIgnored private let owner: ModelReference
 
     init(services: StudyServices?, launchError: String? = nil, startsProcessing: Bool = true) {
         self.services = services
@@ -110,6 +136,15 @@ final class AppModel {
             self.claude = claude
             let pipeline = MailPipeline(services: services, client: claude)
             mailPipeline = pipeline
+            // The memory exists before the model: its changes reach the calendar through `owner`.
+            let owner = ModelReference()
+            let memory = DeadlineMemory(services: services, onChange: { @MainActor in await owner.model?.syncCalendar() })
+            deadlines = memory
+            let agent = AgentRuntime(services: services, client: claude, memory: memory)
+            self.agent = agent
+            composer = DeadlineComposer(services: services, memory: memory, runtime: agent)
+            transcriptItems = TranscriptItemPipeline(services: services, client: claude, memory: memory)
+            self.owner = owner
             #if os(macOS)
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
             mailEngine = startsProcessing ? MailSyncEngine(services: services, onNewMail: { _ in await pipeline.wake() }) : nil
@@ -124,6 +159,11 @@ final class AppModel {
             calendarMirror = nil
             claude = nil
             mailPipeline = nil
+            deadlines = nil
+            agent = nil
+            composer = nil
+            transcriptItems = nil
+            owner = ModelReference()
             #if os(macOS)
             mailEngine = nil
             mailSender = nil
@@ -136,6 +176,8 @@ final class AppModel {
             }
         }
         mailActions = makeMailActions()
+        deadlineActions = makeDeadlineActions()
+        owner.model = self
     }
 
     static func launch() -> AppModel {
@@ -180,6 +222,8 @@ final class AppModel {
     func startBackgroundWork() async {
         guard runsBackgroundWork, !didStartBackgroundWork, let services else { return }
         didStartBackgroundWork = true
+        // Conversations a quit left running end as failed (the composer's parse then still lands).
+        await agent?.recoverInterrupted()
         do {
             let seeded = try await StudentCourses.seedIfEmpty(services: services)
             if !seeded.isEmpty { Log.app.notice("Created \(seeded.count) courses") }
@@ -224,6 +268,8 @@ final class AppModel {
             }
         }
         startMail(services: services)
+        // Transcripts waiting for extraction are read in the background (only with a key).
+        await transcriptItems?.start()
         await syncCalendar(full: true)
     }
 
@@ -254,8 +300,11 @@ final class AppModel {
         ((try? await MailAccountRepository(store: services.records).current()) ?? nil) != nil
     }
 
-    /// A transcript landed: an unsure recording may now be filed by what was said.
+    /// A transcript landed: its deadlines and announcements are read (with a key), and an unsure
+    /// recording may now be filed by what was said.
     private func recordingTranscribed(_ recordingID: Recording.ID) async {
+        let transcriptItems = transcriptItems
+        Task { await transcriptItems?.wake() }
         guard let filing else { return }
         do {
             if let changed = try await filing.fileBySpokenContent(recordingID: recordingID) {
@@ -291,6 +340,8 @@ final class AppModel {
             if !calendarAccessAsked, try await CalendarMirror.hasCalendarWork(services) {
                 calendarAccessAsked = true
                 _ = try await calendarMirror.requestAccess()
+                calendarStoreRevision += 1
+                observeCalendarStore()
             }
             let report = try await calendarMirror.sync(full: full)
             Log.calendar.info("Calendar sync: \(String(describing: report.outcome), privacy: .public)")
@@ -299,6 +350,18 @@ final class AppModel {
         }
     }
 
+
+    /// The student's calendars change (another app, iCloud): the sidebar's list loads again.
+    private func observeCalendarStore() {
+        #if os(macOS)
+        guard calendarStoreObserver == nil else { return }
+        calendarStoreObserver = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: .EKEventStoreChanged) {
+                self?.calendarStoreRevision += 1
+            }
+        }
+        #endif
+    }
 
     // MARK: - Live capture
 
@@ -436,9 +499,11 @@ final class AppModel {
 
     func storeAPIKey(_ key: String) throws {
         try services?.secrets.setSecret(key, for: .anthropicAPIKey)
-        // Mail waiting for the model (routing beyond rules, extraction) goes now.
+        // Mail and transcripts waiting for the model (routing beyond rules, extraction) go now.
         let pipeline = mailPipeline
+        let transcriptItems = transcriptItems
         Task { await pipeline?.wake() }
+        Task { await transcriptItems?.wake() }
     }
 
     func removeAPIKey() throws {
@@ -538,6 +603,54 @@ extension AppModel {
         }
         return try await pipeline.search.search(query, in: MailSearchScope(place)).map(\.messageID)
     }
+}
+
+// MARK: - Deadline actions
+
+extension AppModel {
+    /// Today's and Calendar's effects, each wired to exactly one place (docs/plan-m3.md §6.4):
+    /// Undo, Restore, Mark as Done, Delete and Add to Calendar to the deadline memory (whose
+    /// changes sync the calendar); Confirm through the item actions to the course schedule, then
+    /// settled; Discard settled; Cancel and Restore Session to the course schedule; the composer's
+    /// preview and ↩ to `DeadlineComposer`.
+    fileprivate func makeDeadlineActions() -> DeadlineActions {
+        guard let services, let memory = deadlines, let composer, let items = mailPipeline?.actions else { return DeadlineActions() }
+        let schedule = CourseSchedule(services: services)
+        let calendar: @Sendable () async -> Void = { [weak self] in await self?.syncCalendar() }
+        return DeadlineActions(
+            undo: { id in _ = try await memory.undo(id) },
+            restore: { id in _ = try await memory.restore(id) },
+            complete: { id in _ = try await memory.complete(id) },
+            remove: { id in _ = try await memory.remove(id) },
+            addToCalendar: { id in _ = try await memory.addToCalendar(id) },
+            confirmProposal: { id in
+                switch try await items.sessionChange(for: id) {
+                case .room(let sessionID, let room)?: _ = try await schedule.setRoom(sessionID, room: room)
+                case .cancel(let sessionID)?: _ = try await schedule.cancel(sessionID)
+                case nil: break
+                }
+                _ = try await items.settle(id, confirmed: true)
+                await calendar()
+            },
+            discardProposal: { id in _ = try await items.settle(id, confirmed: false) },
+            cancelSession: { id in
+                _ = try await schedule.cancel(id)
+                await calendar()
+            },
+            restoreSession: { id in
+                _ = try await schedule.restore(id)
+                await calendar()
+            },
+            preview: { text, now in await composer.preview(text, now: now) },
+            submit: { text, now in try await composer.submit(text, now: now) }
+        )
+    }
+}
+
+/// The app model as seen from services created before it (the deadline memory's `onChange`).
+@MainActor
+final class ModelReference {
+    weak var model: AppModel?
 }
 
 /// What the main window presents as a sheet.

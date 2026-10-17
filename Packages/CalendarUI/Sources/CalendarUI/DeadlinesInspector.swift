@@ -172,7 +172,7 @@ struct DeadlinesInspector: View {
             .padding(.trailing, 5)
             .padding(.vertical, 5)
             .frame(minHeight: 32)
-            .background(Color.calendarContent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(Color.contentBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(.separator, lineWidth: 0.5)

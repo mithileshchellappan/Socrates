@@ -1,3 +1,4 @@
+import CalendarUI
 import CaptureUI
 import CoursesUI
 import FilingUI
@@ -53,6 +54,7 @@ struct StudyPortalApp: App {
             ReviewCommands()
             LiveLectureCommands()
             MailCommands()
+            CalendarCommands()
         }
 
         #if os(macOS)

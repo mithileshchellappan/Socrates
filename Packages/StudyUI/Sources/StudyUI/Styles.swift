@@ -29,3 +29,16 @@ public struct Hairline: View {
             .accessibilityHidden(true)
     }
 }
+
+extension Color {
+    /// The window's content surface (`--win`: white; #1e1e20 in dark mode): Calendar's grid and
+    /// composer field (course tints are mixed over it so events stay opaque over lines and weekend
+    /// fills). CaptureUI keeps its own copy (it does not depend on StudyUI; docs/DESIGN.md §7.4).
+    public static var contentBackground: Color {
+        #if os(macOS)
+        Color(nsColor: .textBackgroundColor)
+        #else
+        Color(uiColor: .systemBackground)
+        #endif
+    }
+}

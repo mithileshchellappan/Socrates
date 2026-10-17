@@ -17,7 +17,8 @@ import SwiftUI
 ///         [-StudyPortalAppearance light|dark] [-StudyPortalReadyMarker <file>] [-StudyPortalSettle <seconds>] \
 ///         -ApplePersistenceIgnoreState YES
 ///
-/// Routes: `today`; `course/<name>` and `course/<name>/settings` (a course's name or short name);
+/// Routes: `today`; `calendar?week=YYYY-MM-DD` (Calendar on that day's week, else this week);
+/// `course/<name>` and `course/<name>/settings` (a course's name or short name);
 /// `lecture/<course>/<number>?slide=N&t=SECONDS`; `search?q=TEXT`;
 /// `live-preview/<course>/<lecture number>?slide=N` (the live lecture window in a static
 /// recording state: running timer, a fixed input level, the lecture's own captions and slide
@@ -45,6 +46,7 @@ enum ParityMode {
 
     enum Route: Equatable {
         case today
+        case calendar(week: CalendarDay?)
         case course(name: String)
         case lecture(course: String, number: Int, slide: Int?, time: Double?)
         case search(String)
@@ -201,6 +203,9 @@ enum ParityMode {
             switch route {
             case .today:
                 show(Launch(selection: .today))
+            case .calendar(let week):
+                model.fixedCalendarWeek = week
+                show(Launch(selection: .calendar))
             case .course(let name):
                 // Course Settings is the course's screen.
                 show(Launch(selection: .courseSettings(try course(name, services: services).id)))
@@ -463,7 +468,7 @@ private protocol ForcedActivation {
 extension NSApplication: ForcedActivation {}
 
 extension ParityMode.Route {
-    /// `today`, `course/<name>[/settings]`, `lecture/<course>/<n>?slide=N&t=S`, `search?q=TEXT`,
+    /// `today`, `calendar?week=YYYY-MM-DD`, `course/<name>[/settings]`, `lecture/<course>/<n>?slide=N&t=S`, `search?q=TEXT`,
     /// `live-preview/<course>/<n>?slide=N`, `import-preview`.
     init?(_ text: String) {
         let parts = text.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
@@ -480,6 +485,8 @@ extension ParityMode.Route {
         switch (path.first, path.count) {
         case ("today", 1):
             self = .today
+        case ("calendar", 1):
+            self = .calendar(week: query["week"].flatMap(CalendarDay.init(rawValue:)))
         case ("course", 2), ("course", 3) where path[2] == "settings":
             self = .course(name: path[1])
         case ("lecture", 3):

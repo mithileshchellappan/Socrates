@@ -66,7 +66,7 @@ struct ComingUpSection: View {
             SourceTrailButton(
                 entries: entry.trail, now: now, inCalendar: entry.inCalendar, highlighted: hovered,
                 undo: entry.undoSourceID.map { sourceID in
-                    { run("Undo") { actions in try await actions.undo(sourceID) } }
+                    { @MainActor in run("Undo") { actions in try await actions.undo(sourceID) } }
                 }
             )
         }

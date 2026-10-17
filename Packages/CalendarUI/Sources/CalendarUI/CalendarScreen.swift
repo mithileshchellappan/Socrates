@@ -21,6 +21,8 @@ public struct CalendarScreen: View {
     @State private var showsInspector = true
     @State private var gridWidth: CGFloat = 0
     @State private var scroll = ScrollPosition(y: GridMetrics.openingOffset)
+    /// The body has been scrolled to the opening hour at its real height.
+    @State private var isOpened = false
     @State private var foreignList = ForeignCalendarList.empty
     @State private var foreignEvents: [ForeignEvent] = []
     @FocusState private var composerFocused: Bool
@@ -146,11 +148,21 @@ public struct CalendarScreen: View {
                 WeekBody(plan: plan, columns: columns, now: nowSlot, selection: selection, handlers: handlers)
             }
             .scrollPosition($scroll)
-            .scrollIndicators(.automatic)
+            // Never a legacy scroller: it would narrow the body under the day headers.
+            .scrollIndicators(.never)
+            .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { _, height in
+                // Opens at 08:00 once the body has its height: AppKit resets the offset when the
+                // scroll view first grows, so a position set before that is lost.
+                guard !isOpened, height > GridMetrics.hourHeight * 2 else { return }
+                isOpened = true
+                scroll.scrollTo(y: GridMetrics.openingOffset)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // `minWidth: 0`: the rows are laid out at the measured width, which must not become the
+        // window's minimum (the window would grow to fit it, the grid with it, without end).
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
-        .background(Color.calendarContent)
+        .background(Color.contentBackground)
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.return) {

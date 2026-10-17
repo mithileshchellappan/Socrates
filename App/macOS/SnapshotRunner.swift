@@ -11,7 +11,8 @@ import SwiftUI
 ///
 ///     STUDYPORTAL_DATA_ROOT=<library copy> STUDYPORTAL_SNAPSHOTS=<folder> StudyPortal.app/Contents/MacOS/StudyPortal
 ///
-/// Shots (light and dark): Today, Mail (Inbox with the newest message, its course, Drafts), Course
+/// Shots (light and dark): Today, Calendar (the week of `STUDYPORTAL_SNAPSHOT_WEEK`, YYYY-MM-DD, else
+/// this week), Mail (Inbox with the newest message, its course, Drafts), Course
 /// Settings of Data Centers, the review of DC lecture 2
 /// (slide 16, 37:27) and CL lecture 1 (slide 11, 7:25), Search for "paravirtualization" and
 /// "ELIZA", and the drop HUD over Today for the files in `STUDYPORTAL_SNAPSHOT_DROP` (paths
@@ -63,7 +64,8 @@ enum SnapshotRunner {
                 guard let courseID = courses.first(where: { $0.name == course })?.id else { return nil }
                 return lectures.first { $0.courseID == courseID && $0.number == number }?.id
             }
-            var shots: [Shot] = [Shot(name: "01-today", item: .today)]
+            var shots: [Shot] = [Shot(name: "01-today", item: .today), Shot(name: "06-calendar", item: .calendar)]
+            model.fixedCalendarWeek = ProcessInfo.processInfo.environment["STUDYPORTAL_SNAPSHOT_WEEK"].flatMap(CalendarDay.init(rawValue:))
             if let cc = courses.first(where: { $0.name == "Data Centers" }) {
                 shots.append(Shot(name: "08-course-settings", item: .courseSettings(cc.id)))
             }

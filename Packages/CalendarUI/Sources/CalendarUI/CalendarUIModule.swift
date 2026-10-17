@@ -31,18 +31,6 @@ enum CalendarChrome: Hashable, Sendable {
     case snapshot
 }
 
-extension Color {
-    /// The content surface the grid is drawn on (`--win`: white / #1e1e20), which course tints
-    /// are mixed over so events stay opaque over lines and weekend fills.
-    static var calendarContent: Color {
-        #if os(macOS)
-        Color(nsColor: .textBackgroundColor)
-        #else
-        Color(uiColor: .systemBackground)
-        #endif
-    }
-}
-
 /// Runs an effect from the screen (a `DeadlineActions` closure); failures are logged, the rows
 /// show what landed.
 @MainActor

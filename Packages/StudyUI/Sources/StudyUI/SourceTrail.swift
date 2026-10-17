@@ -334,7 +334,7 @@ public struct SourceTrailButton: View {
                 #endif
                 .popover(isPresented: $isPresented, arrowEdge: .bottom) {
                     SourceTrailPopover(entries: entries, now: now, header: header, inCalendar: inCalendar, undo: undo.map { undo in
-                        { undo(); isPresented = false }
+                        { @MainActor @Sendable in undo(); isPresented = false }
                     })
                     #if os(macOS)
                     .onHover { inside in

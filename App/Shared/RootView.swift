@@ -1,4 +1,5 @@
 import CalendarSync
+import CalendarUI
 import CaptureUI
 import CoursesUI
 import FilingUI
@@ -80,6 +81,10 @@ struct RootView: View {
                 .environment(\.studyServices, model.services)
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
+                .environment(\.deadlineActions, model.deadlineActions)
+                // Calendar: the student's other calendars, read-only (Mac only, like the mirror).
+                .environment(\.foreignCalendars, model.calendarMirror.map { $0 as any ForeignCalendarSource })
+                .environment(\.calendarVisibility, model.calendarVisibility)
                 .onOpenURL(perform: openURL)
                 .sheet(item: $model.sheet) { sheet in
                     switch sheet {
@@ -205,9 +210,11 @@ struct RootView: View {
         return actions
     }
 
-    /// The toolbar search field shows on the top-level screens, not on a lecture or a course.
+    /// The toolbar search field shows on the top-level screens, not on a lecture or a course, and
+    /// not on Calendar (mockup 06: its own toolbar; ⌘F still opens Search).
     private var showsSearchField: Bool {
-        (selection ?? .today).isTopLevel
+        let item = selection ?? .today
+        return item.isTopLevel && item != .calendar
     }
 
     /// ↩ in the search field: the Search screen opens its selected (or first) hit. (On Mail the

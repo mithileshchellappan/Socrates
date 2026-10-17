@@ -1,3 +1,4 @@
+import CalendarUI
 import CoursesUI
 import FilingUI
 import MailUI
@@ -7,7 +8,7 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// Routes the sidebar selection to its screen. Calendar (M3) is empty until its milestone.
+/// Routes the sidebar selection to its screen.
 struct DetailView: View {
     let item: SidebarItem
     let query: String
@@ -22,9 +23,9 @@ struct DetailView: View {
     var body: some View {
         switch item {
         case .today:
-            TodayView(record: record)
+            TodayView(now: model.fixedNow, record: record)
         case .calendar:
-            PlaceholderScreen(item: item)
+            CalendarScreen(week: model.fixedCalendarWeek, now: model.fixedNow)
         case .mail:
             MailView(scope: .inbox, selection: mailSelection, query: query, now: model.fixedNow)
         case .mailScope(let scope):
@@ -103,16 +104,5 @@ private struct RetryToolbarItem: ToolbarContent {
                     .help(jobs.last?.error ?? "")
             }
         }
-    }
-}
-
-struct PlaceholderScreen: View {
-    let item: SidebarItem
-
-    var body: some View {
-        ContentUnavailableView {
-            Image(systemName: item.systemImage)
-        }
-        .screenTitle(item.title, leadingInset: ScreenTitleInset.firstItem)
     }
 }
