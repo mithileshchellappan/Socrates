@@ -177,7 +177,7 @@ public struct CalendarScreen: View {
     private func inspector(now: Date) -> some View {
         DeadlinesInspector(
             data: data, now: now, selection: selection, composer: composer, composerFocused: $composerFocused,
-            handlers: inspectorHandlers(now: now)
+            handlers: inspectorHandlers(now: now), isShown: showsInspector
         )
     }
 

@@ -10,7 +10,7 @@ import SwiftUI
 /// "Slide N Starts Here" sets a manual anchor and re-aligns at once through `realign` (#9).
 ///
 /// The app passes `Realigner(services:).realign` and installs `\.studyServices`, SQLiteData's
-/// default database and `ReviewCommands` (Space, ⌥←/⌥→, ←/→, ⇧⌘F, ⌘\, ⇧⌘R).
+/// default database and `ReviewCommands` (Space, ⌥←/⌥→, ←/→, ⇧⌘F, ⌘\, ⇧⌘R; View ⌥⌘1, ⌥⌘2).
 ///
 /// - Without a deck there is no rail and no slide; without a recording no player and no
 ///   transcript; before the transcript exists the transcript zone shows the job's progress.
@@ -138,7 +138,6 @@ struct ReviewScreen: View {
     private let spansQuery: FetchAll<LectureDeckSpan>
     private var spans: [LectureDeckSpan] { spansQuery.wrappedValue }
     @Environment(\.reviewChrome) private var chrome
-    @State private var column: CGSize = .zero
 
     init(model: ReviewModel) {
         self.model = model
@@ -157,7 +156,7 @@ struct ReviewScreen: View {
         Group {
             switch chrome {
             case .window:
-                content(timeline: timeline)
+                ReviewContent(model: model, timeline: timeline)
                     // The Window menu's name; the toolbar shows its own, larger title.
                     .navigationTitle(title)
                     #if os(macOS)
@@ -182,7 +181,7 @@ struct ReviewScreen: View {
                     }
             case .snapshot:
                 SnapshotChrome(model: model, title: title, subtitle: subtitle) {
-                    content(timeline: timeline)
+                    ReviewContent(model: model, timeline: timeline)
                 }
             }
         }
@@ -204,70 +203,11 @@ struct ReviewScreen: View {
         return course.isEmpty ? date : Text("\(course) · \(date)")
     }
 
-    /// Rail | slide over transcript, with the player floating over the bottom.
-    private func content(timeline: SlideTimeline) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            if let deck = model.deck {
-                SlideRail(model: model, deck: deck)
-                    .frame(width: SlideRail.width)
-            }
-            VStack(spacing: 12) {
-                if let deck = model.deck {
-                    if model.recording == nil {
-                        SlideStage(model: model, deck: deck)
-                            .frame(maxHeight: .infinity)
-                    } else {
-                        SlideStage(model: model, deck: deck)
-                            .frame(height: stageHeight(deck))
-                    }
-                }
-                if model.recording != nil {
-                    TranscriptZone(model: model, timeline: timeline)
-                        .frame(maxHeight: .infinity)
-                        // 6 pt under the slide: the first divider's own top padding finishes the gap.
-                        .padding(.top, model.deck == nil ? 0 : -6)
-                } else if model.deck == nil {
-                    ContentUnavailableView {
-                        Image(systemName: "rectangle.on.rectangle.slash")
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { column = $0 }
-        }
-        .padding(.leading, model.deck == nil ? 16 : 8)
-        .padding(.trailing, 16)
-        .padding(.top, 2)
-        // The rail and transcript end above the player: it floats over empty space, and nothing
-        // scrolls under or below the glass.
-        .padding(.bottom, model.player == nil ? 0 : Self.playerClearance)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .bottom) {
-            if let player = model.player {
-                PlayerBar(model: model, player: player, timeline: timeline)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, Self.playerBottom)
-                    // Filing toasts stay above the player, never over Follow, speed or the scrubber.
-                    .reservesBottomOverlaySpace(Self.playerBottom + PlayerBar.height)
-            }
-        }
-        .background(.background)
-    }
-
     /// The player's distance from the bottom edge.
     static let playerBottom: CGFloat = 14
     /// Room under the rail and transcript: the player, its distance from the bottom edge and 8 pt
     /// above it.
     static let playerClearance: CGFloat = PlayerBar.height + playerBottom + 8
-
-    /// The slide's height over the transcript: its full width, at most about half the content's
-    /// height (measured to the window's bottom edge, the player's room included).
-    private func stageHeight(_ deck: SlideDeck) -> CGFloat {
-        let aspect = deck.aspectRatio(page: 1)
-        guard column.width > 0, aspect > 0 else { return 0 }
-        let height = column.height + (model.player == nil ? 0 : Self.playerClearance)
-        return min(column.width / aspect, max(160, height * 0.5))
-    }
 }
 
 /// The window title (mockup 03): the lecture in the title style, course and day under it.
@@ -295,7 +235,8 @@ struct ReviewTitle: View {
 }
 
 /// The toolbar: previous / "16 / 88" / next as one glass group. The inspector's own header hides
-/// it; while it is hidden, a button of its own brings it back.
+/// it; while it is hidden, a button of its own brings it back (the header's item is gone then, see
+/// `ReviewInspector`), so exactly one of the two is in the toolbar.
 struct ReviewToolbar: ToolbarContent {
     let model: ReviewModel
 
