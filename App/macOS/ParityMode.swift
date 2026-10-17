@@ -70,6 +70,8 @@ enum ParityMode {
         var query = ""
         var reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)?
         var mailSelection: MailMessage.ID?
+        /// The chat inspector shown (Today, Mail; needs Claude Code available).
+        var showsChat = false
     }
 
     static let windowSize = CGSize(width: 1440, height: 900)
@@ -514,8 +516,11 @@ struct ParityRootView: View {
     var body: some View {
         Group {
             if let launch {
-                RootView(selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget, mailSelection: launch.mailSelection)
-                    .environment(model)
+                RootView(
+                    selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
+                    mailSelection: launch.mailSelection, showsChat: launch.showsChat
+                )
+                .environment(model)
             } else {
                 Color.clear
             }

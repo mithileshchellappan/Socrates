@@ -113,6 +113,7 @@ struct ChatInspector: View {
             .id(conversationID)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background { ChatInspectorBackground() }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
         .toolbar {
             // Only while shown: SwiftUI keeps a hidden inspector's content (and this item) alive.
@@ -158,6 +159,19 @@ struct ChatInspector: View {
         }
         .padding(.leading, 12)
         .padding(.trailing, 18)
+    }
+}
+
+/// The column's background, as Review's and Calendar's inspectors: the system's inspector (a glass
+/// column on macOS 26), lifted by white 2.5 % in dark mode. Off-screen renders cannot draw that
+/// glass (light: a tinted rainbow; dark: light), so judge the column's colour in the real window.
+private struct ChatInspectorBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        if colorScheme == .dark {
+            Rectangle().fill(.white.opacity(0.025)).ignoresSafeArea()
+        }
     }
 }
 

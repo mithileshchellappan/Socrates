@@ -3,7 +3,7 @@ import MailUI
 import StudyUI
 import SwiftUI
 
-/// The macOS Settings window (⌘,): Semester, and Accounts (the Claude key and the uni mail account).
+/// The macOS Settings window (⌘,): Semester, and Accounts (Claude Code and the uni mail account).
 struct SettingsScene: Scene {
     let model: AppModel
     @AppStorage(SettingsTab.storageKey) private var tab = SettingsTab.semester

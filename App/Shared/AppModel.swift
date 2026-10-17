@@ -2,6 +2,7 @@ import Agent
 import CalendarSync
 import CalendarUI
 import Capture
+import ChatUI
 import ClaudeKit
 import Courses
 import Deadlines
@@ -40,12 +41,18 @@ final class AppModel {
     let calendarMirror: CalendarMirror?
     /// Keeps the keyword search index in step with transcripts, slides and notes.
     let searchIndexer: SearchIndexer?
-    /// Claude for mail routing, extraction and reply drafts: the key is read from the Keychain at
-    /// each call, every call is logged to `api_call`. Without a key nothing is sent.
+    /// The app's one Claude client (M3.5): the student's Claude Code CLI on the Mac (their
+    /// subscription, no API key), unavailable on iOS. Its engine is the one-process queue, so
+    /// every caller shares it; every call is logged to `api_call` (notional cost).
     let claude: ClaudeClient?
+    /// Whether Claude Code is installed and signed in (and a usage pause), refreshed at launch and
+    /// whenever the app becomes active. Nil until the first check: treated as unavailable.
+    var claudeAvailability: ClaudeAvailability?
     /// Mail intelligence: routes by rules always, indexes mail for search, and runs the model
-    /// steps (routing beyond rules, extraction, drafts) only once an API key is saved.
+    /// steps (routing beyond rules, triage, drafts) only while Claude Code is available.
     let mailPipeline: MailPipeline?
+    /// The chat with the agent (Today and Mail): carries the open mail with the student's words.
+    let mailChat: MailChat?
     #if os(macOS)
     /// IMAP sync of the uni account (INBOX IDLE, a pass every 5 minutes and on wake). Mac only
     /// until the library syncs between devices, like the calendar mirror.
@@ -58,12 +65,12 @@ final class AppModel {
     /// The deadline & exercise memory (PRD #37): the one write path for tracked items from mail,
     /// lectures, the agent and the student; every change brings the calendar up to date.
     let deadlines: DeadlineMemory?
-    /// Claude conversations with a fixed tool set per kind (M3: what the student tells the agent in
-    /// Calendar's composer). Without a key nothing is sent.
+    /// Claude conversations with a fixed tool set per kind (M3: Calendar's composer; M3.5: the mail
+    /// chat). Without Claude Code nothing is sent.
     let agent: AgentRuntime?
-    /// Calendar's "New deadline" composer: the local parse, and the agent once a key is saved.
+    /// Calendar's "New deadline" composer: the local parse, and the agent with Claude Code.
     let composer: DeadlineComposer?
-    /// Deadlines and announcements from lecture transcripts, once a key is saved.
+    /// Deadlines and announcements from lecture transcripts, with Claude Code.
     let transcriptItems: TranscriptItemPipeline?
     /// What Today and Calendar ask the app to do (`\.deadlineActions`).
     @ObservationIgnored private(set) var deadlineActions = DeadlineActions()
@@ -95,6 +102,7 @@ final class AppModel {
     @ObservationIgnored private var spokenContentPass: Task<Void, Never>?
     @ObservationIgnored private var calendarAccessAsked = false
     @ObservationIgnored private var wakeObserver: Task<Void, Never>?
+    @ObservationIgnored private var activationObserver: Task<Void, Never>?
     @ObservationIgnored private var calendarStoreObserver: Task<Void, Never>?
     /// Lets the services made in `init` call back into the model once it exists.
     @ObservationIgnored private let owner: ModelReference
@@ -140,8 +148,14 @@ final class AppModel {
             let owner = ModelReference()
             let memory = DeadlineMemory(services: services, onChange: { @MainActor in await owner.model?.syncCalendar() })
             deadlines = memory
-            let agent = AgentRuntime(services: services, client: claude, memory: memory)
+            // The mail chat writes reply drafts through the pipeline's own drafter (the one Mail's
+            // Reply uses), so it sees the drafts that one is writing.
+            let drafter = pipeline.drafter
+            let agent = AgentRuntime(services: services, client: claude, memory: memory, additionalSpecs: [
+                .mailChat: { try MailChat.spec(services: services, memory: memory, drafter: drafter) }
+            ])
             self.agent = agent
+            mailChat = MailChat(services: services)
             composer = DeadlineComposer(services: services, memory: memory, runtime: agent)
             transcriptItems = TranscriptItemPipeline(services: services, client: claude, memory: memory)
             self.owner = owner
@@ -159,6 +173,7 @@ final class AppModel {
             calendarMirror = nil
             claude = nil
             mailPipeline = nil
+            mailChat = nil
             deadlines = nil
             agent = nil
             composer = nil
@@ -222,6 +237,7 @@ final class AppModel {
     func startBackgroundWork() async {
         guard runsBackgroundWork, !didStartBackgroundWork, let services else { return }
         didStartBackgroundWork = true
+        observeClaudeAvailability()
         // Conversations a quit left running end as failed (the composer's parse then still lands).
         await agent?.recoverInterrupted()
         do {
@@ -268,14 +284,15 @@ final class AppModel {
             }
         }
         startMail(services: services)
-        // Transcripts waiting for extraction are read in the background (only with a key).
+        // Transcripts waiting for extraction are read in the background (only with Claude Code).
         await transcriptItems?.start()
         await syncCalendar(full: true)
     }
 
-    /// Mail on the Mac: the pipeline (rules routing and the search index at once, model steps once
-    /// a key is saved), drafts a quit left sending checked against Sent (never resent), then the
-    /// sync when an account exists; waking from sleep fetches new mail.
+    /// Mail on the Mac: the pipeline (rules routing and the search index at once; triage of new
+    /// mail and the 30-day backlog while Claude Code is available), drafts a quit left sending
+    /// checked against Sent (never resent), then the sync when an account exists; waking from
+    /// sleep fetches new mail.
     private func startMail(services: StudyServices) {
         #if os(macOS)
         guard let mailPipeline, let mailEngine, let mailSender else { return }
@@ -300,7 +317,7 @@ final class AppModel {
         ((try? await MailAccountRepository(store: services.records).current()) ?? nil) != nil
     }
 
-    /// A transcript landed: its deadlines and announcements are read (with a key), and an unsure
+    /// A transcript landed: its deadlines and announcements are read (with Claude Code), and an unsure
     /// recording may now be filed by what was said.
     private func recordingTranscribed(_ recordingID: Recording.ID) async {
         let transcriptItems = transcriptItems
@@ -491,23 +508,64 @@ final class AppModel {
         }
     }
 
-    // MARK: - Anthropic API key
+    // MARK: - Claude Code
 
-    var hasAPIKey: Bool {
-        services?.secrets.hasSecret(for: .anthropicAPIKey) ?? false
+    /// Checks Claude Code at launch and whenever the app becomes active (it may have been
+    /// installed, signed in or out meanwhile), and ends its processes when the app quits.
+    private func observeClaudeAvailability() {
+        Task { await refreshClaudeAvailability() }
+        #if os(macOS)
+        activationObserver = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: NSApplication.didBecomeActiveNotification) {
+                await self?.refreshClaudeAvailability()
+            }
+        }
+        // Synchronous, while the app still runs: a tool loop's MCP server lives in the app.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+            ClaudeCodeEngine.terminateRunningProcesses()
+        }
+        #endif
     }
 
-    func storeAPIKey(_ key: String) throws {
-        try services?.secrets.setSecret(key, for: .anthropicAPIKey)
-        // Mail and transcripts waiting for the model (routing beyond rules, extraction) go now.
+    /// Checks Claude Code again (`force`: no cached answer). When it turns ready, the work that
+    /// waited for it starts: mail triage with its backlog, and transcripts.
+    func refreshClaudeAvailability(force: Bool = true) async {
+        guard let claude else { return }
+        let availability = force ? await claude.refreshAvailability() : await claude.availability()
+        let wasReady = claudeAvailability?.isReady ?? false
+        if availability != claudeAvailability { claudeAvailability = availability }
+        guard availability.isReady, !wasReady, runsBackgroundWork else { return }
         let pipeline = mailPipeline
         let transcriptItems = transcriptItems
         Task { await pipeline?.wake() }
         Task { await transcriptItems?.wake() }
     }
 
-    func removeAPIKey() throws {
-        try services?.secrets.removeSecret(for: .anthropicAPIKey)
+    /// The chat's effects (`\.chatActions`), rebuilt when the availability changes: sending goes
+    /// through `MailChat` (the open mail as context) to the agent runtime. Absent without Claude
+    /// Code.
+    var chatActions: ChatActions {
+        guard let availability = claudeAvailability, availability.isReady, let agent, let mailChat else { return ChatActions() }
+        return ChatActions(
+            isAvailable: true,
+            pausedUntil: availability.status?.pausedUntil,
+            send: { text, context, conversation in
+                try await mailChat.send(text, openMessage: context.messageID, to: conversation, runtime: agent)
+            },
+            stop: { id in await agent.stop(id) },
+            liveReply: { id in
+                let source = agent.liveReplies(id)
+                return AsyncStream { continuation in
+                    let task = Task {
+                        for await reply in source {
+                            continuation.yield(reply.map { ChatLiveReply(afterTurns: $0.afterTurns, text: $0.text) })
+                        }
+                        continuation.finish()
+                    }
+                    continuation.onTermination = { _ in task.cancel() }
+                }
+            }
+        )
     }
 }
 
@@ -553,7 +611,18 @@ extension AppModel {
             discardProposal: { id in _ = try await items.settle(id, confirmed: false) },
             search: { query, scope in try await Self.searchMail(query, in: scope, pipeline: pipeline, services: services) },
             verifyAccount: { account, password in try await MailAccountVerifier().verify(account, password: password) },
-            changeFiling: { [weak self] filingID in await self?.filingCenter?.presentChange(filingID) }
+            changeFiling: { [weak self] filingID in await self?.filingCenter?.presentChange(filingID) },
+            // Local only (no server flag): the student says a mail needs no answer.
+            setNeedsReply: { id, value in
+                let stamp = services.records.currentDate
+                try await services.database.write { db in
+                    try MailMessage.find(id).update {
+                        $0.needsReply = Bool?.some(value)
+                        $0.updatedAt = stamp
+                    }
+                    .execute(db)
+                }
+            }
         )
         #if os(macOS)
         if let engine = mailEngine, let sender = mailSender {

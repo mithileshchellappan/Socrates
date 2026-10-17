@@ -59,6 +59,8 @@ packages:
     path: Packages/Agent
   CalendarUI:
     path: Packages/CalendarUI
+  ChatUI:
+    path: Packages/ChatUI
 
 targets:
   StudyPortal:
@@ -174,3 +176,6 @@ targets:
         product: Agent
       - package: CalendarUI
         product: CalendarUI
+      # M3.5 (docs/plan-m35.md): the chat with the agent, the inspector of Today and Mail.
+      - package: ChatUI
+        product: ChatUI

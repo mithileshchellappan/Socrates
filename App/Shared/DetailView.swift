@@ -1,4 +1,5 @@
 import CalendarUI
+import ChatUI
 import CoursesUI
 import FilingUI
 import MailUI
@@ -16,6 +17,8 @@ struct DetailView: View {
     let target: (lectureID: Lecture.ID, target: ReviewTarget)?
     /// The message selected on Mail (in Drafts, the draft).
     var mailSelection: Binding<MailMessage.ID?> = .constant(nil)
+    /// The chat inspector of Today and Mail is shown (one per window; only with Claude Code).
+    var showsChat: Binding<Bool> = .constant(false)
     let record: () -> Void
 
     @Environment(AppModel.self) private var model
@@ -23,14 +26,18 @@ struct DetailView: View {
     var body: some View {
         switch item {
         case .today:
+            // Show Chat is placed by the window's toolbar, after Record and More (RootView).
             TodayView(now: model.fixedNow, record: record)
+                .chatInspector(isPresented: showsChat, showsToolbarItem: false)
         case .calendar:
             CalendarScreen(week: model.fixedCalendarWeek, now: model.fixedNow)
         case .mail:
             MailView(scope: .inbox, selection: mailSelection, query: query, now: model.fixedNow)
+                .chatInspector(isPresented: showsChat, context: chatContext(.inbox), showsToolbarItem: false)
         case .mailScope(let scope):
             // The window's search field ("Search mail") filters the list.
             MailView(scope: scope, selection: mailSelection, query: query, now: model.fixedNow)
+                .chatInspector(isPresented: showsChat, context: chatContext(scope), showsToolbarItem: false)
         case .search:
             SearchResultsView(query: query, submits: searchSubmits)
         case .course(let id), .courseSettings(let id):
@@ -67,6 +74,12 @@ struct DetailView: View {
                 .id(id)
             }
         }
+    }
+
+    /// The open message the chat's next message carries (in Drafts the selection is a draft).
+    private func chatContext(_ scope: MailScope) -> ChatContext {
+        guard scope != .drafts, let id = mailSelection.wrappedValue else { return .none }
+        return .mail(id)
     }
 
     /// Files dropped on a course's empty Slides group: filed into that course.

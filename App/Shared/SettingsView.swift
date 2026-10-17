@@ -1,5 +1,7 @@
+import ClaudeKit
 import MailUI
 import StudyCore
+import StudyUI
 import SwiftUI
 
 /// The Settings window's tabs; "Set Up Mail…" opens Accounts.
@@ -10,44 +12,19 @@ enum SettingsTab: String, Hashable {
     static let storageKey = "StudyPortal.settingsTab"
 }
 
-/// Account settings: the Claude API key and (on the Mac, where mail syncs) the uni mail account.
-/// The key and the password go straight to the Keychain and are never shown again.
+/// Account settings: Claude Code (the AI runs on the student's Claude Code subscription; one quiet
+/// row, checked again on appear) and, on the Mac where mail syncs, the uni mail account (its
+/// password goes straight to the Keychain).
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
-    @State private var draft = ""
-    @State private var isStored = false
-    @State private var failure: String?
-
-    private var trimmedDraft: String {
-        draft.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     var body: some View {
         Form {
-            Section("Claude") {
-                SecureField(
-                    "API Key",
-                    text: $draft,
-                    prompt: Text(isStored ? "••••••••••••••••" : "sk-ant-…")
-                )
-                .autocorrectionDisabled()
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                #endif
-                .onSubmit(save)
-
-                HStack {
-                    if isStored {
-                        Button("Remove", role: .destructive, action: remove)
-                    }
-                    Spacer()
-                    // Filled only while there is a key to save: the window keeps one filled button.
-                    if trimmedDraft.isEmpty {
-                        Button("Save", action: save)
-                            .disabled(true)
-                    } else {
-                        Button("Save", action: save)
-                            .buttonStyle(.borderedProminent)
+            if let value = claudeCodeValue {
+                Section {
+                    LabeledContent("Claude Code") {
+                        value
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -57,35 +34,29 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .disabled(model.services == nil)
-        .onAppear { isStored = model.hasAPIKey }
-        .alert(
-            "Keychain",
-            isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } }),
-            presenting: failure
-        ) { _ in
-            Button("OK") {}
-        } message: { message in
-            Text(message)
-        }
+        .task { await model.refreshClaudeAvailability() }
     }
 
-    private func save() {
-        guard !trimmedDraft.isEmpty else { return }
-        do {
-            try model.storeAPIKey(trimmedDraft)
-            draft = ""
-            isStored = true
-        } catch {
-            failure = error.localizedDescription
-        }
-    }
-
-    private func remove() {
-        do {
-            try model.removeAPIKey()
-            isStored = false
-        } catch {
-            failure = error.localizedDescription
+    /// The subscription when ready ("Team"), "Paused until 17:20" during a usage pause, "Not
+    /// installed", "Not signed in"; nothing on iOS (the AI runs on the Mac) or before the first
+    /// check.
+    private var claudeCodeValue: Text? {
+        switch model.claudeAvailability {
+        case .ready(let status)?:
+            if let until = status.pausedUntil, until > Date() {
+                let time = Text(DayText.time(until)).font(.mono(13))
+                return Text("Paused until \(time)")
+            }
+            if let subscription = status.subscription, !subscription.isEmpty {
+                return Text(verbatim: subscription.prefix(1).uppercased() + subscription.dropFirst())
+            }
+            return status.version.map { Text(verbatim: $0).font(.mono(13)) }
+        case .notInstalled?:
+            return Text("Not installed")
+        case .signedOut?, .missingAPIKey?:
+            return Text("Not signed in")
+        case .unsupported?, nil:
+            return nil
         }
     }
 }

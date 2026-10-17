@@ -1,5 +1,6 @@
 import CalendarUI
 import CaptureUI
+import ChatUI
 import CoursesUI
 import FilingUI
 import MailUI
@@ -53,8 +54,13 @@ struct StudyPortalApp: App {
             GoCommands()
             ReviewCommands()
             LiveLectureCommands()
-            MailCommands()
-            CalendarCommands()
+            // A commands builder takes ten items: the screens' own menus share one group.
+            Group {
+                MailCommands()
+                CalendarCommands()
+                // View ▸ Show Chat / Hide Chat ⌘J on Today and Mail, only with Claude Code.
+                ChatCommands()
+            }
         }
 
         #if os(macOS)

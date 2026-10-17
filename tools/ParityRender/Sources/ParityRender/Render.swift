@@ -1,6 +1,8 @@
 import AppKit
 import CaptureUI
+import ClaudeKit
 import FilingUI
+import MailIntelligence
 import SearchUI
 import StudyCore
 import StudyUI
@@ -10,7 +12,7 @@ import SwiftUI
 //
 //   tools/parity/render [--library DIR] [--out DIR] [--only 01-today,03-review]
 //                       [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
-//                       [--week 2026-10-19]
+//                       [--week 2026-10-19] [--m35-sample]
 //
 // `06-calendar` opens on the week of `--week` (default: mockup 06's, Mon 19 Oct 2026); `--now`
 // also fixes Today's clock (the DemoLibrary's is 2026-10-16T09:41, its mail's 15:02).
@@ -19,6 +21,11 @@ import SwiftUI
 // the sample library `swift run --package-path tools/EndToEnd m1-e2e demo --library DIR` writes
 // (mockup 05's mail) or the m2-e2e library; `--now` fixes the clock the mail list's times are
 // relative to (the university's time zone).
+//
+// `--m35-sample` (a library with mockup 05's mail, e.g. .data/parity/m3/library): adds M3.5's
+// sample rows to the clone (an open task, a mail that needs a reply, a mail chat about the newest
+// mail) and draws with Claude Code available, so Today and Mail show Show Chat; it adds the shots
+// `01-today-chat` and `05-mail-chat` (the chat inspector open).
 //
 // Builds the app's real views (`RootView` with its sidebar and toolbar, `LiveLectureScreen`) in
 // windows that are never ordered on screen, at the mockups' 1440×900 points, and writes
@@ -41,6 +48,8 @@ struct RenderOptions {
     var now: Date?
     /// The week Calendar shows (mockup 06: Week 43).
     var week = CalendarDay(year: 2026, month: 10, day: 19)
+    /// M3.5's sample rows and Claude Code available (`--m35-sample`).
+    var m35Sample = false
 
     init(arguments: [String]) throws {
         var index = 0
@@ -64,6 +73,7 @@ struct RenderOptions {
             case "--week":
                 guard let day = CalendarDay(rawValue: try value()) else { throw RenderFailure("--week takes 2026-10-19") }
                 week = day
+            case "--m35-sample": m35Sample = true
             case "--appearance":
                 switch try value() {
                 case "light": schemes = [.light]
@@ -141,6 +151,10 @@ struct ParityRender {
                 .order { $0.receivedAt.desc() }
                 .fetchOne(db)?.id
         }
+        if options.m35Sample {
+            try await seedM35(services: services, newestMail: newestMail, now: options.now ?? Date())
+            model.claudeAvailability = .ready(ClaudeBackendStatus(kind: .claudeCode, version: "2.1.268", subscription: "team"))
+        }
         let cc = try ParityMode.course("Data Centers", services: services)
         let (_, dcLecture2) = try ParityMode.lecture("Data Centers", 2, services: services)
         var shots: [RenderShot] = [
@@ -155,11 +169,17 @@ struct ParityRender {
             RenderShot(name: "07-search", window: .main(ParityMode.Launch(selection: .search, query: "paravirtualization"))),
             // Mockup 05: the Inbox, its newest message selected.
             RenderShot(name: "05-mail", window: .main(ParityMode.Launch(selection: .mailScope(.inbox), mailSelection: newestMail))),
+            // M3.5: the chat open (with `--m35-sample` only: it needs Claude Code available).
+            RenderShot(name: "01-today-chat", window: .main(ParityMode.Launch(selection: .today, showsChat: true))),
+            RenderShot(name: "05-mail-chat", window: .main(ParityMode.Launch(
+                selection: .mailScope(.inbox), mailSelection: newestMail, showsChat: true
+            ))),
             RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id)))),
             RenderShot(name: "10-import", window: .main(ParityMode.Launch(selection: .today))) { model, size in
                 try await ParityMode.importPreview(model: model, services: services, size: size)
             }
         ]
+        if !options.m35Sample { shots = shots.filter { !$0.name.hasSuffix("-chat") } }
         if let only = options.only { shots = shots.filter { only.contains($0.name) } }
         // The live screen last: its preview session keeps "recording", and a running recording
         // shows in every main window's toolbar.
@@ -181,6 +201,51 @@ struct ParityRender {
         }
     }
 
+    /// M3.5's sample rows in the clone: the second-newest inbox mail asks the student something
+    /// (`needs_reply`), an open undated task, and a finished mail chat about the newest mail (the
+    /// student's question with that mail as its `<mail>` context, the agent's answer, a second
+    /// exchange). Synthetic text; no model call.
+    static func seedM35(services: StudyServices, newestMail: MailMessage.ID?, now: Date) async throws {
+        let inbox = try await services.database.read { db in
+            try MailMessage
+                .where { $0.mailboxID.in(Mailbox.where { $0.role.eq(MailboxRole?.some(.inbox)) }.select(\.id)) }
+                .order { $0.receivedAt.desc() }
+                .limit(4)
+                .fetchAll(db)
+        }
+        guard let newest = inbox.first(where: { $0.id == newestMail }) ?? inbox.first else { return }
+        let asking = inbox.dropFirst(3).first ?? newest
+        let stamp = now
+        try await services.database.write { db in
+            try MailMessage.find(asking.id).update {
+                $0.needsReply = Bool?.some(true)
+                $0.updatedAt = stamp
+            }
+            .execute(db)
+        }
+        try await services.records.save(TrackedItem(
+            courseID: newest.courseID, kind: .task, title: "Choose a tutorial group",
+            createdBy: .agent, createdAt: now.addingTimeInterval(-3 * 3600), updatedAt: now.addingTimeInterval(-3 * 3600)
+        ))
+
+        let conversations = ConversationRepository(store: services.records)
+        let started = now.addingTimeInterval(-20 * 60)
+        let chat = try await conversations.start(AgentConversation(
+            kind: .mailChat, title: "When is sheet 1 due?", model: ClaudeModel.opus55.rawValue, state: .finished,
+            createdAt: started, updatedAt: started
+        ))
+        let envelope = MailEnvelope.render(newest, id: newest.id.uuidString.lowercased(), budget: MailEnvelope.Budget.drafting)
+        let turns: [(AgentRole, MessageParam)] = [
+            (.user, .user([.text(TextBlock(text: envelope)), .text(TextBlock(text: "When is sheet 1 due, and when do the tutorials start?"))])),
+            (.assistant, .assistant([.text(TextBlock(text: "Sheet 1 is due **Thu 29 Oct, 23:59**, submitted online under Exercises › Sheet 01. Tutorials start **Fri 23 Oct, 12:15**. Both are already on Today."))])),
+            (.user, .user("Draft a short reply thanking Cy.")),
+            (.assistant, .assistant([.text(TextBlock(text: "The draft is under Lena’s mail, for you to edit and send."))]))
+        ]
+        for (role, turn) in turns {
+            _ = try await conversations.append(to: chat.id, role: role, message: try turn.json.serializedString())
+        }
+    }
+
     static func isLive(_ shot: RenderShot) -> Bool {
         if case .live = shot.window { return true }
         return false
@@ -194,8 +259,11 @@ struct ParityRender {
         switch shot.window {
         case .main(let launch):
             content = AnyView(
-                RootView(selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget, mailSelection: launch.mailSelection)
-                    .environment(model)
+                RootView(
+                    selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
+                    mailSelection: launch.mailSelection, showsChat: launch.showsChat
+                )
+                .environment(model)
             )
         case .live:
             content = AnyView(LiveLectureScreen().environment(model))

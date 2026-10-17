@@ -1,6 +1,7 @@
 import CalendarSync
 import CalendarUI
 import CaptureUI
+import ChatUI
 import CoursesUI
 import FilingUI
 import MailUI
@@ -33,17 +34,21 @@ struct RootView: View {
     @FocusState private var searchFocused: Bool
     /// ↩ in the search field: the search screen opens its selected (or first) hit.
     @State private var searchSubmits = 0
+    /// The chat inspector on Today and Mail (M3.5), kept per window.
+    @SceneStorage("chat.shown") private var showsChat = false
 
     init(
         selection: SidebarItem? = .today,
         query: String = "",
         reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil,
-        mailSelection: MailMessage.ID? = nil
+        mailSelection: MailMessage.ID? = nil,
+        showsChat: Bool = false
     ) {
         _selection = State(initialValue: selection?.screen)
         _query = State(initialValue: query)
         _reviewTarget = State(initialValue: reviewTarget)
         _mailSelection = State(initialValue: mailSelection)
+        _showsChat = SceneStorage(wrappedValue: showsChat, "chat.shown")
     }
 
     var body: some View {
@@ -82,6 +87,8 @@ struct RootView: View {
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
                 .environment(\.deadlineActions, model.deadlineActions)
+                // The chat (Today, Mail): absent until Claude Code is available.
+                .environment(\.chatActions, model.chatActions)
                 // Calendar: the student's other calendars, read-only (Mac only, like the mirror).
                 .environment(\.foreignCalendars, model.calendarMirror.map { $0 as any ForeignCalendarSource })
                 .environment(\.calendarVisibility, model.calendarVisibility)
@@ -119,6 +126,7 @@ struct RootView: View {
                 #endif
                 .background { CalendarSessionsWatcher() }
                 .background { CalendarItemsWatcher() }
+                .background { ChatFailureWatcher() }
                 #if os(macOS)
                 .background { MainWindowReader() }
                 #endif
@@ -145,6 +153,7 @@ struct RootView: View {
                     searchSubmits: searchSubmits,
                     target: reviewTarget,
                     mailSelection: $mailSelection,
+                    showsChat: $showsChat,
                     record: record
                 )
                 #if os(iOS)
@@ -292,6 +301,16 @@ struct RootView: View {
                 .frame(width: ToolbarGlyph.pillWidth)
             }
         }
+        // Show Chat at the trailing end of Today and Mail, only while the chat is hidden and
+        // Claude Code is available (DESIGN §6.3).
+        if hasChat {
+            ChatToolbarItem(isPresented: $showsChat, isAvailable: model.chatActions.isAvailable)
+        }
+    }
+
+    /// The screens with the chat inspector: Today and Mail.
+    private var hasChat: Bool {
+        isToday || selection?.isMail == true
     }
 
     #if os(macOS)
@@ -484,6 +503,21 @@ private struct CalendarItemsWatcher: View {
             .task(id: items.map(\.updatedAt)) {
                 guard items.contains(where: \.needsCalendarSync) else { return }
                 await model.syncCalendar()
+            }
+    }
+}
+
+/// A chat answer failed: Claude Code's state is read again (no new check), so a usage pause shows
+/// as "Paused until 17:20" in the chat.
+private struct ChatFailureWatcher: View {
+    @Environment(AppModel.self) private var model
+    @FetchAll(AgentConversation.where { $0.state.eq(ConversationState.failed) }) private var failed
+
+    var body: some View {
+        Color.clear
+            .task(id: failed.count) {
+                guard !failed.isEmpty else { return }
+                await model.refreshClaudeAvailability(force: false)
             }
     }
 }
