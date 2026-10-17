@@ -16,8 +16,8 @@ actor ClaudeCodeQueue {
     private var waiters: [Waiter] = []
     private var nextID: UInt64 = 0
 
-    /// Waits for the turn. `front`: ahead of every waiter (a call retried after a usage pause).
-    func acquire(_ priority: CallPriority, front: Bool = false) async throws {
+    /// Waits for the turn.
+    func acquire(_ priority: CallPriority) async throws {
         try Task.checkCancellation()
         if !busy {
             busy = true
@@ -32,9 +32,7 @@ actor ClaudeCodeQueue {
                     return
                 }
                 let waiter = Waiter(id: id, priority: priority, continuation: continuation)
-                if front {
-                    waiters.insert(waiter, at: 0)
-                } else if priority == .interactive {
+                if priority == .interactive {
                     let index = waiters.firstIndex { $0.priority == .background } ?? waiters.endIndex
                     waiters.insert(waiter, at: index)
                 } else {

@@ -113,11 +113,15 @@ public actor AgentRuntime {
         }
         let spec = try spec(for: conversation.kind)
         var history = try await Self.history(conversations.turns(id))
-        // A run that stopped between a tool call and its result: answer the calls first (the API
-        // needs a result for each), in the same new user turn.
+        // A run that stopped between a tool call and its result: answer the calls still open
+        // first (the API needs a result for each), in the same new user turn.
         var blocks: [ContentBlock] = []
-        if let last = history.last, last.role == .assistant {
-            blocks = last.content.blocks.compactMap(\.toolUse).map { call in
+        if let index = history.lastIndex(where: { $0.role == .assistant }) {
+            var answered: Set<String> = []
+            for case .toolResult(let result) in history[(index + 1)...].flatMap(\.content.blocks) {
+                answered.insert(result.toolUseID)
+            }
+            blocks = history[index].content.blocks.compactMap(\.toolUse).filter { !answered.contains($0.id) }.map { call in
                 .toolResult(ToolResultBlock(toolUseID: call.id, content: .text("interrupted"), isError: true))
             }
         }

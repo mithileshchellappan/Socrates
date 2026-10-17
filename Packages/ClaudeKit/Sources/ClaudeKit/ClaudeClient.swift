@@ -119,8 +119,9 @@ public struct ClaudeClient: Sendable {
         return await availability()
     }
 
-    /// The gate for model work (replaces "an API key is saved"). True while a usage pause holds:
-    /// background calls then wait in the backend's queue.
+    /// The gate for model work (replaces "an API key is saved"). True while a usage pause holds
+    /// (calls then fail with `.usageLimited`); background work checks
+    /// `availability().pausedUntil` too.
     public func isAvailable() async -> Bool {
         await availability().isReady
     }

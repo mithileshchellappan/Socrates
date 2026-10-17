@@ -101,12 +101,16 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
     /// M3.5: the backend cannot run calls (Claude Code not installed or signed out; iOS).
     case unavailable(ClaudeAvailability)
     /// M3.5: the subscription's usage limit was reached ("You've hit your session limit · resets
-    /// 5:20pm"). Calls resume at `resetsAt` (nil when the CLI did not say). Background calls wait
-    /// for it inside the backend's queue; interactive calls get this error at once.
+    /// 5:20pm"). Calls resume at `resetsAt` (nil when the CLI did not say). Every call gets this
+    /// error at once while the pause holds; background work stays pending and runs after it.
     case usageLimited(resetsAt: Date?)
-    /// M3.5: the Claude Code CLI failed (exit status, an error result, a broken stream, a missing
-    /// MCP connection). Readable; never contains prompt content.
+    /// M3.5: the Claude Code CLI failed (an error result, a missing MCP connection, an answer
+    /// without the expected content). Readable; never contains prompt content.
     case claudeCode(String)
+    /// M3.5: the `claude` process failed on its own, whatever was asked: it could not start, it
+    /// crashed or was killed, or it exited without a result line (e.g. a flag a CLI update
+    /// dropped); or the app's tool server could not listen. Service trouble: the work waits.
+    case claudeCodeProcess(String)
 
     /// The API error details, when this is an API error.
     public var apiError: APIErrorInfo? {
@@ -146,7 +150,7 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
     /// everything retryable.
     public var isServiceTrouble: Bool {
         switch self {
-        case .missingAPIKey, .authentication, .permissionDenied, .billing, .unavailable, .usageLimited: true
+        case .missingAPIKey, .authentication, .permissionDenied, .billing, .unavailable, .usageLimited, .claudeCodeProcess: true
         default: isRetryable
         }
     }
@@ -209,7 +213,7 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
             }
         case .usageLimited(let resetsAt):
             "Usage limit reached" + (resetsAt.map { " until \($0.formatted(.iso8601))" } ?? "")
-        case .claudeCode(let reason): "Claude Code: \(reason)"
+        case .claudeCode(let reason), .claudeCodeProcess(let reason): "Claude Code: \(reason)"
         }
     }
 }

@@ -7,8 +7,7 @@ public struct CallContext: Sendable, Hashable {
     public var purpose: String
     public var lectureID: UUID?
     /// Who waits for the answer (M3.5). A backend with one queue (Claude Code: one process at a
-    /// time) runs interactive calls first; during a usage pause background calls wait for the
-    /// reset while interactive calls fail at once. The Messages API ignores it.
+    /// time) runs interactive calls first. The Messages API ignores it.
     public var priority: CallPriority
     /// The conversation a tool loop continues (M3.5). A backend that keeps conversations itself
     /// (Claude Code: one CLI session per conversation) uses it; the Messages API ignores it.
@@ -38,8 +37,9 @@ public enum CallPriority: String, Sendable, Hashable {
 /// A conversation whose history a backend keeps itself.
 ///
 /// Claude Code: `id` is the CLI session id (the `agent_conversation` id); the first run starts the
-/// session (`--session-id`), later runs continue it (`--resume`) and send only the newest user
-/// turn. The caller still stores every turn append-only.
+/// session (`--session-id`), later runs continue it (`--resume`) and send only the user turns
+/// after the last assistant turn (all stored turns as text when the CLI has deleted the session).
+/// The caller still stores every turn append-only.
 public struct ConversationSession: Sendable, Hashable {
     public var id: UUID
     /// False for the conversation's first run; true once a run has produced an assistant turn.

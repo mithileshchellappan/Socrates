@@ -27,9 +27,11 @@ enum LineDecision: Sendable {
     case stop
 }
 
-/// Runs one child process with structured concurrency only: `Process` and pipes, stdout read line
-/// by line from `FileHandle.bytes`, the exit through `terminationHandler`, and cancellation
-/// killing the child (SIGTERM, then SIGKILL after 2 s).
+/// Runs one child process with structured concurrency only: `Process` and pipes, each pipe read
+/// through its own readability handler (never `FileHandle.bytes`: its reads share one serial
+/// executor, so a quiet stderr held every stdout line back until stderr spoke or closed), stdout
+/// split into lines as it arrives, the exit through `terminationHandler`, and cancellation killing
+/// the child (SIGTERM, then SIGKILL after 2 s).
 enum ChildProcess {
     static let standardErrorLimit = 64 * 1024
 
@@ -70,33 +72,41 @@ enum ChildProcess {
         do {
             try process.run()
         } catch {
-            throw ClaudeError.claudeCode("could not start \(spec.executable.lastPathComponent) (\(error.localizedDescription))")
+            throw ClaudeError.claudeCodeProcess("could not start \(spec.executable.lastPathComponent) (\(error.localizedDescription))")
         }
         let pid = process.processIdentifier
         running.withLock { pids in
             if process.isRunning { pids.insert(pid) }
         }
 
+        let standardOutput = chunks(of: stdoutPipe.fileHandleForReading)
+        let standardErrorChunks = chunks(of: stderrPipe.fileHandleForReading)
         return try await withTaskCancellationHandler {
-            async let standardError = collect(stderrPipe.fileHandleForReading, limit: standardErrorLimit)
+            async let standardError = collect(standardErrorChunks, limit: standardErrorLimit)
             async let wroteInput: Void = write(spec.input, to: stdinPipe.fileHandleForWriting)
 
             var failure: (any Error)?
             var stopped = false
             var line = Data()
             do {
-                for try await byte in stdoutPipe.fileHandleForReading.bytes {
+                for await chunk in standardOutput {
+                    // After a stop the rest is drained unread.
+                    guard !stopped else { continue }
                     // Split on "\n" only: JSON lines may hold U+2028/U+2029, which `lines` splits on.
-                    guard byte == 0x0A else {
-                        if !stopped { line.append(byte) }
-                        continue
+                    var start = chunk.startIndex
+                    while !stopped, let newline = chunk[start...].firstIndex(of: 0x0A) {
+                        line.append(chunk[start..<newline])
+                        start = chunk.index(after: newline)
+                        if !line.isEmpty, try await onLine(line) == .stop {
+                            stopped = true
+                            terminate(process)
+                        }
+                        line.removeAll(keepingCapacity: true)
                     }
-                    if !stopped, !line.isEmpty, try await onLine(line) == .stop {
-                        stopped = true
-                        terminate(process)
-                    }
-                    line.removeAll(keepingCapacity: true)
+                    if !stopped { line.append(chunk[start...]) }
                 }
+                // A cancelled task ends the stream early: no partial last line.
+                try Task.checkCancellation()
                 if !stopped, !line.isEmpty, try await onLine(line) == .stop {
                     stopped = true
                 }
@@ -132,7 +142,7 @@ enum ChildProcess {
             }
             defer { group.cancelAll() }
             guard let first = try await group.next(), let value = first else {
-                throw ClaudeError.claudeCode("\(spec.executable.lastPathComponent) did not answer within \(timeout)")
+                throw ClaudeError.claudeCodeProcess("\(spec.executable.lastPathComponent) did not answer within \(timeout)")
             }
             return value
         }
@@ -161,13 +171,29 @@ enum ChildProcess {
         try? handle.close()
     }
 
-    private static func collect(_ handle: FileHandle, limit: Int) async -> String {
-        var data = Data()
-        do {
-            for try await byte in handle.bytes where data.count < limit {
-                data.append(byte)
+    /// What `handle` reads, as it arrives, until end of file. Each handle has its own readability
+    /// source, so one pipe never waits for another.
+    private static func chunks(of handle: FileHandle) -> AsyncStream<Data> {
+        AsyncStream { continuation in
+            handle.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    continuation.finish()
+                } else {
+                    continuation.yield(data)
+                }
             }
-        } catch {}
+            continuation.onTermination = { _ in handle.readabilityHandler = nil }
+        }
+    }
+
+    /// The first `limit` bytes; the rest is drained so the child never blocks on a full pipe.
+    private static func collect(_ chunks: AsyncStream<Data>, limit: Int) async -> String {
+        var data = Data()
+        for await chunk in chunks where data.count < limit {
+            data.append(chunk.prefix(limit - data.count))
+        }
         return String(decoding: data, as: UTF8.self)
     }
 }

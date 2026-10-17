@@ -63,8 +63,9 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
 ///   priority.
 /// - `streamMessage`: one-shot calls; `runToolLoop`: tool loops whose tools the CLI calls through
 ///   an MCP server the app hosts for the run.
-/// - A usage limit pauses the queue until the stated reset (kept in `state.json`): background
-///   calls wait and then run, interactive calls throw `ClaudeError.usageLimited` at once.
+/// - A usage limit pauses the queue until the stated reset (kept in `state.json`): every call
+///   throws `ClaudeError.usageLimited` at once meanwhile (service trouble: background work stays
+///   pending and its pipeline wakes itself at the reset).
 /// - Every API call is one `CallRecord` (`billing: .subscription`, notional cost).
 /// - Cancelling the caller kills the child process.
 public actor ClaudeCodeEngine: ClaudeBackend {
@@ -219,15 +220,11 @@ public actor ClaudeCodeEngine: ClaudeBackend {
         _ request: MessageRequest, context: CallContext, maxIterations: Int, ledger: any CostLedger,
         handler: @escaping ToolHandler, onEvent: @escaping @Sendable (ToolLoopEvent) async -> Void
     ) async throws -> ToolLoopResult {
-        // The CLI session holds the history (and the tool results); only the newest user turn goes.
-        guard let turn = request.messages.last(where: { $0.role == .user }) else {
-            throw ClaudeError.invalidArgument("a tool loop needs a user turn")
-        }
-        let prompt = try ClaudeCodeCall.promptBlocks(turn, droppingToolResults: true)
+        let prompts = try ToolLoopPrompts(request.messages)
         return try await scheduled(context.priority) { binary in
             let call = ClaudeCodeCall(
                 binary: binary, configuration: configuration, request: request, context: context, ledger: ledger)
-            return try await toolLoop(call, maxIterations: maxIterations, prompt: prompt, handler: handler, onEvent: onEvent)
+            return try await toolLoop(call, maxIterations: maxIterations, prompts: prompts, handler: handler, onEvent: onEvent)
         }
     }
 
@@ -235,15 +232,17 @@ public actor ClaudeCodeEngine: ClaudeBackend {
     /// the variant that worked for this CLI version; the live check found that `--safe-mode` also
     /// drops the `--mcp-config` server in 2.1.268, and a relaunch repeats the prompt in the
     /// session), else `--safe-mode`; `--session-id` ↔ `--resume` swapped once when the CLI says
-    /// the session is in use or unknown.
+    /// the session is in use or unknown. The prompt is every user turn the session lacks
+    /// (`ToolLoopPrompts`).
     private func toolLoop(
-        _ call: ClaudeCodeCall, maxIterations: Int, prompt: [JSONValue], handler: @escaping ToolHandler,
+        _ call: ClaudeCodeCall, maxIterations: Int, prompts: ToolLoopPrompts, handler: @escaping ToolHandler,
         onEvent: @escaping @Sendable (ToolLoopEvent) async -> Void
     ) async throws -> ToolLoopResult {
         let version = await current().availability.status?.version ?? "unknown"
         var variant = state.isolation[version] ?? .noSettingSources
         var tried: Set<IsolationVariant> = []
         var session: SessionFlag = call.context.session.map { $0.resumes ? .resume($0.id) : .start($0.id) } ?? .none
+        var prompt = prompts.unsent
         var swappedSession = false
         while true {
             tried.insert(variant)
@@ -268,59 +267,56 @@ public actor ClaudeCodeEngine: ClaudeBackend {
                 }
                 swappedSession = true
                 session = .resume(id)
+                // An earlier run of this conversation reached the CLI: it holds those turns.
+                prompt = prompts.newest
             } catch RunRelaunch.sessionNotFound {
                 guard case .resume(let id) = session, !swappedSession else {
                     throw ClaudeError.claudeCode("the conversation's session was not found")
                 }
                 swappedSession = true
                 session = .start(id)
+                // The CLI deleted the session (it prunes old ones): the history goes along as text.
+                prompt = prompts.replay
+                ClaudeClient.logger.notice("Claude Code session gone; the conversation starts again with its history replayed")
             }
         }
     }
 
-    /// Runs `body` with the binary when the queue gives the turn and no usage pause holds.
-    /// During a pause background calls sleep (cancellable, re-checked at least every 5 min) and
-    /// interactive calls throw `.usageLimited`; a background call that hit the limit runs again
-    /// after the reset, ahead of the queue.
+    /// Runs `body` with the binary when the queue gives the turn and no usage pause holds. During
+    /// a pause every call throws `.usageLimited` at once: a background call never sleeps through
+    /// it, since its pipeline's other work (rules, indexing) must go on; it stays pending and the
+    /// pipeline wakes itself at the reset.
     private func scheduled<T: Sendable>(_ priority: CallPriority, _ body: (URL) async throws -> T) async throws -> T {
-        var front = false
-        while true {
-            let (availability, binary) = await current()
-            guard availability.isReady, let binary else { throw ClaudeError.unavailable(availability) }
-            if let until = activePause() {
-                guard priority == .background else { throw ClaudeError.usageLimited(resetsAt: until) }
-                try await Task.sleep(for: .seconds(min(max(until.timeIntervalSinceNow, 1), 300)))
-                continue
-            }
-            // A call made by a tool of a running loop does not queue behind that loop (it would
-            // wait for itself); it runs beside it.
-            let queued = !Self.insideToolCall
-            if queued { try await queue.acquire(priority, front: front) }
-            if activePause() != nil {
-                // The previous holder hit the limit while this call waited.
-                if queued { await queue.release() }
-                continue
-            }
-            do {
-                let value = try await body(binary)
-                if queued { await queue.release() }
-                return value
-            } catch let hit as UsageLimitHit {
-                if queued { await queue.release() }
-                let until = hit.resetsAt.flatMap { $0 > Date() ? $0 : nil } ?? Date().addingTimeInterval(3600)
-                pause(until: until)
-                guard priority == .background, hit.retryable else { throw ClaudeError.usageLimited(resetsAt: until) }
-                front = true
-            } catch {
-                if queued { await queue.release() }
-                if let error = error as? ClaudeError {
-                    switch error {
-                    case .unavailable, .claudeCode: cached = nil  // signed out or gone: check again
-                    default: break
-                    }
+        let (availability, binary) = await current()
+        guard availability.isReady, let binary else { throw ClaudeError.unavailable(availability) }
+        if let until = activePause() { throw ClaudeError.usageLimited(resetsAt: until) }
+        // A call made by a tool of a running loop does not queue behind that loop (it would wait
+        // for itself); it runs beside it.
+        let queued = !Self.insideToolCall
+        if queued { try await queue.acquire(priority) }
+        if let until = activePause() {
+            // The previous holder hit the limit while this call waited.
+            if queued { await queue.release() }
+            throw ClaudeError.usageLimited(resetsAt: until)
+        }
+        do {
+            let value = try await body(binary)
+            if queued { await queue.release() }
+            return value
+        } catch let hit as UsageLimitHit {
+            if queued { await queue.release() }
+            let until = hit.resetsAt.flatMap { $0 > Date() ? $0 : nil } ?? Date().addingTimeInterval(3600)
+            pause(until: until)
+            throw ClaudeError.usageLimited(resetsAt: until)
+        } catch {
+            if queued { await queue.release() }
+            if let error = error as? ClaudeError {
+                switch error {
+                case .unavailable, .claudeCode, .claudeCodeProcess: cached = nil  // signed out or gone: check again
+                default: break
                 }
-                throw error
             }
+            throw error
         }
     }
 

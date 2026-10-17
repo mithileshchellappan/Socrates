@@ -2,10 +2,9 @@
 import Foundation
 
 /// A usage limit stopped a run (docs/plan-m35.md §3.6). The engine pauses its queue until
-/// `resetsAt` (now + 1 h when unknown); `retryable` is false once turns were appended.
+/// `resetsAt` (now + 1 h when unknown) and throws `ClaudeError.usageLimited`.
 struct UsageLimitHit: Error, CustomStringConvertible {
     var resetsAt: Date?
-    var retryable: Bool
 
     var description: String {
         "usage limit reached" + (resetsAt.map { " until \($0.formatted(.iso8601))" } ?? "")
@@ -78,10 +77,10 @@ struct ClaudeCodeCall: Sendable {
         return try line.serialized() + Data([0x0A])
     }
 
-    /// Text, image and document blocks of a user turn, without `cache_control` (not sent).
-    static func promptBlocks(_ turn: MessageParam, droppingToolResults: Bool) throws -> [JSONValue] {
+    /// Text, image and document blocks of user turns, in order, without `cache_control` (not sent).
+    static func promptBlocks(_ turns: [MessageParam], droppingToolResults: Bool) throws -> [JSONValue] {
         var blocks: [JSONValue] = []
-        for block in turn.content.blocks {
+        for block in turns.flatMap(\.content.blocks) {
             switch block {
             case .text, .image, .document:
                 guard var object = block.json.objectValue else { continue }
@@ -124,6 +123,59 @@ struct ClaudeCodeCall: Sendable {
         } catch {
             logger.error("Cost ledger failed: \(String(describing: error), privacy: .public)")
         }
+    }
+}
+
+/// What a tool loop sends on stdin, by what the CLI session already holds.
+struct ToolLoopPrompts: Sendable {
+    /// Every user turn after the last assistant turn, merged (tool results dropped: the session
+    /// has them). A turn whose run failed before the CLI started (a usage pause) never reached the
+    /// session; sending only the newest would lose it, and its `<mail>` envelope with it.
+    let unsent: [JSONValue]
+    /// The newest user turn alone: the session exists and holds the turns before it (an earlier
+    /// run reached the CLI but stored no answer).
+    let newest: [JSONValue]
+    /// The stored history as one delimited text block, then `unsent`: the CLI deleted the session
+    /// (it prunes sessions older than its `cleanupPeriodDays`), so a new one starts from the text.
+    let replay: [JSONValue]
+
+    init(_ messages: [MessageParam]) throws {
+        let answered = messages.lastIndex { $0.role == .assistant }
+        let pending = messages[(answered.map { $0 + 1 } ?? messages.startIndex)...].filter { $0.role == .user }
+        guard let last = pending.last else { throw ClaudeError.invalidArgument("a tool loop needs a user turn") }
+        let unsent = try ClaudeCodeCall.promptBlocks(pending, droppingToolResults: true)
+        self.unsent = unsent
+        newest = (try? ClaudeCodeCall.promptBlocks([last], droppingToolResults: true)) ?? unsent
+        replay = answered.map { [Self.history(messages[...$0])] + unsent } ?? unsent
+    }
+
+    /// The student's words and the agent's text answers in order, as one text block; the context
+    /// blocks (a `<mail>` envelope, before the words) only of the latest user turn that had any.
+    static func history(_ turns: ArraySlice<MessageParam>) -> JSONValue {
+        func texts(_ turn: MessageParam) -> [String] {
+            turn.content.blocks.compactMap(\.textValue)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        let withContext = turns.lastIndex { $0.role == .user && texts($0).count > 1 }
+        var parts: [String] = []
+        for index in turns.indices {
+            let turn = turns[index]
+            let text = texts(turn)
+            guard let words = text.last else { continue }
+            if turn.role == .user {
+                parts.append("<student>\n\((index == withContext ? text : [words]).joined(separator: "\n\n"))\n</student>")
+            } else {
+                parts.append("<assistant>\n\(text.joined(separator: "\n\n"))\n</assistant>")
+            }
+        }
+        let text = """
+            The conversation so far, for context (its earlier session is gone):
+            <conversation>
+            \(parts.joined(separator: "\n"))
+            </conversation>
+            """
+        return ["type": "text", "text": .string(text)]
     }
 }
 
@@ -184,11 +236,11 @@ struct CLIOutput {
     }
 
     /// The error a failed run throws: a usage limit, a sign-in problem, or the CLI's message.
-    func failure(standardError: String, status: Int32, appended: Bool) -> any Error {
+    func failure(standardError: String, status: Int32) -> any Error {
         let texts = failureTexts(standardError: standardError)
         if let limit = texts.first(where: UsageLimitText.isLimit) ?? (rejected ? "" : nil) {
             let resetsAt = rejectedResetsAt ?? UsageLimitText.resetDate(in: limit, now: Date())
-            return UsageLimitHit(resetsAt: resetsAt, retryable: !appended)
+            return UsageLimitHit(resetsAt: resetsAt)
         }
         if texts.contains(where: { $0.contains("/login") || $0.localizedCaseInsensitiveContains("not logged in") }) {
             return ClaudeError.unavailable(.signedOut)
@@ -208,6 +260,9 @@ struct CLIOutput {
             || lower.contains("fetch failed") {
             return ClaudeError.transport(code: URLError.Code.networkConnectionLost.rawValue, description: reason)
         }
+        // No result line: the process failed on its own (crashed, killed, a flag a CLI update
+        // dropped), not because of what was asked; the work waits instead of counting an attempt.
+        guard result != nil else { return ClaudeError.claudeCodeProcess(reason) }
         return ClaudeError.claudeCode(reason)
     }
 
@@ -327,7 +382,7 @@ enum ClaudeCodeRun {
         guard request.tools.isEmpty else {
             throw ClaudeError.invalidArgument("tools need a ToolLoop on the Claude Code backend")
         }
-        let input = try ClaudeCodeCall.inputLine(try ClaudeCodeCall.promptBlocks(turn, droppingToolResults: false))
+        let input = try ClaudeCodeCall.inputLine(try ClaudeCodeCall.promptBlocks([turn], droppingToolResults: false))
         var arguments = call.commonArguments + ["--safe-mode", "--no-session-persistence"]
         if let format = request.outputFormat {
             arguments += ["--json-schema", try format.schema.serializedString()]
@@ -393,7 +448,7 @@ enum ClaudeCodeRun {
         }
         let failure: any Error = output.isSuccess
             ? ClaudeError.claudeCode(structured ? "the answer had no structured output" : "the answer was empty")
-            : output.failure(standardError: processResult.standardError, status: processResult.status, appended: false)
+            : output.failure(standardError: processResult.standardError, status: processResult.status)
         if tracker.completed.isEmpty {
             // Nothing reached the API (or the CLI refused before streaming): still one ledger row.
             await call.record(nil, error: String(describing: failure), startedAt: Date(), elapsed: .zero)
@@ -474,7 +529,7 @@ enum ClaudeCodeRun {
         guard fileManager.createFile(
             atPath: configFile.path, contents: try server.configuration(port: port).serialized(),
             attributes: [.posixPermissions: 0o600])
-        else { throw ClaudeError.claudeCode("could not write the tool server's configuration") }
+        else { throw ClaudeError.claudeCodeProcess("could not write the tool server's configuration") }
         defer { try? fileManager.removeItem(at: configFile) }
 
         let arguments = call.commonArguments + variant.arguments + [
@@ -581,6 +636,8 @@ enum ClaudeCodeRun {
             if let (partial, started, elapsed) = tracker.openMessage {
                 await call.record(partial, error: error is CancellationError ? "cancelled" : String(describing: error), startedAt: started, elapsed: elapsed)
             }
+            // Results the CLI already printed are stored too (a Stop during a tool call).
+            await flushResults()
             throw error
         }
         if let (partial, started, elapsed) = tracker.openMessage {
@@ -614,8 +671,7 @@ enum ClaudeCodeRun {
             if output.result?.string("subtype") == "error_max_turns" { return result(.iterationLimit, final: last) }
             if output.isSuccess { return result(stop ?? .other(last.stopReason), final: last) }
         }
-        let failure = output.failure(
-            standardError: processResult.standardError, status: processResult.status, appended: !appended.isEmpty)
+        let failure = output.failure(standardError: processResult.standardError, status: processResult.status)
         if tracker.completed.isEmpty {
             await call.record(nil, error: String(describing: failure), startedAt: Date(), elapsed: .zero)
         }

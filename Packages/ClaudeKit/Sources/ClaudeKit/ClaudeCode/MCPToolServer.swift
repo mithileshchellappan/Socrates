@@ -50,16 +50,16 @@ final class MCPToolServer: Sendable {
                 if let port = listener.port?.rawValue { return (port, task) }
             case .failed(let error):
                 task.cancel()
-                throw ClaudeError.claudeCode("the tool server could not listen (\(error))")
+                throw ClaudeError.claudeCodeProcess("the tool server could not listen (\(error))")
             case .cancelled:
                 task.cancel()
-                throw ClaudeError.claudeCode("the tool server stopped before it was ready")
+                throw ClaudeError.claudeCodeProcess("the tool server stopped before it was ready")
             default:
                 continue
             }
         }
         task.cancel()
-        throw ClaudeError.claudeCode("the tool server stopped before it was ready")
+        throw ClaudeError.claudeCodeProcess("the tool server stopped before it was ready")
     }
 
     /// `--mcp-config` content for the CLI. `alwaysLoad`: the tools are in the first request's

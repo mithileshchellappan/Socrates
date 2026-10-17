@@ -21,8 +21,9 @@ public struct ClaudeBackendStatus: Sendable, Hashable {
     public var version: String?
     /// The subscription the CLI is signed in with ("pro", "max", "team"); nil when unknown.
     public var subscription: String?
-    /// The usage limit was reached: background calls wait until then, interactive calls fail at
-    /// once with `ClaudeError.usageLimited`. Nil while calls run.
+    /// The usage limit was reached: calls fail at once with `ClaudeError.usageLimited` until then
+    /// (background pipelines leave their model work pending and wake at this time). Nil while
+    /// calls run.
     public var pausedUntil: Date?
 
     public init(kind: ClaudeBackendKind, version: String? = nil, subscription: String? = nil, pausedUntil: Date? = nil) {
@@ -36,7 +37,7 @@ public struct ClaudeBackendStatus: Sendable, Hashable {
 /// Whether a backend can run calls. Found without a model call (Claude Code: the binary and
 /// `claude auth status`).
 public enum ClaudeAvailability: Sendable, Hashable {
-    /// Calls run (while `pausedUntil` is set they wait or fail, see `ClaudeBackendStatus`).
+    /// Calls run (while `pausedUntil` is set they fail, see `ClaudeBackendStatus`).
     case ready(ClaudeBackendStatus)
     /// The Claude Code CLI was not found.
     case notInstalled
@@ -47,10 +48,16 @@ public enum ClaudeAvailability: Sendable, Hashable {
     /// This platform cannot run the backend (iOS and iPadOS: the AI runs on the Mac).
     case unsupported
 
-    /// Calls can be made (they may still wait for a usage pause to end).
+    /// Calls can be made (a usage pause may still hold, see `pausedUntil`).
     public var isReady: Bool {
         if case .ready = self { return true }
         return false
+    }
+
+    /// The usage pause while it holds; nil when calls run or the backend is not ready.
+    public var pausedUntil: Date? {
+        guard let until = status?.pausedUntil, until > Date() else { return nil }
+        return until
     }
 
     public var status: ClaudeBackendStatus? {

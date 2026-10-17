@@ -10,10 +10,11 @@ import Synchronization
 /// routed between stretches. Runs off the main actor and never blocks the UI; the screens observe
 /// the rows it writes.
 ///
-/// Model steps run only while the client is available (M3.5: Claude Code installed and signed in),
-/// and only while today's mail calls cost less than the daily limit (`MailCostGuard`, $1 by
-/// default; notional under the subscription). Without them it still routes by rules and indexes;
-/// the rest waits as `pending` until `wake()` (e.g. after Claude Code became available).
+/// Model steps run only while the client is available (M3.5: Claude Code installed and signed in)
+/// and no usage pause holds, and only while today's mail calls cost less than the daily limit
+/// (`MailCostGuard`, $1 by default; notional under the subscription). Without them it still
+/// routes by rules and indexes; the rest waits as `pending` until `wake()` (e.g. after Claude
+/// Code became available; the pipeline wakes itself when a usage pause ends).
 public actor MailPipeline {
     /// What one pass did.
     public struct PassReport: Sendable, Equatable {
@@ -40,6 +41,8 @@ public actor MailPipeline {
     private var isRunning = false
     private var runAgain = false
     private var rulesChanged = false
+    /// A pass at the end of the usage pause.
+    private var pauseWake: Task<Void, Never>?
 
     public init(
         services: StudyServices,
@@ -111,6 +114,8 @@ public actor MailPipeline {
         observations = []
         loop?.cancel()
         loop = nil
+        pauseWake?.cancel()
+        pauseWake = nil
     }
 
     /// Runs a pass now (new mail, the API key was saved, wake from sleep). A wake during a pass
@@ -134,9 +139,10 @@ public actor MailPipeline {
                 }
             }
             let report = await pass()
-            // The triage backlog continues in another pass while this one made progress.
+            // The triage backlog continues in another pass while this one made progress (calls
+            // that all failed are none: the next stretch would likely fail the same way).
             let triage = report.extraction
-            if triage.backlogLeft > 0, triage.waiting == 0, triage.calls + triage.skipped + triage.done > 0 {
+            if triage.backlogLeft > 0, triage.waiting == 0, triage.skipped + triage.done > 0 {
                 runAgain = true
             }
         } while runAgain
@@ -179,6 +185,8 @@ public actor MailPipeline {
         } catch {
             MailIntelligence.log.error("Extraction pass failed: \(String(describing: error), privacy: .public)")
         }
+        // A call of this pass may have hit the usage limit.
+        if useModel { _ = await canUseModel() }
         let routing = report.routing
         let extraction = report.extraction
         if routing != MailRouter.Report() || extraction != MailExtractor.Report() {
@@ -192,10 +200,29 @@ public actor MailPipeline {
         return report
     }
 
-    /// A client that can run calls now (M3.5: replaces "an API key is saved").
+    /// A client that can run calls now (M3.5: replaces "an API key is saved"). A usage pause
+    /// counts as none (its calls would fail at once); a pass follows when it ends.
     private func canUseModel() async -> Bool {
         guard let client else { return false }
-        return await client.isAvailable()
+        let availability = await client.availability()
+        if let until = availability.pausedUntil {
+            wakeAfterPause(until)
+            return false
+        }
+        return availability.isReady
+    }
+
+    private func wakeAfterPause(_ until: Date) {
+        guard pauseWake == nil else { return }
+        pauseWake = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(until.timeIntervalSinceNow + 1)) } catch { return }
+            await self?.pauseEnded()
+        }
+    }
+
+    private func pauseEnded() async {
+        pauseWake = nil
+        await wake()
     }
 }
 

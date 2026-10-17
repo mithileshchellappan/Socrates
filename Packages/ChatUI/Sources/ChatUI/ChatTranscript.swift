@@ -38,9 +38,9 @@ struct ChatTranscript: Equatable {
             let blocks = message.content.blocks
             switch turn.role {
             case .user:
-                // Tool results belong to the answer being written.
-                guard !blocks.contains(where: { $0.type == "tool_result" }) else { continue }
-                // The student's words are the last text block; context blocks come before them.
+                // The student's words are the last text block; context blocks (and the results of
+                // calls a stopped run left open) come before them. A turn of tool results only
+                // belongs to the answer being written.
                 guard let words = blocks.last(where: { $0.textValue != nil })?.textValue else { continue }
                 flush()
                 entries.append(.student(id: turn.id, text: words))

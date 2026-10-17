@@ -418,14 +418,20 @@ public struct MailExtractor: Sendable {
     // MARK: - Writing
 
     /// Validates one mail's answer and writes its items, their sources, the message's `done`
-    /// state and `needs_reply` in one transaction.
+    /// state and `needs_reply` in one transaction. A backlog mail that was already extracted
+    /// (`done` before triage existed) keeps its items: only tasks, which that extraction did not
+    /// look for, are added (an undated item quoted slightly differently would be a duplicate).
     func apply(
         _ answer: ExtractionPrompt.MailAnswer,
         to message: MailMessage,
         courses: CourseDirectory,
         apiCallID: APICall.ID?
     ) async throws -> Applied {
-        let (candidates, rejected) = candidates(from: answer.items, message: message, courses: courses)
+        var items = answer.items
+        if message.extractionState == .done {
+            items = items.filter { TrackedItemKind(rawValue: $0.kind.trimmingCharacters(in: .whitespaces).lowercased()) == .task }
+        }
+        let (candidates, rejected) = candidates(from: items, message: message, courses: courses)
         let needsReply = Self.needsReply(answer.needsReply, message: message)
         let store = services.records
         let timeZone = timeZone

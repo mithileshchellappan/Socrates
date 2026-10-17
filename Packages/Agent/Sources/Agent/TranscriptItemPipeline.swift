@@ -49,6 +49,8 @@ public actor TranscriptItemPipeline {
     private var loop: Task<Void, Never>?
     private var running = false
     private var again = false
+    /// A pass at the end of the usage pause.
+    private var pauseWake: Task<Void, Never>?
 
     public init(
         services: StudyServices,
@@ -105,6 +107,8 @@ public actor TranscriptItemPipeline {
         observation = nil
         loop?.cancel()
         loop = nil
+        pauseWake?.cancel()
+        pauseWake = nil
     }
 
     /// A transcription finished, or Claude Code became available: read what waits. Runs a pass (model
@@ -156,7 +160,7 @@ public actor TranscriptItemPipeline {
                 report.skipped += 1
                 continue
             }
-            guard !serviceTrouble, let client, await client.isAvailable(), await costGuard.allowsCalls() else {
+            guard !serviceTrouble, let client, await runsNow(client), await costGuard.allowsCalls() else {
                 try await keepPending(item)
                 report.waiting += 1
                 continue
@@ -175,6 +179,8 @@ public actor TranscriptItemPipeline {
                 serviceTrouble = true
             }
         }
+        // A call of this pass may have hit the usage limit.
+        if serviceTrouble, let client { _ = await runsNow(client) }
         return report
     }
 
@@ -284,6 +290,27 @@ public actor TranscriptItemPipeline {
 
     static func isServiceTrouble(_ error: ClaudeError) -> Bool {
         error.isServiceTrouble
+    }
+
+    /// Calls can run now: a usage pause counts as no client (its calls would fail at once), and a
+    /// pass follows when it ends.
+    func runsNow(_ client: ClaudeClient) async -> Bool {
+        let availability = await client.availability()
+        if let until = availability.pausedUntil {
+            if pauseWake == nil {
+                pauseWake = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(until.timeIntervalSinceNow + 1)) } catch { return }
+                    await self?.pauseEnded()
+                }
+            }
+            return false
+        }
+        return availability.isReady
+    }
+
+    private func pauseEnded() async {
+        pauseWake = nil
+        await wake()
     }
 
     // MARK: - Validation
