@@ -1,12 +1,17 @@
+import Processing
 import StudyCore
 import SwiftUI
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
     @State private var selection: SidebarItem? = .today
     @State private var query = ""
 
     var body: some View {
+        @Bindable var model = model
         if let launchError = model.launchError {
             ContentUnavailableView(
                 "Library unavailable",
@@ -20,11 +25,64 @@ struct RootView: View {
                 NavigationStack {
                     DetailView(item: selection ?? .today)
                 }
+                .id(selection)
             }
             .searchable(text: $query, placement: .toolbar, prompt: "Search lectures, notes, mail")
             .onSubmit(of: .search) { selection = .search }
             .focusedSceneValue(\.sidebarSelection, $selection)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Record", systemImage: "record.circle", action: record)
+                        .labelStyle(.titleAndIcon)
+                }
+            }
+            .sheet(item: $model.sheet) { sheet in
+                switch sheet {
+                case .newCapture:
+                    CaptureSetupView()
+                case .importLecture(let courseID):
+                    ImportLectureView(preferredCourseID: courseID) { imported in
+                        selection = .course(imported.lecture.courseID)
+                    }
+                }
+            }
+            .alert(
+                "Couldn’t finish",
+                isPresented: Binding(get: { model.failure != nil }, set: { if !$0 { model.failure = nil } }),
+                presenting: model.failure
+            ) { _ in
+                Button("OK") {}
+            } message: { message in
+                Text(message)
+            }
+            #if os(iOS)
+            .fullScreenCover(isPresented: $model.isLivePresented, onDismiss: { model.closeLiveLecture() }) {
+                NavigationStack {
+                    LiveLectureScreen()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button(role: .close) { model.isLivePresented = false }
+                            }
+                        }
+                }
+                .environment(model)
+            }
+            #endif
+            .task { await model.startBackgroundWork() }
         }
+    }
+
+    /// Shows the running live lecture, or sets up a new one.
+    private func record() {
+        guard model.live != nil else {
+            model.sheet = .newCapture
+            return
+        }
+        #if os(macOS)
+        openWindow(id: LiveLectureScene.id)
+        #else
+        model.isLivePresented = true
+        #endif
     }
 }
 

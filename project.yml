@@ -37,6 +37,8 @@ packages:
     path: Packages/ClaudeKit
   Alignment:
     path: Packages/Alignment
+  Processing:
+    path: Packages/Processing
 
 targets:
   StudyPortal:
@@ -65,6 +67,14 @@ targets:
         UIBackgroundModes: [audio]
         UISupportedInterfaceOrientations~iphone:
           - UIInterfaceOrientationPortrait
+        # Live capture writes `<uuid>.lecture` folders; declared as a package so Finder and the
+        # import dialog treat one as a single item.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.example.studyportal.lecture
+            UTTypeDescription: Study Portal Lecture
+            UTTypeConformsTo: [com.apple.package, public.composite-content]
+            UTTypeTagSpecification:
+              public.filename-extension: [lecture]
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
@@ -95,6 +105,12 @@ targets:
     dependencies:
       - package: StudyCore
       - package: Capture
+        product: Capture
+      - package: Capture
+        product: CaptureUI
       - package: Transcription
+        product: Transcription
       - package: ClaudeKit
       - package: Alignment
+        product: Alignment
+      - package: Processing

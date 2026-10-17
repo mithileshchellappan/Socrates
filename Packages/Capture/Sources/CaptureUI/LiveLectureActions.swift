@@ -53,8 +53,10 @@ extension FocusedValues {
     @Entry public var liveLecture: LiveLectureActions?
 }
 
-/// Menu commands for live lectures: → next slide, ← previous slide, F flag, Record/Stop.
-/// Space also advances (handled by the screen itself, since a menu item has one shortcut).
+/// Menu commands for live lectures: → or Space next slide, ← previous slide, F flag, Record/Stop.
+/// A menu item has one shortcut, so Next Slide is listed once per key (as Safari lists its tab
+/// shortcuts). Menu key equivalents run before the focused view sees the key, so the screen's own
+/// Space handler never fires for the same press.
 ///
 ///     WindowGroup { … }.commands { LiveLectureCommands() }
 public struct LiveLectureCommands: Commands {
@@ -66,6 +68,9 @@ public struct LiveLectureCommands: Commands {
         CommandMenu("Lecture") {
             Button("Next Slide") { live?.next() }
                 .keyboardShortcut(.rightArrow, modifiers: [])
+                .disabled(live?.nextEnabled != true)
+            Button("Next Slide") { live?.next() }
+                .keyboardShortcut(.space, modifiers: [])
                 .disabled(live?.nextEnabled != true)
             Button("Previous Slide") { live?.previous() }
                 .keyboardShortcut(.leftArrow, modifiers: [])

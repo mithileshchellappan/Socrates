@@ -1,3 +1,4 @@
+import CaptureUI
 import StudyCore
 import SwiftUI
 
@@ -21,10 +22,13 @@ struct StudyPortalApp: App {
         .defaultSize(width: 1180, height: 760)
         .commands {
             SidebarCommands()
+            LectureCommands(model: model)
             GoCommands()
+            LiveLectureCommands()
         }
 
         #if os(macOS)
+        LiveLectureScene(model: model)
         SettingsScene(model: model)
         #endif
     }

@@ -19,9 +19,10 @@ public struct LiveLectureContext {
 /// Live lecture mode: the slide large, the recording in the toolbar, a filmstrip of nearby
 /// slides, and an inspector with captions, quick notes and stamps (mockup 02-live).
 ///
-/// Space advances the slide when no text field has focus; install `LiveLectureCommands` for
-/// →, ← and F. The session must be owned by the app, not this view: it keeps recording when
-/// the view goes away.
+/// Install `LiveLectureCommands` for →, Space, ← and F (disabled while a text field has focus).
+/// The slide also handles Space itself where no menu exists (iPad without a keyboard menu).
+/// The session must be owned by the app, not this view: it keeps recording when the view goes
+/// away.
 public struct LiveLectureView: View {
     let session: LiveLectureSession
     let context: LiveLectureContext?

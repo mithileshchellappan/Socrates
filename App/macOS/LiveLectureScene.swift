@@ -1,0 +1,18 @@
+import SwiftUI
+
+/// Live lecture mode gets its own window on the Mac (mockup 02-live: no sidebar, inspector).
+/// One at a time; closing it keeps a running recording going.
+struct LiveLectureScene: Scene {
+    static let id = "live-lecture"
+    let model: AppModel
+
+    var body: some Scene {
+        Window("Live Lecture", id: Self.id) {
+            LiveLectureScreen()
+                .environment(model)
+                .onDisappear { model.closeLiveLecture() }
+        }
+        .defaultSize(width: 1280, height: 820)
+        .restorationBehavior(.disabled)
+    }
+}

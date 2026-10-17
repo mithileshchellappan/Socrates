@@ -52,5 +52,26 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+				<string>public.composite-content</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Study Portal Lecture</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.example.studyportal.lecture</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>lecture</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>
