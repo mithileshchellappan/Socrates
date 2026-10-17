@@ -5,7 +5,7 @@ import StudyUI
 import SwiftUI
 
 /// Today (mockup 01, light): one first thing — the newest lecture to review, else the next
-/// class — and the next seven days of classes in one dated list.
+/// class — and the next seven days' sessions other than the weekly lectures in one dated list.
 public struct TodayView: View {
     private let fixedNow: Date?
     private let record: (() -> Void)?
@@ -68,7 +68,10 @@ public struct TodayView: View {
                         VStack(spacing: 0) {
                             ForEach(Array(plan.comingUp.enumerated()), id: \.element.id) { index, session in
                                 if index > 0 {
-                                    Divider().padding(.leading, 22)
+                                    // From the title's leading edge to the column's trailing edge.
+                                    Divider()
+                                        .padding(.leading, 32)
+                                        .padding(.trailing, 10)
                                 }
                                 ComingUpRow(session: session, course: data.courses[session.courseID], text: text)
                                     .contextMenu {
@@ -97,8 +100,7 @@ public struct TodayView: View {
                 }
             }
         }
-        .navigationTitle("Today")
-        .navigationSubtitle(subtitle(now: now, plan: plan, text: text))
+        .screenTitle(String(localized: "Today"), subtitle: subtitle(now: now, plan: plan, text: text))
         .task(id: TodayRequest(day: today, timeZone: timeZone)) {
             // A new day (or another time zone) needs a new window of sessions.
             let request = TodayRequest(day: today, timeZone: timeZone)
@@ -147,7 +149,11 @@ struct TodayPlan: Equatable {
             hero = .session(next)
             shown.insert(next.id)
         }
-        comingUp = known.filter { $0.endsAt > now && $0.startsAt < horizon && !shown.contains($0.id) }
+        // Everything but the weekly lectures (mockup 01): exercises, tutorials, seminars and
+        // one-off sessions; a cancelled lecture stays, struck through, so it can be restored.
+        comingUp = known.filter {
+            $0.endsAt > now && $0.startsAt < horizon && !shown.contains($0.id) && ($0.kind != .lecture || $0.isCancelled)
+        }
     }
 
     func canRecord(_ session: LectureSession, courses: [Course.ID: Course], now: Date) -> Bool {
@@ -173,6 +179,33 @@ private struct HeroCard<Content: View>: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(.separator, lineWidth: 0.5)
         }
+    }
+}
+
+/// The hero's one filled button (mockup 01 `.btn.primary.lg`): accent, 32 pt tall (the large
+/// control's 28 pt plus 2 pt above and below the title), corner radius 9, a 13 pt medium title
+/// after a small glyph.
+private struct HeroButtonLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label {
+            Text(title)
+                .fontWeight(.medium)
+        } icon: {
+            Image(systemName: systemImage)
+                .imageScale(.small)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+private extension View {
+    func heroButtonStyle() -> some View {
+        buttonStyle(.borderedProminent)
+            .buttonBorderShape(.roundedRectangle(radius: 9))
+            .controlSize(.large)
     }
 }
 
@@ -210,6 +243,7 @@ private struct ReviewHero: View {
             Eyebrow(course: course, detail: review.recordedAt.map { String(localized: "recorded \(text.day($0))") })
             Text(title)
                 .font(.title.weight(.semibold))
+                .tracking(-0.3)
                 .padding(.top, 2)
                 .padding(.bottom, 3)
             meta
@@ -217,10 +251,9 @@ private struct ReviewHero: View {
                 .foregroundStyle(.secondary)
             HStack(spacing: 14) {
                 Button(action: start) {
-                    Label("Start review", systemImage: "play.fill")
+                    HeroButtonLabel(title: String(localized: "Start review"), systemImage: "play.fill")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .heroButtonStyle()
                 .keyboardShortcut(.defaultAction)
                 if let aside {
                     aside
@@ -293,6 +326,7 @@ private struct SessionHero: View {
             Eyebrow(course: course)
             Text(title)
                 .font(.title.weight(.semibold))
+                .tracking(-0.3)
                 .padding(.top, 2)
                 .padding(.bottom, 3)
             meta
@@ -300,10 +334,9 @@ private struct SessionHero: View {
                 .foregroundStyle(.secondary)
             if let record {
                 Button(action: record) {
-                    Label("Record", systemImage: "record.circle")
+                    HeroButtonLabel(title: String(localized: "Record"), systemImage: "circle.fill")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .heroButtonStyle()
                 .keyboardShortcut(.defaultAction)
                 .padding(.top, 11)
             }
@@ -350,15 +383,18 @@ private struct ComingUpRow: View {
                 .frame(width: 10)
             Text(SessionText.title(of: session, courseName: course?.name ?? ""))
                 .fontWeight(.medium)
+                .frame(minHeight: 18)
                 .strikethrough(session.isCancelled)
                 .foregroundStyle(session.isCancelled ? .tertiary : .primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 2) {
                 Text(text.day(session.startsAt))
+                    .frame(minHeight: 18)
                 Text(text.timeRange(session.startsAt, session.endsAt))
                     .font(.system(.callout, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                    .frame(minHeight: 16)
             }
             .strikethrough(session.isCancelled)
             .foregroundStyle(session.isCancelled ? .tertiary : .primary)

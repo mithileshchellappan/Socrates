@@ -1,16 +1,25 @@
 import Courses
+import Filing
 import FilingUI
 import StudyCore
 import StudyUI
 import SwiftUI
 
-/// The main window's sidebar (mockups 03 and 10): Today, Calendar, Mail, Search; each course with
-/// its lectures ("L2 · Virtualization & IaaS", Tue 13 Oct) and its next session in secondary text
-/// ("L3", "Mon 19 Oct, 12:15"); the semester and New Course at the bottom. Files dropped on a
-/// course, lecture or session row are filed exactly there.
+/// The main window's sidebar (mockups 01, 03, 07, 10): Today, Calendar, Mail (unread count),
+/// Search; then the courses as flat rows. A course opens to its lectures ("L2 · Virtualization &
+/// IaaS", Tue 13 Oct) and its next session in secondary text ("L3", "Mon 19 Oct, 12:15"). Courses
+/// start closed (01, 07); the course of the open lecture or course opens itself (03), and while
+/// files are dragged in, the predicted course opens with the predicted row outlined (10). Small
+/// disclosure chevrons show once any course is open. The semester and Settings at the bottom (New
+/// Course on a course's screen, 08). Files dropped on a course, lecture or session row are filed
+/// exactly there.
 struct SidebarView: View {
     @Binding var selection: SidebarItem?
     let center: FilingCenter
+    /// The last queries searched for, newest first (shown on the Search screen, mockup 07).
+    var recentSearches: [String] = []
+    /// Searches again for a recent query.
+    var search: (String) -> Void = { _ in }
 
     @Environment(AppModel.self) private var model
     @FetchAll(Course.order { ($0.sortOrder, $0.name) }) private var courses
@@ -19,11 +28,26 @@ struct SidebarView: View {
     @FetchAll private var sessions: [LectureSession]
     /// Each lecture's jobs, oldest first: the last one says what processing is doing.
     @FetchAll(Job.where { $0.lectureID.isNot(nil) }.order(by: \.createdAt)) private var jobs
-    @State private var collapsed: Set<Course.ID> = []
+    /// Unread messages in the Inbox (M2 sync fills the table; 0 shows nothing).
+    @FetchOne(
+        MailMessage
+            .where {
+                !$0.isSeen && $0.moveToMailboxID.is(nil)
+                    && $0.mailboxID.in(Mailbox.where { $0.role.eq(MailboxRole?.some(.inbox)) }.select(\.id))
+            }
+            .count()
+    ) private var unreadMail = 0
+    /// The open courses, as comma-separated IDs (kept per window).
+    @SceneStorage("sidebar.openCourses") private var openCourses = ""
 
-    init(selection: Binding<SidebarItem?>, center: FilingCenter) {
+    /// The mockups' 228 pt glass panel (a 236 pt column with its inset).
+    static let idealWidth: CGFloat = 228
+
+    init(selection: Binding<SidebarItem?>, center: FilingCenter, recentSearches: [String] = [], search: @escaping (String) -> Void = { _ in }) {
         _selection = selection
         self.center = center
+        self.recentSearches = recentSearches
+        self.search = search
         // Sessions from yesterday on: enough to find each course's next one. Rounded to the day,
         // so the request stays the same while the window re-creates the sidebar (each keystroke
         // in the search field) and its observation is not restarted.
@@ -34,90 +58,215 @@ struct SidebarView: View {
     var body: some View {
         let latestJobs = Self.latestJobs(jobs)
         let now = Date()
+        let predicted = predictedPlace
+        let open = openCourseIDs.union(predicted.map { [$0.course.id] } ?? [])
+        // While files are dragged in, lecture rows are titles only (mockup 10).
+        let showsDates = center.drag == nil
         List(selection: $selection) {
             ForEach(SidebarItem.destinations, id: \.self) { item in
                 NavigationLink(value: item) {
-                    Label(item.title, systemImage: item.systemImage)
+                    Label {
+                        Text(item.title)
+                    } icon: {
+                        Image(systemName: item.systemImage)
+                            .foregroundStyle(.tint)
+                    }
                 }
+                .badge(item == .mail ? unreadMail : 0)
             }
 
             Section("Courses") {
                 ForEach(courses) { course in
                     let courseLectures = lectures.filter { $0.courseID == course.id }.sorted(by: Self.inOrder)
                     let next = nextSession(course.id, now: now)
-                    if courseLectures.isEmpty, next == nil {
-                        courseRow(course)
-                    } else {
-                        DisclosureGroup(isExpanded: expansion(course.id)) {
-                            ForEach(courseLectures) { lecture in
-                                NavigationLink(value: SidebarItem.lecture(lecture.id)) {
-                                    LectureSidebarRow(lecture: lecture, job: latestJobs[lecture.id])
-                                }
-                                .filingDropTarget(.lecture(lecture.id), center: center)
-                                .contextMenu {
-                                    if latestJobs[lecture.id]?.state == .failed {
-                                        Button("Retry Processing") { model.retryProcessing(lectureID: lecture.id) }
-                                    }
+                    let isOpen = open.contains(course.id)
+                    let hasChildren = !courseLectures.isEmpty || next != nil
+                    courseRow(
+                        course,
+                        disclosure: open.isEmpty ? .none : (hasChildren ? .shown(isOpen: isOpen) : .hidden),
+                        canOpen: hasChildren,
+                        isPredicted: predicted?.destination == .course(course.id)
+                    )
+                    if isOpen {
+                        ForEach(courseLectures) { lecture in
+                            NavigationLink(value: SidebarItem.lecture(lecture.id)) {
+                                LectureSidebarRow(lecture: lecture, job: latestJobs[lecture.id], showsDate: showsDates)
+                                    .predictedDrop(predicted.map { $0.destination == .lecture(lecture.id) || $0.lectureID == lecture.id } ?? false)
+                            }
+                            .filingDropTarget(.lecture(lecture.id), center: center)
+                            .contextMenu {
+                                if latestJobs[lecture.id]?.state == .failed {
+                                    Button("Retry Processing") { model.retryProcessing(lectureID: lecture.id) }
                                 }
                             }
-                            if let next {
-                                SessionSidebarRow(session: next)
-                                    .filingDropTarget(.session(next.id), center: center)
-                            }
-                        } label: {
-                            courseRow(course)
                         }
+                        if let next {
+                            SessionSidebarRow(session: next, showsDate: showsDates)
+                                .predictedDrop(predicted.map { $0.destination == .session(next.id) || ($0.lectureID == nil && $0.sessionID == next.id) } ?? false)
+                                .filingDropTarget(.session(next.id), center: center)
+                        }
+                    }
+                }
+            }
+
+            if selection == .search, !recentSearches.isEmpty {
+                Section("Recent searches") {
+                    ForEach(recentSearches, id: \.self) { query in
+                        Button {
+                            search(query)
+                        } label: {
+                            Label {
+                                Text(query)
+                                    .lineLimit(1)
+                            } icon: {
+                                Image(systemName: "clock")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack {
-                if !semesters.isEmpty {
-                    Text(Semester.current(among: semesters).name)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("New Course", systemImage: "plus") { model.sheet = .newCourse }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("New Course")
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            footer
         }
         .navigationTitle("Study Portal")
         #if os(macOS)
-        .navigationSplitViewColumnWidth(min: 200, ideal: 236, max: 320)
+        .navigationSplitViewColumnWidth(min: 200, ideal: Self.idealWidth, max: 320)
         #else
         .toolbar { SettingsToolbarItem() }
         #endif
-        .onChange(of: selection) { _, item in
-            // Opening a lecture from elsewhere (search, Today) shows it in its course.
-            guard case .lecture(let id) = item, let courseID = lectures.first(where: { $0.id == id })?.courseID else { return }
-            collapsed.remove(courseID)
+        .onChange(of: selection, initial: true) { _, item in
+            // The open lecture or course shows in its course (from the sidebar, search or Today).
+            switch item {
+            case .lecture(let id):
+                if let courseID = lectures.first(where: { $0.id == id })?.courseID { setOpen(courseID, true) }
+            case .course(let id):
+                setOpen(id, true)
+            default:
+                break
+            }
         }
     }
 
-    private func courseRow(_ course: Course) -> some View {
+    // MARK: - Rows
+
+    enum Disclosure: Equatable {
+        /// No course is open: plain rows (01, 07).
+        case none
+        /// Some course is open; this one has nothing to show (the chevron's room is kept).
+        case hidden
+        case shown(isOpen: Bool)
+    }
+
+    private func courseRow(_ course: Course, disclosure: Disclosure, canOpen: Bool, isPredicted: Bool) -> some View {
         NavigationLink(value: SidebarItem.course(course.id)) {
-            Label {
-                Text(course.name)
-            } icon: {
+            HStack(spacing: 8) {
+                if disclosure != .none {
+                    chevron(course, disclosure: disclosure)
+                        .padding(.trailing, -4)
+                }
                 CourseDot(hex: course.colorHex, size: 9)
+                Text(course.name)
+                    .lineLimit(1)
             }
+            .predictedDrop(isPredicted)
         }
         .filingDropTarget(.course(course.id), center: center)
+        .contextMenu {
+            if canOpen {
+                let isOpen = openCourseIDs.contains(course.id)
+                Button(isOpen ? LocalizedStringKey("Hide Lectures") : "Show Lectures") { setOpen(course.id, !isOpen) }
+            }
+        }
     }
 
-    private func expansion(_ id: Course.ID) -> Binding<Bool> {
-        Binding(
-            get: { !collapsed.contains(id) },
-            set: { expanded in
-                if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+    @ViewBuilder
+    private func chevron(_ course: Course, disclosure: Disclosure) -> some View {
+        if case .shown(let isOpen) = disclosure {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { setOpen(course.id, !isOpen) }
+            } label: {
+                Image(systemName: isOpen ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 10, height: 16)
+                    .contentShape(Rectangle())
             }
-        )
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(isOpen ? LocalizedStringKey("Hide Lectures") : "Show Lectures"))
+        } else {
+            Color.clear.frame(width: 10, height: 16)
+        }
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                if case .course = selection {
+                    // Mockup 08: New Course on a course's screen, the semester at the right.
+                    Button {
+                        model.sheet = .newCourse
+                    } label: {
+                        Label("New Course", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    Spacer(minLength: 0)
+                    semesterName
+                } else {
+                    semesterName
+                    Spacer(minLength: 0)
+                    #if os(macOS)
+                    SettingsLink {
+                        Label("Settings", systemImage: "gearshape")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Settings")
+                    #else
+                    Button("New Course", systemImage: "plus") { model.sheet = .newCourse }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                    #endif
+                }
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
+        }
+    }
+
+    @ViewBuilder
+    private var semesterName: some View {
+        if !semesters.isEmpty {
+            Text(Semester.current(among: semesters).name)
+                .lineLimit(1)
+        }
+    }
+
+    // MARK: - State
+
+    private var openCourseIDs: Set<Course.ID> {
+        Set(openCourses.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+    }
+
+    private func setOpen(_ id: Course.ID, _ isOpen: Bool) {
+        var ids = openCourseIDs
+        if isOpen { ids.insert(id) } else { ids.remove(id) }
+        let text = ids.map(\.uuidString).sorted().joined(separator: ",")
+        if text != openCourses { openCourses = text }
+    }
+
+    /// Where the files being dragged in would go (the drop HUD's first choice), unless the
+    /// pointer is over a row, which then shows its own outline.
+    private var predictedPlace: FilingPlace? {
+        guard let drag = center.drag, !drag.isOverRow else { return nil }
+        return drag.predictions.first?.places.first
     }
 
     /// The course's next lecture that has no lecture row yet (one in progress counts); for a
@@ -147,20 +296,24 @@ struct SidebarView: View {
     }
 }
 
+/// Lecture and session rows sit under their course, their titles in line with Today, Calendar …
+private let childIndent: CGFloat = 23
+
 /// "L2 · Virtualization & IaaS" over "Tue 13 Oct"; while it is processed, a small determinate
 /// ring; a failed run, a warning glyph.
 struct LectureSidebarRow: View {
     let lecture: Lecture
     let job: Job?
+    var showsDate = true
 
     var body: some View {
         HStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(Self.title(lecture))
                     .lineLimit(1)
-                if let heldAt = lecture.heldAt {
+                if showsDate, let heldAt = lecture.heldAt {
                     Text(heldAt.formatted(DayText.style()))
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -168,7 +321,8 @@ struct LectureSidebarRow: View {
             Spacer(minLength: 4)
             ProcessingMark(job: job)
         }
-        .padding(.leading, 4)
+        .padding(.leading, childIndent)
+        .padding(.vertical, 3)
     }
 
     /// "L2 · Virtualization & IaaS", "L2", "Virtualization & IaaS" or "Lecture".
@@ -184,24 +338,27 @@ struct LectureSidebarRow: View {
 }
 
 /// The next session of a course that has no lecture yet: "L3" over "Mon 19 Oct, 12:15", both
-/// secondary.
+/// secondary. The time is proportional here, as in mockup 03 (decisions.md: the one place times
+/// are not SF Mono).
 struct SessionSidebarRow: View {
     let session: LectureSession
+    var showsDate = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(Self.title(session))
                 .lineLimit(1)
-            HStack(spacing: 0) {
-                Text(session.startsAt.formatted(DayText.style()))
-                Text(verbatim: ", ")
-                Text(SessionText().time(session.startsAt))
-                    .font(.caption.monospaced())
+            if showsDate {
+                Text(verbatim: "\(DayText.day(session.startsAt)), \(SessionText().time(session.startsAt))")
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .lineLimit(1)
             }
-            .font(.caption)
         }
         .foregroundStyle(.secondary)
-        .padding(.leading, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, childIndent)
+        .padding(.vertical, 3)
     }
 
     static func title(_ session: LectureSession) -> String {
@@ -209,6 +366,22 @@ struct SessionSidebarRow: View {
             return session.number.map { "L\($0)" } ?? SessionKind.lecture.displayName
         }
         return [session.kind.displayName, session.number.map(String.init)].compactMap(\.self).joined(separator: " ")
+    }
+}
+
+extension View {
+    /// The outline of the row the files being dragged in would be filed to (mockup 10): the same
+    /// accent fill and 1.5 pt outline a row shows when they are dragged over it.
+    func predictedDrop(_ isPredicted: Bool) -> some View {
+        background {
+            if isPredicted {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                    .padding(.horizontal, -8)
+                    .padding(.vertical, -2)
+            }
+        }
     }
 }
 

@@ -28,7 +28,7 @@ enum SidebarItem: Hashable {
         switch self {
         case .today: "sun.max"
         case .calendar: "calendar"
-        case .mail: "tray"
+        case .mail: "envelope"
         case .search: "magnifyingglass"
         case .course: "books.vertical"
         case .lecture: "rectangle.on.rectangle"
