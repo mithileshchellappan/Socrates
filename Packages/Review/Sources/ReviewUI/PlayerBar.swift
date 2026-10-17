@@ -132,34 +132,13 @@ private struct Scrubber: View {
 
     var body: some View {
         let duration = max(player.duration, 1)
-        let progress = min(1, max(0, player.time / duration))
         ZStack(alignment: .topLeading) {
             Capsule()
                 .fill(.quaternary)
                 .frame(height: 3)
                 .offset(y: 8)
-            Capsule()
-                .fill(.tint)
-                .frame(width: max(0, width * progress), height: 3)
-                .offset(y: 8)
-            ForEach(Array(ticks.enumerated()), id: \.offset) { _, time in
-                Rectangle()
-                    .fill(.tertiary)
-                    .frame(width: 1, height: 7)
-                    .offset(x: x(time, duration), y: 6)
-            }
-            ForEach(Array(offStretches.enumerated()), id: \.offset) { _, time in
-                mark(.gray, at: time, duration: duration)
-            }
-            ForEach(Array(flags.enumerated()), id: \.offset) { _, time in
-                mark(.red, at: time, duration: duration)
-            }
-            Circle()
-                .fill(.white)
-                .frame(width: 13, height: 13)
-                .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
-                .overlay(Circle().stroke(.separator, lineWidth: 0.5))
-                .offset(x: width * progress - 6.5, y: 3)
+            ScrubberMarks(width: width, duration: duration, ticks: ticks, flags: flags, offStretches: offStretches)
+            ScrubberProgress(player: player, width: width, duration: duration)
         }
         .frame(height: 18)
         .frame(maxWidth: .infinity)
@@ -184,16 +163,68 @@ private struct Scrubber: View {
             }
         }
     }
+}
 
-    private func x(_ time: Double, _ duration: Double) -> CGFloat {
+/// Slide ticks, grey off-slide and red flag marks. Does not read the clock, so it is not redrawn
+/// ten times a second.
+private struct ScrubberMarks: View {
+    let width: CGFloat
+    let duration: Double
+    let ticks: [Double]
+    let flags: [Double]
+    let offStretches: [Double]
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(ticks.enumerated()), id: \.offset) { _, time in
+                Rectangle()
+                    .fill(.tertiary)
+                    .frame(width: 1, height: 7)
+                    .offset(x: x(time), y: 6)
+            }
+            ForEach(Array(offStretches.enumerated()), id: \.offset) { _, time in
+                mark(.gray, at: time)
+            }
+            ForEach(Array(flags.enumerated()), id: \.offset) { _, time in
+                mark(.red, at: time)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func x(_ time: Double) -> CGFloat {
         width * min(1, max(0, time / duration))
     }
 
-    private func mark(_ color: Color, at time: Double, duration: Double) -> some View {
+    private func mark(_ color: Color, at time: Double) -> some View {
         Circle()
             .fill(color)
             .frame(width: 7, height: 7)
-            .offset(x: x(time, duration) - 3.5, y: -1)
+            .offset(x: x(time) - 3.5, y: -1)
+    }
+}
+
+/// The played part and the head.
+private struct ScrubberProgress: View {
+    let player: LecturePlayer
+    let width: CGFloat
+    let duration: Double
+
+    var body: some View {
+        let progress = min(1, max(0, player.time / duration))
+        ZStack(alignment: .topLeading) {
+            Capsule()
+                .fill(.tint)
+                .frame(width: max(0, width * progress), height: 3)
+                .offset(y: 8)
+            Circle()
+                .fill(.white)
+                .frame(width: 13, height: 13)
+                .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                .overlay(Circle().stroke(.separator, lineWidth: 0.5))
+                .offset(x: width * progress - 6.5, y: 3)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
