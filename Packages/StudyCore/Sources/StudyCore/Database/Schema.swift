@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -29,6 +29,10 @@ public enum Schema {
             try db.execute(sql: v5)
             try copyLegacyMailRules(db)
         }
+        // Additive only: the user's real library migrates on its next launch.
+        migrator.registerMigration("v6") { db in
+            try db.execute(sql: v6)
+        }
         return migrator
     }
 
@@ -40,6 +44,7 @@ public enum Schema {
         "semester", "filing",
         "mail_account", "mailbox", "mail_rule", "mail_message", "mail_attachment", "mail_draft",
         "tracked_item_source",
+        "agent_conversation", "agent_turn", "transcript_extraction",
     ]
 
     /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
@@ -673,6 +678,66 @@ public enum Schema {
 
         ALTER TABLE "search_chunk" ADD COLUMN "mail_message_id" TEXT REFERENCES "mail_message"("id") ON DELETE CASCADE;
         CREATE INDEX "search_chunk_mail" ON "search_chunk"("mail_message_id");
+        """
+
+    /// v6 (M3, additive only: new tables and nullable columns):
+    /// - `agent_conversation` + `agent_turn`: Claude conversations of a fixed kind, their turns
+    ///   stored verbatim and append-only (thinking blocks included);
+    /// - `transcript_extraction`: whether a recording's transcript was read for deadlines and
+    ///   announcements said in class;
+    /// - `tracked_item.relevance` (exam admission, bonus points);
+    /// - `tracked_item_source.conversation_id` (chat sources) and `previous` (the item's fields
+    ///   before this source changed them, JSON `TrackedItemSnapshot`: Undo of an update).
+    static let v6 = """
+        CREATE TABLE "agent_conversation" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT '',
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE SET NULL,
+          "title" TEXT NOT NULL DEFAULT '',
+          "model" TEXT NOT NULL DEFAULT '',
+          "state" TEXT NOT NULL DEFAULT 'running',
+          "error" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "agent_conversation_kind" ON "agent_conversation"("kind", "created_at");
+        CREATE INDEX "agent_conversation_course" ON "agent_conversation"("course_id");
+
+        CREATE TABLE "agent_turn" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "conversation_id" TEXT NOT NULL REFERENCES "agent_conversation"("id") ON DELETE CASCADE,
+          "sequence" INTEGER NOT NULL DEFAULT 0,
+          "role" TEXT NOT NULL DEFAULT 'user',
+          "message" TEXT NOT NULL DEFAULT '{}',
+          "stop_reason" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "agent_turn_conversation" ON "agent_turn"("conversation_id", "sequence");
+        CREATE INDEX "agent_turn_call" ON "agent_turn"("api_call_id");
+
+        CREATE TABLE "transcript_extraction" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "recording_id" TEXT NOT NULL REFERENCES "recording"("id") ON DELETE CASCADE,
+          "state" TEXT NOT NULL DEFAULT 'pending',
+          "attempts" INTEGER NOT NULL DEFAULT 0,
+          "source_updated_at" TEXT,
+          "extracted_at" TEXT,
+          "error" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "transcript_extraction_recording" ON "transcript_extraction"("recording_id");
+        CREATE INDEX "transcript_extraction_state" ON "transcript_extraction"("state");
+        CREATE INDEX "transcript_extraction_call" ON "transcript_extraction"("api_call_id");
+
+        ALTER TABLE "tracked_item" ADD COLUMN "relevance" TEXT;
+
+        ALTER TABLE "tracked_item_source" ADD COLUMN "conversation_id" TEXT REFERENCES "agent_conversation"("id") ON DELETE SET NULL;
+        ALTER TABLE "tracked_item_source" ADD COLUMN "previous" TEXT;
+        CREATE INDEX "tracked_item_source_conversation" ON "tracked_item_source"("conversation_id");
         """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row

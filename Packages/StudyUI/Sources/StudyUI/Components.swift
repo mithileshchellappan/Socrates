@@ -167,6 +167,28 @@ public enum DayText {
             calendar: Calendar(identifier: .gregorian)
         )
     }
+
+    /// "10:15", "23:59": always 24-hour, whatever the region (shown in SF Mono).
+    public static func time(_ date: Date, timeZone: TimeZone = .current) -> String {
+        date.formatted(Date.VerbatimFormatStyle(
+            format: "\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
+            locale: Locale(identifier: "en_US_POSIX"),
+            timeZone: timeZone,
+            calendar: Calendar(identifier: .gregorian)
+        ))
+    }
+
+    /// "10:15–11:45".
+    public static func timeRange(_ start: Date, _ end: Date, timeZone: TimeZone = .current) -> String {
+        "\(time(start, timeZone: timeZone))–\(time(end, timeZone: timeZone))"
+    }
+
+    /// "Wed 21 Oct, 23:59" (lists, deadlines); the day alone for an all-day item ("Thu 29 Oct":
+    /// a time the source does not state is never shown).
+    public static func dayTime(_ date: Date, allDay: Bool = false, locale: Locale = .current, timeZone: TimeZone = .current) -> String {
+        let day = day(date, locale: locale, timeZone: timeZone)
+        return allDay ? day : "\(day), \(time(date, timeZone: timeZone))"
+    }
 }
 
 /// The course colour dot used in lists, headers and the sidebar.
@@ -238,8 +260,14 @@ public struct TimeChip: View {
 }
 
 extension Font {
+    /// SF Mono at `size` for clock values (times, ranges, durations): docs/DESIGN.md §3.2. Pair
+    /// with `.monospacedDigit()`.
+    public static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
+    }
+
     /// Time and slide chips: SF Mono at the mockups' 10.5 pt on the Mac.
-    static var chip: Font {
+    public static var chip: Font {
         #if os(macOS)
         .system(size: 10.5, design: .monospaced)
         #else

@@ -577,6 +577,11 @@ public struct TrackedItemSource: StudyRecord {
     /// When the student undid what this source added.
     @Column("undone_at") public var undoneAt: Date?
     @Column("api_call_id") public var apiCallID: APICall.ID?
+    /// v6: the conversation a `chat` source came from (what the student told the agent).
+    @Column("conversation_id") public var conversationID: AgentConversation.ID?
+    /// v6: the item's fields before this source changed them (an update, a completion); Undo puts
+    /// them back. Nil when this source created the item or only repeated it.
+    @Column(as: TrackedItemSnapshot?.JSONRepresentation.self) public var previous: TrackedItemSnapshot?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
 
@@ -594,6 +599,8 @@ public struct TrackedItemSource: StudyRecord {
         calendarAdded: Bool = false,
         undoneAt: Date? = nil,
         apiCallID: APICall.ID? = nil,
+        conversationID: AgentConversation.ID? = nil,
+        previous: TrackedItemSnapshot? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -610,6 +617,8 @@ public struct TrackedItemSource: StudyRecord {
         self.calendarAdded = calendarAdded
         self.undoneAt = undoneAt
         self.apiCallID = apiCallID
+        self.conversationID = conversationID
+        self.previous = previous
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

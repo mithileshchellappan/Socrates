@@ -728,6 +728,8 @@ public struct TrackedItem: StudyRecord {
     @Column("in_calendar") public var inCalendar: Bool
     /// v5: when the calendar event last matched this row (`updatedAt` at that moment).
     @Column("calendar_synced_at") public var calendarSyncedAt: Date?
+    /// v6: why it matters beyond its date (exam admission, bonus points); nil for most items.
+    public var relevance: ItemRelevance?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
 
@@ -748,6 +750,7 @@ public struct TrackedItem: StudyRecord {
         room: String? = nil,
         inCalendar: Bool = false,
         calendarSyncedAt: Date? = nil,
+        relevance: ItemRelevance? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -767,6 +770,7 @@ public struct TrackedItem: StudyRecord {
         self.room = room
         self.inCalendar = inCalendar
         self.calendarSyncedAt = calendarSyncedAt
+        self.relevance = relevance
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

@@ -216,23 +216,26 @@ public struct MailRepository: Sendable {
 
     /// Unread messages in INBOX mailboxes, in total and by course and category.
     public func unreadCounts() async throws -> MailUnreadCounts {
-        try await store.database.read { db in
-            let inboxes = try Mailbox.where { $0.role.eq(MailboxRole?.some(.inbox)) }.select(\.id).fetchAll(db)
-            guard !inboxes.isEmpty else { return MailUnreadCounts() }
-            let unread = try MailMessage
-                .where { $0.mailboxID.in(inboxes) && !$0.isSeen && $0.moveToMailboxID.is(nil) }
-                .select { ($0.courseID, $0.category) }
-                .fetchAll(db)
-            var counts = MailUnreadCounts(inbox: unread.count)
-            for (courseID, category) in unread {
-                if let courseID {
-                    counts.byCourse[courseID, default: 0] += 1
-                } else if let category, category != .course {
-                    counts.byCategory[category, default: 0] += 1
-                }
+        try await store.database.read { db in try Self.unreadCounts(in: db) }
+    }
+
+    /// `unreadCounts()` inside a read (M3: Today's mail line in its one `FetchKeyRequest`).
+    public static func unreadCounts(in db: Database) throws -> MailUnreadCounts {
+        let inboxes = try Mailbox.where { $0.role.eq(MailboxRole?.some(.inbox)) }.select(\.id).fetchAll(db)
+        guard !inboxes.isEmpty else { return MailUnreadCounts() }
+        let unread = try MailMessage
+            .where { $0.mailboxID.in(inboxes) && !$0.isSeen && $0.moveToMailboxID.is(nil) }
+            .select { ($0.courseID, $0.category) }
+            .fetchAll(db)
+        var counts = MailUnreadCounts(inbox: unread.count)
+        for (courseID, category) in unread {
+            if let courseID {
+                counts.byCourse[courseID, default: 0] += 1
+            } else if let category, category != .course {
+                counts.byCategory[category, default: 0] += 1
             }
-            return counts
         }
+        return counts
     }
 }
 
