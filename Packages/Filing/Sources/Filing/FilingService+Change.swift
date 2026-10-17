@@ -48,7 +48,14 @@ extension FilingService {
         return try await move(filing, to: .new, courseID: courseID)
     }
 
-    private func move(_ filing: Filing, to target: LectureTarget, courseID: Course.ID) async throws -> Filing {
+    /// Why a filing moves: the user's choice (it becomes `manual`), or smart import's own second
+    /// look (it stays `auto`, with the evidence that moved it).
+    enum MoveReason: Sendable {
+        case user
+        case evidence([FilingSignal], confidence: Double)
+    }
+
+    func move(_ filing: Filing, to target: LectureTarget, courseID: Course.ID, reason: MoveReason = .user) async throws -> Filing {
         guard let course = try await store.fetch(Course.self, id: courseID) else { throw FilingError.missing }
         let now = now()
         let store = store
@@ -105,10 +112,18 @@ extension FilingService {
             updated.courseID = lecture.courseID
             updated.lectureID = lecture.id
             updated.lectureSessionID = lecture.lectureSessionID
-            updated.source = .manual
-            updated.confidence = 1
-            if !updated.signals.contains(where: { $0.kind == .user }) {
-                updated.signals.append(FilingSignal(kind: .user, evidence: course.name, weight: 1))
+            switch reason {
+            case .user:
+                updated.source = .manual
+                updated.confidence = 1
+                if !updated.signals.contains(where: { $0.kind == .user }) {
+                    updated.signals.append(FilingSignal(kind: .user, evidence: course.name, weight: 1))
+                }
+            case .evidence(let signals, let confidence):
+                updated.source = .auto
+                updated.confidence = confidence
+                updated.signals = signals
+                updated.candidates = []
             }
             let stamped = store.stamp(updated)
             try Filing.upsert { stamped }.execute(db)

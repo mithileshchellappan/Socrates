@@ -289,11 +289,12 @@ public struct LectureImporter: Sendable {
     }
 
     /// Stores a recording that belongs to no course yet (smart import found none): the audio in
-    /// the BlobStore and a `Recording` + one segment without lecture, course or job. Filing it
-    /// later (`Recording.lectureID`) and queuing its transcription is the caller's.
+    /// the BlobStore and a `Recording` + one segment without lecture or course. With `transcribe`
+    /// its transcription is queued at once (without a lecture), so what was said can file it;
+    /// filing it later (`Recording.lectureID`) is the caller's.
     /// Returns the existing recording when the same audio was stored before.
     @concurrent
-    public func storeRecording(audio url: URL, startedAt: Date? = nil) async throws -> Recording {
+    public func storeRecording(audio url: URL, startedAt: Date? = nil, transcribe: Bool = false) async throws -> Recording {
         let info = try Self.audioInfo(url)
         let ref = try services.blobs.importFile(at: url, mode: .copy)
         let sha = ref.sha256
@@ -311,9 +312,11 @@ public struct LectureImporter: Sendable {
             recordingID: recording.id, sequence: 0, startSample: 0, frameCount: info.frameCount,
             blobSHA256: ref.sha256, blobPath: ref.relativePath, byteCount: ref.byteCount ?? 0, fileFormat: ref.fileExtension
         ))
+        let job = transcribe ? store.stamp(Job(stage: .transcribe, recordingID: recording.id, createdAt: now())) : nil
         try await services.database.write { db in
             try Recording.upsert { recording }.execute(db)
             try RecordingSegment.upsert { segment }.execute(db)
+            if let job { try Job.upsert { job }.execute(db) }
         }
         return recording
     }

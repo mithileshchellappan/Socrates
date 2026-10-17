@@ -298,17 +298,25 @@ public actor LectureProcessor {
         }
 
         let rows = transcript.records(recordingID: recording.id, lectureID: lecture?.id).map(store.stamp)
-        var follow: Job?
-        if let lecture, try await deckID(lectureID: lecture.id, recordingID: recording.id) != nil {
-            follow = store.stamp(Job(stage: .align, lectureID: lecture.id, recordingID: recording.id, createdAt: Date()))
-        }
-        let done = finished(job)
-        let next = follow
+        let finishedJob = finished(job)
+        let store = store
+        let startedLectureID = lecture?.id
         try await services.database.write { db in
+            // Filed (or moved) while it was transcribed: the lines and the alignment follow the
+            // lecture the recording is in now.
+            let lectureID = try Recording.find(recording.id).fetchOne(db).map(\.lectureID) ?? startedLectureID
             try TranscriptSegment.where { $0.recordingID.eq(recording.id) }.delete().execute(db)
-            for row in rows { try TranscriptSegment.upsert { row }.execute(db) }
+            for var row in rows {
+                row.lectureID = lectureID
+                try TranscriptSegment.upsert { row }.execute(db)
+            }
+            var done = finishedJob
+            done.lectureID = lectureID
             try Job.upsert { done }.execute(db)
-            if let next { try Job.upsert { next }.execute(db) }
+            if let lectureID, try Realigner.deckID(lectureID: lectureID, recordingID: recording.id, in: db) != nil {
+                let next = store.stamp(Job(stage: .align, lectureID: lectureID, recordingID: recording.id, createdAt: Date()))
+                try Job.upsert { next }.execute(db)
+            }
         }
         let languages = transcript.languageSeconds.map { "\($0.language) \(Int($0.seconds)) s" }.joined(separator: ", ")
         Log.jobs.info(

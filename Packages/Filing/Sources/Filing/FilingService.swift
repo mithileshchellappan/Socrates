@@ -237,7 +237,8 @@ public actor FilingService {
         let importer = LectureImporter(services: services)
         let createdAt = now()
         guard let best = decision.best, decision.verdict != .needsCourse else {
-            let recording = try await importer.storeRecording(audio: url, startedAt: evidence.startedAt)
+            // Transcribed right away: once it is, what was said can file it (`fileBySpokenContent`).
+            let recording = try await importer.storeRecording(audio: url, startedAt: evidence.startedAt, transcribe: true)
             let filing = try await store.save(unfiled(evidence, sha256: sha, decision: decision, createdAt: createdAt, recordingID: recording.id))
             return try await outcome(evidence, filing: filing, status: .needsCourse, decision: decision)
         }

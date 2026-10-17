@@ -90,18 +90,21 @@ public struct Realigner: Sendable {
     /// The deck a lecture's recording is aligned against: the lecture's newest coarse span, else
     /// the deck its slide stamps were taken on.
     public static func deckID(lectureID: Lecture.ID, recordingID: Recording.ID, database: any DatabaseReader) async throws -> Deck.ID? {
-        try await database.read { db in
-            if let coarse = try LectureDeckSpan
-                .where({ $0.lectureID.eq(lectureID) && $0.startTime.is(nil) })
-                .order(by: \.updatedAt)
-                .fetchAll(db)
-                .last {
-                return coarse.deckID
-            }
-            return try SlideEvent
-                .where { $0.recordingID.eq(recordingID) && $0.deckID.isNot(nil) }
-                .fetchOne(db)?
-                .deckID
+        try await database.read { db in try deckID(lectureID: lectureID, recordingID: recordingID, in: db) }
+    }
+
+    /// `deckID(lectureID:recordingID:database:)` inside the caller's transaction.
+    public static func deckID(lectureID: Lecture.ID, recordingID: Recording.ID, in db: Database) throws -> Deck.ID? {
+        if let coarse = try LectureDeckSpan
+            .where({ $0.lectureID.eq(lectureID) && $0.startTime.is(nil) })
+            .order(by: \.updatedAt)
+            .fetchAll(db)
+            .last {
+            return coarse.deckID
         }
+        return try SlideEvent
+            .where { $0.recordingID.eq(recordingID) && $0.deckID.isNot(nil) }
+            .fetchOne(db)?
+            .deckID
     }
 }

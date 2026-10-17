@@ -266,6 +266,20 @@ public final class FilingCenter {
         }
     }
 
+    /// A filing changed without the toast (smart import's second look by what was said): its
+    /// toast, if one is still up, shows where the file is now and leaves on its own when sure.
+    public func refresh(_ filing: Filing) async {
+        guard toasts.contains(where: { $0.outcome.filing?.id == filing.id }) else { return }
+        let place = try? await service.place(of: filing)
+        for index in toasts.indices where toasts[index].outcome.filing?.id == filing.id {
+            toasts[index].outcome.filing = filing
+            toasts[index].outcome.place = place
+            toasts[index].outcome.status = filing.lectureID == nil ? .needsCourse : (filing.needsReview ? .review : .filed)
+            toasts[index].outcome.alternatives = []
+            scheduleDismissal(toasts[index].id)
+        }
+    }
+
     private func update(_ id: Toast.ID, _ change: (inout Toast) -> Void) {
         guard let index = toasts.firstIndex(where: { $0.id == id }) else { return }
         change(&toasts[index])
