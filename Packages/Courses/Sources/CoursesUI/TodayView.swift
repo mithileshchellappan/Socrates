@@ -6,7 +6,8 @@ import SwiftUI
 
 /// Today (mockup 01): one first thing — the newest lecture to review, else the next class —
 /// then Coming up, one dated list of the week's sessions (not the weekly lectures) and the
-/// deadlines and events of the next three weeks, and the unread mail as one counting line.
+/// deadlines and events of the next three weeks, followed by the open tasks and the mail that
+/// needs a reply (M3.5), and the unread mail as one counting line.
 public struct TodayView: View {
     private let fixedNow: Date?
     private let record: (() -> Void)?

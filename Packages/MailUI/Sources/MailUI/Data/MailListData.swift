@@ -13,6 +13,8 @@ struct MailListItem: Hashable, Sendable, Identifiable {
     var date: Date
     var isUnread: Bool
     var isFlagged: Bool
+    /// M3.5: triage found the mail asks the student something and it is not answered yet.
+    var needsReply = false
     /// The course's colour (`#rrggbb`) when the message is routed to a course.
     var courseColor: String?
     /// The one extra line, only where there is something to act on.
@@ -58,6 +60,8 @@ struct MessageListColumns: Hashable, Sendable {
     let isSeen: Bool
     let isFlagged: Bool
     let courseID: UUID?
+    let needsReply: Bool?
+    let isAnswered: Bool
 }
 
 /// Reads one scope's rows in one transaction; observed, so new mail, flags and routes show up.
@@ -114,7 +118,7 @@ struct MailListRequest: FetchKeyRequest {
                 MessageListColumns.Columns(
                     id: $0.id, fromName: $0.fromName, fromAddress: $0.fromAddress, to: $0.to, subject: $0.subject,
                     snippet: $0.snippet, receivedAt: $0.receivedAt, isSeen: $0.isSeen, isFlagged: $0.isFlagged,
-                    courseID: $0.courseID
+                    courseID: $0.courseID, needsReply: $0.needsReply, isAnswered: $0.isAnswered
                 )
             }
             .fetchAll(db)
@@ -133,8 +137,9 @@ struct MailListRequest: FetchKeyRequest {
             }
             return MailListItem(
                 id: row.id, sender: sender, subject: row.subject, snippet: row.snippet, date: row.receivedAt,
-                isUnread: !isSent && !row.isSeen, isFlagged: row.isFlagged, courseColor: row.courseID.flatMap { colors[$0] },
-                extra: extra
+                isUnread: !isSent && !row.isSeen, isFlagged: row.isFlagged,
+                needsReply: !isSent && row.needsReply == true && !row.isAnswered,
+                courseColor: row.courseID.flatMap { colors[$0] }, extra: extra
             )
         }
     }

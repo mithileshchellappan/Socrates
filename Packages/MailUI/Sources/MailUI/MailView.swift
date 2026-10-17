@@ -277,7 +277,8 @@ public struct MailView: View {
             confirmProposal: { id in perform { try await actions.confirmProposal(id) } },
             discardProposal: { id in perform { try await actions.discardProposal(id) } },
             openLecture: { id in openDestination(.lecture(id)) },
-            changeFiling: { id in Task { await actions.changeFiling(id) } }
+            changeFiling: { id in Task { await actions.changeFiling(id) } },
+            clearNeedsReply: { id in perform { try await actions.setNeedsReply(id, false) } }
         )
     }
 

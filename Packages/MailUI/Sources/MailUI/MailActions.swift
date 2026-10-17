@@ -53,6 +53,9 @@ public struct MailActions: Sendable {
     public var accountSaved: @Sendable (MailAccount.ID) async -> Void
     /// "Set Up Mail…": opens the mail account settings. Nil: the Settings window (macOS).
     public var openAccountSettings: (@MainActor @Sendable () -> Void)?
+    /// M3.5: No Reply Needed on a message triage marked as asking the student something: sets
+    /// `mail_message.needs_reply` (false clears the list row's marker and Today's row).
+    public var setNeedsReply: @Sendable (MailMessage.ID, Bool) async throws -> Void
 
     public init(
         syncNow: @escaping @Sendable () async -> Void = {},
@@ -74,7 +77,8 @@ public struct MailActions: Sendable {
         verifyAccount: @escaping @Sendable (MailAccount, String) async throws -> Void = { _, _ in throw MailActionUnavailable() },
         changeFiling: @escaping @Sendable (Filing.ID) async -> Void = { _ in },
         accountSaved: @escaping @Sendable (MailAccount.ID) async -> Void = { _ in },
-        openAccountSettings: (@MainActor @Sendable () -> Void)? = nil
+        openAccountSettings: (@MainActor @Sendable () -> Void)? = nil,
+        setNeedsReply: @escaping @Sendable (MailMessage.ID, Bool) async throws -> Void = { _, _ in }
     ) {
         self.syncNow = syncNow
         self.setSeen = setSeen
@@ -96,6 +100,7 @@ public struct MailActions: Sendable {
         self.changeFiling = changeFiling
         self.accountSaved = accountSaved
         self.openAccountSettings = openAccountSettings
+        self.setNeedsReply = setNeedsReply
     }
 }
 

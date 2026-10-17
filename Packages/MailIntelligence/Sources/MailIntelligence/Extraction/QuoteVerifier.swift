@@ -35,39 +35,6 @@ enum QuoteVerifier {
     }
 }
 
-/// The DE/EN cues that make a mail worth an extraction call: dates, weekdays, months, times, and
-/// words about deadlines, rooms, cancellations, exams and registrations. Mail without any is
-/// marked skipped without a call.
-enum CuePrefilter {
-    static func hasCue(subject: String, body: String, reference: Date) -> Bool {
-        let text = subject + "\n" + body
-        let words = Set(Folding.words(text))
-        if !words.isDisjoint(with: cueWords) { return true }
-        if words.contains(where: { word in cuePrefixes.contains { word.hasPrefix($0) } }) { return true }
-        return !DateMentions.parse(text, reference: reference).isEmpty
-    }
-
-    /// Whole folded words.
-    static let cueWords: Set<String> = [
-        // deadlines
-        "due", "deadline", "deadlines", "until", "submit", "submission", "bis", "frist", "fristen", "abgabe", "abgaben",
-        "abgeben", "einreichen", "einreichung", "spatestens", "latest",
-        // rooms
-        "raum", "room", "horsaal", "hs", "location", "ort", "statt", "instead", "moved", "verlegt",
-        // cancellations and moves
-        "entfallt", "entfallen", "fallt", "ausfallen", "ausfall", "cancelled", "canceled", "cancel", "verschoben",
-        "postponed", "rescheduled", "abgesagt",
-        // exams and registration
-        "klausur", "klausuren", "exam", "exams", "prufung", "prufungen", "anmeldung", "anmelden", "registration", "register",
-        "registrieren", "nachklausur", "quiz", "test",
-        // exercises
-        "sheet", "blatt", "ubungsblatt", "assignment", "homework", "hausaufgabe", "tutorial", "tutorium", "ubung",
-    ]
-
-    /// Word beginnings (German compounds: "Abgabefrist", "Prüfungsanmeldung", "Klausurtermin").
-    static let cuePrefixes: [String] = ["abgabe", "frist", "prufung", "klausur", "anmeld", "termin", "deadline", "ubungsblatt"]
-}
-
 /// Defense in depth against instructions hidden in mail (the system prompt already says mail is
 /// data): the paragraphs of a mail that talk to the model ("ignore previous instructions", "you
 /// are now …", a forged `<mail>` element). An item quoting such a paragraph is dropped, and

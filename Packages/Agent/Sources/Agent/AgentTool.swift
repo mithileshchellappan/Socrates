@@ -119,12 +119,37 @@ public struct ConversationSpec: Sendable {
     /// on every iteration and every later message).
     public var system: @Sendable (_ startedAt: Date, _ courses: CourseList) -> String
 
+    /// M3.5: specs of kinds built outside this package (`AgentRuntime.SpecProvider`, the mail chat).
+    public init(
+        kind: ConversationKind,
+        model: ClaudeModel,
+        effort: Effort,
+        maxTokens: Int,
+        maxIterations: Int,
+        thinking: ThinkingConfig?,
+        tools: ToolSet,
+        system: @escaping @Sendable (_ startedAt: Date, _ courses: CourseList) -> String
+    ) {
+        self.kind = kind
+        self.model = model
+        self.effort = effort
+        self.maxTokens = maxTokens
+        self.maxIterations = maxIterations
+        self.thinking = thinking
+        self.tools = tools
+        self.system = system
+    }
+
     public var purpose: String { AgentModule.purpose(of: kind) }
 }
 
 /// The courses a system prompt names.
 public struct CourseList: Sendable {
     let tokens: CourseTokens
+
+    /// "Fri 16 Oct 2026, 15:02" in the university's time zone: how a system prompt states when the conversation
+    /// started (M3.5: the mail chat's prompt is built in MailIntelligence).
+    public static func spokenDate(_ date: Date) -> String { AgentDates.spoken(date) }
 
     /// One line per course: "DC: Data Centers; lecturers: …" (the tokens the tools accept).
     public var promptLines: String { tokens.promptLines }

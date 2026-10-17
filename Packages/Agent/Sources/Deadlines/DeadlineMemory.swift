@@ -10,9 +10,11 @@ import StudyCore
 /// - **Match** (dismissed and done items included, so Undo sticks): (1) the same source and quote
 ///   (the same mail row or Message-ID; the same recording within ±30 s; the same conversation,
 ///   or the composer, and then only for the same course, title and due day) → nothing new; (2) a session proposal: the same session and kind (and room); (3) an event
-///   or announcement tied to the same session and kind; (4) a dated item: same course, kind
+///   or announcement tied to the same session and kind; (3b) an undated task (M3.5, its own kind
+///   group): same course and session, similar titles; (4) a dated item: same course, kind
 ///   group (deadline/exercise/exam together), same day in Exampleton, times within an hour unless
-///   one is all-day, similar titles. A match gets a new source row; otherwise a new item.
+///   one is all-day, similar titles. A match gets a new source row; otherwise a new item. A task
+///   with a due date is recorded as a deadline.
 /// - **Calendar**: in on its own only for deadline/exercise/exam with a due date, a verified date
 ///   and a trusted source (`ItemFinding.addsToCalendar`); a qualifying repeat puts an open item
 ///   in. Everything else waits for Add to Calendar.
@@ -140,7 +142,9 @@ struct MemoryWriter {
         var draft = finding.draft
         draft.title = String(draft.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
         draft.details = String(draft.details.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
-        if draft.dueAt == nil, draft.kind != .announcement { draft.kind = .announcement }
+        // M3.5: a task is an action without a date of its own; with one it is a deadline.
+        if draft.kind == .task, draft.dueAt != nil { draft.kind = .deadline }
+        if draft.dueAt == nil, draft.kind != .announcement, draft.kind != .task { draft.kind = .announcement }
         finding.confidence = min(max(finding.confidence.isFinite ? finding.confidence : 0, 0), 1)
 
         var sessionID: LectureSession.ID?
@@ -320,6 +324,20 @@ struct MemoryWriter {
             }
         }
 
+        // (3b) An undated task (its own kind group): the same course and session, a similar title.
+        if draft.kind == .task, draft.dueAt == nil {
+            let kind = TrackedItemKind.task
+            let tasks = try TrackedItem
+                .where { $0.kind.eq(kind) && $0.dueAt.is(nil) }
+                .order(by: \.createdAt)
+                .fetchAll(db)
+            return tasks.first { item in
+                item.courseID == draft.courseID && item.lectureSessionID == draft.lectureSessionID
+                    && ItemMatching.similarTitles(item.title, draft.title)
+            }
+            .map(Match.item)
+        }
+
         // (4) The same dated item: course, kind group, day (time within an hour), similar title.
         guard let due = draft.dueAt else { return nil }
         let day = CalendarDay(due, in: timeZone)
@@ -404,6 +422,7 @@ struct MemoryWriter {
         let before = TrackedItemSnapshot(item)
         let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
         item.kind = draft.dueAt == nil && draft.kind.isDue ? .announcement : draft.kind
+        if item.kind == .task, draft.dueAt != nil { item.kind = .deadline }
         item.title = title.isEmpty ? item.title : String(title.prefix(120))
         item.details = String(draft.details.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
         item.courseID = draft.courseID

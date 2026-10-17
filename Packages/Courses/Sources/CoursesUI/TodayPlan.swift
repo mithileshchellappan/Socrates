@@ -76,6 +76,11 @@ struct TodayPlan: Equatable {
     /// both add their sources); items tied to sessions that are not listed are left out, except
     /// due items, which always have their own row. Proposals (Calendar's), undated items and items
     /// already past are not shown.
+    ///
+    /// M3.5: open tasks and mail that needs a reply have their own ring rows. A task tied to a
+    /// coming session sits at that session's day (no time: the session row has it); every other
+    /// task and every "Reply to …" row has no date and follows the dated rows, newest first, with
+    /// an empty right column (DESIGN §8.1).
     static func comingUp(sessions: [LectureSession], data: TodayData, now: Date, timeZone: TimeZone) -> [ComingUpEntry] {
         let today = CalendarDay(now, in: timeZone)
         let itemHorizon = today.adding(days: itemDays + 1).start(in: timeZone)
@@ -84,7 +89,12 @@ struct TodayPlan: Equatable {
         var folded: [LectureSession.ID: [TrackedItem]] = [:]
         var due: [TrackedItem] = []
         var events: [EventKey: [TrackedItem]] = [:]
+        var tasks: [TrackedItem] = []
         for item in data.items where item.status == .open && !item.kind.isSessionProposal {
+            if item.kind == .task {
+                tasks.append(item)
+                continue
+            }
             if !item.kind.isDue, let sessionID = item.lectureSessionID {
                 if listed.contains(sessionID) { folded[sessionID, default: []].append(item) }
                 continue
@@ -139,8 +149,41 @@ struct TodayPlan: Equatable {
             entry.attachSources(data.trails)
             entries.append(entry)
         }
-        return entries.sorted {
-            ($0.date, $0.session == nil ? 1 : 0, $0.title) < ($1.date, $1.session == nil ? 1 : 0, $1.title)
+        for task in tasks {
+            var date: Date?
+            if let sessionID = task.lectureSessionID,
+               let session = data.sessions.first(where: { $0.id == sessionID }) ?? data.linkedSessions[sessionID],
+               session.endsAt > now {
+                // A later session's task shows once the session is within the window.
+                guard session.startsAt < itemHorizon else { continue }
+                date = session.startsAt
+            }
+            var entry = ComingUpEntry(
+                id: task.id, items: [task], courseID: task.courseID, marker: .ring, title: task.title,
+                date: date, isAllDay: true, gloss: Self.gloss(task), arrival: task.createdAt
+            )
+            entry.attachSources(data.trails)
+            entries.append(entry)
+        }
+        for reply in data.replies {
+            let subject = reply.subject.trimmingCharacters(in: .whitespacesAndNewlines)
+            entries.append(ComingUpEntry(
+                id: reply.id, items: [], courseID: reply.courseID, marker: .ring,
+                title: String(localized: "Reply to \(reply.sender)"), date: nil, isAllDay: true,
+                gloss: subject.isEmpty ? String(localized: "No Subject") : subject, arrival: reply.receivedAt, reply: reply
+            ))
+        }
+        return entries.sorted { lhs, rhs in
+            switch (lhs.date, rhs.date) {
+            case let (left?, right?):
+                return (left, lhs.session == nil ? 1 : 0, lhs.title) < (right, rhs.session == nil ? 1 : 0, rhs.title)
+            case (.some, nil):
+                return true
+            case (nil, .some):
+                return false
+            case (nil, nil):
+                return (lhs.arrival ?? .distantPast, lhs.title) > (rhs.arrival ?? .distantPast, rhs.title)
+            }
         }
     }
 
@@ -150,8 +193,8 @@ struct TodayPlan: Equatable {
     }
 }
 
-/// One row of Coming up: a session with the items folded into it, a due item, or one event on
-/// one or more days.
+/// One row of Coming up: a session with the items folded into it, a due item, one event on one
+/// or more days, a task, or a mail that needs a reply.
 struct ComingUpEntry: Identifiable, Equatable {
     enum Marker: Equatable {
         /// A class or event: the course bar.
@@ -168,8 +211,9 @@ struct ComingUpEntry: Identifiable, Equatable {
     var courseID: Course.ID?
     var marker: Marker
     var title: String
-    /// The session's start or the item's due time (its day when all-day).
-    var date: Date
+    /// The session's start or the item's due time (its day when all-day); nil for an undated task
+    /// or a reply (they follow the dated rows).
+    var date: Date?
     /// The session's end.
     var end: Date?
     var isAllDay: Bool
@@ -177,6 +221,10 @@ struct ComingUpEntry: Identifiable, Equatable {
     var gloss: String?
     /// The same event on later days ("and Fri 13 Nov").
     var laterDays: [Date] = []
+    /// When an undated row arrived (the task was found, the mail received): their order.
+    var arrival: Date?
+    /// The mail a "Reply to …" row opens.
+    var reply: TodayReply?
     /// The items' sources, oldest first (one row per recording moment or mail).
     var trail: [SourceTrailEntry] = []
     /// An item of the row is in the calendar (the popover's green check).
