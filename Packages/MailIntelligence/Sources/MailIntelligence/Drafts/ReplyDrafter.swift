@@ -88,6 +88,87 @@ public actor ReplyDrafter {
         return draft.id
     }
 
+    /// Why the mail chat's draft_reply wrote nothing.
+    public enum AgentDraftRefusal: Error, Sendable, Hashable, CustomStringConvertible {
+        case emptyBody
+        case messageNotFound
+        /// The student changed the open draft (or wrote it): their words are never replaced.
+        case editedByStudent
+        /// The Reply button's drafter is writing the open draft right now.
+        case beingDrafted
+        /// A reply to this mail is being sent, or its sending failed (the student owns it).
+        case beingSent
+
+        public var description: String {
+            switch self {
+            case .emptyBody: "The draft is empty."
+            case .messageNotFound: "No mail with that id."
+            case .editedByStudent: "The student has edited the open reply draft of this mail; it was not changed."
+            case .beingDrafted: "A reply draft of this mail is being written already."
+            case .beingSent: "A reply to this mail is being sent."
+            }
+        }
+    }
+
+    /// M3.5, the mail chat's draft_reply: `body` becomes the reply draft of mail `id` as the
+    /// agent's text (`generated_body` = `body`, so the reader shows it grey with one sparkle and
+    /// the student's edits turn primary). A new draft has the Reply button's headers (To =
+    /// Reply-To ?? From, "Re: …", In-Reply-To, References, the course); an open draft the student
+    /// has not edited gets the new text. Refuses an edited draft, one being drafted or sent. Never
+    /// sends: only the student's Send does.
+    @discardableResult
+    public func writeAgentDraft(replyingTo id: MailMessage.ID, body: String) async throws -> MailDraft {
+        let text = Self.clean(body)
+        guard !text.isEmpty else { throw AgentDraftRefusal.emptyBody }
+        let records = services.records
+        guard let message = try await records.fetch(MailMessage.self, id: id) else { throw AgentDraftRefusal.messageNotFound }
+        let busy: [MailDraftState] = [.sending, .failed]
+        let sending = try await services.database.read { db in
+            try MailDraft.where { $0.mailMessageID.eq(id) && $0.state.in(busy) }.fetchCount(db)
+        }
+        guard sending == 0 else { throw AgentDraftRefusal.beingSent }
+
+        if let open = try await drafts.openDraft(replyingTo: id) {
+            guard open.state == .draft, running[open.id] == nil else { throw AgentDraftRefusal.beingDrafted }
+            let draftID = open.id
+            let store = records
+            // Checked again inside the write: the student may have typed since.
+            let written = try await services.database.write { db -> MailDraft? in
+                guard var draft = try MailDraft.find(draftID).fetchOne(db), draft.state == .draft, !Self.isEdited(draft) else { return nil }
+                draft.body = text
+                draft.generatedBody = text
+                draft.error = nil
+                let stamped = store.stamp(draft)
+                try MailDraft.upsert { stamped }.execute(db)
+                return stamped
+            }
+            guard let written else { throw AgentDraftRefusal.editedByStudent }
+            return written
+        }
+
+        guard let account = try await records.fetch(MailAccount.self, id: message.accountID) else { throw DraftError.accountNotFound }
+        let mailboxes = try await MailboxDirectory.load(services.database)
+        return try await records.save(MailDraft(
+            accountID: account.id,
+            mailMessageID: message.id,
+            inReplyTo: message.rfcMessageID,
+            referenceIDs: Self.references(of: message),
+            to: Self.recipients(of: message, own: mailboxes.isOwn(message)),
+            subject: Self.replySubject(message.subject),
+            body: text,
+            generatedBody: text,
+            courseID: message.courseID,
+            state: .draft,
+            createdAt: now()
+        ))
+    }
+
+    /// The student wrote or changed text of the draft (an empty draft is not edited).
+    static func isEdited(_ draft: MailDraft) -> Bool {
+        let body = draft.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !body.isEmpty && draft.body != (draft.generatedBody ?? "")
+    }
+
     /// Stops the agent (the student started typing, or pressed Stop): what came so far stays and
     /// the draft becomes editable. Returns when the draft is settled.
     public func stop(_ draftID: MailDraft.ID) async {
