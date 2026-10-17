@@ -82,16 +82,23 @@ public struct MailSearch: Sendable {
             }
             guard let candidates else { return [] }
             let any = terms.count == 1 ? terms[0] : terms.map { "(\($0))" }.joined(separator: " OR ")
+            // bm25 per chunk (materialized: an auxiliary function cannot run inside the
+            // aggregate), then the best chunk of each message (SQLite takes the bare columns
+            // from the row `min` picked).
             let rows = try Row.fetchCursor(db, sql: """
-                SELECT c.source_id AS id, min(bm25(search_fts, 4.0, 1.0)) AS score, c.text AS text,
-                       m.subject AS subject, m.from_name AS from_name, m.from_address AS from_address,
-                       m.received_at AS received_at, m.course_id AS course_id
-                FROM search_fts
-                JOIN search_chunk c ON c.id = search_fts.rowid
-                JOIN mail_message m ON m.id = c.source_id
-                LEFT JOIN mailbox b ON b.id = m.mailbox_id
-                WHERE search_fts MATCH ? AND c.kind = 'mail' \(filter.sql)
-                GROUP BY c.source_id
+                WITH hits AS MATERIALIZED (
+                    SELECT c.source_id AS id, bm25(search_fts, 4.0, 1.0) AS score, c.text AS text,
+                           m.subject AS subject, m.from_name AS from_name, m.from_address AS from_address,
+                           m.received_at AS received_at, m.course_id AS course_id
+                    FROM search_fts
+                    JOIN search_chunk c ON c.id = search_fts.rowid
+                    JOIN mail_message m ON m.id = c.source_id
+                    LEFT JOIN mailbox b ON b.id = m.mailbox_id
+                    WHERE search_fts MATCH ? AND c.kind = 'mail' \(filter.sql)
+                )
+                SELECT id, min(score) AS score, text, subject, from_name, from_address, received_at, course_id
+                FROM hits
+                GROUP BY id
                 """, arguments: StatementArguments([any]) + filter.arguments)
             var hits: [MailSearchHit] = []
             while let row = try rows.next() {
