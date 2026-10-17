@@ -5,7 +5,9 @@ let package = Package(
     name: "Alignment",
     platforms: [.macOS(.v26), .iOS(.v26)],
     products: [
-        .library(name: "Alignment", targets: ["Alignment"])
+        .library(name: "Alignment", targets: ["Alignment"]),
+        // Ground truth and scoring for tools (tools/ProcessLecture). The app does not link it.
+        .library(name: "AlignmentEvaluation", targets: ["AlignmentEvaluation"])
     ],
     targets: [
         // The aligner itself: pure Swift, no dependencies, no I/O besides SRT parsing of strings.
