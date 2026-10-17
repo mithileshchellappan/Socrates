@@ -380,7 +380,13 @@ public struct DateMentions: Hashable, Sendable {
             guard let weekday = Self.weekday(word, capitalized: current.isCapitalized) else { return }
             // A weekday right before a date ("Thursday, 29 October") is part of it.
             for offset in 1...4 {
-                if consumed.contains(index + offset) { return }
+                if consumed.contains(index + offset) {
+                    if let date = found.firstIndex(where: { $0.tokens.lowerBound == index + offset }) {
+                        found[date].tokens = index..<found[date].tokens.upperBound
+                        consumed.insert(integersIn: index..<(index + offset))
+                    }
+                    return
+                }
                 guard let next = token(index + offset) else { break }
                 if next.number != nil || next.word.map({ !["the", "den", "dem", "der"].contains($0) }) == true { break }
             }

@@ -61,6 +61,12 @@ public struct DeadlineMemory: Sendable {
         try MemoryWriter(db: db, store: store, now: now, timeZone: DeadlinesModule.timeZone).record(finding)
     }
 
+    /// Tells the app the rows changed after the caller's own transaction with
+    /// `record(_:in:store:now:)` (calls `onChange`).
+    public func didChange() async {
+        await onChange()
+    }
+
     // MARK: - Changes
 
     /// Changes an item to `draft` (an agent's `update_item`); the item's fields before go on the
