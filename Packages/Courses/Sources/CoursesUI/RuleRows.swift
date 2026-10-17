@@ -4,13 +4,13 @@ import StudyUI
 import SwiftUI
 
 /// One exam/exercise rule: who said it (orange professor pin), the rule in bold-title form, the
-/// jump to where it was said, and Confirm while an AI-read rule waits.
+/// jump to where it was said (one chip), and Confirm while an AI-read rule waits.
 struct RuleRow: View {
     let rule: CourseRule
     let lectureNumber: Int?
     let update: (CourseRule) -> Void
     let delete: (CourseRule.ID) -> Void
-    let play: (Lecture.ID, Double) -> Void
+    let open: (Lecture.ID, ReviewTarget) -> Void
     @State private var editing: Bool
 
     init(
@@ -19,13 +19,13 @@ struct RuleRow: View {
         editing: Bool = false,
         update: @escaping (CourseRule) -> Void,
         delete: @escaping (CourseRule.ID) -> Void,
-        play: @escaping (Lecture.ID, Double) -> Void
+        open: @escaping (Lecture.ID, ReviewTarget) -> Void
     ) {
         self.rule = rule
         self.lectureNumber = lectureNumber
         self.update = update
         self.delete = delete
-        self.play = play
+        self.open = open
         _editing = State(initialValue: editing)
     }
 
@@ -37,6 +37,7 @@ struct RuleRow: View {
                 editing = true
             } label: {
                 ruleText
+                    .lineSpacing(1.5)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -45,31 +46,45 @@ struct RuleRow: View {
             .popover(isPresented: $editing, arrowEdge: .bottom) {
                 RuleEditor(rule: rule, update: update, delete: delete)
             }
-            if let source = rule.source, let lectureID = source.lectureID, let time = source.time {
-                LectureTimeChip(lectureNumber: lectureNumber, seconds: time) { play(lectureID, time) }
-            }
+            sourceChip
             if !rule.isConfirmed {
-                Button("Confirm") {
-                    var confirmed = rule
-                    confirmed.confirmedAt = Date()
-                    update(confirmed)
-                }
-                .controlSize(.small)
+                Button("Confirm", action: confirm)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
         .contextMenu {
             Button("Edit…") { editing = true }
             if !rule.isConfirmed {
-                Button("Confirm") {
-                    var confirmed = rule
-                    confirmed.confirmedAt = Date()
-                    update(confirmed)
+                Button("Confirm", action: confirm)
+            }
+            if !rule.title.isEmpty || !rule.text.isEmpty {
+                Divider()
+                Button("Delete", role: .destructive) { delete(rule.id) }
+            }
+        }
+    }
+
+    /// "L2 · 0:20" for something said in a lecture, "S13" for a slide.
+    @ViewBuilder
+    private var sourceChip: some View {
+        if let source = rule.source, let lectureID = source.lectureID {
+            if source.kind == .slide, let page = source.pageNumber {
+                SlideChip(page: page) { open(lectureID, ReviewTarget(page: page)) }
+            } else if let time = source.time {
+                TimeChip(time, prefix: lectureNumber.map { "L\($0)" }) {
+                    open(lectureID, ReviewTarget(time: time, plays: true, recordingID: source.recordingID))
                 }
             }
-            Divider()
-            Button("Delete", role: .destructive) { delete(rule.id) }
         }
+    }
+
+    private func confirm() {
+        var confirmed = rule
+        confirmed.confirmedAt = Date()
+        update(confirmed)
     }
 
     @ViewBuilder
@@ -100,7 +115,8 @@ struct RuleRow: View {
             return Text("\(heading) \(Text("Not announced").foregroundStyle(.tertiary))")
         }
         if !rule.isConfirmed {
-            return Text("\(heading) \(Text("\(Image(systemName: "sparkle")) \(body)").foregroundStyle(.secondary))")
+            let mark = Text(Image(systemName: "sparkle")).font(.caption).foregroundStyle(Color.ai)
+            return Text("\(heading) \(mark) \(Text(body).foregroundStyle(.secondary))")
         }
         return Text("\(heading) \(body)")
     }
@@ -112,7 +128,12 @@ struct RuleEditor: View {
     let update: (CourseRule) -> Void
     let delete: (CourseRule.ID) -> Void
     @State private var rule: CourseRule
-    @FocusState private var titleFocused: Bool
+    @FocusState private var focus: Field?
+
+    private enum Field {
+        case title
+        case text
+    }
 
     init(rule: CourseRule, update: @escaping (CourseRule) -> Void, delete: @escaping (CourseRule.ID) -> Void) {
         original = rule
@@ -124,14 +145,15 @@ struct RuleEditor: View {
     var body: some View {
         Form {
             TextField("Title", text: $rule.title, prompt: Text("Exam admission"))
-                .focused($titleFocused)
+                .focused($focus, equals: .title)
             TextField("Rule", text: $rule.text, prompt: Text("Take part in the online quizzes."), axis: .vertical)
                 .lineLimit(2...5)
+                .focused($focus, equals: .text)
         }
         .formStyle(.grouped)
         .frame(width: 340)
         .fixedSize(horizontal: false, vertical: true)
-        .onAppear { titleFocused = original.title.isEmpty }
+        .onAppear { focus = original.title.isEmpty ? .title : (original.text.isEmpty ? .text : nil) }
         .onDisappear(perform: commit)
     }
 
@@ -153,46 +175,57 @@ struct RuleEditor: View {
     }
 }
 
-/// A mail routing rule: which header to look at and what it contains (used from M2).
+extension MailRuleKind {
+    /// The kinds Course Settings offers, in menu order.
+    static let settingsKinds: [MailRuleKind] = [.sender, .listID, .subject, .platformCourse]
+
+    /// "Sender is", "Mailing list is", "Subject contains", "LMS course is".
+    var settingsTitle: String {
+        switch self {
+        case .sender: String(localized: "Sender is")
+        case .listID: String(localized: "Mailing list is")
+        case .subject: String(localized: "Subject contains")
+        case .platformCourse: String(localized: "LMS course is")
+        default: rawValue
+        }
+    }
+}
+
+/// A mail routing rule (`mail_rule`): which part of a message to look at, as a pop-up button, and
+/// what it contains, as a token that edits in place. Learned rules are secondary. A rule whose
+/// value is emptied is deleted.
 struct MailRuleRow: View {
-    let rule: MailRoutingRule
-    let update: (MailRoutingRule) -> Void
-    let delete: () -> Void
+    let rule: MailRule
+    var focusesOnAppear = false
+    let save: (MailRule) -> Void
+    let delete: (MailRule) -> Void
+
     @State private var value = ""
     @State private var isHovered = false
     @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            Picker("Field", selection: Binding(get: { rule.field }, set: { field in
-                var changed = rule
-                changed.field = field
-                update(changed)
-            })) {
-                Text("Sender is").tag(MailRoutingRule.Field.from)
-                Text("Subject contains").tag(MailRoutingRule.Field.subject)
-                Text("Mailing list is").tag(MailRoutingRule.Field.listID)
-            }
-            .labelsHidden()
-            .fixedSize()
+        HStack(spacing: 10) {
+            PopUpPicker(title: "Field", selection: kind, options: kindOptions)
 
-            TextField("Value", text: $value)
-                .labelsHidden()
-                .textFieldStyle(.plain)
-                .font(.callout)
-                .focused($focused)
-                .onSubmit(commit)
-                .onChange(of: focused) {
-                    if !focused { commit() }
+            Text(verbatim: value.isEmpty ? " " : value)
+                .hidden()
+                .frame(minWidth: 40, alignment: .leading)
+                .overlay(alignment: .leading) {
+                    TextField("Value", text: $value)
+                        .labelsHidden()
+                        .textFieldStyle(.plain)
+                        .focused($focused)
+                        .onSubmit(commit)
                 }
-                .padding(.horizontal, 7)
-                .frame(height: 20)
-                .background(.tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .fixedSize()
-                .frame(minWidth: 60, alignment: .leading)
+                .tokenStyle()
+                .foregroundStyle(rule.origin == .learned ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                .focusRing(focused, cornerRadius: 5)
 
             Spacer(minLength: 0)
-            Button(action: delete) {
+            Button {
+                delete(rule)
+            } label: {
                 Image(systemName: "minus.circle")
                     .foregroundStyle(.secondary)
             }
@@ -200,21 +233,59 @@ struct MailRuleRow: View {
             .opacity(isHovered || focused ? 1 : 0)
             .accessibilityLabel(Text("Delete Rule"))
         }
+        .foregroundStyle(rule.origin == .learned ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+        .settingsRowPadding()
+        .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .onAppear { value = rule.contains }
-        .onChange(of: rule.contains) {
-            if !focused { value = rule.contains }
+        .onAppear { value = rule.pattern }
+        .task {
+            // After the row is in the window, so the field can take focus.
+            guard focusesOnAppear else { return }
+            try? await Task.sleep(for: .milliseconds(50))
+            focused = true
+        }
+        .onChange(of: rule.pattern) {
+            if !focused { value = rule.pattern }
+        }
+        .onChange(of: focused) {
+            if !focused { commit() }
         }
         .contextMenu {
-            Button("Delete", role: .destructive, action: delete)
+            Button("Delete", role: .destructive) { delete(rule) }
         }
+    }
+
+    private var kindOptions: [ChoiceOption<MailRuleKind>] {
+        var kinds = MailRuleKind.settingsKinds
+        if !kinds.contains(rule.kind) { kinds.append(rule.kind) }
+        return kinds.map { ChoiceOption(value: $0, label: $0.settingsTitle) }
+    }
+
+    private var kind: Binding<MailRuleKind> {
+        Binding(
+            get: { rule.kind },
+            set: { kind in
+                var changed = rule
+                changed.kind = kind
+                changed.pattern = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                save(changed)
+            }
+        )
     }
 
     private func commit() {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed != rule.contains else { return }
+        if trimmed.isEmpty {
+            delete(rule)
+            return
+        }
+        guard trimmed != rule.pattern else { return }
         var changed = rule
-        changed.contains = trimmed
-        update(changed)
+        changed.pattern = trimmed
+        if changed.origin == .learned {
+            // Rewording a learned rule makes it the student's.
+            changed.origin = .user
+        }
+        save(changed)
     }
 }

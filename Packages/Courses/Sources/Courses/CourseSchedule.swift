@@ -81,6 +81,71 @@ public struct CourseSchedule: Sendable {
         return stamped
     }
 
+    /// Saves several slots (an .ics import) and replans their courses, in one transaction.
+    @discardableResult
+    public func save(_ slots: [WeeklySlot], now: Date = Date()) async throws -> [WeeklySlot] {
+        let planner = planner
+        let store = store
+        let stamped = slots.map(store.stamp)
+        guard !stamped.isEmpty else { return [] }
+        try await services.database.write { db in
+            for slot in stamped {
+                try WeeklySlot.upsert { slot }.execute(db)
+            }
+            for courseID in Set(stamped.map(\.courseID)) {
+                try Self.replan(courseID: courseID, now: now, planner: planner, store: store, db: db)
+            }
+        }
+        return stamped
+    }
+
+    /// Saves a slot made from the course's one-off sessions (`SlotGuess`): the one-off sessions
+    /// it would plan anyway (same kind, weekday and start) become its sessions, so they hold their
+    /// days instead of being doubled. They stay as edited.
+    @discardableResult
+    public func saveAdoptingSessions(_ slot: WeeklySlot, now: Date = Date()) async throws -> WeeklySlot {
+        let planner = planner
+        let store = store
+        let stamped = store.stamp(slot)
+        let zone = TimeZone(identifier: slot.timeZone) ?? .current
+        try await services.database.write { db in
+            try WeeklySlot.upsert { stamped }.execute(db)
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = zone
+            let oneOffs = try LectureSession
+                .where { $0.courseID.eq(stamped.courseID) && $0.weeklySlotID.is(nil) }
+                .fetchAll(db)
+            for var session in oneOffs where session.kind == stamped.kind {
+                let parts = calendar.dateComponents([.weekday, .hour, .minute], from: session.startsAt)
+                guard let weekday = parts.weekday, let hour = parts.hour, let minute = parts.minute,
+                      (weekday == 1 ? 7 : weekday - 1) == stamped.weekday, hour * 60 + minute == stamped.startMinute
+                else { continue }
+                session.weeklySlotID = stamped.id
+                let adopted = store.stamp(session)
+                try LectureSession.upsert { adopted }.execute(db)
+            }
+            try Self.replan(courseID: stamped.courseID, now: now, planner: planner, store: store, db: db)
+        }
+        return stamped
+    }
+
+    /// Deletes several slots (undoing an import) and replans their courses, in one transaction.
+    public func deleteSlots(_ slotIDs: [WeeklySlot.ID], now: Date = Date()) async throws {
+        let planner = planner
+        let store = store
+        try await services.database.write { db in
+            var courses = Set<Course.ID>()
+            for slotID in slotIDs {
+                guard let slot = try WeeklySlot.find(slotID).fetchOne(db) else { continue }
+                try WeeklySlot.find(slotID).delete().execute(db)
+                courses.insert(slot.courseID)
+            }
+            for courseID in courses {
+                try Self.replan(courseID: courseID, now: now, planner: planner, store: store, db: db)
+            }
+        }
+    }
+
     /// Deletes a weekly slot and replans its course: its future sessions go, past ones and ones
     /// with a lecture stay.
     public func deleteSlot(_ slotID: WeeklySlot.ID, now: Date = Date()) async throws {

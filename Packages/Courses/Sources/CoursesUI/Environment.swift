@@ -57,6 +57,27 @@ struct ScheduleActions {
         run("Deleting a slot") { try await CourseSchedule(services: $0).deleteSlot(id) }
     }
 
+    func save(_ slots: [WeeklySlot]) {
+        run("Importing slots") { try await CourseSchedule(services: $0).save(slots) }
+    }
+
+    func deleteSlots(_ ids: [WeeklySlot.ID]) {
+        run("Removing imported slots") { try await CourseSchedule(services: $0).deleteSlots(ids) }
+    }
+
+    /// A slot made from one-off sessions, which become its sessions.
+    func adopt(_ slot: WeeklySlot) {
+        run("Saving a slot") { try await CourseSchedule(services: $0).saveAdoptingSessions(slot) }
+    }
+
+    func save(_ rule: MailRule) {
+        run("Saving a mail rule", syncCalendar: false) { try await $0.records.save(rule) }
+    }
+
+    func delete(_ rule: MailRule) {
+        run("Deleting a mail rule", syncCalendar: false) { try await $0.records.delete(MailRule.self, id: rule.id) }
+    }
+
     func cancel(_ id: LectureSession.ID) {
         run("Cancelling a session") { try await CourseSchedule(services: $0).cancel(id) }
     }
