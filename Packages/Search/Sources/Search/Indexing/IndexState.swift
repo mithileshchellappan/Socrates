@@ -15,6 +15,50 @@ enum IndexState {
         var notes: [Note.ID] = []
 
         var isEmpty: Bool { recordings.isEmpty && decks.isEmpty && notes.isEmpty }
+
+        /// Adds `other`'s units that are not here yet.
+        mutating func formUnion(_ other: Work) {
+            recordings += other.recordings.filter { !recordings.contains($0) }
+            decks += other.decks.filter { !decks.contains($0) }
+            notes += other.notes.filter { !notes.contains($0) }
+        }
+    }
+
+    /// Decks and notes whose chunks an earlier build cut differently: the text the chunker gives
+    /// them now is not the text they have (slides and notes became one line with " · " between
+    /// items). Checked once per launch, so a library indexed by an older build is re-chunked
+    /// without a schema change. Transcript chunks are a segment's own text and are not checked.
+    static func outdatedText(_ db: Database) throws -> Work {
+        var work = Work()
+        let decks = try Deck.ID.fetchAll(db, sql: """
+            SELECT DISTINCT deck_id FROM search_chunk WHERE kind = 'slide' AND deck_id IS NOT NULL
+            """)
+        for deckID in decks {
+            let pages = try Row.fetchAll(db, sql: """
+                SELECT page_number, text FROM deck_page WHERE deck_id = ? ORDER BY page_number
+                """, arguments: [deckID.storageText])
+            let cleaned = SlideText.clean(pages.map { $0["text"] })
+            var expected: [Int: String] = [:]
+            for (page, text) in zip(pages, cleaned) where !text.isEmpty { expected[page["page_number"]] = text }
+            var indexed: [Int: String] = [:]
+            for row in try Row.fetchAll(db, sql: """
+                SELECT page_number, text FROM search_chunk WHERE kind = 'slide' AND deck_id = ? AND page_number IS NOT NULL
+                """, arguments: [deckID.storageText]) {
+                indexed[row["page_number"]] = row["text"]
+            }
+            if indexed != expected { work.decks.append(deckID) }
+        }
+
+        var noteTexts: [Note.ID: String] = [:]
+        for row in try Row.fetchAll(db, sql: "SELECT note_id, text FROM search_chunk WHERE kind = 'note' AND note_id IS NOT NULL") {
+            noteTexts[row["note_id"]] = row["text"]
+        }
+        guard !noteTexts.isEmpty else { return work }
+        for note in try Note.where({ $0.id.in(Array(noteTexts.keys)) }).fetchAll(db)
+        where noteTexts[note.id] != ChunkBuilder.noteText(note) {
+            work.notes.append(note.id)
+        }
+        return work
     }
 
     /// Dates are compared to the millisecond the database stores.

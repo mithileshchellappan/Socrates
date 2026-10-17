@@ -5,11 +5,16 @@ import StudyUI
 import SwiftUI
 
 /// The search screen (mockup 07 without tutor, "Also searched" and web): All | Lectures | Notes
-/// and a course scope above the hits, grouped by course and lecture, notes last.
+/// and a course scope above the hits, grouped by course and lecture, notes last, on one surface
+/// that scrolls under the toolbar.
 ///
 /// The query comes from the window's search field; ↩ there opens the selected (else first) hit.
-/// In the list: ↑/↓ select, ↩ opens the hit, Space plays it. An empty query shows nothing; no hits shows the system's no-results view.
-/// Results follow the index: a lecture processed or a note saved while the screen is open shows up.
+/// In the results: ↑/↓ select, ↩ or a double click opens the hit, Space plays it. The selected
+/// hit sits on a neutral block. A group with only weak matches (not every word) collapses to its
+/// header while others match fully; clicking it opens it. An empty query shows nothing; no hits
+/// shows the system's no-results title. Results follow the index: a lecture processed or a note
+/// saved while the screen is open shows up. Opening a hit, or ↩ in the field, records the query
+/// in `RecentSearches`.
 public struct SearchResultsView: View {
     private let query: String
     /// Counts ↩ presses in the window's search field: each opens the selected (or first) hit.
@@ -21,9 +26,13 @@ public struct SearchResultsView: View {
     @State private var courseID: Course.ID?
     @State private var results: SearchResults?
     @State private var selection: SearchHit.ID?
+    /// Collapsed groups (weak matches only) the student opened, for this query.
+    @State private var expanded: Set<SearchGroup.ID> = []
     /// Slide PDFs opened for thumbnails (off the main actor, once per deck for the screen's life);
     /// a slide hit shows its thumbnail once its deck is open.
     @State private var decks: [Deck.ID: SlideDeck] = [:]
+    @FocusState private var resultsFocused: Bool
+    @AppStorage(RecentSearches.storageKey) private var recentSearches = ""
 
     @FetchAll(Course.order { ($0.sortOrder, $0.name) }) private var courses
     @FetchOne(SearchChunk.select { $0.count() }) private var chunkCount = 0
@@ -58,7 +67,8 @@ public struct SearchResultsView: View {
             }
             .onChange(of: submits) {
                 // Keyboard-first from the toolbar field: ↩ opens the hit without reaching for the list.
-                if let results, let hit = selection.flatMap(results.hit(id:)) ?? results.hits.first {
+                recordQuery()
+                if let results, let hit = selection.flatMap(results.hit(id:)) ?? visibleHits(results).first {
                     open(hit)
                 } else {
                     opensFirstHit = true
@@ -71,21 +81,51 @@ public struct SearchResultsView: View {
         if searchQuery.isEmpty {
             Color.clear
         } else {
-            VStack(spacing: 0) {
-                filters
-                if let results {
-                    // Until the next search lands (milliseconds) the previous results stay.
-                    if results.isEmpty {
-                        ContentUnavailableView.search(text: query)
-                            .frame(maxHeight: .infinity)
-                    } else {
-                        list(results)
+            ScrollViewReader { proxy in
+                // Filters and hits share one surface that scrolls under the toolbar (no title bar
+                // line), as in the mockup.
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        filters
+                            .id(RowID.filters)
+                        if let results {
+                            // Until the next search lands (milliseconds) the previous results stay.
+                            ForEach(rows(results)) { row in
+                                rowView(row, results)
+                            }
+                        }
                     }
-                } else {
-                    Spacer()
+                    .padding(.horizontal, SearchMetrics.margin)
+                    .padding(.top, 2)
+                    .padding(.bottom, 12)
+                    .frame(maxWidth: SearchMetrics.columnWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .focusable()
+                .focused($resultsFocused)
+                .focusEffectDisabled()
+                .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+                    moveSelection(by: press.key == .upArrow ? -1 : 1, proxy: proxy) ? .handled : .ignored
+                }
+                .onKeyPress(.return) {
+                    guard let hit = selectedHit, hit.destination != nil else { return .ignored }
+                    open(hit)
+                    return .handled
+                }
+                .onKeyPress(.space) {
+                    guard let hit = selectedHit, hit.playDestination != nil else { return .ignored }
+                    play(hit)
+                    return .handled
+                }
+                .onChange(of: query) {
+                    proxy.scrollTo(RowID.filters, anchor: .top)
+                }
+                .overlay {
+                    if let results, results.isEmpty {
+                        ContentUnavailableView("No Results for “\(query)”", systemImage: "magnifyingglass")
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
     }
 
@@ -94,16 +134,15 @@ public struct SearchResultsView: View {
         return Text("^[\(results.count) result](inflect: true)")
     }
 
+    // MARK: - Filters
+
     private var filters: some View {
-        HStack(spacing: 8) {
-            Picker("Show", selection: $scope) {
-                Text("All").tag(SearchQuery.Scope.all)
-                Text("Lectures").tag(SearchQuery.Scope.lectures)
-                Text("Notes").tag(SearchQuery.Scope.notes)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
+        HStack(spacing: 6) {
+            FilterSegments(selection: $scope, label: "Show", options: [
+                .init(value: .all, title: "All"),
+                .init(value: .lectures, title: "Lectures"),
+                .init(value: .notes, title: "Notes")
+            ])
             Spacer(minLength: 8)
             Menu {
                 Picker("Course", selection: $courseID) {
@@ -116,65 +155,157 @@ public struct SearchResultsView: View {
                 .pickerStyle(.inline)
                 .labelsHidden()
             } label: {
-                Text(courses.first { $0.id == courseID }?.name ?? String(localized: "All courses"))
+                // Quiet, as in the mockup: secondary text and a thin chevron, no bezel.
+                HStack(spacing: 3) {
+                    Text(courses.first { $0.id == courseID }?.name ?? String(localized: "All courses"))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .regular))
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .contentShape(.rect)
             }
             .menuStyle(.button)
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
             .fixedSize()
         }
-        .controlSize(.small)
-        .padding(.horizontal, 18)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
     }
 
-    private func list(_ results: SearchResults) -> some View {
-        List(selection: $selection) {
-            ForEach(results.groups) { group in
-                Section {
-                    ForEach(group.hits) { hit in
-                        SearchHitRow(
-                            hit: hit,
-                            label: results.label(for: hit),
-                            deck: thumbnailDeck(hit, results),
-                            play: { play(hit) }
-                        )
-                        .tag(hit.id)
-                        .listRowSeparator(.hidden)
+    // MARK: - Rows
+
+    /// The screen's rows, flat so the stack stays lazy: each group's header, then its hits.
+    private enum Row: Identifiable {
+        case header(SearchGroup, collapsedLabel: String?)
+        case hit(SearchHit, firstInGroup: Bool)
+
+        var id: RowID {
+            switch self {
+            case .header(let group, _): .header(group.id)
+            case .hit(let hit, _): .hit(hit.id)
+            }
+        }
+    }
+
+    private enum RowID: Hashable {
+        case filters
+        case header(SearchGroup.ID)
+        case hit(SearchHit.ID)
+    }
+
+    private func rows(_ results: SearchResults) -> [Row] {
+        var rows: [Row] = []
+        for group in results.groups {
+            if isCollapsed(group, in: results) {
+                rows.append(.header(group, collapsedLabel: group.hits.first.map(results.label(for:)) ?? ""))
+            } else {
+                rows.append(.header(group, collapsedLabel: nil))
+                for (index, hit) in group.hits.enumerated() {
+                    rows.append(.hit(hit, firstInGroup: index == 0))
+                }
+            }
+        }
+        return rows
+    }
+
+    private func isCollapsed(_ group: SearchGroup, in results: SearchResults) -> Bool {
+        results.collapses(group, expanded: expanded)
+    }
+
+    /// The hits shown (not in a collapsed group), in order.
+    private func visibleHits(_ results: SearchResults) -> [SearchHit] {
+        results.visibleHits(expanded: expanded)
+    }
+
+    private var selectedHit: SearchHit? {
+        guard let results, let selection else { return nil }
+        return results.hit(id: selection)
+    }
+
+    @ViewBuilder
+    private func rowView(_ row: Row, _ results: SearchResults) -> some View {
+        switch row {
+        case .header(let group, let collapsedLabel):
+            Group {
+                if let collapsedLabel {
+                    Button {
+                        expanded.insert(group.id)
+                    } label: {
+                        SearchGroupHeader(group: group, collapsedLabel: collapsedLabel)
+                            .contentShape(.rect)
                     }
-                } header: {
+                    .buttonStyle(.plain)
+                } else {
                     SearchGroupHeader(group: group)
                 }
-                .listSectionSeparator(.hidden)
             }
-        }
-        .listStyle(.inset)
-        // Filters and hits share one surface, as in the mockup.
-        .scrollContentBackground(.hidden)
-        .contextMenu(forSelectionType: SearchHit.ID.self) { ids in
-            if let id = ids.first, let hit = results.hit(id: id) {
-                Button("Open") { open(hit) }
-                    .disabled(hit.destination == nil)
-                if hit.playDestination != nil {
-                    Button("Play") { play(hit) }
-                }
-            }
-        } primaryAction: { ids in
-            if let id = ids.first, let hit = results.hit(id: id) { open(hit) }
-        }
-        .onKeyPress(.space) {
-            guard let id = selection, let hit = results.hit(id: id), hit.playDestination != nil else { return .ignored }
-            play(hit)
-            return .handled
-        }
-        .onKeyPress(.return) {
-            guard let id = selection, let hit = results.hit(id: id), hit.destination != nil else { return .ignored }
-            open(hit)
-            return .handled
+            .padding(.top, SearchMetrics.groupSpacing)
+            .id(row.id)
+        case .hit(let hit, let firstInGroup):
+            hitRow(hit, results)
+                .padding(.top, firstInGroup ? 4 : 0)
+                .id(row.id)
         }
     }
 
-    private func thumbnailDeck(_ hit: SearchHit, _ results: SearchResults) -> SlideDeck? {
+    private func hitRow(_ hit: SearchHit, _ results: SearchResults) -> some View {
+        let isSelected = selection == hit.id
+        return SearchHitRow(
+            hit: hit,
+            label: results.label(for: hit),
+            deck: thumbnailDeck(hit),
+            play: { play(hit) }
+        )
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: SearchMetrics.selectionRadius, style: .continuous)
+                    .fill(QuietFill())
+            }
+        }
+        .contentShape(.rect)
+        .onTapGesture(count: 2) { open(hit) }
+        .simultaneousGesture(TapGesture().onEnded {
+            selection = hit.id
+            resultsFocused = true
+        })
+        .contextMenu {
+            Button("Open") { open(hit) }
+                .disabled(hit.destination == nil)
+            if hit.playDestination != nil {
+                Button("Play") { play(hit) }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { open(hit) }
+        .accessibilityActions {
+            if hit.playDestination != nil {
+                Button("Play") { play(hit) }
+            }
+        }
+    }
+
+    /// Moves the selection through the shown hits; the first hit of a group brings its header
+    /// (the first of all, the filters) into view with it.
+    private func moveSelection(by offset: Int, proxy: ScrollViewProxy) -> Bool {
+        guard let results else { return false }
+        let visible = visibleHits(results)
+        guard !visible.isEmpty else { return false }
+        let current = selection.flatMap { id in visible.firstIndex { $0.id == id } }
+        let next = current.map { min(max($0 + offset, 0), visible.count - 1) } ?? 0
+        let hit = visible[next]
+        selection = hit.id
+        if next == 0 {
+            proxy.scrollTo(RowID.filters)
+        } else if let group = results.groups.first(where: { $0.hits.first?.id == hit.id }) {
+            proxy.scrollTo(RowID.header(group.id))
+        } else {
+            proxy.scrollTo(RowID.hit(hit.id))
+        }
+        return true
+    }
+
+    private func thumbnailDeck(_ hit: SearchHit) -> SlideDeck? {
         guard hit.kind == .slide, let deckID = hit.deckID else { return nil }
         return decks[deckID]
     }
@@ -190,12 +321,25 @@ public struct SearchResultsView: View {
         }
     }
 
+    // MARK: - Actions
+
     private func open(_ hit: SearchHit) {
-        if let destination = hit.destination { openDestination(destination) }
+        guard let destination = hit.destination else { return }
+        recordQuery()
+        openDestination(destination)
     }
 
     private func play(_ hit: SearchHit) {
-        if let destination = hit.playDestination { openDestination(destination) }
+        guard let destination = hit.playDestination else { return }
+        recordQuery()
+        openDestination(destination)
+    }
+
+    /// Puts the query first among the sidebar's recent searches.
+    private func recordQuery() {
+        var recent = RecentSearches(storage: recentSearches)
+        recent.record(query)
+        recentSearches = recent.storage
     }
 
     private func search() async {
@@ -207,11 +351,13 @@ public struct SearchResultsView: View {
         do {
             let found = try await SearchEngine(database: database).search(query)
             guard !Task.isCancelled else { return }
+            if found.query.text != results?.query.text { expanded = [] }
             results = found
-            if selection.flatMap(found.hit(id:)) == nil { selection = found.hits.first?.id }
+            let visible = visibleHits(found)
+            if selection.flatMap({ id in visible.first { $0.id == id } }) == nil { selection = visible.first?.id }
             if opensFirstHit {
                 opensFirstHit = false
-                if let hit = found.hits.first { open(hit) }
+                if let hit = visible.first { open(hit) }
             }
             await openDecks(for: found)
         } catch {

@@ -88,7 +88,7 @@ public actor SearchIndexer {
                 await self?.catchUpLogged()
             }
         }
-        await catchUpLogged()
+        await catchUpLogged(verifyingText: true)
     }
 
     /// Stops watching the library.
@@ -110,8 +110,18 @@ public actor SearchIndexer {
     /// Re-chunks every stale source and removes orphaned chunks.
     @discardableResult
     public func catchUp() async throws -> Report {
+        try await catchUp(verifyingText: false)
+    }
+
+    /// `verifyingText` also re-chunks sources an earlier build cut differently (`IndexState.outdatedText`).
+    @discardableResult
+    func catchUp(verifyingText: Bool) async throws -> Report {
         var report = Report()
-        let work = try await database.read { db in try IndexState.staleUnits(db) }
+        var work = try await database.read { db in try IndexState.staleUnits(db) }
+        if verifyingText {
+            let outdated = try await database.read { db in try IndexState.outdatedText(db) }
+            work.formUnion(outdated)
+        }
         for recordingID in work.recordings {
             report.chunks += try await indexRecording(recordingID)
             report.recordings += 1
@@ -132,18 +142,20 @@ public actor SearchIndexer {
     /// Catches up, logging what it did. A change that arrives while a catch-up is suspended on
     /// the database (the actor is reentrant) runs one more pass afterwards instead of a second
     /// catch-up alongside.
-    private func catchUpLogged() async {
+    private func catchUpLogged(verifyingText: Bool = false) async {
         guard !isCatchingUp else {
             catchUpAgain = true
             return
         }
         isCatchingUp = true
         defer { isCatchingUp = false }
+        var verifies = verifyingText
         repeat {
             catchUpAgain = false
             do {
                 let started = ContinuousClock.now
-                let report = try await catchUp()
+                let report = try await catchUp(verifyingText: verifies)
+                verifies = false
                 if !report.isEmpty {
                     let elapsed = ContinuousClock.now - started
                     Log.search.info("""

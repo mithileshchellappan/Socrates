@@ -47,9 +47,18 @@ enum SlideText {
         return bodies.map(flatten)
     }
 
-    /// The text with bullets as " · " and all whitespace collapsed to single spaces.
+    /// The text as one line: each item (a bullet, the title, a line that does not continue the one
+    /// before) after " · ", a wrapped line after a space, inline bullets as " · ", all whitespace
+    /// collapsed to single spaces.
+    ///
+    /// PDF text loses most bullet glyphs and breaks lines where the slide wrapped them, so whether
+    /// a line starts an item is read from the text: a line that starts in lower case or with
+    /// punctuation, or follows a comma, an open parenthesis or a function word ("to", "der"),
+    /// continues the line before. After a colon or a sentence the next item needs no " · "
+    /// ("Examples: VMWare Fusion").
     static func flatten(_ text: String) -> String {
-        var parts: [String] = []
+        var flat = ""
+        var item = ""
         for raw in text.split(whereSeparator: \.isNewline) {
             var line = raw.trimmingCharacters(in: .whitespaces)
             var bullet = false
@@ -59,26 +68,90 @@ enum SlideText {
                 line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
             }
             guard !line.isEmpty else { continue }
-            parts.append(bullet && !parts.isEmpty ? "· " + line : line)
+            if flat.isEmpty {
+                flat = line
+                item = line
+                continue
+            }
+            if !bullet, continues(item, with: line) {
+                // A word broken at its hyphen ("paravirtualization-" / "enabled") stays one word.
+                let joiner = flat.hasSuffix("-") && flat.dropLast().last?.isLetter == true ? "" : " "
+                flat += joiner + line
+                item += joiner + line
+            } else {
+                // After a colon, or a sentence a plain line follows, the item needs no " · ".
+                let closes = flat.hasSuffix(":") || (!bullet && flat.last.map { ".!?".contains($0) } == true)
+                flat += (closes ? " " : " · ") + line
+                item = line
+            }
         }
-        var flat = parts.joined(separator: " ")
-        // Bullets inside a line, with or without spaces around them ("pay-as-you-go §Efficiency").
-        // "§ 22 Abs. 3" (a German legal paragraph) stays; a § before words is a Wingdings bullet.
+        flat = spacedInlineBullets(flat)
+        flat = flat.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        while flat.hasPrefix("· ") { flat.removeFirst(2) }
+        // A heading's colon already separates ("Examples: § VMWare" → "Examples: VMWare").
+        return flat.replacing("· ·", with: "·").replacing(": · ", with: ": ")
+    }
+
+    /// Lines typed one per item (a note's blocks) as one line: " · " between them, a space after
+    /// a line that ends in a colon or a sentence.
+    static func joinLines(_ text: String) -> String {
+        var flat = ""
+        for raw in text.split(whereSeparator: \.isNewline) {
+            let line = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            guard !line.isEmpty else { continue }
+            if flat.isEmpty {
+                flat = line
+            } else {
+                flat += (flat.last.map { ":.!?".contains($0) } == true ? " " : " · ") + line
+            }
+        }
+        return flat
+    }
+
+    /// Whether `line` carries on `item` (the item's text so far) rather than starting a new one.
+    static func continues(_ item: String, with line: String) -> Bool {
+        guard let first = line.first, let last = item.last else { return false }
+        if first.isLetter, first.isLowercase { return true }
+        if "(),.;:/&+=%]}".contains(first) { return true }
+        if ",(/&+=-–".contains(last) { return true }
+        // An open parenthesis or quotation ("Source: Greenpeace, “CLICKING CLEAN: … GREEN" / "INTERNET?”").
+        if item.count(where: { $0 == "(" }) > item.count(where: { $0 == ")" }) { return true }
+        // “…” in English, „…“ in German.
+        let low = item.count { $0 == "„" }, left = item.count { $0 == "“" }, right = item.count { $0 == "”" }
+        if low + left > right + 2 * min(low, left) { return true }
+        if !item.count(where: { $0 == "\"" }).isMultiple(of: 2) { return true }
+        let lastWord = item.reversed().prefix { $0.isLetter }.reversed()
+        return !lastWord.isEmpty && joiningWords.contains(String(lastWord).lowercased())
+    }
+
+    /// Words a line does not end on unless the sentence goes on (English and German).
+    private static let joiningWords: Set<String> = [
+        "a", "an", "the", "and", "or", "but", "nor", "of", "to", "for", "with", "without", "in", "on",
+        "at", "by", "from", "into", "onto", "as", "via", "than", "that", "which", "who", "whose",
+        "is", "are", "was", "were", "be", "can", "may", "must", "will", "not", "its", "their",
+        "der", "die", "das", "des", "dem", "den", "ein", "eine", "einer", "eines", "einem", "einen",
+        "und", "oder", "aber", "mit", "ohne", "für", "von", "vom", "zu", "zur", "zum", "im", "auf",
+        "am", "bei", "beim", "über", "unter", "nach", "aus", "durch", "ist", "sind", "wird",
+        "werden", "kann", "als", "wie", "dass", "sowie", "nicht", "sich"
+    ]
+
+    /// Bullets inside a line, with or without spaces around them ("pay-as-you-go §Efficiency"),
+    /// as " · ". "§ 22 Abs. 3" (a German legal paragraph) stays; a § before words is a Wingdings
+    /// bullet.
+    private static func spacedInlineBullets(_ text: String) -> String {
         var spaced = ""
-        var index = flat.startIndex
-        while index < flat.endIndex {
-            let character = flat[index]
-            let next = flat[flat.index(after: index)...].first { !$0.isWhitespace }
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            let next = text[text.index(after: index)...].first { !$0.isWhitespace }
             if inlineBullets.contains(character), !(character == "§" && next?.isNumber == true) {
                 spaced += " · "
             } else {
                 spaced.append(character)
             }
-            index = flat.index(after: index)
+            index = text.index(after: index)
         }
-        flat = spaced.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        while flat.hasPrefix("· ") { flat.removeFirst(2) }
-        return flat.replacing("· ·", with: "·")
+        return spaced
     }
 
     private static let bullets: Set<Character> = ["•", "§", "▪", "◦", "–", "-", "*", "·", "\u{F0A7}", "\u{F0B7}", "\u{F0D8}"]

@@ -117,7 +117,8 @@ enum Snippet {
             return lower < upper ? lower..<upper : nil
         }, in: text)
         var snippet = AttributedString()
-        if first > 0 { snippet += AttributedString("…") }
+        // A window that opens at an item, sentence or clause needs no "…" ("Cons · Requires …").
+        if first > 0, !opensAtBoundary(first, tokens: tokens, text: text) { snippet += AttributedString("…") }
         var cursor = start
         for range in marked {
             if cursor < range.lowerBound { snippet += AttributedString(String(text[cursor..<range.lowerBound])) }
@@ -150,14 +151,33 @@ enum Snippet {
     }
 
     /// The nearest word at or before `match` (not before `earliest`) that opens a bullet, sentence
-    /// or clause, so a snippet starts at "Cons …" rather than mid-phrase.
+    /// or clause, so a snippet starts at "Requires …" rather than mid-phrase. A one-word item
+    /// just before it is a heading and opens the snippet with it ("Cons · Needs a patched guest …",
+    /// "Pro: can run …").
     private static func boundary(before match: Int, earliest: Int, tokens: [Token], text: String) -> Int? {
         guard earliest <= match else { return nil }
         for index in stride(from: match, through: earliest, by: -1) {
-            let gap = text[tokens[index - 1].range.upperBound..<tokens[index].range.lowerBound]
-            if gap.contains(where: { "·.!?:;)\n".contains($0) }) { return index }
+            let between = gap(before: index, tokens: tokens, text: text)
+            guard between.contains(where: { boundaryCharacters.contains($0) }) else { continue }
+            if between.contains("·") || between.contains(":"),
+               index == 1 || gap(before: index - 1, tokens: tokens, text: text).contains("·") {
+                return index - 1
+            }
+            return index
         }
         return nil
+    }
+
+    private static let boundaryCharacters: Set<Character> = ["·", ".", "!", "?", ":", ";", ")", "\n"]
+
+    /// Whether the word at `index` opens an item, sentence or clause.
+    private static func opensAtBoundary(_ index: Int, tokens: [Token], text: String) -> Bool {
+        gap(before: index, tokens: tokens, text: text).contains { boundaryCharacters.contains($0) }
+    }
+
+    /// The text between the word at `index` and the one before it.
+    private static func gap(before index: Int, tokens: [Token], text: String) -> Substring {
+        text[tokens[index - 1].range.upperBound..<tokens[index].range.lowerBound]
     }
 
     /// Overlapping ranges, and neighbours with only spaces between them ("binary rewriting"),

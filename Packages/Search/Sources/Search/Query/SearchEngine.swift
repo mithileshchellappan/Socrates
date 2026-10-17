@@ -348,6 +348,11 @@ struct Retrieval {
             try Deck.where { $0.id.in(Array(deckIDs)) }.fetchAll(db).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
         )
         let spans = try LectureDeckSpan.where { $0.deckID.in(Array(deckIDs)) }.fetchAll(db)
+        let noteIDs = chunks.values.compactMap { $0.kind == .note ? $0.noteID : nil }
+        var noteTitles: [Note.ID: String] = [:]
+        if !noteIDs.isEmpty {
+            for note in try Note.where({ $0.id.in(noteIDs) }).fetchAll(db) { noteTitles[note.id] = note.searchTitle }
+        }
 
         var hits: [SearchHit] = []
         for entry in chosen {
@@ -375,6 +380,7 @@ struct Retrieval {
                     hit.target = .course(courseID)
                 }
             default:
+                hit.title = meta.noteID.flatMap { noteTitles[$0] }
                 if let lectureID = meta.lectureID {
                     hit.target = .lecture(lectureID, page: meta.page, time: meta.start, plays: false, recording: meta.recordingID)
                 } else if let courseID = meta.courseID {
