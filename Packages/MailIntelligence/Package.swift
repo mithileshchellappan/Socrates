@@ -1,10 +1,11 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// Workstream B (M2): what the app understands from mail. Routing to courses (rules, then Haiku;
-// corrections become rules), extraction of deadlines / announcements / room changes /
-// cancellations into tracked items with verified quotes, digest data, Opus reply drafts (text
-// only), mail search chunks and the read-only mail tools for Q&A.
+// Workstream B (M2, M3.5): what the app understands from mail. Routing to courses (rules, then
+// Haiku; corrections become rules), triage (deadlines / announcements / room changes /
+// cancellations / tasks into tracked items with verified quotes, and whether a mail needs a
+// reply), digest data, Opus reply drafts (text only), mail search chunks, the read-only mail tools
+// and the mail chat's conversation spec.
 //
 // Deliberately no dependency on `Mail`: nothing here can send mail or touch the server.
 let package = Package(
@@ -17,7 +18,8 @@ let package = Package(
         .package(path: "../StudyCore"),
         .package(path: "../ClaudeKit"),
         // M3: `Deadlines` (the deadline memory every tracked item write goes through, `DateMentions`
-        // and the text folding helpers). `Agent` never depends back on MailIntelligence.
+        // and the text folding helpers). M3.5: `Agent` (the mail chat's conversation spec: tools,
+        // the deadline tool kit). `Agent` never depends back on MailIntelligence.
         .package(path: "../Agent"),
         // `Lemmatizer` only (public, frozen in M2): mail chunks get the same `lemma_text` as
         // transcripts, so the search engine matches them alike.
@@ -35,6 +37,7 @@ let package = Package(
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "ClaudeKit", package: "ClaudeKit"),
                 .product(name: "Deadlines", package: "Agent"),
+                .product(name: "Agent", package: "Agent"),
                 .product(name: "Search", package: "Search"),
                 .product(name: "GRDB", package: "GRDB.swift")
             ]

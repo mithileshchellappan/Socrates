@@ -4,9 +4,11 @@ import GRDB
 import StudyCore
 import Synchronization
 
-/// The mail intelligence loop: route → index → extract, whenever mail arrives or changes, and
-/// again after the rules change (which re-runs the rules first). Runs off the main actor and
-/// never blocks the UI; the screens observe the rows it writes.
+/// The mail intelligence loop: route → index → triage (items, tasks, needs-reply), whenever mail
+/// arrives or changes, and again after the rules change (which re-runs the rules first). The
+/// 30-day triage backlog runs a stretch per pass, newest first, until it is done; new mail is
+/// routed between stretches. Runs off the main actor and never blocks the UI; the screens observe
+/// the rows it writes.
 ///
 /// Model steps run only while the client is available (M3.5: Claude Code installed and signed in),
 /// and only while today's mail calls cost less than the daily limit (`MailCostGuard`, $1 by
@@ -131,7 +133,12 @@ public actor MailPipeline {
                     MailIntelligence.log.error("Re-running rules failed: \(String(describing: error), privacy: .public)")
                 }
             }
-            _ = await pass()
+            let report = await pass()
+            // The triage backlog continues in another pass while this one made progress.
+            let triage = report.extraction
+            if triage.backlogLeft > 0, triage.waiting == 0, triage.calls + triage.skipped + triage.done > 0 {
+                runAgain = true
+            }
         } while runAgain
     }
 
@@ -177,8 +184,9 @@ public actor MailPipeline {
         if routing != MailRouter.Report() || extraction != MailExtractor.Report() {
             MailIntelligence.log.info("""
                 Mail pass: routed \(routing.byRule) by rule, \(routing.byModel) by model, \(routing.own) own, \
-                \(routing.waiting) waiting; extraction \(extraction.done) done, \(extraction.skipped) skipped, \
-                \(extraction.failed) failed, \(extraction.waiting) waiting, \(extraction.itemsCreated) items
+                \(routing.waiting) waiting; triage \(extraction.done) done, \(extraction.skipped) skipped, \
+                \(extraction.failed) failed, \(extraction.waiting) waiting, \(extraction.itemsCreated) items, \
+                \(extraction.needsReply) to answer, \(extraction.backlogLeft) backlog left
                 """)
         }
         return report
