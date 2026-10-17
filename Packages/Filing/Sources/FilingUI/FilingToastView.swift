@@ -38,25 +38,24 @@ struct FilingToastView: View {
 
     private var outcome: FilingOutcome { toast.outcome }
 
-    /// Mockup 10's toast width, plus room for the longest course name beside the buttons.
-    static let width: CGFloat = 444
+    /// The widest a toast gets; it hugs its text up to this (mockup 10: about 420 pt with the
+    /// longest course name), and a longer file name is shortened in the middle.
+    static let maximumWidth: CGFloat = 444
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        // Three columns: the tile centred on the text, the text, the actions at its top.
+        HStack(alignment: .center, spacing: 12) {
             FileTile(kind: outcome.kind, course: outcome.place?.course, failed: isFailure)
-            VStack(alignment: .leading, spacing: 1) {
-                // The actions share the first line, so the lines below get the full width.
-                HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
                     title
-                    Spacer(minLength: 8)
-                    actions
+                    content
                 }
-                content
+                actions
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 14))
-        .frame(width: Self.width, alignment: .leading)
+        .padding(EdgeInsets(top: 13, leading: 12, bottom: 13, trailing: 14))
+        .huggingWidth(upTo: Self.maximumWidth)
         .filingGlass()
         .overlay(alignment: .topLeading) {
             if isHovering, !toast.dismissesItself || isFailure {
@@ -87,7 +86,7 @@ struct FilingToastView: View {
             CourseHeader(course: place.course)
         } else {
             Text(outcome.fileName)
-                .font(.headline)
+                .font(.body.weight(.semibold))
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
@@ -126,7 +125,7 @@ struct FilingToastView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, 16)
-                .padding(.top, 4)
+                .padding(.top, 2)
             }
         }
     }
@@ -186,31 +185,99 @@ struct FilingToastView: View {
     }
 }
 
-/// The 38 pt tile on the toast's left: a slide or audio glyph in the course colour.
+/// The 38 pt tile on the toast's left (mockup 10): the window colour, so it reads inset in the
+/// glass, with the file as a document outline in the course colour: a waveform inside for a
+/// recording or capture, "PDF" for a deck.
 struct FileTile: View {
     let kind: FilingKind?
     let course: Course?
     var failed = false
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(.background)
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.separator, lineWidth: 0.5))
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        shape
+            .fill(Self.window)
+            .overlay(shape.strokeBorder(.separator, lineWidth: 0.5))
             .frame(width: 38, height: 38)
             .overlay {
-                Image(systemName: symbol)
-                    .font(.system(size: 18, weight: .regular))
-                    .foregroundStyle(failed ? Color.secondary : course.map { Color.course($0) } ?? .secondary)
+                if failed {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 18, weight: .light))
+                        .foregroundStyle(.secondary)
+                } else {
+                    FileGlyph(content: kind == .deck ? .pdf : .waveform)
+                        .frame(width: 22, height: 22)
+                        .foregroundStyle(course.map { Color.course($0) } ?? .secondary)
+                }
             }
             .accessibilityHidden(true)
     }
 
-    private var symbol: String {
-        if failed { return "exclamationmark.triangle" }
-        switch kind {
-        case .deck?: return "doc.richtext"
-        case .capture?: return "record.circle"
-        default: return "waveform"
+    /// The window's own colour, explicitly: darker than the card in dark, so the tile reads inset.
+    private static var window: Color {
+        #if os(macOS)
+        Color(nsColor: .windowBackgroundColor)
+        #else
+        Color(uiColor: .systemBackground)
+        #endif
+    }
+}
+
+/// A document with a folded corner, drawn with a light stroke on a 24-point grid (mockup 10's
+/// file glyphs), with waveform bars or "PDF" inside.
+struct FileGlyph: View {
+    enum Content {
+        case waveform
+        case pdf
+    }
+
+    let content: Content
+
+    var body: some View {
+        Canvas { context, size in
+            let scale = min(size.width, size.height) / 24
+            let style = StrokeStyle(lineWidth: 1.5 * scale, lineCap: .round, lineJoin: .round)
+            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * scale, y: y * scale) }
+            var outline = Path()
+            outline.addLines([point(6, 2.5), point(14.5, 2.5), point(18.5, 6.5), point(18.5, 21.5), point(6, 21.5)])
+            outline.closeSubpath()
+            outline.addLines([point(14.5, 2.5), point(14.5, 6.5), point(18.5, 6.5)])
+            context.stroke(outline, with: .foreground, style: style)
+            switch content {
+            case .waveform:
+                var bars = Path()
+                for (x, top, bottom) in [(9.0, 13.0, 15.0), (11, 11, 17), (13, 12, 16), (15, 13, 15)] {
+                    bars.move(to: point(x, top))
+                    bars.addLine(to: point(x, bottom))
+                }
+                context.stroke(bars, with: .foreground, style: style)
+            case .pdf:
+                var label = context.resolve(Text(verbatim: "PDF").font(.system(size: 5.2 * scale, weight: .heavy)))
+                label.shading = .foreground
+                context.draw(label, at: point(12.2, 15.3), anchor: .center)
+            }
         }
+    }
+}
+
+extension View {
+    /// As wide as the view wants up to `maximum` (narrower content keeps its own width; wider
+    /// content is offered `maximum` and shortens its text).
+    func huggingWidth(upTo maximum: CGFloat) -> some View {
+        HuggingWidthLayout(maximum: maximum) { self }
+    }
+}
+
+struct HuggingWidthLayout: Layout {
+    let maximum: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let width = min(proposal.width ?? maximum, maximum)
+        return child.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
     }
 }

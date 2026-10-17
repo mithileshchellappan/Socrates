@@ -14,6 +14,8 @@ struct DropHUD: View {
 
     static let width: CGFloat = 236
     static let estimatedHeight: CGFloat = 92
+    /// The course name on the card (mockup 10: 14 pt semibold, a step above the lecture line).
+    static let titleFont = Font.system(size: 14, weight: .semibold)
     nonisolated static let space = "FilingSmartImport"
 
     private var lead: FilingPrediction? { predictions.first }
@@ -30,7 +32,7 @@ struct DropHUD: View {
                         target(.place(entry.index), isChoice: places.count > 1) { PlaceRows(place: entry.place) }
                     } else if let first = group.first {
                         // Several lectures of one course: the course once, a drop row per lecture.
-                        CourseHeader(course: first.place.course)
+                        CourseHeader(course: first.place.course, font: Self.titleFont)
                             .padding(.bottom, 2)
                         ForEach(group, id: \.index) { entry in
                             target(.place(entry.index), isChoice: true) {
@@ -51,20 +53,21 @@ struct DropHUD: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
+                    // Looks like a small button; it is a place to drop on (the HUD takes no clicks).
                     Text("Change…")
-                        .font(.callout)
+                        .font(.callout.weight(.medium))
                         .padding(.horizontal, 9)
                         .frame(height: 22)
                         .background(
-                            targeted == .change ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.08),
+                            targeted == .change ? AnyShapeStyle(Color.accentColor.opacity(0.22)) : AnyShapeStyle(.fill),
                             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                         )
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { onFrame(.change, $0) }
                 }
                 .padding(.leading, 16)
-                .padding(.top, 4)
+                .padding(.top, 5)
             }
-            .padding(EdgeInsets(top: 12, leading: 14, bottom: 11, trailing: 12))
+            .padding(EdgeInsets(top: 14, leading: 14, bottom: 11, trailing: 12))
             .frame(width: Self.width, alignment: .leading)
             .filingGlass()
             .accessibilityElement(children: .combine)
@@ -121,10 +124,10 @@ struct DropHUD: View {
 /// Course dot + course name, then "Lecture 3 · Wed 21 Oct" under it.
 struct PlaceRows: View {
     let place: FilingPlace
-    var emphasis: Font = .headline
+    var emphasis: Font = DropHUD.titleFont
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             CourseHeader(course: place.course, font: emphasis)
             if !place.isCourseOnly {
                 Text(FilingText.line(place))
@@ -136,10 +139,10 @@ struct PlaceRows: View {
     }
 }
 
-/// Course dot + course name.
+/// Course dot + course name (semibold, not the heavier headline).
 struct CourseHeader: View {
     let course: Course
-    var font: Font = .headline
+    var font: Font = .body.weight(.semibold)
 
     var body: some View {
         HStack(spacing: 7) {

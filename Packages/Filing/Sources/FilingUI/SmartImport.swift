@@ -113,26 +113,83 @@ struct FilingDropTargetModifier: ViewModifier {
     @State private var isTargeted = false
 
     func body(content: Content) -> some View {
+        // Lit under the cursor, and while files dragged over the window would go here.
+        let isLit = isTargeted || center.predictedDestination == destination
         content
-            .background {
-                if isTargeted {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.12))
-                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color.accentColor, lineWidth: 1.5))
-                }
-            }
+            .environment(\.isFilingTarget, isLit)
+            .listRowBackground(isLit ? FilingTargetHighlight() : nil)
             .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
                 let destination = destination
                 Task { @MainActor in
-                    let urls = await FileURLs.load(providers)
-                    center.dragExited()
-                    await center.file(urls, to: destination)
+                    await center.dropped(await FileURLs.load(providers), onRow: destination)
                 }
                 return true
             }
             .onChange(of: isTargeted) { _, targeted in
                 center.rowTargeted(targeted)
             }
+    }
+}
+
+extension EnvironmentValues {
+    /// True inside a sidebar row lit as the place dragged files go (`filingDropTarget`): a row
+    /// that draws its title in secondary text shows it in the primary colour meanwhile.
+    @Entry public var isFilingTarget = false
+}
+
+/// A sidebar row lit as the place dropped files go (mockup 10): the accent at 12 % (24 % in
+/// dark) with an inset 1.5 pt accent ring, the size and shape of the selection.
+struct FilingTargetHighlight: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+        shape
+            .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.24 : 0.12))
+            .overlay(shape.strokeBorder(Color.accentColor, lineWidth: 1.5))
+            .padding(.horizontal, 10)
+    }
+}
+
+extension View {
+    /// Keeps the course dragged files would go to expanded in an outline sidebar while they are
+    /// dragged, so its lit row shows. A course it opened closes again when the drag ends without
+    /// a drop; other courses stay as they are.
+    public func revealsFilingTarget(_ center: FilingCenter, collapsed: Binding<Set<Course.ID>>) -> some View {
+        modifier(RevealFilingTargetModifier(center: center, collapsed: collapsed))
+    }
+}
+
+struct RevealFilingTargetModifier: ViewModifier {
+    let center: FilingCenter
+    @Binding var collapsed: Set<Course.ID>
+    /// Courses this drag expanded.
+    @State private var opened: Set<Course.ID> = []
+    @State private var dropsBefore = 0
+    @State private var closing: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content.onChange(of: center.predictedCourseID) { old, new in
+            if let new {
+                if old == nil, closing == nil { dropsBefore = center.dropCount }
+                closing?.cancel()
+                closing = nil
+                if collapsed.contains(new) {
+                    collapsed.remove(new)
+                    opened.insert(new)
+                }
+            } else {
+                // Moving from the window onto a sidebar row can end one drag a moment before the
+                // row takes it: wait before closing anything.
+                closing = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled else { return }
+                    if center.dropCount == dropsBefore { collapsed.formUnion(opened) }
+                    opened = []
+                    closing = nil
+                }
+            }
+        }
     }
 }
 
