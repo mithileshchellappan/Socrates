@@ -24,8 +24,11 @@ final class MailFocus {
 ///   streaming into the row replaces it.
 /// - The first keystroke while the agent writes stops it (`MailActions.stopDrafting`).
 /// - Typing is saved (`MailDraftRepository.editBody`) a moment after it pauses, and before Send.
+/// - Send first adds an address still being typed in To, waits for the recipients and text to
+///   be saved, and stops when they could not be: what is sent is what the editor shows.
 /// - Send calls `MailActions.send` once, never while the agent writes or a send runs; a failure
-///   shows its reason and Send works again.
+///   shows its reason and Send works again. A draft that may have gone out already asks first
+///   (`confirmsResend`), then calls `MailActions.sendAgain`.
 @MainActor
 @Observable
 final class DraftEditorModel {
@@ -45,11 +48,17 @@ final class DraftEditorModel {
     private(set) var isSending = false
     /// The student typed in this editor: the agent's later text no longer replaces it.
     private(set) var hasUserEdits = false
+    /// Typed in To and not yet a recipient token; Send adds it first.
+    var pendingRecipient = ""
+    /// Send was pressed on a draft that may have gone out already: the composer asks first.
+    var confirmsResend = false
 
     @ObservationIgnored private let actions: MailActions
     @ObservationIgnored private let services: StudyServices?
     @ObservationIgnored private var savedText: String
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    /// The latest recipients/subject save (each waits for the one before); false when it failed.
+    @ObservationIgnored private var headerSave: Task<Bool, Never>?
     @ObservationIgnored private let saveDelay: Duration
 
     init(draft: MailDraft, actions: MailActions, services: StudyServices?, saveDelay: Duration = .milliseconds(400)) {
@@ -77,9 +86,12 @@ final class DraftEditorModel {
 
     var canSend: Bool {
         (state == .draft || state == .failed) && !isSending
-            && to.contains { MailText.isAddress($0.address) }
+            && (to + MailText.addresses(from: pendingRecipient)).contains { MailText.isAddress($0.address) }
             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    /// The last send may have gone out (`MailDraft.mayHaveBeenSent`).
+    var mayHaveBeenSent: Bool { state == .failed && storedError == MailDraft.unknownSendOutcome }
 
     /// The reason the last send failed, shown under the editor.
     var errorText: String? {
@@ -126,20 +138,36 @@ final class DraftEditorModel {
         scheduleSave()
     }
 
-    /// Recipients or subject changed (saved at once).
+    /// Recipients or subject changed (saved at once, in order).
     func setHeaders(to: [MailAddress]? = nil, subject: String? = nil) {
         if let to { self.to = to }
         if let subject { self.subject = subject }
         guard let services else { return }
         let id = draftID
         let (to, cc, bcc, subject) = (self.to, self.cc, self.bcc, self.subject)
-        Task {
+        let previous = headerSave
+        headerSave = Task {
+            _ = await previous?.value
             do {
-                try await MailDraftRepository(store: services.records).editHeaders(id, to: to, cc: cc, bcc: bcc, subject: subject)
+                return try await MailDraftRepository(store: services.records).editHeaders(id, to: to, cc: cc, bcc: bcc, subject: subject)
             } catch {
                 Log.mail.error("Saving draft headers failed: \(error.localizedDescription, privacy: .private)")
+                return false
             }
         }
+    }
+
+    /// Adds what is typed in To as recipients; false when it is not an address.
+    @discardableResult
+    func commitPendingRecipient() -> Bool {
+        let typed = pendingRecipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty else { return true }
+        let added = MailText.addresses(from: typed)
+        guard !added.isEmpty else { return false }
+        let known = Set(to.map(\.normalizedAddress))
+        pendingRecipient = ""
+        setHeaders(to: to + added.filter { !known.contains($0.normalizedAddress) })
+        return true
     }
 
     /// Writes pending text now.
@@ -149,18 +177,37 @@ final class DraftEditorModel {
         await save()
     }
 
-    /// Send: saves the text, then asks the app to send, once.
-    func send() async {
+    /// Send: adds the recipient being typed, saves recipients and text, then asks the app to
+    /// send, once. Nothing is sent when what the editor shows could not be saved. A draft that may
+    /// have gone out already is sent again only with `confirmingResend` (the composer asks).
+    func send(confirmingResend: Bool = false) async {
         guard canSend else { return }
+        if mayHaveBeenSent, !confirmingResend {
+            confirmsResend = true
+            return
+        }
         isSending = true
         sendError = nil
+        defer { isSending = false }
+        guard commitPendingRecipient() else {
+            sendError = String(localized: "“\(pendingRecipient)” is not a valid address.")
+            return
+        }
         await flush()
+        let headersSaved = await headerSave?.value ?? true
+        guard headersSaved, savedText == text else {
+            sendError = String(localized: "The draft could not be saved.")
+            return
+        }
         do {
-            try await actions.send(draftID)
+            if confirmingResend {
+                try await actions.sendAgain(draftID)
+            } else {
+                try await actions.send(draftID)
+            }
         } catch {
             sendError = error.localizedDescription
         }
-        isSending = false
     }
 
     /// Discard: stops the agent and deletes the draft (not while it is being sent).
@@ -188,12 +235,15 @@ final class DraftEditorModel {
         }
     }
 
+    /// Writes the text when it changed; `savedText` follows only a write that took.
     private func save() async {
         let text = text
         guard text != savedText, let services else { return }
         do {
             if try await MailDraftRepository(store: services.records).editBody(draftID, text) {
                 savedText = text
+            } else {
+                Log.mail.error("Saving a draft failed: the draft is no longer editable")
             }
         } catch {
             Log.mail.error("Saving a draft failed: \(error.localizedDescription, privacy: .private)")

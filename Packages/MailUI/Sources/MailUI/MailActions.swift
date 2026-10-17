@@ -26,6 +26,9 @@ public struct MailActions: Sendable {
     public var stopDrafting: @Sendable (MailDraft.ID) async -> Void
     /// Sends a draft. Only the Send button calls this.
     public var send: @Sendable (MailDraft.ID) async throws -> Void
+    /// Sends a draft that may have gone out already (`MailDraft.mayHaveBeenSent`), after the
+    /// student confirmed sending it again.
+    public var sendAgain: @Sendable (MailDraft.ID) async throws -> Void
     /// Undo of what one source added (the item leaves the list and the calendar).
     public var undo: @Sendable (TrackedItemSource.ID) async throws -> Void
     /// Takes an Undo back.
@@ -60,6 +63,7 @@ public struct MailActions: Sendable {
         draftReply: @escaping @Sendable (MailMessage.ID) async throws -> MailDraft.ID = { _ in throw MailActionUnavailable() },
         stopDrafting: @escaping @Sendable (MailDraft.ID) async -> Void = { _ in },
         send: @escaping @Sendable (MailDraft.ID) async throws -> Void = { _ in throw MailActionUnavailable() },
+        sendAgain: @escaping @Sendable (MailDraft.ID) async throws -> Void = { _ in throw MailActionUnavailable() },
         undo: @escaping @Sendable (TrackedItemSource.ID) async throws -> Void = { _ in },
         restore: @escaping @Sendable (TrackedItemSource.ID) async throws -> Void = { _ in },
         addToCalendar: @escaping @Sendable (TrackedItem.ID) async throws -> Void = { _ in },
@@ -80,6 +84,7 @@ public struct MailActions: Sendable {
         self.draftReply = draftReply
         self.stopDrafting = stopDrafting
         self.send = send
+        self.sendAgain = sendAgain
         self.undo = undo
         self.restore = restore
         self.addToCalendar = addToCalendar

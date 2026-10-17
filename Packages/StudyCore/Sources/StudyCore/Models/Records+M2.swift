@@ -541,6 +541,13 @@ public struct MailDraft: StudyRecord {
 
     /// The student changed what the agent wrote (or wrote it all).
     public var isEditedByUser: Bool { generatedBody != body }
+
+    /// `error` of a send whose outcome is unknown (interrupted and not found in Sent, or the
+    /// server stopped answering after taking the message). Send asks before sending it again.
+    public static let unknownSendOutcome = "It is not known whether this message went out."
+
+    /// The last send may have gone out: sending again needs the student's confirmation.
+    public var mayHaveBeenSent: Bool { state == .failed && error == Self.unknownSendOutcome }
 }
 
 // MARK: - Provenance of tracked items

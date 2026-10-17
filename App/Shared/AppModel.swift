@@ -498,6 +498,7 @@ extension AppModel {
             actions.archive = { id in try await engine.archive(id) }
             actions.openAttachment = { id in try await engine.attachmentFile(id) }
             actions.send = { id in try await sender.send(id) }
+            actions.sendAgain = { id in try await sender.send(id, confirmingResend: true) }
             // A saved account (or password) logs in again; the first save starts the sync. Not
             // awaited: Save returns at once, the first pass runs in the background.
             actions.accountSaved = { _ in

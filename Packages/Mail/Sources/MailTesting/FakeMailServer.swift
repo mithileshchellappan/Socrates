@@ -44,6 +44,10 @@ public actor FakeIMAPServer {
     public private(set) var loginAttempts = 0
     /// The next opens fail with this error (count, error).
     private var connectFailures: (count: Int, error: MailTransportError)?
+    /// BODY.PEEK[] of these (path, UID) fails with the error, every time.
+    private var rawFailures: [String: MailTransportError] = [:]
+    /// Scripted BODYSTRUCTURE and sections (path, UID).
+    private var structures: [String: (parts: [IMAPBodyPart], sections: [String: Data])] = [:]
     private var idleContinuations: [UUID: AsyncStream<IMAPIdleEvent>.Continuation] = [:]
 
     public init(password: String, folders: [(path: String, attributes: Set<String>)] = [("INBOX", []), ("Sent", ["\\Sent"])]) {
@@ -66,6 +70,16 @@ public actor FakeIMAPServer {
     public func setCapabilities(_ capabilities: Set<String>) { self.capabilities = capabilities }
 
     public func failNextConnects(_ count: Int, with error: MailTransportError) { connectFailures = (count, error) }
+
+    /// Every whole fetch of `uid` fails with `error` (nil: works again).
+    public func failRawFetches(uid: UInt32, in path: String = "INBOX", with error: MailTransportError?) {
+        rawFailures["\(path)/\(uid)"] = error
+    }
+
+    /// BODYSTRUCTURE of `uid` and the (transfer-encoded) contents of its sections.
+    public func setStructure(_ parts: [IMAPBodyPart], sections: [String: Data], uid: UInt32, in path: String = "INBOX") {
+        structures["\(path)/\(uid)"] = (parts, sections)
+    }
 
     /// Delivers a message; returns its UID.
     @discardableResult
@@ -225,7 +239,33 @@ public actor FakeIMAPServer {
         let folder = folders[try index(path ?? "")]
         guard let message = folder.messages.first(where: { $0.uid == uid }) else { throw MailTransportError.refused("NO No such message") }
         rawFetches.append((folder.path, uid))
+        if let failure = rawFailures["\(folder.path)/\(uid)"] { throw failure }
         return message.raw
+    }
+
+    public func structure(_ path: String?, _ uid: UInt32) throws -> [IMAPBodyPart] {
+        let folder = folders[try index(path ?? "")]
+        log.append("UID FETCH \(uid) (BODYSTRUCTURE)")
+        guard let scripted = structures["\(folder.path)/\(uid)"] else { throw MailTransportError.refused("not scripted") }
+        return scripted.parts
+    }
+
+    /// A section of a scripted structure, or "HEADER": the message's header block.
+    public func section(_ path: String?, _ uid: UInt32, _ section: String) throws -> Data {
+        let folder = folders[try index(path ?? "")]
+        log.append("UID FETCH \(uid) (BODY.PEEK[\(section)])")
+        if section.uppercased() == "HEADER" {
+            guard let raw = folder.messages.first(where: { $0.uid == uid })?.raw else { throw MailTransportError.refused("NO No such message") }
+            let bytes = [UInt8](raw)
+            for index in bytes.indices where bytes[index] == 0x0A {
+                let next = bytes.index(after: index)
+                if next < bytes.endIndex, bytes[next] == 0x0A { return Data(bytes[...next]) }
+                if next + 1 < bytes.endIndex, bytes[next] == 0x0D, bytes[next + 1] == 0x0A { return Data(bytes[...(next + 1)]) }
+            }
+            return raw
+        }
+        guard let data = structures["\(folder.path)/\(uid)"]?.sections[section] else { throw MailTransportError.refused("not scripted") }
+        return data
     }
 
     public func store(_ path: String?, _ uids: [UInt32], _ flags: Set<String>, _ operation: IMAPStoreOperation) throws {
@@ -344,9 +384,9 @@ public actor FakeIMAPSession: IMAPSession {
 
     public func fetchRaw(_ uid: UInt32) async throws -> Data { try await server.raw(selected, uid) }
 
-    public func fetchStructure(_ uid: UInt32) async throws -> [IMAPBodyPart] { throw MailTransportError.refused("not scripted") }
+    public func fetchStructure(_ uid: UInt32) async throws -> [IMAPBodyPart] { try await server.structure(selected, uid) }
 
-    public func fetchSection(_ uid: UInt32, section: String) async throws -> Data { throw MailTransportError.refused("not scripted") }
+    public func fetchSection(_ uid: UInt32, section: String) async throws -> Data { try await server.section(selected, uid, section) }
 
     public func store(_ uids: [UInt32], flags: Set<String>, _ operation: IMAPStoreOperation) async throws {
         try await server.store(selected, uids, flags, operation)
@@ -392,6 +432,8 @@ public actor FakeSMTPServer {
     public var unreachableHosts: Set<String> = []
     /// The next MAIL FROM … DATA is refused with this reply.
     public var refusal: String?
+    /// The next MAIL FROM … DATA fails with this error after the message was handed over.
+    public var failure: MailTransportError?
 
     public init(password: String) {
         self.password = password
@@ -399,6 +441,7 @@ public actor FakeSMTPServer {
 
     public func setUnreachable(_ hosts: Set<String>) { unreachableHosts = hosts }
     public func setRefusal(_ reply: String?) { refusal = reply }
+    public func setFailure(_ error: MailTransportError?) { failure = error }
 
     public func open(_ endpoint: MailEndpoint, _ credentials: MailCredentials) throws {
         opened.append(endpoint)
@@ -412,6 +455,10 @@ public actor FakeSMTPServer {
             throw MailTransportError.refused(refusal)
         }
         transactions.append(Transaction(endpoint: endpoint, from: from, to: to, data: data))
+        if let failure {
+            self.failure = nil
+            throw failure
+        }
     }
 }
 

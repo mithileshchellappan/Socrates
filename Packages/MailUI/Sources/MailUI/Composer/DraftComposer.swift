@@ -79,7 +79,13 @@ private struct ComposerBox: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: model.isReply ? "arrowshape.turn.up.left" : "envelope")
                     .foregroundStyle(.secondary)
-                RecipientField(addresses: model.to, isEditable: model.canEdit) { model.setHeaders(to: $0) }
+                RecipientField(
+                    addresses: model.to,
+                    entry: Binding(get: { model.pendingRecipient }, set: { model.pendingRecipient = $0 }),
+                    isEditable: model.canEdit,
+                    onCommit: { model.commitPendingRecipient() },
+                    onChange: { model.setHeaders(to: $0) }
+                )
             }
             .padding(.bottom, 8)
             .overlay(alignment: .bottom) { Divider() }
@@ -151,17 +157,27 @@ private struct ComposerBox: View {
         .focusedSceneValue(\.mailComposer, MailComposerCommands(canSend: model.canSend) {
             Task { await model.send() }
         })
+        .confirmationDialog(
+            "Send Again?",
+            isPresented: Binding(get: { model.confirmsResend }, set: { model.confirmsResend = $0 })
+        ) {
+            Button("Send Again") {
+                Task { await model.send(confirmingResend: true) }
+            }
+        }
     }
 }
 
 /// Recipients as tokens; while editable, a field after them takes more ("Name <a@b>", "a@b",
-/// committed with ↩, a comma or leaving the field).
+/// committed with ↩, a comma, leaving the field, or Send: the typed text lives in the editor
+/// model).
 struct RecipientField: View {
     let addresses: [MailAddress]
+    @Binding var entry: String
     let isEditable: Bool
+    let onCommit: () -> Void
     let onChange: ([MailAddress]) -> Void
 
-    @State private var entry = ""
     @FocusState private var isFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
 
@@ -204,11 +220,8 @@ struct RecipientField: View {
     }
 
     private func commit() {
-        let added = MailText.addresses(from: entry)
-        guard !added.isEmpty else { return }
-        let known = Set(addresses.map(\.normalizedAddress))
-        onChange(addresses + added.filter { !known.contains($0.normalizedAddress) })
-        entry = ""
+        guard !MailText.addresses(from: entry).isEmpty else { return }
+        onCommit()
     }
 
     private func remove(at index: Int) {

@@ -298,7 +298,9 @@ struct MailSyncStore: Sendable {
     /// Writes a batch of fetched messages and the mailbox checkpoint in one transaction. A
     /// message already stored under its UID is skipped (no duplicates); one stored without a
     /// UID (after a UIDVALIDITY change or a move) with the same Message-ID, received within a
-    /// day, is re-attached so its id, route, items and drafts survive. Returns the new rows.
+    /// day, is re-attached so its id, route, items and drafts survive. The checkpoint does not
+    /// pass `lastUIDLimit` (below a message that could not be fetched, so a later pass still
+    /// does). Returns the new rows.
     func commitBatch(
         _ messages: [PreparedMessage],
         mailbox: Mailbox,
@@ -306,6 +308,7 @@ struct MailSyncStore: Sendable {
         uidValidity: UInt32,
         uidNext: UInt32?,
         syncedSince: CalendarDay?,
+        lastUIDLimit: UInt32? = nil,
         batchIndex: Int,
         faults: MailSyncFaults
     ) async throws -> [MailMessage.ID] {
@@ -404,7 +407,9 @@ struct MailSyncStore: Sendable {
 
             guard var checkpoint = try Mailbox.find(mailboxID).fetchOne(db) else { return inserted }
             checkpoint.uidValidity = Int64(uidValidity)
-            if let highest = messages.map(\.uid).max() { checkpoint.lastUID = max(checkpoint.lastUID, Int64(highest)) }
+            if let highest = messages.map(\.uid).max() {
+                checkpoint.lastUID = max(checkpoint.lastUID, Int64(min(highest, lastUIDLimit ?? highest)))
+            }
             if let uidNext { checkpoint.uidNext = Int64(uidNext) }
             if let syncedSince { checkpoint.syncedSince = syncedSince }
             let stamped = store.stamp(checkpoint)

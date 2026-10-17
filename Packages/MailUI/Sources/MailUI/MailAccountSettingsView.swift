@@ -9,7 +9,8 @@ import SwiftUI
 /// Save logs in first (`MailActions.verifyAccount`, which sends nothing), then puts the password
 /// in the Keychain (`services.secrets`, item `account.passwordKey`) and saves the row, which never
 /// holds the password. The password field is never filled from the Keychain: a stored password
-/// shows as dots in its prompt. A failed login shows the reason under the field.
+/// shows as dots in its prompt, and is used only while the servers are the ones it was saved for.
+/// A failed login shows the reason under the field.
 public struct MailAccountSettingsView: View {
     private let accountsQuery: FetchAll<MailAccount>
     private var account: MailAccount? { accountsQuery.wrappedValue.first }
@@ -40,7 +41,13 @@ public struct MailAccountSettingsView: View {
     }
 
     private var canSubmit: Bool {
-        phase != .working && services != nil && form.isComplete && (!password.isEmpty || hasStoredPassword)
+        phase != .working && services != nil && form.isComplete && (!password.isEmpty || storedPasswordApplies)
+    }
+
+    /// The stored password goes only to the servers it was saved for.
+    private var storedPasswordApplies: Bool {
+        guard hasStoredPassword, let account else { return false }
+        return MailAccountSaver.sameServers(form.account(updating: account), account)
     }
 
     /// Why the last attempt failed: this form's, else the sync engine's last error.
@@ -64,7 +71,7 @@ public struct MailAccountSettingsView: View {
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 #endif
-            SecureField("Password", text: $password, prompt: Text(hasStoredPassword ? "••••••••" : ""))
+            SecureField("Password", text: $password, prompt: Text(storedPasswordApplies ? "••••••••" : ""))
                 .onSubmit { if canSubmit { Task { await save() } } }
             if let failure {
                 Text(failure)
@@ -258,7 +265,8 @@ struct MailAccountSaver: Sendable {
         }
     }
 
-    /// Logs in with the typed password, else the stored one; sends nothing, stores nothing.
+    /// Logs in with the typed password, else the stored one (same servers only); sends nothing,
+    /// stores nothing.
     func verify(form: MailAccountForm, password: String, existing: MailAccount?) async throws {
         guard form.isComplete else { throw Failure.incomplete }
         let account = form.account(updating: existing)
@@ -281,12 +289,29 @@ struct MailAccountSaver: Sendable {
         return saved
     }
 
-    /// The typed password, else the one stored for this (or the previous) account name.
+    /// The typed password, else the one stored for this (or the previous) account name, but only
+    /// while every server is the one it was saved for: a changed host or port (a typo, or one
+    /// someone talked the student into) must not receive the uni password without it being typed.
     private func secret(typed: String, account: MailAccount, existing: MailAccount?) throws -> String {
         if !typed.isEmpty { return typed }
-        for key in [account.passwordKey, existing?.passwordKey].compactMap(\.self) {
+        guard let existing, Self.sameServers(account, existing) else { throw Failure.missingPassword }
+        for key in [account.passwordKey, existing.passwordKey] {
             if let stored = try services.secrets.secret(for: key), !stored.isEmpty { return stored }
         }
         throw Failure.missingPassword
+    }
+
+    /// Host, port and security of IMAP, SMTP and the SMTP fallback are the same: where the
+    /// password goes.
+    static func sameServers(_ account: MailAccount, _ other: MailAccount) -> Bool {
+        func servers(_ account: MailAccount) -> [String] {
+            [
+                account.imapHost.lowercased(), String(account.imapPort), "\(account.imapSecurity)",
+                account.smtpHost.lowercased(), String(account.smtpPort), "\(account.smtpSecurity)",
+                account.smtpFallbackHost?.lowercased() ?? "", account.smtpFallbackPort.map(String.init) ?? "",
+                account.smtpFallbackSecurity.map { "\($0)" } ?? "",
+            ]
+        }
+        return servers(account) == servers(other)
     }
 }

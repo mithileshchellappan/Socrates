@@ -1,5 +1,8 @@
 import Foundation
 import StudyCore
+#if os(macOS)
+import CoreServices
+#endif
 
 /// Keeps the uni mailboxes (INBOX, Sent, Archive) in the library (docs/plan-m2.md §3).
 ///
@@ -66,6 +69,9 @@ public actor MailSyncEngine {
     private var pendingScope: Scope?
     private var passWaiters: [CheckedContinuation<Void, Never>] = []
     private var pollWaiter: (token: UUID, continuation: CheckedContinuation<Bool, Never>)?
+    /// Messages whose download failed, per mailbox: UID → failed attempts. They are fetched after
+    /// the others and in parts; after `configuration.fetchAttempts` their headers are stored.
+    private var fetchFailures: [Mailbox.ID: [UInt32: Int]] = [:]
 
     public init(
         services: StudyServices,
@@ -264,28 +270,47 @@ public actor MailSyncEngine {
         }
     }
 
-    /// `<caches>/MailAttachments/<id>/<file name>`, a hard link to (or copy of) the blob.
+    /// `<caches>/MailAttachments/<id>/<file name>`, a copy (an APFS clone) of the blob marked as
+    /// a mail attachment from the internet, so Gatekeeper asks before anything in it runs (the
+    /// blob itself stays unmarked).
     private func namedFile(for blob: BlobRef, fileName: String, attachmentID: MailAttachment.ID) throws -> URL {
         let folder = services.paths.caches
             .appending(path: "MailAttachments", directoryHint: .isDirectory)
             .appending(path: attachmentID.uuidString.lowercased(), directoryHint: .isDirectory)
         let name = MIMEParser.sanitizedFileName(fileName, mimeType: "application/octet-stream")
-        let target = folder.appending(path: name, directoryHint: .notDirectory)
+        var target = folder.appending(path: name, directoryHint: .notDirectory)
         let manager = FileManager.default
         let source = services.blobs.url(for: blob)
         if manager.fileExists(atPath: target.path(percentEncoded: false)) {
             let size = (try? manager.attributesOfItem(atPath: target.path(percentEncoded: false))[.size] as? Int) ?? -1
             let blobSize = (try? manager.attributesOfItem(atPath: source.path(percentEncoded: false))[.size] as? Int) ?? -2
-            if size == blobSize { return target }
+            if size == blobSize, Self.isQuarantined(target) { return target }
             try manager.removeItem(at: target)
         }
         try manager.createDirectory(at: folder, withIntermediateDirectories: true)
-        do {
-            try manager.linkItem(at: source, to: target)
-        } catch {
-            try manager.copyItem(at: source, to: target)
-        }
+        try manager.copyItem(at: source, to: target)
+        try Self.quarantine(&target)
         return target
+    }
+
+    /// Marks a file as an email attachment from the internet (`com.apple.quarantine`).
+    static func quarantine(_ url: inout URL) throws {
+        #if os(macOS)
+        var values = URLResourceValues()
+        values.quarantineProperties = [
+            kLSQuarantineAgentNameKey as String: "Study Portal",
+            kLSQuarantineTypeKey as String: kLSQuarantineTypeEmailAttachment as String,
+        ]
+        try url.setResourceValues(values)
+        #endif
+    }
+
+    static func isQuarantined(_ url: URL) -> Bool {
+        #if os(macOS)
+        return (try? url.resourceValues(forKeys: [.quarantinePropertiesKey]).quarantineProperties) != nil
+        #else
+        return true
+        #endif
     }
 
     // MARK: - Loops
@@ -527,6 +552,7 @@ public actor MailSyncEngine {
             Log.mail.info("UIDVALIDITY of \(mailbox.role?.rawValue ?? "a mailbox", privacy: .public) changed; re-attaching by Message-ID")
             windowFloor = mailbox.syncedSince
             mailbox = try await store.resetUIDValidity(mailbox, to: selection.uidValidity)
+            fetchFailures[mailbox.id] = nil
             resync = nil
         }
         let hadMessages = mailbox.lastUID > 0
@@ -555,15 +581,18 @@ public actor MailSyncEngine {
         // The window, newest first, then new mail, oldest first.
         var since = account.syncSince ?? CalendarDay(clock.now(), in: MailClock.berlin).adding(days: -configuration.defaultWindowDays)
         if let windowFloor, windowFloor < since { since = windowFloor }
-        var batchIndex = 0
+        var run = FetchRun()
         var windowComplete = mailbox.syncedSince.map { $0 <= since } ?? false
         if !windowComplete {
             let window = try await session.search(.since(since))
             let stored = try await store.storedUIDs(mailbox.id)
             let missing = window.filter { !stored.contains($0) }.sorted(by: >)
-            try await fetch(missing, into: mailbox, account: account, session: session, selection: selection, batchIndex: &batchIndex)
-            try await store.completeWindow(mailbox.id, since: since, uidNext: selection.uidNext)
-            windowComplete = true
+            try await fetch(missing, into: mailbox, account: account, session: session, selection: selection, run: &run)
+            // A message that could not be fetched keeps the window open: the next pass tries it again.
+            if run.skipped.isEmpty {
+                try await store.completeWindow(mailbox.id, since: since, uidNext: selection.uidNext)
+                windowComplete = true
+            }
         }
         let lastUID = UInt32(clamping: (try await store.mailbox(mailbox.id))?.lastUID ?? 0)
         if lastUID < UInt32.max {
@@ -571,12 +600,12 @@ public actor MailSyncEngine {
             let fresh = try await session.search(.uids((lastUID + 1)...UInt32.max))
                 .filter { $0 > lastUID && !stored.contains($0) }
                 .sorted()
-            try await fetch(fresh, into: mailbox, account: account, session: session, selection: selection, batchIndex: &batchIndex)
+            try await fetch(fresh, into: mailbox, account: account, session: session, selection: selection, run: &run)
         }
 
         // Rows without a UID: find them again by Message-ID; what the server no longer has goes.
         if windowComplete {
-            try await reattachDetached(in: mailbox, account: account, session: session, selection: selection, batchIndex: &batchIndex)
+            try await reattachDetached(in: mailbox, account: account, session: session, selection: selection, run: &run)
             let deleted = try await store.deleteLeftovers(mailbox.id, before: passStart)
             if deleted > 0 { Log.mail.info("Removed \(deleted, privacy: .public) messages the server no longer has") }
         }
@@ -618,7 +647,7 @@ public actor MailSyncEngine {
 
     /// Detached rows (no UID) looked up by Message-ID; found ones are fetched and re-attached.
     private func reattachDetached(
-        in mailbox: Mailbox, account: MailAccount, session: any IMAPSession, selection: IMAPSelection, batchIndex: inout Int
+        in mailbox: Mailbox, account: MailAccount, session: any IMAPSession, selection: IMAPSelection, run: inout FetchRun
     ) async throws {
         let detached = try await store.detachedRows(mailbox.id)
         guard !detached.isEmpty else { return }
@@ -628,45 +657,81 @@ public actor MailSyncEngine {
             let uids = try await session.search(.messageID(rfcID))
             found.formUnion(uids.filter { !stored.contains($0) })
         }
-        try await fetch(found.sorted(), into: mailbox, account: account, session: session, selection: selection, batchIndex: &batchIndex)
+        try await fetch(found.sorted(), into: mailbox, account: account, session: session, selection: selection, run: &run)
     }
 
     // MARK: - Fetching
 
+    /// One mailbox's fetching in a pass: the batch counter, and the UIDs that failed (not tried
+    /// again in this pass; the checkpoint stays below them so a later pass does).
+    private struct FetchRun {
+        var batchIndex = 0
+        var skipped: Set<UInt32> = []
+    }
+
+    /// Fetches and stores `uids` in batches, each one transaction with its checkpoint. A message
+    /// that fails is skipped and the rest are still stored: one the server refuses at once, on a
+    /// lost connection after the batch so far is stored. Messages that failed before come last
+    /// and in parts; after `configuration.fetchAttempts` failures their headers are stored.
     private func fetch(
         _ uids: [UInt32], into mailbox: Mailbox, account: MailAccount, session: any IMAPSession, selection: IMAPSelection,
-        batchIndex: inout Int
+        run: inout FetchRun
     ) async throws {
-        guard !uids.isEmpty else { return }
+        let failed = fetchFailures[mailbox.id] ?? [:]
+        let wanted = uids.filter { !run.skipped.contains($0) }
+        let ordered = wanted.filter { failed[$0] == nil } + wanted.filter { failed[$0] != nil }
         var start = 0
-        while start < uids.count {
-            let chunk = Array(uids[start..<min(start + configuration.batchSize, uids.count)])
+        while start < ordered.count {
+            let chunk = Array(ordered[start..<min(start + configuration.batchSize, ordered.count)])
             start += configuration.batchSize
             let summaries = try await session.fetchSummaries(chunk)
             let byUID = Dictionary(summaries.map { ($0.uid, $0) }, uniquingKeysWith: { first, _ in first })
             var prepared: [PreparedMessage] = []
-            for uid in chunk {
+            var interruption: MailTransportError?
+            messages: for uid in chunk {
                 guard let summary = byUID[uid] else { continue }   // expunged meanwhile
-                prepared.append(try await prepare(summary, session: session))
+                let attempts = fetchFailures[mailbox.id]?[uid] ?? 0
+                if attempts >= configuration.fetchAttempts {
+                    Log.mail.error("A message failed to download \(attempts, privacy: .public) times; storing its headers only")
+                    prepared.append(await headersOnly(summary, session: session))
+                    fetchFailures[mailbox.id]?[uid] = nil
+                    continue
+                }
+                do {
+                    prepared.append(try await prepare(summary, session: session, whole: attempts == 0))
+                    fetchFailures[mailbox.id]?[uid] = nil
+                } catch let error as MailTransportError where !error.isAuthentication {
+                    fetchFailures[mailbox.id, default: [:]][uid] = attempts + 1
+                    run.skipped.insert(uid)
+                    Log.mail.error("Downloading a message failed (\(attempts + 1, privacy: .public)): \(String(describing: error), privacy: .private)")
+                    if case .refused = error { continue }
+                    if case .missingCapability = error { continue }
+                    interruption = error
+                    break messages
+                }
             }
+            let limit = run.skipped.min().map { $0 > 0 ? $0 - 1 : 0 }
             let inserted = try await store.commitBatch(
                 prepared, mailbox: mailbox, accountID: account.id, uidValidity: selection.uidValidity, uidNext: selection.uidNext,
-                syncedSince: nil, batchIndex: batchIndex, faults: faults
+                syncedSince: nil, lastUIDLimit: limit, batchIndex: run.batchIndex, faults: faults
             )
-            batchIndex += 1
+            run.batchIndex += 1
             if !inserted.isEmpty {
                 Log.mail.info("Stored \(inserted.count, privacy: .public) new messages")
                 await onNewMail(inserted)
             }
+            if let interruption { throw interruption }
         }
     }
 
     /// Fetches (BODY.PEEK, nothing is marked read) and parses one message; stores the raw
-    /// message (up to 25 MB) and the sanitized HTML in the BlobStore.
-    private func prepare(_ summary: IMAPSummary, session: any IMAPSession) async throws -> PreparedMessage {
+    /// message and the sanitized HTML in the BlobStore. `whole`: one fetch of the raw message
+    /// when it is within `wholeMessageLimit`; otherwise (and on a retry) headers, structure and
+    /// text parts.
+    private func prepare(_ summary: IMAPSummary, session: any IMAPSession, whole: Bool) async throws -> PreparedMessage {
         var parsed: ParsedMail
         var raw: BlobRef?
-        if summary.size <= MIMEParser.maximumStoredRawSize {
+        if whole, summary.size <= configuration.wholeMessageLimit {
             let data = try await session.fetchRaw(summary.uid)
             parsed = (try? MIMEParser.parse(data)) ?? MIMEParser.assemble(HeaderBlock(), collector: BodyCollector())
             if !data.isEmpty { raw = try services.blobs.put(data, fileExtension: "eml") }
@@ -683,8 +748,20 @@ public actor MailSyncEngine {
         )
     }
 
-    /// A message over 25 MB: headers and text parts only; attachments are listed from the body
-    /// structure and fetched by section when opened.
+    /// A message that could not be downloaded: its headers (when the server still gives them),
+    /// no text, so it is listed and the mail after it moves on.
+    private func headersOnly(_ summary: IMAPSummary, session: any IMAPSession) async -> PreparedMessage {
+        let header = try? await session.fetchSection(summary.uid, section: "HEADER")
+        let block = header.map { HeaderBlock(bytes: Array($0)[...]) } ?? HeaderBlock()
+        return PreparedMessage(
+            uid: summary.uid, flags: summary.flags, internalDate: summary.internalDate, size: summary.size,
+            parsed: MIMEParser.assemble(block, collector: BodyCollector()), raw: nil, html: nil
+        )
+    }
+
+    /// A message over `wholeMessageLimit` (or one whose whole fetch failed): headers and text
+    /// parts only; attachments are listed from the body structure and fetched by section when
+    /// opened.
     private func parseLarge(_ uid: UInt32, session: any IMAPSession) async throws -> ParsedMail {
         let header = try await session.fetchSection(uid, section: "HEADER")
         let structure = try await session.fetchStructure(uid)

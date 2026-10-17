@@ -252,7 +252,7 @@ enum AddressList {
             if name.isEmpty { name = comment.trimmingCharacters(in: .whitespaces) }
             let cleanedAddress = (mailbox ?? "").trimmingCharacters(in: .whitespaces)
             if cleanedAddress.contains("@") {
-                result.append(MailAddress(name: EncodedWords.decode(collapse(name)), address: cleanedAddress))
+                result.append(MailAddress(name: MailText.headerSafe(EncodedWords.decode(collapse(name))), address: cleanedAddress))
             }
             phrase = ""
             address = nil
@@ -318,7 +318,7 @@ enum MessageIDs {
             if character == "<" {
                 current = ""
             } else if character == ">" {
-                if let id = current?.trimmingCharacters(in: .whitespaces), !id.isEmpty, !id.contains(" ") { ids.append(id) }
+                if let id = current?.trimmingCharacters(in: .whitespaces), isValid(id) { ids.append(id) }
                 current = nil
             } else if current != nil {
                 current?.append(character)
@@ -327,10 +327,18 @@ enum MessageIDs {
         if ids.isEmpty {
             ids = raw.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "," })
                 .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "<>")) }
-                .filter { $0.contains("@") }
+                .filter { $0.contains("@") && isValid($0) }
         }
         var seen: Set<String> = []
         return ids.filter { seen.insert($0).inserted }
+    }
+
+    /// A Message-ID that can be written into a header as `<id>`: not empty, no whitespace, no
+    /// control characters, no angle brackets.
+    static func isValid(_ id: String) -> Bool {
+        !id.isEmpty && !id.unicodeScalars.contains { scalar in
+            scalar.properties.isWhitespace || MailText.isUnsafeInHeader(scalar) || scalar == "<" || scalar == ">"
+        }
     }
 
     static func single(_ raw: String?) -> String {

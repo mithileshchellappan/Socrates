@@ -36,6 +36,13 @@ public struct MailSyncConfiguration: Sendable {
     public var usesIdle = true
     /// Rows re-derived from their raw message per pass after a parser upgrade.
     public var reparseLimit = 200
+    /// Messages up to this size are fetched whole (BODY.PEEK[]) and kept as .eml; larger ones as
+    /// headers, structure and text parts, attachments by section when opened. SwiftMail gives a
+    /// whole-message fetch 10 seconds, which a slow link manages for about 2 MB.
+    public var wholeMessageLimit = 2 * 1024 * 1024
+    /// A message whose download failed this many times is stored with its headers only, so it
+    /// no longer holds back the mail after it.
+    public var fetchAttempts = 3
 
     public init() {}
 

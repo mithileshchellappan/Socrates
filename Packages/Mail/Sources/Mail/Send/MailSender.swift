@@ -5,10 +5,13 @@ import StudyCore
 /// does not depend on this package).
 ///
 /// Send is a state machine over `mail_draft.state`: draft/failed → sending (the Message-ID is
-/// assigned before SMTP starts) → sent, or → failed with a readable reason. Pressing Send twice
-/// sends once. After the server accepted the message, a copy goes to Sent with \Seen and the
-/// replied message gets \Answered; if that fails, the sync engine saves the copy later. A draft
-/// found `sending` at launch is looked up in Sent and never sent again on its own.
+/// assigned before SMTP starts) → sent as soon as the server accepted the message, or → failed
+/// with a readable reason. Pressing Send twice sends once. After the server accepted the
+/// message, a copy goes to Sent with \Seen and the replied message gets \Answered; if that
+/// fails, the sync engine saves the copy later. A draft found `sending` at launch is looked up
+/// in Sent and never sent again on its own; when it is not found, or the server stopped
+/// answering after taking the message, the draft fails with `MailDraft.unknownSendOutcome` and
+/// is sent again only with `confirmingResend`.
 public actor MailSender {
     private let services: StudyServices
     private let connector: any MailConnector
@@ -25,8 +28,10 @@ public actor MailSender {
     private var records: RecordStore { RecordStore(database: services.database, now: clock.now) }
 
     /// Sends the draft over SMTP (587 STARTTLS with the uni account name; 465 TLS only when 587
-    /// cannot be reached). Returns quietly when the draft is already sending or sent.
-    public func send(_ draftID: MailDraft.ID) async throws {
+    /// cannot be reached). Returns quietly when the draft is already sending or sent. A draft that
+    /// may have gone out already (`MailDraft.mayHaveBeenSent`) is sent only with
+    /// `confirmingResend`.
+    public func send(_ draftID: MailDraft.ID, confirmingResend: Bool = false) async throws {
         let drafts = MailDraftRepository(store: records)
         guard let current = try await records.fetch(MailDraft.self, id: draftID) else { throw MailSendError.draftNotFound }
         switch current.state {
@@ -34,6 +39,7 @@ public actor MailSender {
         case .generating: throw MailSendError.notReady
         case .draft, .failed: break
         }
+        if current.mayHaveBeenSent, !confirmingResend { throw MailSendError.mayHaveBeenSent }
         guard let account = try await records.fetch(MailAccount.self, id: current.accountID) else { throw MailSendError.noAccount }
         let recipients = Self.recipients(of: current)
         guard !recipients.isEmpty else { throw MailSendError.noRecipients }
@@ -55,53 +61,56 @@ public actor MailSender {
 
         let bytes = MessageComposer.compose(draft, from: account.sender, date: started, messageID: draft.rfcMessageID)
         let credentials = MailCredentials(username: account.username, password: password)
+        let sent: MailDraft?
         do {
             let smtp = try await connector.openSubmission(for: account, credentials: credentials)
             do {
                 try await smtp.send(bytes, from: account.emailAddress, to: recipients)
-                await smtp.close()
             } catch {
                 await smtp.close()
                 throw error
             }
+            // Accepted: recorded before QUIT, which can hang, so a quit now cannot lose it.
+            let sentAt = clock.now()
+            sent = try? await drafts.transition(draftID, from: [.sending], to: .sent) { draft in
+                draft.sentAt = sentAt
+                draft.error = nil
+            }
+            await smtp.close()
         } catch {
-            let reason = Self.readable(error)
             Log.mail.error("Send failed: \(String(describing: error), privacy: .private)")
+            if case MailTransportError.unconfirmed = error {
+                try await drafts.transition(draftID, from: [.sending], to: .failed) { $0.error = MailDraft.unknownSendOutcome }
+                throw MailSendError.mayHaveBeenSent
+            }
+            let reason = Self.readable(error)
             try await drafts.transition(draftID, from: [.sending], to: .failed) { $0.error = reason }
             throw error
         }
 
-        let sentAt = clock.now()
-        guard let sent = try await drafts.transition(draftID, from: [.sending], to: .sent, { draft in
-            draft.sentAt = sentAt
-            draft.error = nil
-        }) else { return }
+        guard let sent else { return }
         Log.mail.info("Message sent")
         await afterSend(sent, account: account, credentials: credentials)
     }
 
     /// Launch: drafts left `sending` by a crash are looked up in Sent by Message-ID: found →
-    /// sent; not found (or not checkable) → failed. Never sent again on their own.
+    /// sent; not found or not checkable → failed with `MailDraft.unknownSendOutcome` (the Sent
+    /// copy is saved only after the server took the message, so a missing copy proves nothing).
+    /// Never sent again on their own.
     public func recoverInterruptedSends() async {
         let drafts = MailDraftRepository(store: records)
         guard let interrupted = try? await drafts.drafts(in: [.sending]), !interrupted.isEmpty else { return }
         var sessions: [MailAccount.ID: any IMAPSession] = [:]
         for draft in interrupted where !inFlight.contains(draft.id) {
-            let found = await isInSent(draft, sessions: &sessions)
-            switch found {
-            case true?:
+            if await isInSent(draft, sessions: &sessions) == true {
                 let stamp = clock.now()
                 _ = try? await drafts.transition(draft.id, from: [.sending], to: .sent) { draft in
                     draft.sentAt = draft.sendStartedAt ?? stamp
                     draft.sentCopySavedAt = stamp
                     draft.error = nil
                 }
-            case false?:
-                _ = try? await drafts.transition(draft.id, from: [.sending], to: .failed) { $0.error = "Not sent." }
-            case nil:
-                _ = try? await drafts.transition(draft.id, from: [.sending], to: .failed) {
-                    $0.error = "Sending was interrupted; it is not known whether the message went out."
-                }
+            } else {
+                _ = try? await drafts.transition(draft.id, from: [.sending], to: .failed) { $0.error = MailDraft.unknownSendOutcome }
             }
         }
         for session in sessions.values { await session.logout() }
@@ -196,6 +205,7 @@ public actor MailSender {
         let parts = address.split(separator: "@", omittingEmptySubsequences: false)
         guard parts.count == 2, !parts[0].isEmpty, parts[1].contains("."), !parts[1].hasSuffix(".") else { return false }
         return !address.contains { $0.isWhitespace || $0 == "<" || $0 == ">" || $0 == "," || $0 == "\"" }
+            && !address.unicodeScalars.contains(where: MailText.isUnsafeInHeader)
     }
 
     static func readable(_ error: any Error) -> String {
@@ -212,6 +222,8 @@ public enum MailSendError: Error, Hashable, Sendable, LocalizedError {
     case noRecipients
     case noAccount
     case invalidAddress(String)
+    /// The draft may have gone out already; sending again needs `confirmingResend`.
+    case mayHaveBeenSent
 
     public var errorDescription: String? {
         switch self {
@@ -220,6 +232,7 @@ public enum MailSendError: Error, Hashable, Sendable, LocalizedError {
         case .noRecipients: "Add a recipient."
         case .noAccount: "Set up the mail account first."
         case .invalidAddress(let address): "“\(address)” is not a valid address."
+        case .mayHaveBeenSent: MailDraft.unknownSendOutcome
         }
     }
 }

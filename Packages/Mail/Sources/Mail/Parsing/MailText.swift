@@ -4,6 +4,23 @@ import NaturalLanguage
 // Plain-text helpers: format=flowed, line endings, the list snippet and the language.
 
 enum MailText {
+    /// A character that must never reach a header: C0 and C1 controls (CR, LF, NEL), DEL, and
+    /// the Unicode line and paragraph separators.
+    static func isUnsafeInHeader(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .control, .lineSeparator, .paragraphSeparator: true
+        default: false
+        }
+    }
+
+    /// A display name fit for a header: unsafe characters become spaces, whitespace runs one
+    /// space, trimmed.
+    static func headerSafe(_ text: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars { scalars.append(isUnsafeInHeader(scalar) ? " " : scalar) }
+        return String(scalars).split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+    }
+
     /// "\r\n" and "\r" → "\n". (Checked on UTF-8: in Swift "\r\n" is one Character, so
     /// `contains("\r")` would miss it.)
     static func normalizeLineEndings(_ text: String) -> String {

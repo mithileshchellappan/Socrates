@@ -24,12 +24,15 @@ public struct ParsedMail: Hashable, Sendable {
     public var listID: String
     /// Selected other headers (lower-cased names) routing and extraction use.
     public var headers: [String: String]
-    /// text/plain (format=flowed joined) when the mail has one, else the sanitized HTML's text;
-    /// forwarded messages appended as quoted text.
+    /// The text the reader shows: the sanitized HTML's text when the mail has HTML (forwarded
+    /// messages quoted inside it), else text/plain (format=flowed joined) with forwarded messages
+    /// appended as quoted text. The model reads this and quotes are checked against it, so a
+    /// text/plain alternative the reader never shows cannot add anything.
     public var bodyText: String
-    /// The sanitized HTML fragment (docs/plan-m2.md §2.8); empty when the mail has no HTML.
+    /// The sanitized HTML fragment (docs/plan-m2.md §2.8); empty when the mail has no HTML (or
+    /// HTML without text).
     public var sanitizedHTML: String
-    /// The body came from a text/plain part.
+    /// The mail has a text/plain body part.
     public var hasPlainText: Bool
     public var attachments: [ParsedAttachment]
     /// About 200 characters without quoted text and signature.
@@ -62,10 +65,7 @@ public enum MIMEParserError: Error, Hashable, Sendable {
 /// RFC 5322 / MIME parsing for the sync (docs/plan-m2.md §3 "Parsing"). Bump `version` when the
 /// output changes: rows with an older `parse_version` are re-derived from their raw message.
 public enum MIMEParser {
-    public static let version = 1
-
-    /// Largest raw message kept in the BlobStore (larger ones keep their text parts only).
-    public static let maximumStoredRawSize = 25 * 1024 * 1024
+    public static let version = 2
 
     /// Header names copied into `ParsedMail.headers`.
     static let keptHeaders: Set<String> = [
@@ -104,21 +104,20 @@ public enum MIMEParser {
             .split(whereSeparator: \.isNewline).joined(separator: " ")
             .trimmingCharacters(in: .whitespaces)
 
+        // The reader shows the HTML when there is one, so the text is the HTML's too.
         var sanitized = ""
+        var body = ""
         if !collector.html.isEmpty {
-            sanitized = HTMLSanitizer.sanitize(collector.html.joined(separator: "\n"))
+            let html = collector.html.joined(separator: "\n") + collector.forwarded.map(forwardedHTML).joined()
+            sanitized = HTMLSanitizer.sanitize(html)
+            body = HTMLSanitizer.text(fromSanitized: sanitized).trimmingCharacters(in: .whitespacesAndNewlines)
+            if body.isEmpty { sanitized = "" }
         }
-        var body: String
-        if !collector.plain.isEmpty {
-            body = collector.plain.joined(separator: "\n\n")
-        } else if !sanitized.isEmpty {
-            body = HTMLSanitizer.text(fromSanitized: sanitized)
-        } else {
-            body = ""
-        }
-        body = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        for forwarded in collector.forwarded {
-            body += (body.isEmpty ? "" : "\n\n") + forwarded
+        if sanitized.isEmpty {
+            body = collector.plain.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            for forwarded in collector.forwarded {
+                body += (body.isEmpty ? "" : "\n\n") + forwarded
+            }
         }
 
         var kept: [String: String] = [:]
@@ -152,14 +151,31 @@ public enum MIMEParser {
         )
     }
 
-    /// A file name without path components or control characters, at most 200 characters;
+    /// A forwarded message's quoted text (`BodyCollector.forwarded`) as an escaped blockquote.
+    static func forwardedHTML(_ quoted: String) -> String {
+        let lines = quoted.components(separatedBy: "\n").map { line in
+            var text = Substring(line)
+            if text.hasPrefix("> ") { text = text.dropFirst(2) } else if text.hasPrefix(">") { text = text.dropFirst() }
+            return text
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+        }
+        return "<blockquote><p>" + lines.joined(separator: "<br>") + "</p></blockquote>"
+    }
+
+    /// A file name without path components, control or invisible formatting characters (bidi
+    /// overrides that would show "fdp.command" as "dmmoc.pdf"), at most 200 characters;
     /// "Attachment" (+ an extension for the type) when nothing usable is left.
     static func sanitizedFileName(_ raw: String?, mimeType: String) -> String {
         var name = (raw ?? "")
             .replacingOccurrences(of: "\\", with: "/")
             .components(separatedBy: "/").last ?? ""
-        name = String(name.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F && !"<>:\"|?*".unicodeScalars.contains($0) })
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        name = String(name.unicodeScalars.filter { scalar in
+            scalar.value >= 0x20 && !"<>:\"|?*".unicodeScalars.contains(scalar)
+                && ![.control, .format, .lineSeparator, .paragraphSeparator].contains(scalar.properties.generalCategory)
+        })
+        .trimmingCharacters(in: .whitespacesAndNewlines)
         while name.hasPrefix(".") { name.removeFirst() }
         if name.count > 200 {
             let ext = (name as NSString).pathExtension

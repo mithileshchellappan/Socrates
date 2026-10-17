@@ -14,7 +14,7 @@ public enum MessageComposer {
         lines.append("Subject: " + unstructured(draft.subject, nameLength: "Subject: ".count))
         lines.append("Date: " + dateHeader(date))
         lines.append("Message-ID: <\(messageID)>")
-        if !draft.inReplyTo.isEmpty { lines.append("In-Reply-To: <\(draft.inReplyTo)>") }
+        if MessageIDs.isValid(draft.inReplyTo) { lines.append("In-Reply-To: <\(draft.inReplyTo)>") }
         let references = referenceChain(draft)
         if !references.isEmpty { lines.append(folded("References", references.map { "<\($0)>" }, separator: "")) }
         lines.append("MIME-Version: 1.0")
@@ -26,8 +26,8 @@ public enum MessageComposer {
 
     /// References of a reply: the draft's chain, ending with the message replied to.
     static func referenceChain(_ draft: MailDraft) -> [String] {
-        var chain = draft.referenceIDs.filter { !$0.isEmpty }
-        if !draft.inReplyTo.isEmpty, chain.last != draft.inReplyTo { chain.append(draft.inReplyTo) }
+        var chain = draft.referenceIDs.filter(MessageIDs.isValid)
+        if MessageIDs.isValid(draft.inReplyTo), chain.last != draft.inReplyTo { chain.append(draft.inReplyTo) }
         var seen: Set<String> = []
         return chain.filter { seen.insert($0).inserted }
     }
@@ -64,15 +64,17 @@ public enum MessageComposer {
     private static let atext = CharacterSet(charactersIn:
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&'*+-/=?^_`{|}~ ")
 
-    /// "Name <address>", the name quoted or RFC 2047-encoded when needed.
+    /// "Name <address>", the name quoted or RFC 2047-encoded when needed. Names and addresses
+    /// come from received mail: line breaks and other control characters never reach the header.
     static func address(_ address: MailAddress) -> String {
-        let name = address.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let mailbox = address.address.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = MailText.headerSafe(address.name)
+        let mailbox = String(address.address.unicodeScalars.filter { !MailText.isUnsafeInHeader($0) && !$0.properties.isWhitespace })
         guard !name.isEmpty else { return mailbox }
         return "\(phrase(name)) <\(mailbox)>"
     }
 
-    static func phrase(_ name: String) -> String {
+    static func phrase(_ raw: String) -> String {
+        let name = MailText.headerSafe(raw)
         if !name.unicodeScalars.allSatisfy(\.isASCII) {
             return encodedWords(name, restricted: true, firstLineRoom: 60).joined(separator: " ")
         }
@@ -104,7 +106,7 @@ public enum MessageComposer {
 
     /// Unstructured header text: as is when ASCII, else Q-encoded words folded on CRLF SP.
     static func unstructured(_ text: String, nameLength: Int) -> String {
-        let clean = text.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+        let clean = String(String.UnicodeScalarView(text.unicodeScalars.map { MailText.isUnsafeInHeader($0) ? " " : $0 }))
         if clean.unicodeScalars.allSatisfy(\.isASCII), !clean.contains("=?") { return clean }
         return encodedWords(clean, restricted: false, firstLineRoom: 76 - nameLength).joined(separator: "\r\n ")
     }
