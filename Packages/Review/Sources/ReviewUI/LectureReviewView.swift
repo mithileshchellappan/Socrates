@@ -158,17 +158,27 @@ struct ReviewScreen: View {
             switch chrome {
             case .window:
                 content(timeline: timeline)
-                    .navigationTitle(model.lecture.title.isEmpty ? String(localized: "Lecture") : model.lecture.title)
+                    // The Window menu's name; the toolbar shows its own, larger title.
+                    .navigationTitle(title)
                     #if os(macOS)
                     .navigationSubtitle(subtitle)
+                    .toolbar(removing: .title)
                     #endif
-                    .toolbar { ReviewToolbar(model: model) }
+                    .toolbar {
+                        ToolbarItem(placement: .navigation) {
+                            ReviewTitle(title: title, subtitle: subtitle)
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                        // Without the system title nothing pushes the items to the trailing edge.
+                        ToolbarSpacer(.flexible)
+                        ReviewToolbar(model: model)
+                    }
                     .inspector(isPresented: Bindable(model).showsInspector) {
                         ReviewInspector(model: model)
-                            .inspectorColumnWidth(min: 260, ideal: 320, max: 440)
+                            .inspectorColumnWidth(min: 260, ideal: ReviewInspector.width, max: 440)
                     }
             case .snapshot:
-                SnapshotChrome(model: model, title: model.lecture.title, subtitle: subtitle) {
+                SnapshotChrome(model: model, title: title, subtitle: subtitle) {
                     content(timeline: timeline)
                 }
             }
@@ -178,6 +188,10 @@ struct ReviewScreen: View {
             model.session.update(timeline: timeline)
         }
         .onDisappear { model.close() }
+    }
+
+    private var title: String {
+        model.lecture.title.isEmpty ? String(localized: "Lecture") : model.lecture.title
     }
 
     private var subtitle: Text {
@@ -207,6 +221,8 @@ struct ReviewScreen: View {
                 if model.recording != nil {
                     TranscriptZone(model: model, timeline: timeline)
                         .frame(maxHeight: .infinity)
+                        // 6 pt under the slide: the first divider's own top padding finishes the gap.
+                        .padding(.top, model.deck == nil ? 0 : -6)
                 } else if model.deck == nil {
                     ContentUnavailableView {
                         Image(systemName: "rectangle.on.rectangle.slash")
@@ -219,6 +235,9 @@ struct ReviewScreen: View {
         .padding(.leading, model.deck == nil ? 16 : 8)
         .padding(.trailing, 16)
         .padding(.top, 2)
+        // The rail and transcript end above the player: it floats over empty space, and nothing
+        // scrolls under or below the glass.
+        .padding(.bottom, model.player == nil ? 0 : Self.playerClearance)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottom) {
             if let player = model.player {
@@ -234,16 +253,46 @@ struct ReviewScreen: View {
 
     /// The player's distance from the bottom edge.
     static let playerBottom: CGFloat = 14
+    /// Room under the rail and transcript: the player, its distance from the bottom edge and 8 pt
+    /// above it.
+    static let playerClearance: CGFloat = PlayerBar.height + playerBottom + 8
 
-    /// The slide's height over the transcript: its full width, at most about half the column.
+    /// The slide's height over the transcript: its full width, at most about half the content's
+    /// height (measured to the window's bottom edge, the player's room included).
     private func stageHeight(_ deck: SlideDeck) -> CGFloat {
         let aspect = deck.aspectRatio(page: 1)
         guard column.width > 0, aspect > 0 else { return 0 }
-        return min(column.width / aspect, max(160, column.height * 0.5))
+        let height = column.height + (model.player == nil ? 0 : Self.playerClearance)
+        return min(column.width / aspect, max(160, height * 0.5))
     }
 }
 
-/// The toolbar: previous / "16 / 88" / next as one glass group, and the inspector toggle.
+/// The window title (mockup 03): the lecture in the title style, course and day under it.
+struct ReviewTitle: View {
+    /// Past the toolbar's own leading inset, so the title starts about 20 pt from the content's
+    /// edge.
+    static let leadingInset: CGFloat = 11
+
+    let title: String
+    let subtitle: Text
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.title3.weight(.semibold))
+            subtitle
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .lineLimit(1)
+        .padding(.leading, Self.leadingInset)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// The toolbar: previous / "16 / 88" / next as one glass group. The inspector's own header hides
+/// it; while it is hidden, a button of its own brings it back.
 struct ReviewToolbar: ToolbarContent {
     let model: ReviewModel
 
@@ -259,11 +308,15 @@ struct ReviewToolbar: ToolbarContent {
                 SlideStepper(session: model.session)
             }
         }
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                model.showsInspector.toggle()
-            } label: {
-                Label("Inspector", systemImage: "sidebar.trailing")
+        if !model.showsInspector {
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    model.showsInspector = true
+                } label: {
+                    Label("Show Inspector", systemImage: "sidebar.trailing")
+                }
+                .help(Text("Show Inspector"))
             }
         }
     }
@@ -307,7 +360,7 @@ struct SlideStepper: View {
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .fixedSize()
-            .padding(.horizontal, 2)
+            .padding(.horizontal, 10)
             .accessibilityLabel(Text("Slide \(session.shownPage ?? 0) of \(session.pageCount)"))
         Button {
             session.nextSlide()
@@ -330,14 +383,8 @@ private struct SnapshotChrome<Content: View>: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(title)
-                            .font(.title3.weight(.semibold))
-                        subtitle
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    .lineLimit(1)
+                    ReviewTitle(title: title, subtitle: subtitle)
+                        .padding(.leading, -ReviewTitle.leadingInset)
                     Spacer()
                     if model.deck != nil {
                         HStack(spacing: 12) {
@@ -357,8 +404,7 @@ private struct SnapshotChrome<Content: View>: View {
             }
             Divider()
             ReviewInspector(model: model)
-                .frame(width: 320)
-                .background(.background.secondary)
+                .frame(width: ReviewInspector.width)
         }
         .background(.background)
     }

@@ -36,22 +36,32 @@ struct SlideRail: View {
                             }
                     }
                 }
-                .padding(.bottom, 64)
             }
             .scrollIndicators(.never)
+            // No hard edge line or blur band where scrolled thumbnails meet the toolbar.
+            .scrollEdgeEffectHidden(true, for: .top)
+            .fadesAbovePlayer(model.player != nil)
             .task {
                 // The slide the review opens on: once the lazy list has laid out (a scroll asked
                 // for while it appears is dropped, as for the transcript).
                 try? await Task.sleep(for: .milliseconds(60))
-                if let page = model.session.shownPage { proxy.scrollTo(page, anchor: .center) }
+                if let page = model.session.shownPage { scroll(proxy, to: page) }
             }
             .onChange(of: shown) { _, page in
                 guard let page else { return }
-                withAnimation(.snappy) { proxy.scrollTo(page, anchor: .center) }
+                withAnimation(.snappy) { scroll(proxy, to: page) }
             }
         }
         .accessibilityLabel(Text("Slides"))
     }
+
+    /// The slide on screen as the fourth thumbnail, with three whole ones above it (the first
+    /// slides from the top).
+    private func scroll(_ proxy: ScrollViewProxy, to page: Int) {
+        proxy.scrollTo(max(1, page - Self.thumbnailsAbove), anchor: .top)
+    }
+
+    static let thumbnailsAbove = 3
 }
 
 private struct RailThumbnail: View {
@@ -63,6 +73,12 @@ private struct RailThumbnail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             SlideImageView(deck: deck, page: page, pixelWidth: SlideWidth.thumbnail, cornerRadius: 3)
+                .background {
+                    // Paper depth (mockup: 0 1px 3px at 18 %).
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(.white)
+                        .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+                }
                 .overlay {
                     if isCurrent {
                         RoundedRectangle(cornerRadius: 4.5, style: .continuous)
@@ -105,6 +121,12 @@ struct SlideStage: View {
     var body: some View {
         let page = model.session.shownPage ?? 1
         SlideBitmapView(deck: deck, page: page)
+            .background {
+                // The canvas cannot draw outside its bounds: the paper's shadow is SwiftUI's.
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(.white)
+                    .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+            }
             .frame(maxWidth: .infinity)
             .task(id: page) {
                 await deck.prefetch(pages: [page + 1, page - 1, page + 2, page - 2], width: SlideWidth.display)
