@@ -100,6 +100,12 @@ final class AppModel {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return AppModel(services: try? StudyServices.inMemory(), startsProcessing: false)
         }
+        #if DEBUG && os(macOS)
+        // Rendering snapshots of a library (`SnapshotRunner`): nothing is started.
+        if SnapshotRunner.directory != nil {
+            return AppModel(services: try? StudyServices.live(), startsProcessing: false)
+        }
+        #endif
         do {
             return AppModel(services: try StudyServices.live())
         } catch {

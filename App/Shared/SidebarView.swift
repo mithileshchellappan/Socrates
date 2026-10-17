@@ -118,10 +118,13 @@ struct SidebarView: View {
         )
     }
 
-    /// The course's next session that has no lecture yet (one in progress counts).
+    /// The course's next lecture that has no lecture row yet (one in progress counts); for a
+    /// course without lecture sessions (a seminar), its next session of any kind.
     private func nextSession(_ courseID: Course.ID, now: Date) -> LectureSession? {
         let filed = Set(lectures.compactMap(\.lectureSessionID))
-        return sessions.first { $0.courseID == courseID && $0.endsAt > now && !filed.contains($0.id) }
+        let course = sessions.filter { $0.courseID == courseID }
+        let numbered = course.contains { $0.kind == .lecture } ? course.filter { $0.kind == .lecture } : course
+        return numbered.first { $0.endsAt > now && !filed.contains($0.id) }
     }
 
     /// By number, then date, then when they were added.

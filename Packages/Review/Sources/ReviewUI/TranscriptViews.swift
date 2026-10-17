@@ -106,7 +106,10 @@ private struct TranscriptFollower: View {
         let line = session.isFollowing ? model.player?.currentSegmentID : nil
         let page = session.isFollowing ? nil : session.shownPage
         Color.clear
-            .onAppear {
+            .task {
+                // Opened at a moment (search hit, Today, saved position): go there once the list
+                // has laid out; a scroll asked for while it appears is dropped.
+                try? await Task.sleep(for: .milliseconds(60))
                 if let line = model.player?.currentSegmentID { scroll(to: line) }
             }
             .onChange(of: line) { _, line in

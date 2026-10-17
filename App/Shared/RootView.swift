@@ -18,9 +18,10 @@ struct RootView: View {
     @State private var reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)?
     @FocusState private var searchFocused: Bool
 
-    init(selection: SidebarItem? = .today, query: String = "") {
+    init(selection: SidebarItem? = .today, query: String = "", reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil) {
         _selection = State(initialValue: selection)
         _query = State(initialValue: query)
+        _reviewTarget = State(initialValue: reviewTarget)
     }
 
     var body: some View {

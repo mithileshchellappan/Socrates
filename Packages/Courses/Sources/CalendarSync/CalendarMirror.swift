@@ -279,7 +279,7 @@ public actor CalendarMirror {
         return (start, end)
     }
 
-    static func calendarTitle(for paths: AppPaths) -> String {
+    public static func calendarTitle(for paths: AppPaths) -> String {
         guard let live = try? AppPaths.live(environment: [:]) else { return defaultCalendarTitle }
         if paths.root.standardizedFileURL.path(percentEncoded: false) == live.root.standardizedFileURL.path(percentEncoded: false) {
             return defaultCalendarTitle

@@ -19,8 +19,17 @@ struct StudyPortalApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG && os(macOS)
+            if SnapshotRunner.directory != nil {
+                SnapshotRunnerView(model: model)
+            } else {
+                RootView()
+                    .environment(model)
+            }
+            #else
             RootView()
                 .environment(model)
+            #endif
         }
         .defaultSize(width: 1180, height: 760)
         .commands {

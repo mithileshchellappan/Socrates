@@ -299,6 +299,18 @@ public final class FilingCenter {
 
     // MARK: - Previews and snapshots
 
+    /// Shows the HUD for `urls` as if they were dragged to `location` (previews and snapshots of
+    /// the whole window). `dragExited()` hides it.
+    public func previewDrag(_ urls: [URL], at location: CGPoint) async {
+        let predictions = await service.predict(urls)
+        drag = Drag(location: location, anchor: hudAnchor(for: location), predictions: predictions, targeted: nil, isOverRow: false)
+    }
+
+    /// Hides a previewed drag.
+    public func endPreviewDrag() {
+        dragExited()
+    }
+
     /// Shows a drag prediction without a drag (snapshots, previews).
     func preview(predictions: [FilingPrediction], at location: CGPoint, targeted: HUDTarget? = nil) {
         drag = Drag(location: location, anchor: hudAnchor(for: location), predictions: predictions, targeted: targeted, isOverRow: false)
