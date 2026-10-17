@@ -17,14 +17,18 @@ let package = Package(
         // SPECIAL-USE, UIDPLUS, MOVE, APPEND, ENABLE + QRESYNC select, STARTTLS / implicit TLS,
         // EMLParser. 1.16.0 pins swift-nio-imap by revision, which SwiftPM refuses in a versioned
         // dependency, so this stays on 1.15.x (docs/decisions.md).
-        .package(url: "https://github.com/Cocoanetics/SwiftMail", .upToNextMinor(from: "1.15.0"))
+        .package(url: "https://github.com/Cocoanetics/SwiftMail", .upToNextMinor(from: "1.15.0")),
+        // Already a SwiftMail dependency (resolved 0.4.0); named here because SwiftMail's API
+        // exposes its `Capability` and `ModificationSequenceValue` types.
+        .package(url: "https://github.com/apple/swift-nio-imap", from: "0.4.0")
     ],
     targets: [
         .target(
             name: "Mail",
             dependencies: [
                 .product(name: "StudyCore", package: "StudyCore"),
-                .product(name: "SwiftMail", package: "SwiftMail")
+                .product(name: "SwiftMail", package: "SwiftMail"),
+                .product(name: "NIOIMAP", package: "swift-nio-imap")
             ]
         ),
     ],
