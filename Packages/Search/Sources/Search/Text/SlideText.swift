@@ -53,7 +53,8 @@ enum SlideText {
         for raw in text.split(whereSeparator: \.isNewline) {
             var line = raw.trimmingCharacters(in: .whitespaces)
             var bullet = false
-            while let first = line.first, bullets.contains(first) {
+            while let first = line.first, bullets.contains(first),
+                  !(first == "§" && line.dropFirst().first { !$0.isWhitespace }?.isNumber == true) {
                 bullet = true
                 line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
             }
@@ -61,14 +62,27 @@ enum SlideText {
             parts.append(bullet && !parts.isEmpty ? "· " + line : line)
         }
         var flat = parts.joined(separator: " ")
-        for glyph in inlineBullets {
-            flat = flat.replacing(" \(glyph) ", with: " · ")
+        // Bullets inside a line, with or without spaces around them ("pay-as-you-go §Efficiency").
+        // "§ 22 Abs. 3" (a German legal paragraph) stays; a § before words is a Wingdings bullet.
+        var spaced = ""
+        var index = flat.startIndex
+        while index < flat.endIndex {
+            let character = flat[index]
+            let next = flat[flat.index(after: index)...].first { !$0.isWhitespace }
+            if inlineBullets.contains(character), !(character == "§" && next?.isNumber == true) {
+                spaced += " · "
+            } else {
+                spaced.append(character)
+            }
+            index = flat.index(after: index)
         }
-        return flat.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        flat = spaced.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        while flat.hasPrefix("· ") { flat.removeFirst(2) }
+        return flat.replacing("· ·", with: "·")
     }
 
     private static let bullets: Set<Character> = ["•", "§", "▪", "◦", "–", "-", "*", "·", "\u{F0A7}", "\u{F0B7}", "\u{F0D8}"]
-    private static let inlineBullets: [String] = ["§", "•", "▪", "◦", "\u{F0A7}", "\u{F0B7}", "\u{F0D8}"]
+    private static let inlineBullets: Set<Character> = ["§", "•", "▪", "◦", "\u{F0A7}", "\u{F0B7}", "\u{F0D8}"]
 
     /// Case- and digit-insensitive form of a line or word, so "Page 3" and "Page 4" compare equal.
     private static func boilerplateKey(_ text: String) -> String {

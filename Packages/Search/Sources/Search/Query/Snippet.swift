@@ -98,6 +98,9 @@ enum Snippet {
         var last = tokens.count
         if tokens.count > wholeLimit {
             first = bestWindow(termsAtToken)
+            if let match = termsAtToken[first...].firstIndex(where: { !$0.isEmpty }) {
+                first = boundary(before: match, earliest: max(1, match - 8), tokens: tokens, text: text) ?? first
+            }
             last = min(tokens.count, first + window)
         }
         guard first < last else { return AttributedString(text) }
@@ -144,6 +147,17 @@ enum Snippet {
             }
         }
         return best.start
+    }
+
+    /// The nearest word at or before `match` (not before `earliest`) that opens a bullet, sentence
+    /// or clause, so a snippet starts at "Cons …" rather than mid-phrase.
+    private static func boundary(before match: Int, earliest: Int, tokens: [Token], text: String) -> Int? {
+        guard earliest <= match else { return nil }
+        for index in stride(from: match, through: earliest, by: -1) {
+            let gap = text[tokens[index - 1].range.upperBound..<tokens[index].range.lowerBound]
+            if gap.contains(where: { "·.!?:;)\n".contains($0) }) { return index }
+        }
+        return nil
     }
 
     /// Overlapping ranges, and neighbours with only spaces between them ("binary rewriting"),
