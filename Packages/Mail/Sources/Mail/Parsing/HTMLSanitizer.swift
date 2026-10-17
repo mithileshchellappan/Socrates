@@ -49,6 +49,14 @@ private enum Tag: UInt8 {
 
     var name: [UInt8] { Tag.names[Int(rawValue)] }
 
+    /// A set of tags as bits (no allocation).
+    struct Mask {
+        var bits: UInt32
+        init(_ tags: [Tag]) { bits = tags.reduce(0) { $0 | 1 << UInt32($1.rawValue) } }
+        func contains(_ tag: Tag) -> Bool { bits & (1 << UInt32(tag.rawValue)) != 0 }
+        static let paragraphBoundaries = Mask([.div, .li, .td, .th, .blockquote, .table, .ul, .ol])
+    }
+
     var isBlock: Bool {
         switch self {
         case .div, .p, .br, .ul, .ol, .li, .blockquote, .pre, .h1, .h2, .h3, .h4, .h5, .h6, .table, .thead, .tbody, .tr,
@@ -79,10 +87,38 @@ private enum TagAction {
     case dropContent
 }
 
-private let tagActions: [[UInt8]: TagAction] = {
-    var map: [[UInt8]: TagAction] = [:]
+/// A tag name packed into an integer (6 bits per character, at most 10 characters; 0 = longer
+/// or unknown), so looking a tag up allocates nothing.
+private enum TagKey {
+    static func code(_ byte: UInt8) -> UInt64 {
+        switch byte | 0x20 {
+        case 0x61...0x7A: UInt64((byte | 0x20) - 0x60)          // a–z: 1…26
+        default:
+            switch byte {
+            case 0x30...0x39: UInt64(byte - 0x30 + 27)          // 0–9: 27…36
+            case UInt8(ascii: "-"): 37
+            case UInt8(ascii: ":"): 38
+            default: 39
+            }
+        }
+    }
+
+    static func make<C: Collection>(_ bytes: C) -> UInt64 where C.Element == UInt8 {
+        guard !bytes.isEmpty, bytes.count <= 10 else { return 0 }
+        var key: UInt64 = 0
+        for byte in bytes { key = key << 6 | code(byte) }
+        return key
+    }
+
+    static let a = make("a".utf8)
+    static let href = make("href".utf8)
+    static let plaintext = make("plaintext".utf8)
+}
+
+private let tagActions: [UInt64: TagAction] = {
+    var map: [UInt64: TagAction] = [:]
     for (index, name) in Tag.names.enumerated() {
-        if let tag = Tag(rawValue: UInt8(index)) { map[name] = .emit(tag) }
+        if let tag = Tag(rawValue: UInt8(index)) { map[TagKey.make(name)] = .emit(tag) }
     }
     let aliases: [String: Tag] = [
         "strike": .s, "del": .s, "ins": .u, "tt": .code, "kbd": .code, "samp": .code, "var": .code, "tfoot": .tbody,
@@ -91,17 +127,17 @@ private let tagActions: [[UInt8]: TagAction] = {
         "dl": .div, "dd": .div, "dt": .div, "fieldset": .div, "legend": .div, "caption": .div, "hgroup": .div,
         "dir": .ul, "menu": .ul, "listing": .pre,
     ]
-    for (name, tag) in aliases { map[Array(name.utf8)] = .emit(tag) }
+    for (name, tag) in aliases { map[TagKey.make(name.utf8)] = .emit(tag) }
     for name in ["img", "input", "meta", "link", "base", "col", "area", "source", "track", "param", "embed", "wbr",
                  "keygen", "basefont", "bgsound", "image", "frame", "isindex"] {
-        map[Array(name.utf8)] = .void
+        map[TagKey.make(name.utf8)] = .void
     }
     for name in ["script", "style", "title", "textarea", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext"] {
-        map[Array(name.utf8)] = .rawText
+        map[TagKey.make(name.utf8)] = .rawText
     }
     for name in ["svg", "math", "object", "applet", "template", "select", "option", "optgroup", "datalist", "button",
                  "video", "audio", "canvas", "map", "frameset", "colgroup", "head"] {
-        map[Array(name.utf8)] = .dropContent
+        map[TagKey.make(name.utf8)] = .dropContent
     }
     return map
 }()
@@ -178,20 +214,26 @@ private struct Sanitizer {
         output.append(contentsOf: Array("<div>".utf8))
         let count = input.count
         var index = 0
+        // Literals instead of the `UInt8` constants: this loop runs once per byte, and Debug
+        // builds call an accessor for every use of a static.
         while index < count {
             let byte = input[index]
-            if byte == .lt {
+            if byte == 0x3C {
                 index = handleMarkup(at: index)
-            } else if byte == .amp {
+            } else if byte == 0x26 {
                 let (scalar, next) = Entities.decode(input, at: index)
                 appendText(scalar)
                 index = next
             } else if byte < 0x80 {
-                if byte.isHTMLSpace, preDepth == 0 {
+                if byte == 0x20 || byte == 0x0A || byte == 0x09 || byte == 0x0D || byte == 0x0C, preDepth == 0 {
                     pendingSpace = true
                 } else {
-                    flushSpace()
-                    appendEscaped(UInt32(byte), to: &output)
+                    if pendingSpace { flushSpace() }
+                    if byte >= 0x20, byte != 0x3E, byte != 0x22 {
+                        output.append(byte)
+                    } else {
+                        appendEscaped(UInt32(byte), to: &output)
+                    }
                     lastWasBlock = false
                 }
                 index += 1
@@ -262,18 +304,17 @@ private struct Sanitizer {
                 // "</ " or "</>": not a tag in HTML; drop up to ">".
                 return skip(past: [.gt], from: position)
             }
-            let name = lowercasedName(nameStart, position)
             let end = skipTagRemainder(from: position)
-            handleClose(name)
+            handleClose(key(nameStart, position))
             return end
         }
         if next.isASCIILetter {
             var position = index + 1
             let nameStart = position
             while position < count, input[position].isTagNameByte { position += 1 }
-            let name = lowercasedName(nameStart, position)
-            let (end, href) = parseAttributes(from: position, wantHref: name == [UInt8(ascii: "a")])
-            return handleOpen(name, href: href, end: end)
+            let tagKey = key(nameStart, position)
+            let (end, href) = parseAttributes(from: position, wantHref: tagKey == TagKey.a)
+            return handleOpen(tagKey, name: nameStart..<position, href: href, end: end)
         }
         appendText(0x3C)
         return index + 1
@@ -295,6 +336,17 @@ private struct Sanitizer {
             index += 1
         }
         return count
+    }
+
+    func key(_ start: Int, _ end: Int) -> UInt64 {
+        guard end > start, end - start <= 10 else { return 0 }
+        var key: UInt64 = 0
+        var position = start
+        while position < end {
+            key = key << 6 | TagKey.code(input[position])
+            position += 1
+        }
+        return key
     }
 
     func lowercasedName(_ start: Int, _ end: Int) -> [UInt8] {
@@ -337,9 +389,9 @@ private struct Sanitizer {
             while index < count, !input[index].isHTMLSpace, input[index] != .equals, input[index] != .gt, input[index] != .slash {
                 index += 1
             }
-            let name = lowercasedName(nameStart, index)
+            let isHref = key(nameStart, index) == TagKey.href
             while index < count, input[index].isHTMLSpace { index += 1 }
-            var value: [UInt8] = []
+            var value: Range<Int> = index..<index
             if index < count, input[index] == .equals {
                 index += 1
                 while index < count, input[index].isHTMLSpace { index += 1 }
@@ -348,32 +400,32 @@ private struct Sanitizer {
                     index += 1
                     let valueStart = index
                     while index < count, input[index] != quote { index += 1 }
-                    value = Array(input[valueStart..<min(index, count)])
+                    value = valueStart..<min(index, count)
                     if index < count { index += 1 }
                 } else {
                     let valueStart = index
                     while index < count, !input[index].isHTMLSpace, input[index] != .gt { index += 1 }
-                    value = Array(input[valueStart..<index])
+                    value = valueStart..<index
                 }
             }
-            if name == Array("href".utf8), href == nil { href = value }
+            if isHref, href == nil { href = Array(input[value]) }
         }
         return (count, href)
     }
 
     // MARK: Elements
 
-    mutating func handleOpen(_ name: [UInt8], href: [UInt8]?, end: Int) -> Int {
+    mutating func handleOpen(_ key: UInt64, name: Range<Int>, href: [UInt8]?, end: Int) -> Int {
         let selfClosing = end >= 2 && input[end - 2] == .slash
-        switch tagActions[name] ?? .unwrap {
+        switch tagActions[key] ?? .unwrap {
         case .unwrap, .void:
             return end
         case .rawText:
-            if name == Array("plaintext".utf8) { return input.count }
-            return skipRawText(name, from: end)
+            if key == TagKey.plaintext { return input.count }
+            return skipRawText(lowercasedName(name.lowerBound, name.upperBound), from: end)
         case .dropContent:
             if selfClosing { return end }
-            return skipElement(name, from: end)
+            return skipElement(lowercasedName(name.lowerBound, name.upperBound), from: end)
         case .emit(let tag):
             emitOpen(tag, href: href)
             return end
@@ -392,14 +444,14 @@ private struct Sanitizer {
         }
         if tag.closesParagraph { closeParagraph() }
         switch tag {
-        case .li: closeOpen(.li, within: [.ul, .ol])
-        case .tr: closeOpen(.tr, within: [.table, .thead, .tbody])
+        case .li: closeOpen(.li, within: Tag.Mask([.ul, .ol]))
+        case .tr: closeOpen(.tr, within: Tag.Mask([.table, .thead, .tbody]))
         case .td, .th:
-            closeOpen(.td, within: [.tr, .table])
-            closeOpen(.th, within: [.tr, .table])
+            closeOpen(.td, within: Tag.Mask([.tr, .table]))
+            closeOpen(.th, within: Tag.Mask([.tr, .table]))
         case .thead, .tbody:
-            closeOpen(.thead, within: [.table])
-            closeOpen(.tbody, within: [.table])
+            closeOpen(.thead, within: Tag.Mask([.table]))
+            closeOpen(.tbody, within: Tag.Mask([.table]))
         default: break
         }
         guard stack.count < Self.maximumDepth else { return }
@@ -423,19 +475,26 @@ private struct Sanitizer {
     }
 
     /// Closes an open `tag` that sits above the nearest of `boundaries` (implied end tags).
-    mutating func closeOpen(_ tag: Tag, within boundaries: Set<Tag>) {
-        guard let position = stack.lastIndex(where: { $0 == tag || boundaries.contains($0) }), stack[position] == tag else { return }
+    mutating func closeOpen(_ tag: Tag, within boundaries: Tag.Mask) {
+        var position = stack.count - 1
+        while position >= 0 {
+            let open = stack[position]
+            if open == tag { break }
+            if boundaries.contains(open) { return }
+            position -= 1
+        }
+        guard position >= 0 else { return }
         while stack.count > position {
             if let top = stack.popLast() { appendClose(top) }
         }
     }
 
     mutating func closeParagraph() {
-        closeOpen(.p, within: [.div, .li, .td, .th, .blockquote, .table, .ul, .ol])
+        closeOpen(.p, within: Tag.Mask.paragraphBoundaries)
     }
 
-    mutating func handleClose(_ name: [UInt8]) {
-        guard case .emit(let tag)? = tagActions[name] else { return }
+    mutating func handleClose(_ key: UInt64) {
+        guard case .emit(let tag)? = tagActions[key] else { return }
         if tag == .br {
             emitOpen(.br, href: nil)
             return
@@ -571,10 +630,25 @@ enum Entities {
             position += 1
         }
         guard position > nameStart, position < count, input[position] == .semicolon else { return (0x26, index + 1) }
-        let name = String(decoding: UnsafeBufferPointer(rebasing: input[nameStart..<position]), as: UTF8.self)
-        guard let scalar = named[name] else { return (0x26, index + 1) }
+        guard let key = namedKey(UnsafeBufferPointer(rebasing: input[nameStart..<position])), let scalar = namedByKey[key] else {
+            return (0x26, index + 1)
+        }
         return (scalar, position + 1)
     }
+
+    /// An entity name packed into an integer (7 bits per ASCII character, case kept, at most 9).
+    static func namedKey<C: Collection>(_ bytes: C) -> UInt64? where C.Element == UInt8 {
+        guard !bytes.isEmpty, bytes.count <= 9 else { return nil }
+        var key: UInt64 = 0
+        for byte in bytes { key = key << 7 | UInt64(byte & 0x7F) }
+        return key
+    }
+
+    static let namedByKey: [UInt64: UInt32] = {
+        var map: [UInt64: UInt32] = [:]
+        for (name, scalar) in named { if let key = namedKey(Array(name.utf8)) { map[key] = scalar } }
+        return map
+    }()
 
     static let windows1252: [UInt32: UInt32] = [
         0x80: 0x20AC, 0x82: 0x201A, 0x83: 0x0192, 0x84: 0x201E, 0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02C6,

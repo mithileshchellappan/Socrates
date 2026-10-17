@@ -13,6 +13,8 @@ public actor MailSender {
     private let services: StudyServices
     private let connector: any MailConnector
     private let clock: MailClock
+    /// Drafts this sender is sending right now (recovery leaves them alone).
+    private var inFlight: Set<MailDraft.ID> = []
 
     public init(services: StudyServices, connector: any MailConnector = SwiftMailConnector(), clock: MailClock = MailClock()) {
         self.services = services
@@ -48,6 +50,8 @@ public actor MailSender {
         }) else {
             return   // another Send got there first
         }
+        inFlight.insert(draftID)
+        defer { inFlight.remove(draftID) }
 
         let bytes = MessageComposer.compose(draft, from: account.sender, date: started, messageID: draft.rfcMessageID)
         let credentials = MailCredentials(username: account.username, password: password)
@@ -82,7 +86,7 @@ public actor MailSender {
         let drafts = MailDraftRepository(store: records)
         guard let interrupted = try? await drafts.drafts(in: [.sending]), !interrupted.isEmpty else { return }
         var sessions: [MailAccount.ID: any IMAPSession] = [:]
-        for draft in interrupted {
+        for draft in interrupted where !inFlight.contains(draft.id) {
             let found = await isInSent(draft, sessions: &sessions)
             switch found {
             case true?:
@@ -141,13 +145,17 @@ public actor MailSender {
     /// sync engine (`sent_copy_saved_at` stays empty; the flag stays pending).
     private func afterSend(_ draft: MailDraft, account: MailAccount, credentials: MailCredentials) async {
         let stamp = clock.now()
-        var original: MailMessage?
+        // The replied message is answered here at once; `onlyAnswered`: it had no other local
+        // change waiting, so the server gets just \Answered (a \Seen another client set stays).
+        var original: (row: MailMessage, onlyAnswered: Bool)?
         if let originalID = draft.mailMessageID {
             original = try? await services.database.write { db in
+                guard let before = try MailMessage.find(originalID).fetchOne(db) else { return nil }
                 try MailMessage.where { $0.id.eq(originalID) && !$0.isAnswered }
                     .update { $0.isAnswered = true; $0.flagsChangedAt = Date?.some(stamp); $0.updatedAt = stamp }
                     .execute(db)
-                return try MailMessage.find(originalID).fetchOne(db)
+                guard let after = try MailMessage.find(originalID).fetchOne(db) else { return nil }
+                return (after, before.flagsChangedAt == nil)
             }
         }
         do {
@@ -156,11 +164,16 @@ public actor MailSender {
                 if let sent = try await MailboxRepository(store: records).mailbox(role: .sent, accountID: account.id) {
                     try await SentCopy.save(draft, account: account, sent: sent, session: session, services: services, now: clock.now)
                 }
-                if let original, original.flagsChangedAt != nil, let uid = original.uid.flatMap({ UInt32(exactly: $0) }),
-                   let mailbox = try await records.fetch(Mailbox.self, id: original.mailboxID) {
+                if case let (row, onlyAnswered)? = original, row.flagsChangedAt != nil, row.moveToMailboxID == nil,
+                   let uid = row.uid.flatMap({ UInt32(exactly: $0) }),
+                   let mailbox = try await records.fetch(Mailbox.self, id: row.mailboxID) {
                     _ = try await session.select(mailbox.path)
-                    try await session.store([uid], flags: [IMAPFlag.answered], .add)
-                    try await MailSyncStore(services: services, now: clock.now).markFlagsPushed([original])
+                    if onlyAnswered {
+                        try await session.store([uid], flags: [IMAPFlag.answered], .add)
+                    } else {
+                        try await FlagState.push([row], session: session)
+                    }
+                    try await MailSyncStore(services: services, now: clock.now).markFlagsPushed([row])
                 }
                 await session.logout()
             } catch {

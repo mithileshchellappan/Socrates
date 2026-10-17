@@ -128,8 +128,9 @@ actor SwiftMailIMAPSession: IMAPSession {
     private var capabilitySet: Set<String>
     private var idleTask: Task<Void, Never>?
 
-    /// IDLE is re-issued this often (RFC 2177: at least every 29 minutes).
-    static let idleRenewal: Duration = .seconds(25 * 60)
+    /// IDLE is re-issued this often (RFC 2177: at least every 29 minutes; shorter keeps NAT
+    /// mappings of home routers alive).
+    static let idleRenewal: Duration = .seconds(10 * 60)
 
     init(server: IMAPServer, host: String, capabilities: Set<String>) {
         self.server = server

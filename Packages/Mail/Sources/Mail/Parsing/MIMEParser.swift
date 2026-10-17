@@ -101,7 +101,7 @@ public enum MIMEParser {
         let inReplyTo = MessageIDs.single(headers["in-reply-to"])
         let references = MessageIDs.list(headers["references"])
         let subject = EncodedWords.decode(headers["subject"] ?? "")
-            .split(whereSeparator: { $0 == "\n" || $0 == "\r" }).joined(separator: " ")
+            .split(whereSeparator: \.isNewline).joined(separator: " ")
             .trimmingCharacters(in: .whitespaces)
 
         var sanitized = ""

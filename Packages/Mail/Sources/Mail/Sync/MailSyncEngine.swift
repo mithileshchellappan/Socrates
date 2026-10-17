@@ -520,8 +520,12 @@ public actor MailSyncEngine {
             selection = try await session.select(mailbox.path)
         }
 
+        // After a UIDVALIDITY change the window is fetched again from where the old one began, so
+        // every stored row can be found again by Message-ID.
+        var windowFloor: CalendarDay?
         if let stored = mailbox.uidValidity, stored != Int64(selection.uidValidity) {
             Log.mail.info("UIDVALIDITY of \(mailbox.role?.rawValue ?? "a mailbox", privacy: .public) changed; re-attaching by Message-ID")
+            windowFloor = mailbox.syncedSince
             mailbox = try await store.resetUIDValidity(mailbox, to: selection.uidValidity)
             resync = nil
         }
@@ -529,7 +533,7 @@ public actor MailSyncEngine {
 
         // Local changes first: the student's flags win, moves leave this mailbox.
         let pendingFlags = try await store.pendingFlags(mailbox.id)
-        try await pushFlags(pendingFlags, session: session)
+        try await FlagState.push(pendingFlags, session: session)
         try await store.markFlagsPushed(pendingFlags)
         try await pushMoves(from: mailbox, session: session, mailboxes: mailboxes)
 
@@ -549,7 +553,8 @@ public actor MailSyncEngine {
         }
 
         // The window, newest first, then new mail, oldest first.
-        let since = account.syncSince ?? CalendarDay(clock.now(), in: MailClock.berlin).adding(days: -configuration.defaultWindowDays)
+        var since = account.syncSince ?? CalendarDay(clock.now(), in: MailClock.berlin).adding(days: -configuration.defaultWindowDays)
+        if let windowFloor, windowFloor < since { since = windowFloor }
         var batchIndex = 0
         var windowComplete = mailbox.syncedSince.map { $0 <= since } ?? false
         if !windowComplete {
@@ -579,19 +584,6 @@ public actor MailSyncEngine {
         _ = try await store.finishMailbox(
             mailbox.id, selection: selection, highestModSeq: selection.highestModSeq, syncedSince: nil, at: clock.now()
         )
-    }
-
-    private func pushFlags(_ rows: [MailMessage], session: any IMAPSession) async throws {
-        guard !rows.isEmpty else { return }
-        let flags: [(String, KeyPath<MailMessage, Bool>)] = [
-            (IMAPFlag.seen, \.isSeen), (IMAPFlag.flagged, \.isFlagged), (IMAPFlag.answered, \.isAnswered),
-        ]
-        for (flag, keyPath) in flags {
-            let add = rows.filter { $0[keyPath: keyPath] }.compactMap { $0.uid.flatMap { UInt32(exactly: $0) } }
-            let remove = rows.filter { !$0[keyPath: keyPath] }.compactMap { $0.uid.flatMap { UInt32(exactly: $0) } }
-            if !add.isEmpty { try await session.store(add.sorted(), flags: [flag], .add) }
-            if !remove.isEmpty { try await session.store(remove.sorted(), flags: [flag], .remove) }
-        }
     }
 
     private func pushMoves(from mailbox: Mailbox, session: any IMAPSession, mailboxes: [Mailbox.ID: Mailbox]) async throws {
@@ -628,12 +620,12 @@ public actor MailSyncEngine {
     private func reattachDetached(
         in mailbox: Mailbox, account: MailAccount, session: any IMAPSession, selection: IMAPSelection, batchIndex: inout Int
     ) async throws {
-        let detached = try await store.detachedRows(mailbox.id, limit: 50)
+        let detached = try await store.detachedRows(mailbox.id)
         guard !detached.isEmpty else { return }
         let stored = try await store.storedUIDs(mailbox.id)
         var found: Set<UInt32> = []
-        for row in detached where !row.rfcMessageID.isEmpty {
-            let uids = try await session.search(.messageID(row.rfcMessageID))
+        for rfcID in Set(detached.map(\.rfcMessageID)) where !rfcID.isEmpty {
+            let uids = try await session.search(.messageID(rfcID))
             found.formUnion(uids.filter { !stored.contains($0) })
         }
         try await fetch(found.sorted(), into: mailbox, account: account, session: session, selection: selection, batchIndex: &batchIndex)

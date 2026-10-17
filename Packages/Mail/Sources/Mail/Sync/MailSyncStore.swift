@@ -82,8 +82,18 @@ struct MailSyncStore: Sendable {
             if let archive = try Mailbox.where({ $0.accountID.eq(accountID) && $0.role.eq(MailboxRole?.some(.archive)) }).fetchOne(db) {
                 return archive
             }
-            let delimiter = try Mailbox.where { $0.accountID.eq(accountID) }.fetchAll(db).compactMap(\.delimiter).first
-            let archive = store.stamp(Mailbox(accountID: accountID, path: "Archive", name: "Archive", delimiter: delimiter, role: .archive, isSynced: true))
+            let all = try Mailbox.where { $0.accountID.eq(accountID) }.fetchAll(db)
+            let delimiter = all.compactMap(\.delimiter).first
+            // Servers whose folders live under INBOX ("INBOX.Sent") get "INBOX.Archive".
+            var path = "Archive"
+            if let delimiter, !delimiter.isEmpty {
+                let prefix = "INBOX" + delimiter
+                let roleFolders = all.filter { $0.role != nil && $0.role != .inbox }
+                if !roleFolders.isEmpty, roleFolders.allSatisfy({ $0.path.uppercased().hasPrefix(prefix.uppercased()) }) {
+                    path = prefix + "Archive"
+                }
+            }
+            let archive = store.stamp(Mailbox(accountID: accountID, path: path, name: "Archive", delimiter: delimiter, role: .archive, isSynced: true))
             try Mailbox.upsert { archive }.execute(db)
             return archive
         }
@@ -154,12 +164,11 @@ struct MailSyncStore: Sendable {
 
     /// Rows without a UID (after a UIDVALIDITY change or a move without COPYUID) and no pending
     /// move, oldest first.
-    func detachedRows(_ mailboxID: Mailbox.ID, limit: Int) async throws -> [MailMessage] {
+    func detachedRows(_ mailboxID: Mailbox.ID) async throws -> [MailMessage] {
         try await database.read { db in
             try MailMessage
                 .where { $0.mailboxID.eq(mailboxID) && $0.uid.is(nil) && $0.moveToMailboxID.is(nil) }
                 .order(by: \.receivedAt)
-                .limit(limit)
                 .fetchAll(db)
         }
     }
@@ -448,5 +457,20 @@ struct FlagState: Hashable, Sendable {
         answered = IMAPFlag.contains(flags, IMAPFlag.answered)
         let managed: Set<String> = [IMAPFlag.seen, IMAPFlag.flagged, IMAPFlag.answered, IMAPFlag.recent].map(IMAPFlag.normalized).reduce(into: []) { $0.insert($1) }
         keywords = flags.filter { !managed.contains(IMAPFlag.normalized($0)) }.sorted()
+    }
+
+    /// Stores the rows' \Seen, \Flagged and \Answered on the server (the selected mailbox), as
+    /// they are here: local wins.
+    static func push(_ rows: [MailMessage], session: any IMAPSession) async throws {
+        guard !rows.isEmpty else { return }
+        let flags: [(String, KeyPath<MailMessage, Bool>)] = [
+            (IMAPFlag.seen, \.isSeen), (IMAPFlag.flagged, \.isFlagged), (IMAPFlag.answered, \.isAnswered),
+        ]
+        for (flag, keyPath) in flags {
+            let add = rows.filter { $0[keyPath: keyPath] }.compactMap { $0.uid.flatMap { UInt32(exactly: $0) } }
+            let remove = rows.filter { !$0[keyPath: keyPath] }.compactMap { $0.uid.flatMap { UInt32(exactly: $0) } }
+            if !add.isEmpty { try await session.store(add.sorted(), flags: [flag], .add) }
+            if !remove.isEmpty { try await session.store(remove.sorted(), flags: [flag], .remove) }
+        }
     }
 }

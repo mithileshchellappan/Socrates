@@ -9,10 +9,7 @@ let package = Package(
     name: "Mail",
     platforms: [.macOS(.v26), .iOS(.v26)],
     products: [
-        .library(name: "Mail", targets: ["Mail"]),
-        // Dev CLI for the opt-in live check against the Exampleton servers (reads the Keychain
-        // password; never sends). Not linked by the app.
-        .executable(name: "mail-sync", targets: ["MailSyncTool"])
+        .library(name: "Mail", targets: ["Mail"])
     ],
     dependencies: [
         .package(path: "../StudyCore"),
@@ -32,13 +29,6 @@ let package = Package(
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "SwiftMail", package: "SwiftMail"),
                 .product(name: "NIOIMAP", package: "swift-nio-imap")
-            ]
-        ),
-        .executableTarget(
-            name: "MailSyncTool",
-            dependencies: [
-                "Mail",
-                .product(name: "StudyCore", package: "StudyCore")
             ]
         ),
     ],

@@ -4,9 +4,10 @@ import NaturalLanguage
 // Plain-text helpers: format=flowed, line endings, the list snippet and the language.
 
 enum MailText {
-    /// "\r\n" and "\r" → "\n".
+    /// "\r\n" and "\r" → "\n". (Checked on UTF-8: in Swift "\r\n" is one Character, so
+    /// `contains("\r")` would miss it.)
     static func normalizeLineEndings(_ text: String) -> String {
-        guard text.contains("\r") else { return text }
+        guard text.utf8.contains(0x0D) else { return text }
         return text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
     }
 
