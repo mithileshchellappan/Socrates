@@ -83,6 +83,8 @@ public struct SearchHit: Identifiable, Hashable, Sendable {
     /// Every query term matched (directly or through the slide on screen), not just some.
     public var matchesAllTerms: Bool
     public var target: SearchTarget?
+    /// A note's own title (its first heading); nil for other hits and untitled notes.
+    public var title: String? = nil
 }
 
 /// Hits of one lecture (or of one deck no lecture uses, or the student's notes), best first.
@@ -148,6 +150,15 @@ public struct SearchResults: Hashable, Sendable {
 /// and course-glossary expansion. M1 ships none.
 public protocol QueryPlanning: Sendable {
     func alternatives(for query: SearchQuery) async throws -> [String]
+}
+
+extension Note {
+    /// The note's own title: its first heading, when it has one.
+    var searchTitle: String? {
+        guard let heading = blocks.first(where: { $0.type == .heading }) else { return nil }
+        let text = heading.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
 }
 
 extension Course {

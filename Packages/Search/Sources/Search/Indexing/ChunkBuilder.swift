@@ -154,7 +154,7 @@ final class ChunkBuilder {
 
     /// The note's plain text as one chunk, anchored like the note; nil for a blank note.
     func noteChunk(note: Note, courseID: Course.ID?, fallbackLanguage: String, now: Date) -> ChunkRow? {
-        let text = note.plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = Self.noteText(note)
         guard !text.isEmpty else { return nil }
         let language = lemmatizer.language(of: text, fallback: fallbackLanguage)
         return ChunkRow(
@@ -173,5 +173,11 @@ final class ChunkBuilder {
             sourceUpdatedAt: note.updatedAt,
             updatedAt: now
         )
+    }
+
+    /// A note's chunk text: its blocks on one line, " · " between them (a snippet reads as one
+    /// paragraph, not a ragged first line).
+    static func noteText(_ note: Note) -> String {
+        SlideText.joinLines(note.plainText)
     }
 }
