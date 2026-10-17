@@ -1,4 +1,7 @@
+import CalendarSync
 import CaptureUI
+import CoursesUI
+import FilingUI
 import Processing
 import StudyCore
 import StudyUI
@@ -9,8 +12,16 @@ struct RootView: View {
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     #endif
-    @State private var selection: SidebarItem? = .today
+    @State private var selection: SidebarItem?
     @State private var query = ""
+    /// Where the next review screen opens (a search hit, Today's hero).
+    @State private var reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)?
+    @FocusState private var searchFocused: Bool
+
+    init(selection: SidebarItem? = .today, query: String = "") {
+        _selection = State(initialValue: selection)
+        _query = State(initialValue: query)
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -20,18 +31,31 @@ struct RootView: View {
                 systemImage: "exclamationmark.triangle",
                 description: Text(launchError)
             )
-        } else {
+        } else if let center = model.filingCenter {
             NavigationSplitView {
-                SidebarView(selection: $selection)
+                SidebarView(selection: $selection, center: center)
             } detail: {
                 NavigationStack {
-                    DetailView(item: selection ?? .today)
+                    DetailView(
+                        item: selection ?? .today,
+                        query: query,
+                        target: reviewTarget,
+                        record: record
+                    )
                 }
                 .id(selection)
             }
-            .searchable(text: $query, placement: .toolbar, prompt: "Search lectures, notes, mail")
+            .searchable(text: $query, placement: .toolbar, prompt: Text("Search lectures and notes"))
+            .searchFocused($searchFocused)
+            .onChange(of: query) { _, text in
+                if !text.trimmingCharacters(in: .whitespaces).isEmpty, selection != .search { selection = .search }
+            }
             .onSubmit(of: .search) { selection = .search }
             .focusedSceneValue(\.sidebarSelection, $selection)
+            .focusedSceneValue(\.focusSearch) {
+                selection = .search
+                searchFocused = true
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     // A recording keeps going with its screen closed; show it here so it is never
@@ -46,14 +70,17 @@ struct RootView: View {
                     }
                 }
             }
+            .smartImport(center)
+            .environment(\.openDestination, OpenDestinationAction(open))
+            .environment(\.studyServices, model.services)
+            .environment(\.calendarMirror, model.calendarMirror)
             .sheet(item: $model.sheet) { sheet in
                 switch sheet {
                 case .newCapture:
                     CaptureSetupView()
-                case .importLecture(let courseID):
-                    ImportLectureView(preferredCourseID: courseID) { imported in
-                        selection = .course(imported.lecture.courseID)
-                    }
+                case .newCourse:
+                    NewCourseView { course in selection = .course(course.id) }
+                        .environment(\.studyServices, model.services)
                 }
             }
             .alert(
@@ -78,7 +105,23 @@ struct RootView: View {
                 .environment(model)
             }
             #endif
+            .background { CalendarSessionsWatcher() }
             .task { await model.startBackgroundWork() }
+        }
+    }
+
+    /// Routes a feature screen's request: the sidebar selection, plus where a lecture opens.
+    private func open(_ destination: StudyDestination) {
+        switch destination {
+        case .today: selection = .today
+        case .calendar: selection = .calendar
+        case .search(let text):
+            query = text
+            selection = .search
+        case .course(let id): selection = .course(id)
+        case .lecture(let id, let target):
+            reviewTarget = (id, target)
+            selection = .lecture(id)
         }
     }
 
@@ -96,37 +139,17 @@ struct RootView: View {
     }
 }
 
-struct SidebarView: View {
-    @Binding var selection: SidebarItem?
-    @FetchAll(Course.order { ($0.sortOrder, $0.name) }) private var courses
+/// Asks for Calendar access the first time a course shown in the calendar gets a session (weekly
+/// slots entered in Course Settings), then keeps the calendar in step.
+private struct CalendarSessionsWatcher: View {
+    @Environment(AppModel.self) private var model
+    @FetchAll(LectureSession.where { !$0.isCancelled }) private var sessions
 
     var body: some View {
-        List(selection: $selection) {
-            ForEach(SidebarItem.destinations, id: \.self) { item in
-                NavigationLink(value: item) {
-                    Label(item.title, systemImage: item.systemImage)
-                }
+        Color.clear
+            .task(id: sessions.count) {
+                guard !sessions.isEmpty else { return }
+                await model.syncCalendar()
             }
-
-            Section("Courses") {
-                ForEach(courses) { course in
-                    NavigationLink(value: SidebarItem.course(course.id)) {
-                        Label {
-                            Text(course.name)
-                        } icon: {
-                            Image(systemName: "circle.fill")
-                                .imageScale(.small)
-                                .foregroundStyle(Color(hex: course.colorHex) ?? .accentColor)
-                        }
-                    }
-                }
-            }
-        }
-        .navigationTitle("Study Portal")
-        #if os(macOS)
-        .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 300)
-        #else
-        .toolbar { SettingsToolbarItem() }
-        #endif
     }
 }

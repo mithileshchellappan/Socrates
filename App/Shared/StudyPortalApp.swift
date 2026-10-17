@@ -1,4 +1,7 @@
 import CaptureUI
+import CoursesUI
+import FilingUI
+import ReviewUI
 import StudyCore
 import SwiftUI
 
@@ -24,7 +27,12 @@ struct StudyPortalApp: App {
             SidebarCommands()
             InspectorCommands()
             LectureCommands(model: model)
+            CourseCommands { model.sheet = .newCourse }
+            if let center = model.filingCenter {
+                ImportCommands(center: center)
+            }
             GoCommands()
+            ReviewCommands()
             LiveLectureCommands()
         }
 

@@ -1,7 +1,12 @@
+import CalendarSync
 import Capture
+import Courses
+import Filing
+import FilingUI
 import Foundation
 import Observation
 import Processing
+import Search
 import StudyCore
 import Transcription
 
@@ -13,6 +18,16 @@ final class AppModel {
     let launchError: String?
     /// Runs lecture jobs (transcribe → align) in the background; state lives in `job` rows.
     let processor: LectureProcessor?
+    /// Smart import: files dropped files to their course and lecture (Undo, Change).
+    let filing: FilingService?
+    /// The main window's drop HUD, toasts, change sheet and File ▸ Import… panel.
+    let filingCenter: FilingCenter?
+    /// Mirrors lecture sessions into the "Study Portal" calendar. Mac only until the library
+    /// syncs between devices (M7): another device's session ids differ, and each device's orphan
+    /// cleanup would delete the other's events.
+    let calendarMirror: CalendarMirror?
+    /// Keeps the keyword search index in step with transcripts, slides and notes.
+    let searchIndexer: SearchIndexer?
 
     /// The lecture being captured, owned here so recording outlives its window.
     private(set) var live: LiveCapture?
@@ -20,28 +35,71 @@ final class AppModel {
     var sheet: AppSheet?
     /// iOS/iPadOS: the live lecture covers the screen while true (macOS uses its own window).
     var isLivePresented = false
-    /// A failure to show once (import, opening a deck).
+    /// A failure to show once (opening a deck, a live capture).
     var failure: String?
-    /// Set when an import finishes, so the main window can show where it went.
-    var lastImported: ImportedLecture?
 
+    /// Recordings whose transcription just finished (from the processor's observer).
+    @ObservationIgnored private let transcribed: AsyncStream<Recording.ID>
     @ObservationIgnored private var didStartBackgroundWork = false
+    @ObservationIgnored private var spokenContentPass: Task<Void, Never>?
+    @ObservationIgnored private var calendarAccessAsked = false
 
-    init(services: StudyServices?, launchError: String? = nil) {
+    init(services: StudyServices?, launchError: String? = nil, startsProcessing: Bool = true) {
         self.services = services
         self.launchError = launchError
-        if let services, let store = try? WhisperModelStore.shared() {
+        let (transcribed, finishedTranscription) = AsyncStream.makeStream(of: Recording.ID.self)
+        self.transcribed = transcribed
+        var processor: LectureProcessor?
+        if startsProcessing, let services, let store = try? WhisperModelStore.shared() {
             let engine = WhisperKitEngine(store: store)
-            processor = LectureProcessor(services: services, engine: engine, onIdle: {
-                // The model holds about 1.5 GB; load it again only for the next job.
-                await engine.decoder.unload()
-            })
+            processor = LectureProcessor(
+                services: services, engine: engine,
+                onIdle: {
+                    // The model holds about 1.5 GB; load it again only for the next job.
+                    await engine.decoder.unload()
+                },
+                observer: { event in
+                    if case .finished(let job, _) = event, job.stage == .transcribe, job.state == .succeeded,
+                       let recordingID = job.recordingID {
+                        finishedTranscription.yield(recordingID)
+                    }
+                }
+            )
+        }
+        self.processor = processor
+        if let services {
+            let service = FilingService(
+                services: services,
+                afterImport: { [weak processor] in await processor?.wake() },
+                cancelJobs: { [weak processor] lectureID in try? await processor?.cancel(lectureID: lectureID) }
+            )
+            filing = service
+            filingCenter = FilingCenter(service: service)
+            searchIndexer = SearchIndexer(services: services)
+            #if os(macOS)
+            calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
+            #else
+            calendarMirror = nil
+            #endif
         } else {
-            processor = nil
+            filing = nil
+            filingCenter = nil
+            searchIndexer = nil
+            calendarMirror = nil
+        }
+        filingCenter?.didFile = { [weak self] outcomes in
+            // New slides may settle a recording that was transcribed before they came.
+            if outcomes.contains(where: { $0.kind == .deck && $0.filing?.lectureID != nil }) {
+                self?.filesWereFiled()
+            }
         }
     }
 
     static func launch() -> AppModel {
+        // Hosting unit tests: an empty in-memory library, nothing started.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return AppModel(services: try? StudyServices.inMemory(), startsProcessing: false)
+        }
         do {
             return AppModel(services: try StudyServices.live())
         } catch {
@@ -52,11 +110,30 @@ final class AppModel {
 
     // MARK: - Background work
 
-    /// Imports captures a crash left behind, re-queues interrupted jobs and starts processing.
-    /// Runs once per launch.
+    /// Runs once per launch: creates the student's courses in an empty library, imports captures
+    /// a crash left behind, re-queues interrupted jobs and starts processing, keeps the search
+    /// index current, gives unsure recordings their look by what was said, and brings the
+    /// calendar up to date.
     func startBackgroundWork() async {
         guard !didStartBackgroundWork, let services, let processor else { return }
         didStartBackgroundWork = true
+        do {
+            let seeded = try await StudentCourses.seedIfEmpty(services: services)
+            if !seeded.isEmpty { Log.app.notice("Created \(seeded.count) courses") }
+        } catch {
+            Log.app.error("Creating the courses failed: \(error.localizedDescription, privacy: .public)")
+        }
+
+        if let searchIndexer {
+            Task { await searchIndexer.start() }
+        }
+        let transcribed = transcribed
+        Task { [weak self] in
+            for await recordingID in transcribed {
+                await self?.recordingTranscribed(recordingID)
+            }
+        }
+
         let recording = live?.session.package.map { Set([$0.url]) } ?? []
         let recovered = await LectureImporter(services: services)
             .importPendingCaptures(in: services.paths.recordings, excluding: recording)
@@ -69,6 +146,66 @@ final class AppModel {
             Log.jobs.error("Job recovery failed: \(error.localizedDescription, privacy: .public)")
         }
         await processor.wake()
+
+        if let filing {
+            for changed in await filing.fileUnsureRecordingsBySpokenContent() {
+                await filingCenter?.refresh(changed)
+            }
+        }
+        await syncCalendar(full: true)
+    }
+
+    /// A transcript landed: an unsure recording may now be filed by what was said.
+    private func recordingTranscribed(_ recordingID: Recording.ID) async {
+        guard let filing else { return }
+        do {
+            if let changed = try await filing.fileBySpokenContent(recordingID: recordingID) {
+                await filingCenter?.refresh(changed)
+            }
+        } catch {
+            Log.importer.error("Filing by spoken content failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// After a drop: slides that just arrived may settle a recording that was transcribed before
+    /// they were there. Runs once things are quiet.
+    func filesWereFiled() {
+        guard let filing else { return }
+        spokenContentPass?.cancel()
+        spokenContentPass = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            for changed in await filing.fileUnsureRecordingsBySpokenContent() {
+                await self?.filingCenter?.refresh(changed)
+            }
+        }
+    }
+
+    // MARK: - Calendar
+
+    /// Brings the "Study Portal" calendar in line with the sessions. Calendar access is asked for
+    /// only once a course shown in the calendar has a session; until then nothing is written.
+    func syncCalendar(full: Bool = false) async {
+        guard let calendarMirror, let services else { return }
+        do {
+            if !calendarAccessAsked, try await Self.hasCalendarSessions(services) {
+                calendarAccessAsked = true
+                _ = try await calendarMirror.requestAccess()
+            }
+            let report = try await calendarMirror.sync(full: full)
+            Log.calendar.info("Calendar sync: \(String(describing: report.outcome), privacy: .public)")
+        } catch {
+            Log.calendar.error("Calendar sync failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// True when a course shown in the calendar has a session that is not cancelled.
+    static func hasCalendarSessions(_ services: StudyServices) async throws -> Bool {
+        try await services.database.read { db in
+            let visible = try Course.where { $0.showsInCalendar }.fetchAll(db).map(\.id)
+            guard !visible.isEmpty else { return false }
+            return try LectureSession.where { !$0.isCancelled && $0.courseID.in(visible) }.fetchCount(db) > 0
+        }
     }
 
     // MARK: - Live capture
@@ -112,26 +249,18 @@ final class AppModel {
         )
         // Filed from here, not from the live screen: Stop and recording failures alike, whether or
         // not the screen is still open.
-        let courseID = course.id
         session.onFinalized = { [weak self] package in
-            self?.fileCapture(package, courseID: courseID)
+            self?.fileCapture(package)
         }
         live = LiveCapture(session: session, course: course, deck: deck, lectureID: lectureID, openedAt: Date())
     }
 
-    /// Files a finished capture into the library and queues its processing.
-    private func fileCapture(_ package: LecturePackage, courseID: Course.ID) {
-        guard let services else { return }
-        let processor = processor
+    /// Files a finished capture through smart import (its course from the manifest, its session
+    /// by start time), with a toast, and queues its processing.
+    private func fileCapture(_ package: LecturePackage) {
+        guard let filingCenter else { return }
         Task {
-            do {
-                let imported = try await LectureImporter(services: services).importCapture(at: package.url, courseID: courseID)
-                lastImported = imported
-                await processor?.wake()
-            } catch {
-                Log.importer.error("Capture import failed: \(String(describing: error), privacy: .public)")
-                failure = error.localizedDescription
-            }
+            await filingCenter.file([package.url])
         }
     }
 
@@ -142,45 +271,7 @@ final class AppModel {
         self.live = nil
     }
 
-    // MARK: - Import
-
-    enum ImportSource: Hashable {
-        /// A `.lecture` package from live capture.
-        case capture(URL)
-        /// An audio file, with an optional slide PDF.
-        case recording(audio: URL, deck: URL?)
-    }
-
-    /// Imports a lecture and queues its processing. Returns nil on failure (shown via `failure`).
-    @discardableResult
-    func importLecture(_ source: ImportSource, courseID: Course.ID) async -> ImportedLecture? {
-        guard let services else { return nil }
-        let urls: [URL] = switch source {
-        case .capture(let url): [url]
-        case .recording(let audio, let deck): [audio] + (deck.map { [$0] } ?? [])
-        }
-        let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
-        defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
-        do {
-            let importer = LectureImporter(services: services)
-            let imported: ImportedLecture
-            switch source {
-            case .capture(let url):
-                imported = try await importer.importCapture(at: url, courseID: courseID)
-            case .recording(let audio, let deck):
-                imported = try await importer.importRecording(audio: audio, deck: deck, courseID: courseID)
-            }
-            lastImported = imported
-            await processor?.wake()
-            return imported
-        } catch {
-            Log.importer.error("Import failed: \(String(describing: error), privacy: .public)")
-            failure = error.localizedDescription
-            return nil
-        }
-    }
-
-    /// Puts a slide PDF into the library for `courseID`.
+    /// Puts a slide PDF into the library for `courseID` (the capture sheet's Choose PDF…).
     func importDeck(at url: URL, courseID: Course.ID) async -> Deck? {
         guard let services else { return nil }
         let scoped = url.startAccessingSecurityScopedResource()
@@ -193,38 +284,23 @@ final class AppModel {
         }
     }
 
-    /// Creates a course from the minimal fields the capture and import sheets offer.
-    func createCourse(_ draft: CourseDraft) async -> Course? {
-        guard let services else { return nil }
-        do {
-            let count = try await services.records.count(Course.self)
-            let semester = try await SemesterRepository(store: services.records).current()
-            return try await services.records.save(Course(
-                name: draft.name.trimmingCharacters(in: .whitespacesAndNewlines),
-                language: draft.language,
-                adminLanguage: "de",
-                colorHex: CourseDraft.palette[count % CourseDraft.palette.count],
-                recordingConsentAt: draft.records ? Date() : nil,
-                sortOrder: count,
-                semesterID: semester.id
-            ))
-        } catch {
-            failure = error.localizedDescription
-            return nil
-        }
-    }
-
     /// Records (or withdraws) recording consent for a course.
     func setRecordingConsent(_ granted: Bool, for course: Course) async -> Course? {
         guard let services else { return nil }
-        var course = course
-        course.recordingConsentAt = granted ? (course.recordingConsentAt ?? Date()) : nil
-        return try? await services.records.save(course)
+        return try? await CourseLibrary(services: services).setRecordingConsent(granted, courseID: course.id)
     }
 
     func retryProcessing(lectureID: Lecture.ID) {
         let processor = processor
         Task { _ = try? await processor?.retry(lectureID: lectureID) }
+    }
+
+    /// Re-aligns one recording at once (a manual "slide starts here").
+    nonisolated static func realign(services: StudyServices) -> @Sendable (Lecture.ID, Recording.ID) async throws -> Void {
+        let realigner = Realigner(services: services)
+        return { lectureID, recordingID in
+            _ = try await realigner.realign(lectureID: lectureID, recordingID: recordingID)
+        }
     }
 
     // MARK: - Anthropic API key
@@ -245,19 +321,7 @@ final class AppModel {
 /// What the main window presents as a sheet.
 enum AppSheet: Identifiable, Hashable {
     case newCapture
-    case importLecture(courseID: Course.ID?)
+    case newCourse
 
     var id: Self { self }
-}
-
-/// The few course fields needed to file a lecture before course setup (M1) exists.
-struct CourseDraft: Hashable {
-    var name = ""
-    var language = "en"
-    var records = false
-
-    var isValid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
-    static let languages: [(code: String, name: String)] = [("en", "English"), ("de", "Deutsch")]
-    static let palette = ["#0a84ff", "#30b0c7", "#ff9f0a", "#bf5af2", "#34c759", "#ff375f"]
 }

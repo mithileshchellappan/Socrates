@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// File menu: start a live lecture or import one (⇧⌘N, ⇧⌘I).
+/// File ▸ New Lecture Capture… (⇧⌘N). Import… (⇧⌘I) comes from smart import's `ImportCommands`.
 struct LectureCommands: Commands {
     let model: AppModel
     #if os(macOS)
@@ -22,10 +22,6 @@ struct LectureCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
             .disabled(model.services == nil)
-
-            Button("Import Lecture…") { model.sheet = .importLecture(courseID: nil) }
-                .keyboardShortcut("i", modifiers: [.command, .shift])
-                .disabled(model.services == nil)
         }
     }
 }

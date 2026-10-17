@@ -59,8 +59,10 @@ struct SmartImportModifier: ViewModifier {
                 allowedContentTypes: FilingTypes.importable,
                 allowsMultipleSelection: true
             ) { result in
+                let destination = center.importDestination
+                center.importDestination = nil
                 guard case .success(let urls) = result, !urls.isEmpty else { return }
-                Task { await center.file(urls) }
+                Task { await center.file(urls, to: destination) }
             }
     }
 }

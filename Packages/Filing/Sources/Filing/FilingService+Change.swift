@@ -60,13 +60,25 @@ extension FilingService {
         let now = now()
         let store = store
         let recording: Recording? = try await filing.recordingID.asyncMap { try await store.fetch(Recording.self, id: $0) } ?? nil
+        let zone = try await loadLibrary().zone
         let moved = try await services.database.write { db -> Filing in
             // The destination lecture, created when needed.
             var created = false
             let lecture: Lecture
             switch target {
             case .lecture(let id):
-                guard let existing = try Lecture.find(id).fetchOne(db) else { throw FilingError.missing }
+                guard var existing = try Lecture.find(id).fetchOne(db) else { throw FilingError.missing }
+                // A lecture without a session that is undated, or dated only by day (a title
+                // slide), takes the recording's start, as an import into it does.
+                if filing.kind != .deck, let started = recording?.startedAt, existing.lectureSessionID == nil {
+                    let sameDay = existing.heldAt.map { CalendarDay($0, in: zone) == CalendarDay(started, in: zone) } ?? true
+                    if existing.heldAt == nil || (sameDay && LectureImporter.isWholeDay(existing.heldAt, in: zone)) {
+                        existing.heldAt = started
+                        existing = store.stamp(existing)
+                        let dated = existing
+                        try Lecture.upsert { dated }.execute(db)
+                    }
+                }
                 lecture = existing
             case .session(let id):
                 guard let session = try LectureSession.find(id).fetchOne(db) else { throw FilingError.missing }

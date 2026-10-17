@@ -62,6 +62,11 @@ public final class FilingCenter {
     public var changing: ChangeRequest?
     /// File ▸ Import… presents the file importer.
     public var isImporterPresented = false
+    /// Where the importer's files go (nil: wherever smart import puts them).
+    @ObservationIgnored var importDestination: FilingDestination?
+    /// Called after every drop, import or row drop has been filed (the app takes a second look
+    /// at unsure recordings once new slides are in).
+    @ObservationIgnored public var didFile: (@MainActor ([FilingOutcome]) -> Void)?
 
     /// Seconds a confident toast stays (while not hovered).
     @ObservationIgnored var toastLifetime: Duration = .seconds(8)
@@ -174,6 +179,7 @@ public final class FilingCenter {
     private func file(_ urls: [URL], to destination: FilingDestination?, openChange: Bool) async {
         let outcomes = await service.file(urls, to: destination)
         for outcome in outcomes { show(outcome) }
+        didFile?(outcomes)
         if openChange, let filing = outcomes.first(where: { $0.filing != nil })?.filing {
             changing = ChangeRequest(id: filing.id)
         }
@@ -285,8 +291,9 @@ public final class FilingCenter {
         change(&toasts[index])
     }
 
-    /// File ▸ Import…
-    public func importFiles() {
+    /// File ▸ Import… (or a course's Import, which files into that course).
+    public func importFiles(to destination: FilingDestination? = nil) {
+        importDestination = destination
         isImporterPresented = true
     }
 

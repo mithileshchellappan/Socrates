@@ -105,33 +105,51 @@ public struct CourseLibrary: Sendable {
         guard draft.isValid else { throw CourseLibraryError.missingName }
         let store = store
         return try await services.database.write { db in
-            let courses = try Course.all.fetchAll(db)
-            let semester: Semester
-            if let id = draft.semesterID, let chosen = try Semester.find(id).fetchOne(db) {
-                semester = chosen
-            } else {
-                semester = SemesterChoice.pick(from: try Semester.all.fetchAll(db), on: now)
-            }
-            let used = Set(courses.map { $0.colorHex.lowercased() })
-            let color = draft.colorHex
-                ?? CourseDraft.palette.first { !used.contains($0) }
-                ?? CourseDraft.palette[courses.count % CourseDraft.palette.count]
-            let course = store.stamp(Course(
-                name: draft.trimmedName,
-                shortName: CourseDraft.shortName(for: draft.trimmedName),
-                professors: draft.professors,
-                language: draft.language,
-                adminLanguage: draft.adminLanguage,
-                colorHex: color,
-                recordingConsentAt: draft.records ? now : nil,
-                sortOrder: (courses.map(\.sortOrder).max() ?? -1) + 1,
-                semesterID: semester.id,
-                rules: draft.rules,
-                createdAt: now
-            ))
-            try Course.upsert { course }.execute(db)
-            return course
+            try Self.insert(draft, now: now, consentAt: now, store: store, db: db)
         }
+    }
+
+    /// Creates `drafts` in one transaction, but only in a library without courses (a first
+    /// launch). Consent, when a draft records, is dated `consentAt`. Returns the courses created
+    /// (none when the library already had some).
+    @discardableResult
+    public func seedIfEmpty(_ drafts: [CourseDraft], consentAt: Date, now: Date = Date()) async throws -> [Course] {
+        let store = store
+        return try await services.database.write { db in
+            guard try Course.all.fetchCount(db) == 0 else { return [] }
+            return try drafts.filter(\.isValid).map { draft in
+                try Self.insert(draft, now: now, consentAt: consentAt, store: store, db: db)
+            }
+        }
+    }
+
+    static func insert(_ draft: CourseDraft, now: Date, consentAt: Date, store: RecordStore, db: Database) throws -> Course {
+        let courses = try Course.all.fetchAll(db)
+        let semester: Semester
+        if let id = draft.semesterID, let chosen = try Semester.find(id).fetchOne(db) {
+            semester = chosen
+        } else {
+            semester = SemesterChoice.pick(from: try Semester.all.fetchAll(db), on: now)
+        }
+        let used = Set(courses.map { $0.colorHex.lowercased() })
+        let color = draft.colorHex
+            ?? CourseDraft.palette.first { !used.contains($0) }
+            ?? CourseDraft.palette[courses.count % CourseDraft.palette.count]
+        let course = store.stamp(Course(
+            name: draft.trimmedName,
+            shortName: CourseDraft.shortName(for: draft.trimmedName),
+            professors: draft.professors,
+            language: draft.language,
+            adminLanguage: draft.adminLanguage,
+            colorHex: color,
+            recordingConsentAt: draft.records ? consentAt : nil,
+            sortOrder: (courses.map(\.sortOrder).max() ?? -1) + 1,
+            semesterID: semester.id,
+            rules: draft.rules,
+            createdAt: now
+        ))
+        try Course.upsert { course }.execute(db)
+        return course
     }
 
     /// Saves a changed course. When its semester changed, its sessions are replanned in the same

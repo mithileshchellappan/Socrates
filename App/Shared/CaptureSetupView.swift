@@ -1,4 +1,6 @@
+import CoursesUI
 import StudyCore
+import StudyUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -14,32 +16,36 @@ struct CaptureSetupView: View {
     @FetchAll(Course.order { ($0.sortOrder, $0.name) }) private var courses
     @FetchAll(Deck.order { $0.importedAt.desc() }) private var decks
 
-    @State private var choice: CourseChoice = .new
-    @State private var draft = CourseDraft()
+    @State private var courseID: Course.ID?
     @State private var records = false
     @State private var deckID: Deck.ID?
     @State private var choosesPDF = false
+    @State private var createsCourse = false
     @State private var isWorking = false
     @State private var didSetInitialChoice = false
 
-    private var course: Course? { choice.course(in: courses) }
+    private var course: Course? { courseID.flatMap { id in courses.first { $0.id == id } } }
 
     private var courseDecks: [Deck] {
         guard let course else { return [] }
         return decks.filter { $0.courseID == course.id }
     }
 
-    private var canOpen: Bool {
-        guard !isWorking, records else { return false }
-        return choice == .new ? draft.isValid : course != nil
-    }
+    private var canOpen: Bool { !isWorking && records && course != nil }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    CourseChoiceSection(courses: courses, choice: $choice, draft: $draft)
+                    Picker("Course", selection: coursePicker) {
+                        ForEach(courses) { course in
+                            Text(course.name).tag(CoursePick.course(course.id))
+                        }
+                        if !courses.isEmpty { Divider() }
+                        Text("New Course…").tag(CoursePick.newCourse)
+                    }
                     Toggle("Record this course", isOn: $records)
+                        .disabled(course == nil)
                 }
                 Section {
                     Picker("Slides", selection: $deckID) {
@@ -49,7 +55,7 @@ struct CaptureSetupView: View {
                         }
                     }
                     Button("Choose PDF…") { choosesPDF = true }
-                        .disabled(isWorking || (choice == .new && !draft.isValid))
+                        .disabled(isWorking || course == nil)
                 }
             }
             .formStyle(.grouped)
@@ -71,17 +77,18 @@ struct CaptureSetupView: View {
                 guard case .success(let url) = result else { return }
                 Task { await addDeck(url) }
             }
+            .sheet(isPresented: $createsCourse) {
+                NewCourseView { created in
+                    courseID = created.id
+                    syncCourse(created)
+                }
+                .environment(\.studyServices, model.services)
+            }
             .onAppear {
                 guard !didSetInitialChoice else { return }
                 didSetInitialChoice = true
-                let preferred = courses.first { $0.recordingConsentAt != nil }?.id
-                choice = CourseChoiceSection.initial(courses: courses, preferred: preferred)
-                syncCourse()
-            }
-            .onChange(of: choice) {
-                // Programmatic changes (a course just created) keep what the user set.
-                guard !isWorking else { return }
-                syncCourse()
+                courseID = (courses.first { $0.recordsLectures } ?? courses.first)?.id
+                syncCourse(course)
             }
         }
         #if os(macOS)
@@ -89,36 +96,49 @@ struct CaptureSetupView: View {
         #endif
     }
 
+    private enum CoursePick: Hashable {
+        case course(Course.ID)
+        case newCourse
+        case none
+    }
+
+    /// The course menu; its last item opens the New Course sheet instead of selecting.
+    private var coursePicker: Binding<CoursePick> {
+        Binding(
+            get: { courseID.map(CoursePick.course) ?? .none },
+            set: { pick in
+                switch pick {
+                case .course(let id):
+                    courseID = id
+                    syncCourse(courses.first { $0.id == id })
+                case .newCourse:
+                    createsCourse = true
+                case .none:
+                    break
+                }
+            }
+        )
+    }
+
     /// Consent and the default deck follow the chosen course.
-    private func syncCourse() {
-        if let course {
-            records = course.recordingConsentAt != nil
-            deckID = courseDecks.first?.id
-        } else {
-            records = draft.records
-            deckID = nil
-        }
+    private func syncCourse(_ course: Course?) {
+        records = course?.recordsLectures ?? false
+        deckID = course.flatMap { course in decks.first { $0.courseID == course.id } }?.id
     }
 
     private func addDeck(_ url: URL) async {
+        guard let course else { return }
         isWorking = true
         defer { isWorking = false }
-        guard let target = await resolveCourse() else { return }
-        if let deck = await model.importDeck(at: url, courseID: target.id) {
+        if let deck = await model.importDeck(at: url, courseID: course.id) {
             deckID = deck.id
         }
     }
 
-    /// The chosen course, creating a new one first, with consent as toggled.
+    /// The chosen course, with consent as toggled.
     private func resolveCourse() async -> Course? {
-        if choice == .new {
-            draft.records = records
-            guard draft.isValid, let created = await model.createCourse(draft) else { return nil }
-            choice = .existing(created.id)
-            return created
-        }
         guard let course else { return nil }
-        if (course.recordingConsentAt != nil) != records {
+        if course.recordsLectures != records {
             return await model.setRecordingConsent(records, for: course)
         }
         return course
@@ -128,7 +148,7 @@ struct CaptureSetupView: View {
         Task {
             isWorking = true
             defer { isWorking = false }
-            guard let course = await resolveCourse(), course.recordingConsentAt != nil else { return }
+            guard let course = await resolveCourse(), course.recordsLectures else { return }
             let deck = deckID.flatMap { id in decks.first { $0.id == id } }
             do {
                 try await model.openLiveLecture(course: course, deck: deck)
