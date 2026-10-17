@@ -57,11 +57,16 @@ struct MailListActions {
     var discardProposal: (TrackedItem.ID) -> Void
     var openLecture: (Lecture.ID) -> Void
     var changeFiling: (Filing.ID) -> Void
+    /// No Reply Needed: clears the row's reply marker.
+    var clearNeedsReply: (UUID) -> Void
 
     @ViewBuilder
     func menu(_ row: MailListItem) -> some View {
         if canArchive {
             Button("Reply") { reply(row.id) }
+            if row.needsReply {
+                Button("No Reply Needed") { clearNeedsReply(row.id) }
+            }
             Divider()
             Button(row.isUnread ? "Mark as Read" : "Mark as Unread") { toggleSeen(row) }
             Button(row.isFlagged ? "Unflag" : "Flag") { toggleFlag(row) }
@@ -93,6 +98,13 @@ struct MailListRow: View {
                         .fontWeight(.semibold)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    if row.needsReply {
+                        // Quiet: tertiary, no chip and no copy (the mail asks the student something).
+                        Image(systemName: "arrowshape.turn.up.left")
+                            .imageScale(.small)
+                            .foregroundStyle(.tertiary)
+                            .accessibilityLabel(Text("Needs Reply"))
+                    }
                     if row.isFlagged {
                         Image(systemName: "flag.fill")
                             .imageScale(.small)
