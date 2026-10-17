@@ -18,11 +18,15 @@ enum ExtractionPrompt {
             var due: String?
             var allDay: Bool
             var room: String?
+            /// M3: at most 12 words on why it matters, or "".
+            var details: String?
+            /// M3: "exam_admission", "bonus" or null.
+            var relevance: String?
             var quote: String
             var confidence: Double
 
             enum CodingKeys: String, CodingKey {
-                case kind, title, course, due, room, quote, confidence
+                case kind, title, course, due, room, details, relevance, quote, confidence
                 case allDay = "all_day"
             }
         }
@@ -31,6 +35,18 @@ enum ExtractionPrompt {
     }
 
     static let kinds = ["deadline", "exercise", "exam", "event", "room_change", "cancellation", "announcement"]
+    static let relevances = [ItemRelevance.examAdmission.rawValue, ItemRelevance.bonus.rawValue]
+
+    /// The model's details, at most 12 words.
+    static func details(_ text: String?) -> String {
+        let words = (text ?? "").split(whereSeparator: \.isWhitespace)
+        return words.prefix(12).joined(separator: " ")
+    }
+
+    static func relevance(_ text: String?) -> ItemRelevance? {
+        guard let text = text?.trimmingCharacters(in: .whitespaces).lowercased(), relevances.contains(text) else { return nil }
+        return ItemRelevance(rawValue: text)
+    }
 
     static var schema: JSONValue {
         Schemas.object([
@@ -43,6 +59,8 @@ enum ExtractionPrompt {
                     "due": Schemas.nullable(["type": "string"]),
                     "all_day": ["type": "boolean"],
                     "room": Schemas.nullable(["type": "string"]),
+                    "details": ["type": "string"],
+                    "relevance": Schemas.nullable(Schemas.stringEnum(relevances)),
                     "quote": ["type": "string"],
                     "confidence": ["type": "number"],
                 ]),
@@ -72,6 +90,10 @@ enum ExtractionPrompt {
         item has no date.
         - title: a short English title (at most 8 words), e.g. "Online quiz 1", "CL exercise sheet 1".
         - course: the token of the course it is about (list below), else null.
+        - details: at most 12 words on why it matters or what to do beyond the title, taken from the mail \
+        ("Weekly from then on", "Required for exam admission"), else "".
+        - relevance: "exam_admission" when the mail says it counts towards admission to the exam, "bonus" \
+        when it earns bonus points, else null.
         - confidence: how sure you are that the item is real and correct, from 0 to 1.
         List each thing once. Never list anything the mail does not state. No items: an empty list.
 

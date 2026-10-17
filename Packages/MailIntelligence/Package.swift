@@ -16,6 +16,9 @@ let package = Package(
     dependencies: [
         .package(path: "../StudyCore"),
         .package(path: "../ClaudeKit"),
+        // M3: `Deadlines` (the deadline memory every tracked item write goes through, `DateMentions`
+        // and the text folding helpers). `Agent` never depends back on MailIntelligence.
+        .package(path: "../Agent"),
         // `Lemmatizer` only (public, frozen in M2): mail chunks get the same `lemma_text` as
         // transcripts, so the search engine matches them alike.
         .package(path: "../Search"),
@@ -31,6 +34,7 @@ let package = Package(
             dependencies: [
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "ClaudeKit", package: "ClaudeKit"),
+                .product(name: "Deadlines", package: "Agent"),
                 .product(name: "Search", package: "Search"),
                 .product(name: "GRDB", package: "GRDB.swift")
             ]

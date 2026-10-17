@@ -1,4 +1,5 @@
 import ClaudeKit
+import Deadlines
 import Foundation
 import GRDB
 import StudyCore
@@ -14,9 +15,10 @@ import StudyCore
 ///    one — in that quote; otherwise it is kept with `in_calendar` false (Add to Calendar);
 /// 3. a room change or cancellation becomes a proposal only when exactly one non-cancelled session
 ///    of the course matches the quoted day (and time), else an announcement;
-/// 4. a repeat (same course, kind group, day, similar title; or the same Message-ID and quote)
-///    becomes another source of the existing item, also when it was dismissed: Undo sticks and
-///    nothing goes into the calendar twice;
+/// 4. a repeat (same course, kind group, day, similar title; or the same Message-ID and quote),
+///    also of an item read from a lecture or told by the student, becomes another source of the
+///    existing item, also when it was dismissed: Undo sticks and nothing goes into the calendar
+///    twice (rules 2-4 live in `Deadlines.DeadlineMemory`, the one write path);
 /// 5. items, sources and the message's extraction state are written in one transaction.
 public struct MailExtractor: Sendable {
     /// What one pass did.
@@ -219,6 +221,9 @@ public struct MailExtractor: Sendable {
     struct Candidate: Sendable {
         var kind: TrackedItemKind
         var title: String
+        /// At most 12 words on why it matters, or "".
+        var details = ""
+        var relevance: ItemRelevance?
         var courseID: Course.ID?
         var due: Date?
         var allDay: Bool
@@ -231,8 +236,6 @@ public struct MailExtractor: Sendable {
         /// False for every item of a mail that talks to the model: nothing from it goes into the
         /// calendar on its own.
         var trusted = true
-
-        var addsToCalendar: Bool { trusted && kind.addsToCalendarAutomatically && verified && due != nil }
     }
 
     /// The model's items that survive the checks, and how many were rejected.
@@ -280,9 +283,10 @@ public struct MailExtractor: Sendable {
             if due == nil, kind != .announcement { finalKind = .announcement }
             let room = item.room?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             accepted.append(Candidate(
-                kind: finalKind, title: title, courseID: courseID, due: due?.date, allDay: due?.allDay ?? false,
-                verified: verified, quote: quote, confidence: confidence, room: room, mentions: mentions,
-                trusted: hostile.isEmpty
+                kind: finalKind, title: title, details: ExtractionPrompt.details(item.details),
+                relevance: ExtractionPrompt.relevance(item.relevance), courseID: courseID, due: due?.date,
+                allDay: due?.allDay ?? false, verified: verified, quote: quote, confidence: confidence, room: room,
+                mentions: mentions, trusted: hostile.isEmpty
             ))
         }
         return (accepted, rejected)
@@ -337,8 +341,10 @@ public struct MailExtractor: Sendable {
     }
 }
 
-/// Writes candidates of one message inside one transaction: session proposals, deduplication,
-/// items and sources.
+/// Writes the candidates of one message inside MailExtractor's transaction, through the deadline
+/// memory (`Deadlines.DeadlineMemory`, the one write path for tracked items): session proposals,
+/// deduplication across mail, transcripts and chat, the calendar rule and the source rows live
+/// there. This adapter only turns a validated candidate into an `ItemFinding`.
 struct ItemWriter {
     let db: Database
     let store: RecordStore
@@ -353,202 +359,23 @@ struct ItemWriter {
         var sourceAdded = false
     }
 
-    /// Kinds that count as the same thing when deduplicating.
-    static func group(_ kind: TrackedItemKind) -> String {
-        switch kind {
-        case .deadline, .exercise, .exam: "due"
-        default: kind.rawValue
-        }
-    }
-
-    mutating func write(_ original: MailExtractor.Candidate) throws -> Result {
-        var candidate = original
-        var sessionID: LectureSession.ID?
-        if candidate.kind.isSessionProposal {
-            if let session = try proposalSession(for: candidate) {
-                sessionID = session.id
-                candidate.due = session.startsAt
-                candidate.allDay = false
-                if candidate.kind == .roomChange, let room = candidate.room {
-                    candidate.title = "Move to \(room)?"
-                } else if candidate.kind == .cancellation {
-                    candidate.title = "Cancel \(Self.sessionName(session.kind)) on \(Self.dayText(session.startsAt, timeZone: timeZone))?"
-                }
-            } else {
-                candidate.kind = .announcement
-            }
-        } else if candidate.kind == .event, candidate.verified, !candidate.allDay, let due = candidate.due {
-            sessionID = try session(startingNear: due, courseID: candidate.courseID)
-        }
-        if !candidate.kind.isSessionProposal { candidate.room = candidate.kind == .event || candidate.kind == .exam ? candidate.room : nil }
-
-        if let found = try existingItem(for: candidate, sessionID: sessionID) {
-            if found.sameMessage { return Result() }
-            var item = found.item
-            var calendarAdded = false
-            if item.status == .open, !item.inCalendar, candidate.addsToCalendar, let due = candidate.due {
-                item.inCalendar = true
-                item.dueAt = due
-                item.isAllDay = candidate.allDay
-                calendarAdded = true
-                let updated = store.stamp(item)
-                try TrackedItem.upsert { updated }.execute(db)
-            }
-            try insertSource(itemID: item.id, candidate: candidate, calendarAdded: calendarAdded)
-            return Result(created: false, sourceAdded: true)
-        }
-
-        let item = store.stamp(TrackedItem(
-            courseID: candidate.courseID, kind: candidate.kind, title: candidate.title, dueAt: candidate.due,
-            isAllDay: candidate.allDay, status: .open, sourceQuote: candidate.quote, createdBy: .agent,
-            lectureSessionID: sessionID, room: candidate.room, inCalendar: candidate.addsToCalendar,
-            createdAt: date
-        ))
-        try TrackedItem.upsert { item }.execute(db)
-        try insertSource(itemID: item.id, candidate: candidate, calendarAdded: candidate.addsToCalendar)
-        return Result(created: true, sourceAdded: true)
-    }
-
-    func insertSource(itemID: TrackedItem.ID, candidate: MailExtractor.Candidate, calendarAdded: Bool) throws {
-        let source = store.stamp(TrackedItemSource(
-            trackedItemID: itemID, kind: .mail, mailMessageID: message.id, rfcMessageID: message.rfcMessageID,
-            quote: candidate.quote, confidence: candidate.confidence, calendarAdded: calendarAdded, apiCallID: apiCallID,
-            createdAt: date
-        ))
-        try TrackedItemSource.upsert { source }.execute(db)
-    }
-
-    // MARK: Deduplication
-
-    /// The item this candidate repeats, and whether it was already read from this very message.
-    func existingItem(for candidate: MailExtractor.Candidate, sessionID: LectureSession.ID?) throws -> (item: TrackedItem, sameMessage: Bool)? {
-        let group = Self.group(candidate.kind)
-        // The same quote of this message (or of a copy with the same Message-ID).
-        let quote = candidate.quote
-        let messageID = message.id
-        let rfcID = message.rfcMessageID
-        let sources = try TrackedItemSource
-            .where { $0.quote.eq(quote) && ($0.mailMessageID.eq(MailMessage.ID?.some(messageID)) || ($0.rfcMessageID.eq(rfcID) && $0.rfcMessageID.neq(""))) }
-            .fetchAll(db)
-        for source in sources {
-            guard let item = try TrackedItem.find(source.trackedItemID).fetchOne(db), Self.group(item.kind) == group else { continue }
-            return (item, source.mailMessageID == messageID)
-        }
-        // The same session proposal.
-        if candidate.kind.isSessionProposal, let sessionID {
-            let kind = candidate.kind
-            let proposals = try TrackedItem
-                .where { $0.lectureSessionID.eq(LectureSession.ID?.some(sessionID)) && $0.kind.eq(kind) }
-                .fetchAll(db)
-            if let match = proposals.first(where: { kind == .cancellation || Folding.fold($0.room ?? "") == Folding.fold(candidate.room ?? "") }) {
-                return (match, false)
-            }
-            return nil
-        }
-        // The same dated item: course, kind group, day (time within an hour), similar title.
-        guard let due = candidate.due else { return nil }
-        let day = CalendarDay(due, in: timeZone)
-        let from = day.adding(days: -1).start(in: timeZone)
-        let until = day.adding(days: 2).start(in: timeZone)
-        let kinds: [TrackedItemKind] = group == "due" ? [.deadline, .exercise, .exam] : [candidate.kind]
-        let nearby = try TrackedItem
-            .where { $0.kind.in(kinds) && $0.dueAt.gte(Date?.some(from)) && $0.dueAt.lt(Date?.some(until)) }
-            .order(by: \.createdAt)
-            .fetchAll(db)
-        return nearby.first { item in
-            guard item.courseID == candidate.courseID, let itemDue = item.dueAt,
-                  CalendarDay(itemDue, in: timeZone) == day else { return false }
-            if !item.isAllDay, !candidate.allDay, abs(itemDue.timeIntervalSince(due)) > 3_600 { return false }
-            return Self.similarTitles(item.title, candidate.title)
-        }
-        .map { ($0, false) }
-    }
-
-    /// Word overlap of at least half the shorter title, and no contradicting numbers ("Sheet 1" ≠ "Sheet 2").
-    static func similarTitles(_ lhs: String, _ rhs: String) -> Bool {
-        let left = Folding.titleWords(lhs)
-        let right = Folding.titleWords(rhs)
-        guard !left.isEmpty, !right.isEmpty else { return false }
-        let leftNumbers = left.filter { $0.allSatisfy(\.isNumber) }
-        let rightNumbers = right.filter { $0.allSatisfy(\.isNumber) }
-        if !leftNumbers.isEmpty, !rightNumbers.isEmpty, leftNumbers.isDisjoint(with: rightNumbers) { return false }
-        let overlap = Double(left.intersection(right).count) / Double(min(left.count, right.count))
-        return overlap >= 0.5
-    }
-
-    // MARK: Sessions
-
-    /// The one non-cancelled session of the course on the quoted day (and time) a proposal is
-    /// about; nil when none or several match.
-    func proposalSession(for candidate: MailExtractor.Candidate) throws -> LectureSession? {
-        guard candidate.verified, let courseID = candidate.courseID, let due = candidate.due else { return nil }
-        if candidate.kind == .roomChange {
-            guard let room = candidate.room, Folding.fold(candidate.quote).contains(Folding.fold(room)) else { return nil }
-        }
-        let day = CalendarDay(due, in: timeZone)
-        let sessions = try LectureSession
-            .where { $0.courseID.eq(courseID) && !$0.isCancelled }
-            .order(by: \.startsAt)
-            .fetchAll(db)
-        var matches = sessions.filter { CalendarDay($0.startsAt, in: timeZone) == day }
-        if !candidate.mentions.minutes.isEmpty {
-            matches = matches.filter { session in
-                let minute = Self.minute(of: session.startsAt, timeZone: timeZone)
-                return candidate.mentions.minutes.contains { abs($0 - minute) <= 20 }
-            }
-        }
-        if matches.count > 1, let kind = Self.sessionKind(in: candidate.quote) {
-            matches = matches.filter { $0.kind == kind }
-        }
-        guard matches.count == 1, let session = matches.first else { return nil }
-        if candidate.kind == .roomChange, let room = candidate.room, Folding.fold(room) == Folding.fold(session.room) {
-            return nil
-        }
-        return session
-    }
-
-    /// The one session of the course starting within 15 minutes of `date` (an event the calendar
-    /// already shows, e.g. the first tutorial).
-    func session(startingNear date: Date, courseID: Course.ID?) throws -> LectureSession.ID? {
-        guard let courseID else { return nil }
-        let from = date.addingTimeInterval(-15 * 60)
-        let until = date.addingTimeInterval(15 * 60)
-        let sessions = try LectureSession
-            .where { $0.courseID.eq(courseID) && !$0.isCancelled && $0.startsAt.gte(from) && $0.startsAt.lte(until) }
-            .fetchAll(db)
-        return sessions.count == 1 ? sessions.first?.id : nil
-    }
-
-    static func minute(of date: Date, timeZone: TimeZone) -> Int {
-        let parts = Calendar.gregorian(in: timeZone).dateComponents([.hour, .minute], from: date)
-        return (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
-    }
-
-    /// The session kind a quote names ("lecture", "Übung", "Tutorium", …).
-    static func sessionKind(in quote: String) -> SessionKind? {
-        let words = Set(Folding.words(quote))
-        if !words.isDisjoint(with: ["lecture", "vorlesung", "vl"]) { return .lecture }
-        if !words.isDisjoint(with: ["exercise", "ubung", "uebung", "ubungen"]) { return .exercise }
-        if !words.isDisjoint(with: ["tutorial", "tutorium", "tutorien", "tutorials"]) { return .tutorial }
-        if words.contains("seminar") { return .seminar }
-        return nil
-    }
-
-    static func sessionName(_ kind: SessionKind) -> String {
-        switch kind {
-        case .exercise: "exercise"
-        case .tutorial: "tutorial"
-        case .seminar: "seminar"
-        default: "lecture"
-        }
-    }
-
-    /// "Thu 22 Oct".
-    static func dayText(_ date: Date, timeZone: TimeZone) -> String {
-        let parts = Calendar.gregorian(in: timeZone).dateComponents([.weekday, .day, .month], from: date)
-        let weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][((parts.weekday ?? 1) - 1 + 7) % 7]
-        let month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][((parts.month ?? 1) - 1 + 12) % 12]
-        return "\(weekday) \(parts.day ?? 1) \(month)"
+    mutating func write(_ candidate: MailExtractor.Candidate) throws -> Result {
+        let finding = ItemFinding(
+            draft: DeadlineDraft(
+                kind: candidate.kind, title: candidate.title, details: candidate.details, courseID: candidate.courseID,
+                dueAt: candidate.due, isAllDay: candidate.allDay, relevance: candidate.relevance, room: candidate.room
+            ),
+            source: .mail(message.id, rfcMessageID: message.rfcMessageID),
+            quote: candidate.quote,
+            confidence: candidate.confidence,
+            dateVerified: candidate.verified,
+            trusted: candidate.trusted,
+            createdBy: .agent,
+            apiCallID: apiCallID,
+            mentions: candidate.mentions
+        )
+        let result = try DeadlineMemory.record(finding, in: db, store: store, now: date)
+        return Result(created: result.created, sourceAdded: result.source != nil)
     }
 }
 

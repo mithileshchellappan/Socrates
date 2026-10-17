@@ -1,11 +1,12 @@
 import Foundation
 
-/// Text comparisons the router and extractor make: case-insensitive with diacritics folded,
-/// typographic punctuation made plain and whitespace runs collapsed.
-enum Folding {
+/// Text comparisons the extractors, the router and the deadline memory make: case-insensitive
+/// with diacritics folded, typographic punctuation made plain and whitespace runs collapsed.
+/// (Moved from MailIntelligence in M3, which keeps `Folding` as a typealias.)
+public enum TextFolding {
     /// Lower-cased, diacritics removed ("Prüfung" → "prufung"), "ß" → "ss", typographic quotes,
     /// dashes and spaces made plain, whitespace runs collapsed to one space, trimmed.
-    static func fold(_ text: some StringProtocol) -> String {
+    public static func fold(_ text: some StringProtocol) -> String {
         let plain = NormalizedText.plainCharacters(String(text))
         let folded = plain
             .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
@@ -27,7 +28,7 @@ enum Folding {
     }
 
     /// Words as FTS5 `unicode61` cuts them (runs of letters and digits), folded.
-    static func words(_ text: some StringProtocol) -> [String] {
+    public static func words(_ text: some StringProtocol) -> [String] {
         var words: [String] = []
         var current = ""
         for scalar in String(text).unicodeScalars {
@@ -43,7 +44,7 @@ enum Folding {
     }
 
     /// Letters, digits and combining marks.
-    static func isWordScalar(_ scalar: Unicode.Scalar) -> Bool {
+    public static func isWordScalar(_ scalar: Unicode.Scalar) -> Bool {
         let value = scalar.value
         if value < 0x80 {
             return (value >= 0x61 && value <= 0x7A) || (value >= 0x41 && value <= 0x5A) || (value >= 0x30 && value <= 0x39)
@@ -57,7 +58,7 @@ enum Folding {
     }
 
     /// Content words of a title, for duplicate detection (short function words dropped).
-    static func titleWords(_ text: String) -> Set<String> {
+    public static func titleWords(_ text: String) -> Set<String> {
         Set(words(text).filter { $0.count >= 2 && !titleStopwords.contains($0) || $0.allSatisfy(\.isNumber) })
     }
 
@@ -70,14 +71,14 @@ enum Folding {
 /// A text with whitespace and typographic punctuation normalized, mapped back to the original:
 /// every normalized character knows the range of the original it came from, so a match in the
 /// normalized text is cut from the original byte for byte.
-struct NormalizedText {
+public struct NormalizedText: Sendable {
     /// Normalized characters.
-    let characters: [Character]
+    public let characters: [Character]
     /// For each normalized character, the original range it stands for.
-    let sources: [Range<String.Index>]
-    let original: String
+    public let sources: [Range<String.Index>]
+    public let original: String
 
-    init(_ text: String) {
+    public init(_ text: String) {
         original = text
         var characters: [Character] = []
         var sources: [Range<String.Index>] = []
@@ -109,7 +110,7 @@ struct NormalizedText {
     }
 
     /// The original text of the first occurrence of `needle` (normalized the same way), or nil.
-    func originalSpan(of needle: String) -> Substring? {
+    public func originalSpan(of needle: String) -> Substring? {
         let pattern = NormalizedText(needle).characters
         guard !pattern.isEmpty, pattern.count <= characters.count else { return nil }
         let first = pattern[0]
@@ -131,7 +132,7 @@ struct NormalizedText {
     }
 
     /// `text` with typographic punctuation and spaces made plain (no whitespace collapsing).
-    static func plainCharacters(_ text: String) -> String {
+    public static func plainCharacters(_ text: String) -> String {
         var output = ""
         output.reserveCapacity(text.utf8.count)
         for character in text {
@@ -142,7 +143,7 @@ struct NormalizedText {
 
     /// The plain form of one character (curly quotes → straight, dashes → "-", "…" → "...",
     /// non-breaking and thin spaces → " ", soft hyphens dropped).
-    static func plain(_ character: Character) -> [Character] {
+    public static func plain(_ character: Character) -> [Character] {
         switch character {
         case "\u{2018}", "\u{2019}", "\u{201A}", "\u{201B}", "\u{2032}", "\u{00B4}", "`": return ["'"]
         case "\u{201C}", "\u{201D}", "\u{201E}", "\u{201F}", "\u{2033}", "\u{00AB}", "\u{00BB}": return ["\""]

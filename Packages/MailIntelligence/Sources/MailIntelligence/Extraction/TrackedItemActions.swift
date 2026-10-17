@@ -1,3 +1,4 @@
+import Deadlines
 import Foundation
 import StudyCore
 
@@ -12,41 +13,44 @@ public enum SessionChange: Hashable, Sendable {
 
 /// The reader's buttons on what mail added: Undo / restore of a source, Add to Calendar for an
 /// item whose date the quote did not confirm, and Confirm / Discard of a session proposal.
-/// Writes go through StudyCore's repositories (each one transaction); the calendar mirror
-/// follows `in_calendar` on its own.
+/// Undo, Restore and Add to Calendar act through the deadline memory (`Deadlines.DeadlineMemory`,
+/// the one write path for tracked items); proposals settle through StudyCore's repository. The
+/// calendar mirror follows `in_calendar` on its own (`onChange` lets the app sync at once).
 public struct TrackedItemActions: Sendable {
     let services: StudyServices
     let now: @Sendable () -> Date
+    let memory: DeadlineMemory
 
-    public init(services: StudyServices, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(
+        services: StudyServices,
+        now: @escaping @Sendable () -> Date = { Date() },
+        onChange: @escaping @Sendable () async -> Void = {}
+    ) {
         self.services = services
         self.now = now
+        memory = DeadlineMemory(services: services, now: now, onChange: onChange)
     }
 
     var repository: TrackedItemRepository { TrackedItemRepository(store: services.records) }
 
-    /// Undo of what one source added: the item is dismissed and leaves the calendar. A later mail
-    /// repeating it does not bring it back.
+    /// Undo of what one source did: an item it added is dismissed and leaves the calendar (a later
+    /// mail repeating it does not bring it back); a change it made is put back.
     @discardableResult
     public func undo(_ sourceID: TrackedItemSource.ID) async throws -> TrackedItem? {
-        try await repository.undo(sourceID: sourceID, at: now())
+        try await memory.undo(sourceID)
     }
 
     /// Takes an Undo back.
     @discardableResult
     public func restore(_ sourceID: TrackedItemSource.ID) async throws -> TrackedItem? {
-        try await repository.restore(sourceID: sourceID)
+        try await memory.restore(sourceID)
     }
 
     /// Add to Calendar (an item whose date was not confirmed by its quote, or that was taken out).
     /// Only an open item with a due date can go in; returns nil otherwise.
     @discardableResult
     public func addToCalendar(_ itemID: TrackedItem.ID) async throws -> TrackedItem? {
-        guard let item = try await services.records.fetch(TrackedItem.self, id: itemID),
-              item.status == .open, item.dueAt != nil, !item.kind.isSessionProposal
-        else { return nil }
-        if item.inCalendar { return item }
-        return try await repository.setInCalendar(itemID, true)
+        try await memory.addToCalendar(itemID)
     }
 
     /// What Confirm of an open proposal changes; nil when the item is no open proposal or its
