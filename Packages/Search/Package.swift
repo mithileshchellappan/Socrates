@@ -15,12 +15,18 @@ let package = Package(
     dependencies: [
         .package(path: "../StudyCore"),
         .package(path: "../StudyUI"),
-        .package(path: "../Capture")
+        .package(path: "../Capture"),
+        // Already in the graph through SQLiteData; used directly for `DatabaseRegionObservation`
+        // and raw FTS5 SQL (SQLiteData re-exports only a few GRDB types).
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0")
     ],
     targets: [
         .target(
             name: "Search",
-            dependencies: [.product(name: "StudyCore", package: "StudyCore")]
+            dependencies: [
+                .product(name: "StudyCore", package: "StudyCore"),
+                .product(name: "GRDB", package: "GRDB.swift")
+            ]
         ),
         .target(
             name: "SearchUI",
@@ -28,6 +34,7 @@ let package = Package(
                 "Search",
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "StudyUI", package: "StudyUI"),
+                .product(name: "Capture", package: "Capture"),
                 .product(name: "CaptureUI", package: "Capture")
             ]
         ),
