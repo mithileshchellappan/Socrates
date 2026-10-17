@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -32,6 +32,10 @@ public enum Schema {
         // Additive only: the user's real library migrates on its next launch.
         migrator.registerMigration("v6") { db in
             try db.execute(sql: v6)
+        }
+        // M3.5, additive only (nullable columns).
+        migrator.registerMigration("v7") { db in
+            try db.execute(sql: v7)
         }
         return migrator
     }
@@ -738,6 +742,18 @@ public enum Schema {
         ALTER TABLE "tracked_item_source" ADD COLUMN "conversation_id" TEXT REFERENCES "agent_conversation"("id") ON DELETE SET NULL;
         ALTER TABLE "tracked_item_source" ADD COLUMN "previous" TEXT;
         CREATE INDEX "tracked_item_source_conversation" ON "tracked_item_source"("conversation_id");
+        """
+
+    /// v7 (M3.5, additive only: nullable columns):
+    /// - `api_call.billing` (`CallBilling`): `subscription` for Claude Code calls, whose
+    ///   `cost_usd` is notional; NULL for the Messages API and older rows;
+    /// - `mail_message.needs_reply`: the mail asks the student something (NULL: not triaged yet).
+    /// The tracked item kind `task` and the conversation kind `mail_chat` are new values of
+    /// existing TEXT columns.
+    static let v7 = """
+        ALTER TABLE "api_call" ADD COLUMN "billing" TEXT;
+        ALTER TABLE "mail_message" ADD COLUMN "needs_reply" INTEGER;
+        CREATE INDEX "mail_message_needs_reply" ON "mail_message"("needs_reply");
         """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row

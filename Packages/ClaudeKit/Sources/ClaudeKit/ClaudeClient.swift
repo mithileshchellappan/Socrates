@@ -52,11 +52,17 @@ public struct ClaudeConfiguration: Sendable, Hashable {
 /// Every call (successful or failed, retries folded in) is reported to the `CostLedger` with its usage
 /// and cost. Prefer `streamMessage` for anything long: non-streaming calls go quiet until the whole
 /// response is ready and run into idle timeouts.
+///
+/// M3.5: with a `backend` (e.g. `ClaudeCodeEngine`, the student's Claude Code CLI) every call goes to
+/// the backend instead of the HTTP code below; `ToolLoop` hands whole loops to it. Callers do not
+/// change. Gate model work on `isAvailable()`, never on an API key.
 public struct ClaudeClient: Sendable {
     public let configuration: ClaudeConfiguration
     private let keyProvider: any APIKeyProvider
     private let transport: any HTTPTransport
-    private let ledger: any CostLedger
+    let ledger: any CostLedger
+    /// Runs the calls instead of the HTTP code (M3.5); nil: the Messages API.
+    let backend: (any ClaudeBackend)?
     private let sleep: @Sendable (Duration) async throws -> Void
     private let random: @Sendable () -> Double
 
@@ -76,6 +82,52 @@ public struct ClaudeClient: Sendable {
         self.transport = transport
         self.sleep = sleep
         self.random = random
+        backend = nil
+    }
+
+    /// A client whose calls run on `backend` (M3.5: `ClaudeCodeEngine` on the Mac,
+    /// `UnavailableClaudeBackend` elsewhere). `configuration` is used for `prepared` and the
+    /// pricing a backend may read.
+    public init(
+        backend: any ClaudeBackend,
+        ledger: any CostLedger = NullCostLedger(),
+        configuration: ClaudeConfiguration = ClaudeConfiguration()
+    ) {
+        self.configuration = configuration
+        keyProvider = StaticAPIKeyProvider(nil)
+        self.ledger = ledger
+        transport = URLSessionTransport.shared
+        sleep = { try await Task.sleep(for: $0) }
+        random = { Double.random(in: 0..<1) }
+        self.backend = backend
+    }
+
+    // MARK: - Availability
+
+    /// What serves the calls.
+    public var backendKind: ClaudeBackendKind { backend?.kind ?? .messagesAPI }
+
+    /// Whether calls can run now, without a model call (Messages API: a key is saved).
+    public func availability() async -> ClaudeAvailability {
+        if let backend { return await backend.availability() }
+        return await hasAPIKey() ? .ready(ClaudeBackendStatus(kind: .messagesAPI)) : .missingAPIKey
+    }
+
+    /// `availability()` found again, without a cached answer.
+    public func refreshAvailability() async -> ClaudeAvailability {
+        if let backend { return await backend.refreshAvailability() }
+        return await availability()
+    }
+
+    /// The gate for model work (replaces "an API key is saved"). True while a usage pause holds:
+    /// background calls then wait in the backend's queue.
+    public func isAvailable() async -> Bool {
+        await availability().isReady
+    }
+
+    private func hasAPIKey() async -> Bool {
+        guard let key = try? await keyProvider.apiKey() else { return false }
+        return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     // MARK: - Calls
@@ -84,6 +136,9 @@ public struct ClaudeClient: Sendable {
     public func send(_ request: MessageRequest, context: CallContext = CallContext()) async throws -> Message {
         let request = prepared(request)
         try request.validate()
+        if let backend {
+            return try await backend.streamMessage(request, context: context, ledger: ledger, onEvent: { _ in })
+        }
         guard request.maxTokens <= configuration.maxNonStreamingTokens else {
             throw ClaudeError.streamingRequired(maxTokens: request.maxTokens)
         }
@@ -125,6 +180,9 @@ public struct ClaudeClient: Sendable {
     ) async throws -> Message {
         let request = prepared(request)
         try request.validate()
+        if let backend {
+            return try await backend.streamMessage(request, context: context, ledger: ledger, onEvent: onEvent)
+        }
         let urlRequest = try makeURLRequest(request, stream: true, apiKey: try await apiKey())
         let started = Date()
         let clock = ContinuousClock.now

@@ -802,6 +802,9 @@ public struct APICall: StudyRecord {
     @Column("duration_ms") public var durationMs: Int
     @Column("stop_reason") public var stopReason: String?
     public var error: String?
+    /// v7: `subscription` for Claude Code calls (`cost_usd` notional); nil for the Messages API
+    /// and rows written before v7.
+    public var billing: CallBilling?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
 
@@ -819,6 +822,7 @@ public struct APICall: StudyRecord {
         durationMs: Int = 0,
         stopReason: String? = nil,
         error: String? = nil,
+        billing: CallBilling? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -835,6 +839,7 @@ public struct APICall: StudyRecord {
         self.durationMs = durationMs
         self.stopReason = stopReason
         self.error = error
+        self.billing = billing
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

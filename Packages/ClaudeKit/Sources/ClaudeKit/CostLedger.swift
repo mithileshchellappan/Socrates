@@ -6,11 +6,58 @@ public struct CallContext: Sendable, Hashable {
     /// e.g. "correction", "routing", "tutor".
     public var purpose: String
     public var lectureID: UUID?
+    /// Who waits for the answer (M3.5). A backend with one queue (Claude Code: one process at a
+    /// time) runs interactive calls first; during a usage pause background calls wait for the
+    /// reset while interactive calls fail at once. The Messages API ignores it.
+    public var priority: CallPriority
+    /// The conversation a tool loop continues (M3.5). A backend that keeps conversations itself
+    /// (Claude Code: one CLI session per conversation) uses it; the Messages API ignores it.
+    public var session: ConversationSession?
 
-    public init(purpose: String = "unspecified", lectureID: UUID? = nil) {
+    public init(
+        purpose: String = "unspecified",
+        lectureID: UUID? = nil,
+        priority: CallPriority = .interactive,
+        session: ConversationSession? = nil
+    ) {
         self.purpose = purpose
         self.lectureID = lectureID
+        self.priority = priority
+        self.session = session
     }
+}
+
+/// Who waits for a call's answer.
+public enum CallPriority: String, Sendable, Hashable {
+    /// The student waits (chat, reply drafts, the deadline composer).
+    case interactive
+    /// Nobody waits (mail triage and its backlog, transcript extraction).
+    case background
+}
+
+/// A conversation whose history a backend keeps itself.
+///
+/// Claude Code: `id` is the CLI session id (the `agent_conversation` id); the first run starts the
+/// session (`--session-id`), later runs continue it (`--resume`) and send only the newest user
+/// turn. The caller still stores every turn append-only.
+public struct ConversationSession: Sendable, Hashable {
+    public var id: UUID
+    /// False for the conversation's first run; true once a run has produced an assistant turn.
+    public var resumes: Bool
+
+    public init(id: UUID, resumes: Bool) {
+        self.id = id
+        self.resumes = resumes
+    }
+}
+
+/// Whether a call's cost was billed or is notional.
+public enum Billing: String, Sendable, Hashable {
+    /// Billed per token (the Messages API with an API key).
+    case api
+    /// Counted against a subscription's usage limits (Claude Code); `costUSD` is notional, at
+    /// list prices.
+    case subscription
 }
 
 /// Usage and cost of one logical call (retries included), successful or not.
@@ -33,11 +80,13 @@ public struct CallRecord: Sendable, Hashable {
     public var streamed: Bool
     /// HTTP attempts made (1 + retries).
     public var attempts: Int
+    /// Billed per token, or notional under a subscription (M3.5).
+    public var billing: Billing
 
     public init(
         id: UUID = UUID(), model: ClaudeModel, requestedModel: ClaudeModel, purpose: String, lectureID: UUID?,
         requestID: String?, usage: Usage, costUSD: Double?, startedAt: Date, duration: Duration,
-        stopReason: StopReason?, error: String?, streamed: Bool, attempts: Int
+        stopReason: StopReason?, error: String?, streamed: Bool, attempts: Int, billing: Billing = .api
     ) {
         self.id = id
         self.model = model
@@ -53,6 +102,7 @@ public struct CallRecord: Sendable, Hashable {
         self.error = error
         self.streamed = streamed
         self.attempts = attempts
+        self.billing = billing
     }
 
     /// Cache writes of both TTLs.

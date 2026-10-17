@@ -97,6 +97,16 @@ public struct ToolLoop: Sendable {
         handler: @escaping ToolHandler,
         onEvent: @escaping @Sendable (ToolLoopEvent) async -> Void = { _ in }
     ) async throws -> ToolLoopResult {
+        if let backend = client.backend {
+            // M3.5: the backend runs the whole loop (Claude Code: the CLI calls the tools through
+            // the app's MCP server); the same events and result come back.
+            let request = client.prepared(request)
+            try request.validate()
+            return try await backend.runToolLoop(
+                request, context: context, maxIterations: maxIterations, ledger: client.ledger, handler: handler,
+                onEvent: onEvent
+            )
+        }
         var history = request.messages
         var appended: [MessageParam] = []
         var usage = Usage()

@@ -244,6 +244,11 @@ public struct MailMessage: StudyRecord {
     @Column("extraction_attempts") public var extractionAttempts: Int
     @Column("extracted_at") public var extractedAt: Date?
     @Column("extraction_api_call_id") public var extractionAPICallID: APICall.ID?
+    /// v7 (M3.5 triage): the mail asks the student something they should answer. Nil until the
+    /// message was triaged (also the backlog's resume point: the last 30 days' routed mail with
+    /// nil is still to read); false when it asks nothing or the student cleared it. Shown while
+    /// true and the message is not answered (`is_answered`, set when a reply is sent).
+    @Column("needs_reply") public var needsReply: Bool?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
 
@@ -292,6 +297,7 @@ public struct MailMessage: StudyRecord {
         extractionAttempts: Int = 0,
         extractedAt: Date? = nil,
         extractionAPICallID: APICall.ID? = nil,
+        needsReply: Bool? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -339,6 +345,7 @@ public struct MailMessage: StudyRecord {
         self.extractionAttempts = extractionAttempts
         self.extractedAt = extractedAt
         self.extractionAPICallID = extractionAPICallID
+        self.needsReply = needsReply
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

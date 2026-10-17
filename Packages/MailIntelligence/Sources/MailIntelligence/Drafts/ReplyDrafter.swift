@@ -58,7 +58,8 @@ public actor ReplyDrafter {
     // MARK: - Drafting
 
     /// The open reply to `id` (a new one, streaming, when there is none) — returns at once.
-    /// Without a client or an API key the draft is empty and editable (the student writes it).
+    /// Without an available client (M3.5: Claude Code) the draft is empty and editable (the student
+    /// writes it).
     public func draftReply(to id: MailMessage.ID) async throws -> MailDraft.ID {
         if let open = try await drafts.openDraft(replyingTo: id) { return open.id }
         let records = services.records
@@ -66,7 +67,8 @@ public actor ReplyDrafter {
         guard let account = try await records.fetch(MailAccount.self, id: message.accountID) else { throw DraftError.accountNotFound }
         let mailboxes = try await MailboxDirectory.load(services.database)
 
-        let canDraft = client != nil && services.secrets.hasSecret(for: .anthropicAPIKey)
+        var canDraft = false
+        if let client { canDraft = await client.isAvailable() }
         let draft = try await records.save(MailDraft(
             accountID: account.id,
             mailMessageID: message.id,

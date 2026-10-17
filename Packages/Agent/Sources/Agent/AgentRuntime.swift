@@ -17,22 +17,35 @@ import StudyCore
 ///   composer's parse of what such a `deadlines` conversation was told when it wrote nothing.
 /// - Requests always state `effort`, never force `tool_choice`, never disable thinking.
 public actor AgentRuntime {
+    /// Builds the one spec of a conversation kind defined outside this package (M3.5: the mail
+    /// chat, assembled in MailIntelligence from its mail tools and the deadline tools).
+    public typealias SpecProvider = @Sendable () throws -> ConversationSpec
+
     let services: StudyServices
     let client: ClaudeClient
     let memory: DeadlineMemory
     let now: @Sendable () -> Date
+    let additionalSpecs: [ConversationKind: SpecProvider]
     private var tasks: [AgentConversation.ID: Task<Void, Never>] = [:]
 
     public init(
         services: StudyServices,
         client: ClaudeClient,
         memory: DeadlineMemory? = nil,
+        additionalSpecs: [ConversationKind: SpecProvider] = [:],
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
         self.client = client
         self.memory = memory ?? DeadlineMemory(services: services, now: now)
+        self.additionalSpecs = additionalSpecs
         self.now = now
+    }
+
+    /// Whether the agent can run now (M3.5: Claude Code installed and signed in). The chat's entry
+    /// point and the composer's agent path depend on it.
+    public func isAvailable() async -> Bool {
+        await client.isAvailable()
     }
 
     var conversations: ConversationRepository { ConversationRepository(store: services.records) }
@@ -58,15 +71,21 @@ public actor AgentRuntime {
     func spec(for kind: ConversationKind) throws -> ConversationSpec {
         switch kind {
         case .deadlines: return try DeadlineTools.spec(services: services, memory: memory)
-        default: throw RuntimeError.unknownKind(kind.rawValue)
+        default:
+            guard let provider = additionalSpecs[kind] else { throw RuntimeError.unknownKind(kind.rawValue) }
+            return try provider()
         }
     }
 
     // MARK: - Entry points
 
     /// Starts a conversation of `kind` with the student's `text`; returns at once while the agent
-    /// works in the background.
-    public func start(_ kind: ConversationKind, text: String, courseID: Course.ID? = nil) async throws -> AgentConversation.ID {
+    /// works in the background. `context` blocks go before the student's words in the same user
+    /// turn (M3.5: the open mail as a `<mail>` envelope, data never instructions); the tools'
+    /// `ToolContext.studentText` is the student's words only.
+    public func start(
+        _ kind: ConversationKind, text: String, context: [ContentBlock] = [], courseID: Course.ID? = nil
+    ) async throws -> AgentConversation.ID {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw RuntimeError.emptyText }
         let spec = try spec(for: kind)
@@ -75,14 +94,15 @@ public actor AgentRuntime {
             kind: kind, courseID: courseID, title: String(trimmed.prefix(60)), model: spec.model.rawValue, state: .running,
             createdAt: startedAt, updatedAt: startedAt
         ))
-        let turn = MessageParam.user(trimmed)
+        let turn: MessageParam = context.isEmpty ? .user(trimmed) : .user(context + [.text(TextBlock(text: trimmed))])
         try await conversations.append(to: conversation.id, role: .user, message: try Self.encode(turn))
         launch(conversation, spec: spec, history: [turn], studentText: trimmed)
         return conversation.id
     }
 
-    /// Appends the student's next message to a conversation that is not running and runs it again.
-    public func send(_ text: String, to id: AgentConversation.ID) async throws {
+    /// Appends the student's next message (after its `context` blocks) to a conversation that is
+    /// not running and runs it again.
+    public func send(_ text: String, context: [ContentBlock] = [], to id: AgentConversation.ID) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw RuntimeError.emptyText }
         guard tasks[id] == nil else { throw RuntimeError.busy }
@@ -99,6 +119,7 @@ public actor AgentRuntime {
                 .toolResult(ToolResultBlock(toolUseID: call.id, content: .text("interrupted"), isError: true))
             }
         }
+        blocks += context
         let turn: MessageParam = blocks.isEmpty ? .user(trimmed) : .user(blocks + [.text(TextBlock(text: trimmed))])
         try await conversations.append(to: id, role: .user, message: try Self.encode(turn))
         history.append(turn)
@@ -183,8 +204,11 @@ public actor AgentRuntime {
                 tools: spec.tools.definitions, thinking: spec.thinking, cacheControl: .ephemeral
             )
             let loop = ToolLoop(client: client, maxIterations: spec.maxIterations, streaming: true, parallelToolExecution: false)
+            // M3.5: a backend that keeps conversations (Claude Code) continues the conversation's
+            // own session once an assistant turn exists; the Messages API ignores it.
+            let session = ConversationSession(id: id, resumes: history.contains { $0.role == .assistant })
             let result = try await loop.run(
-                request, context: CallContext(purpose: spec.purpose), handler: spec.tools.handler(context),
+                request, context: CallContext(purpose: spec.purpose, session: session), handler: spec.tools.handler(context),
                 onEvent: { event in await recorder.handle(event) }
             )
             if let failure = await recorder.failure { throw failure }

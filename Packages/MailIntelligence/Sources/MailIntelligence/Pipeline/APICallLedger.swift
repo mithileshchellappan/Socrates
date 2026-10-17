@@ -18,15 +18,30 @@ public struct APICallLedger: CostLedger {
             inputTokens: call.usage.inputTokens, outputTokens: call.usage.outputTokens,
             cacheReadTokens: call.usage.cacheReadInputTokens, cacheWriteTokens: call.cacheWriteTokens,
             costUSD: call.costUSD ?? 0, durationMs: call.durationMilliseconds,
-            stopReason: call.stopReason?.rawValue, error: call.error, createdAt: call.startedAt
+            stopReason: call.stopReason?.rawValue, error: call.error,
+            billing: call.billing == .subscription ? .subscription : nil, createdAt: call.startedAt
         ))
     }
 }
 
 extension ClaudeClient {
-    /// The app's client: the key from the Keychain helper at each call (nil when none is saved:
-    /// the call fails, nothing is sent), every call logged to `api_call`.
-    public static func studyPortal(services: StudyServices, transport: any HTTPTransport = URLSessionTransport.shared) -> ClaudeClient {
+    /// The app's client (M3.5, docs/plan-m35.md): the student's Claude Code CLI on the Mac (their
+    /// subscription; no API key), unavailable on iOS and iPadOS (the AI runs on the Mac). Every
+    /// call is logged to `api_call` (`billing = subscription`: the cost is notional).
+    ///
+    /// Each call makes a new engine, and the engine is the one-process queue: the app calls this
+    /// once and shares the client.
+    public static func studyPortal(services: StudyServices) -> ClaudeClient {
+        #if os(macOS)
+        let backend: any ClaudeBackend = ClaudeCodeEngine(configuration: ClaudeCodeConfiguration(directory: services.paths.agent))
+        #else
+        let backend: any ClaudeBackend = UnavailableClaudeBackend()
+        #endif
+        return ClaudeClient(backend: backend, ledger: APICallLedger(services: services))
+    }
+
+    /// The Messages API with the Keychain key (the M2/M3 path; unused since M3.5, kept in code).
+    public static func messagesAPI(services: StudyServices, transport: any HTTPTransport = URLSessionTransport.shared) -> ClaudeClient {
         let secrets = services.secrets
         return ClaudeClient(
             keyProvider: ClosureAPIKeyProvider { try secrets.secret(for: .anthropicAPIKey) },

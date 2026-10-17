@@ -76,7 +76,9 @@ public struct MailRouter: Sendable {
                     report.byModel += try await routeWithModel(Array(batch), client: client)
                 } catch is CancellationError {
                     throw CancellationError()
-                } catch ClaudeError.missingAPIKey {
+                } catch let error as ClaudeError where error.isServiceTrouble {
+                    // No CLI or key, signed out, a usage limit, an outage: the rest waits.
+                    MailIntelligence.log.notice("Routing waits: \(error.description, privacy: .public)")
                     break
                 } catch {
                     MailIntelligence.log.error("Routing call failed: \(String(describing: error), privacy: .public)")

@@ -10,6 +10,15 @@ public enum ToolEffect: String, Sendable, Hashable {
     case stage
     /// Changes the library on its own (deadlines through the memory, with Undo).
     case write
+    /// M3.5: changes the library on its own only with what code verified against words that are
+    /// not the model's: the quote is the student's words of the turn or an exact span of a mail,
+    /// the date is found in that quote (`DateMentions`), a mail quote is `trusted` only when the
+    /// mail passes the injection guard. Allowed beside tools that read untrusted content (the
+    /// mail chat's add_item).
+    case verifiedWrite
+    /// M3.5: writes a reply draft (`mail_draft`) and nothing else; only the student sends it.
+    /// Allowed beside tools that read untrusted content.
+    case draft
 }
 
 /// What a tool call runs with: the conversation, the student's words of the current turn (the
@@ -62,7 +71,8 @@ public enum ToolSetError: Error, Hashable, CustomStringConvertible {
 }
 
 /// The fixed tools of one conversation kind. Checked when built: a set with a tool that reads
-/// untrusted content (mail, web, files) and any `.write` tool is refused.
+/// untrusted content (mail, web, files) and any `.write` tool is refused (`.verifiedWrite`,
+/// `.draft`, `.stage` and `.read` may sit beside it).
 public struct ToolSet: Sendable {
     public let kind: ConversationKind
     public let tools: [AgentTool]
@@ -112,9 +122,12 @@ public struct ConversationSpec: Sendable {
     public var purpose: String { AgentModule.purpose(of: kind) }
 }
 
-/// The courses a system prompt names (opaque outside the package).
+/// The courses a system prompt names.
 public struct CourseList: Sendable {
     let tokens: CourseTokens
+
+    /// One line per course: "DC: Data Centers; lecturers: …" (the tokens the tools accept).
+    public var promptLines: String { tokens.promptLines }
 }
 
 /// Readable JSON tool inputs.

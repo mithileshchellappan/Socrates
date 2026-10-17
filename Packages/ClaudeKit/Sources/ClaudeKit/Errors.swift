@@ -98,6 +98,16 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
     /// The response hit `max_tokens` where a complete answer was required.
     case truncated(message: Message)
 
+    /// M3.5: the backend cannot run calls (Claude Code not installed or signed out; iOS).
+    case unavailable(ClaudeAvailability)
+    /// M3.5: the subscription's usage limit was reached ("You've hit your session limit · resets
+    /// 5:20pm"). Calls resume at `resetsAt` (nil when the CLI did not say). Background calls wait
+    /// for it inside the backend's queue; interactive calls get this error at once.
+    case usageLimited(resetsAt: Date?)
+    /// M3.5: the Claude Code CLI failed (exit status, an error result, a broken stream, a missing
+    /// MCP connection). Readable; never contains prompt content.
+    case claudeCode(String)
+
     /// The API error details, when this is an API error.
     public var apiError: APIErrorInfo? {
         switch self {
@@ -128,6 +138,16 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
             RetryPolicy.isRetryableURLErrorCode(code)
         default:
             false
+        }
+    }
+
+    /// Trouble with the service rather than the request: work waits (stays pending, counts no
+    /// attempt) and runs again when woken. No key or CLI, sign-in, billing, usage limits, and
+    /// everything retryable.
+    public var isServiceTrouble: Bool {
+        switch self {
+        case .missingAPIKey, .authentication, .permissionDenied, .billing, .unavailable, .usageLimited: true
+        default: isRetryable
         }
     }
 
@@ -179,6 +199,17 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
         case .refused(let details, _):
             "Declined" + (details?.category.map { " (\($0))" } ?? "")
         case .truncated: "The response hit max_tokens"
+        case .unavailable(let availability):
+            switch availability {
+            case .notInstalled: "Claude Code is not installed"
+            case .signedOut: "Claude Code is not signed in"
+            case .missingAPIKey: "No Anthropic API key in the Keychain"
+            case .unsupported: "Claude does not run on this device"
+            case .ready: "Claude is unavailable"
+            }
+        case .usageLimited(let resetsAt):
+            "Usage limit reached" + (resetsAt.map { " until \($0.formatted(.iso8601))" } ?? "")
+        case .claudeCode(let reason): "Claude Code: \(reason)"
         }
     }
 }

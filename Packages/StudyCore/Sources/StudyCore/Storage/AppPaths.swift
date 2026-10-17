@@ -10,6 +10,7 @@ import Foundation
 ///       Blobs/ab/abcdef….pdf          content-addressed files (BlobStore)
 ///       Models/                       WhisperKit and other models (excluded from backup)
 ///       Recordings/                   in-progress capture files before they enter Blobs
+///       Agent/                        the Claude Code backend (M3.5): Workspace/, state.json, Runs/
 ///
 /// Caches (slide bitmaps, …) live in the system caches directory and may be purged.
 /// Never use ~/Documents: it syncs to iCloud.
@@ -53,6 +54,9 @@ public struct AppPaths: Hashable, Sendable {
     public var blobs: URL { root.appending(path: "Blobs", directoryHint: .isDirectory) }
     public var models: URL { root.appending(path: "Models", directoryHint: .isDirectory) }
     public var recordings: URL { root.appending(path: "Recordings", directoryHint: .isDirectory) }
+    /// M3.5: the Claude Code backend's folder (`ClaudeCodeConfiguration.directory`): its empty
+    /// working directory, its state (usage pause) and each run's MCP config. Created by the backend.
+    public var agent: URL { root.appending(path: "Agent", directoryHint: .isDirectory) }
 
     /// Creates all directories. Models and caches are excluded from device backups.
     public func createDirectories(fileManager: FileManager = .default) throws {

@@ -9,7 +9,7 @@ import StudyCore
 ///
 /// - **Queue**: a recording with transcript lines is pending when its `transcript_extraction` row
 ///   is missing or older than its newest line (a replaced transcript is read again) and no job of
-///   it is still queued or running. Calls run only with a client, a saved API key and while the
+///   it is still queued or running. Calls run only with an available client (M3.5: Claude Code) and while the
 ///   daily guard allows; otherwise rows stay `pending` (no call, nothing on screen). At most one
 ///   call at a time. Service trouble (no key, rate limits, outages) does not count an attempt;
 ///   other failures do (three, then `failed` until the transcript changes).
@@ -107,7 +107,7 @@ public actor TranscriptItemPipeline {
         loop = nil
     }
 
-    /// A transcription finished, or the API key was saved: read what waits. Runs a pass (model
+    /// A transcription finished, or Claude Code became available: read what waits. Runs a pass (model
     /// calls included) before it returns, or returns at once when a pass is running (it then runs
     /// once more); call it from a task.
     public func wake() async {
@@ -156,7 +156,7 @@ public actor TranscriptItemPipeline {
                 report.skipped += 1
                 continue
             }
-            guard !serviceTrouble, let client, services.secrets.hasSecret(for: .anthropicAPIKey), await costGuard.allowsCalls() else {
+            guard !serviceTrouble, let client, await client.isAvailable(), await costGuard.allowsCalls() else {
                 try await keepPending(item)
                 report.waiting += 1
                 continue
@@ -261,7 +261,8 @@ public actor TranscriptItemPipeline {
         var apiCallID: APICall.ID?
         do {
             let message = try await client.streamMessage(
-                TranscriptPrompt.request(text), context: CallContext(purpose: purpose, lectureID: source.lecture?.id)
+                TranscriptPrompt.request(text),
+                context: CallContext(purpose: purpose, lectureID: source.lecture?.id, priority: .background)
             )
             apiCallID = try? await APICallRepository(store: services.records).call(requestID: message.requestID, purpose: purpose)
             let answer = try message.decodeJSON(TranscriptPrompt.Answer.self)
@@ -282,10 +283,7 @@ public actor TranscriptItemPipeline {
     }
 
     static func isServiceTrouble(_ error: ClaudeError) -> Bool {
-        switch error {
-        case .missingAPIKey, .authentication, .permissionDenied, .billing: true
-        default: error.isRetryable
-        }
+        error.isServiceTrouble
     }
 
     // MARK: - Validation

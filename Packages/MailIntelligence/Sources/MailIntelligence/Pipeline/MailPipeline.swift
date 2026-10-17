@@ -8,9 +8,10 @@ import Synchronization
 /// again after the rules change (which re-runs the rules first). Runs off the main actor and
 /// never blocks the UI; the screens observe the rows it writes.
 ///
-/// Model steps run only with a client and a saved API key, and only while today's mail calls cost
-/// less than the daily limit (`MailCostGuard`, $1 by default). Without them it still routes by
-/// rules and indexes; the rest waits as `pending` until `wake()` (e.g. after the key is saved).
+/// Model steps run only while the client is available (M3.5: Claude Code installed and signed in),
+/// and only while today's mail calls cost less than the daily limit (`MailCostGuard`, $1 by
+/// default; notional under the subscription). Without them it still routes by rules and indexes;
+/// the rest waits as `pending` until `wake()` (e.g. after Claude Code became available).
 public actor MailPipeline {
     /// What one pass did.
     public struct PassReport: Sendable, Equatable {
@@ -152,7 +153,7 @@ public actor MailPipeline {
     @discardableResult
     public func pass() async -> PassReport {
         var report = PassReport()
-        let useModel = canUseModel
+        let useModel = await canUseModel()
         report.usedModel = useModel
         let costGuard = costGuard
         let allow: @Sendable () async -> Bool = { await costGuard.allowsModelCalls() }
@@ -183,9 +184,10 @@ public actor MailPipeline {
         return report
     }
 
-    /// A client and a saved API key.
-    private var canUseModel: Bool {
-        client != nil && services.secrets.hasSecret(for: .anthropicAPIKey)
+    /// A client that can run calls now (M3.5: replaces "an API key is saved").
+    private func canUseModel() async -> Bool {
+        guard let client else { return false }
+        return await client.isAvailable()
     }
 }
 

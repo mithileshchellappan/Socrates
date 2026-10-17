@@ -209,10 +209,7 @@ public struct MailExtractor: Sendable {
     }
 
     static func isServiceTrouble(_ error: ClaudeError) -> Bool {
-        switch error {
-        case .missingAPIKey, .authentication, .permissionDenied, .billing: true
-        default: error.isRetryable
-        }
+        error.isServiceTrouble
     }
 
     // MARK: - Validation

@@ -19,7 +19,8 @@ struct ModelCaller: Sendable {
     /// Streams `request` (which must set `outputFormat`) and decodes the JSON answer. A refused,
     /// truncated or undecodable answer throws `CallFailure` carrying the call's `api_call` id.
     func structured<Value: Decodable & Sendable>(_ type: Value.Type, _ request: MessageRequest, purpose: String) async throws -> Answer<Value> {
-        let message = try await client.streamMessage(request, context: CallContext(purpose: purpose))
+        // Routing and extraction run in the background: interactive calls go first (M3.5).
+        let message = try await client.streamMessage(request, context: CallContext(purpose: purpose, priority: .background))
         let callID = try? await APICallLink.callID(requestID: message.requestID, purpose: purpose, in: database)
         do {
             return Answer(value: try message.decodeJSON(Value.self), apiCallID: callID)
