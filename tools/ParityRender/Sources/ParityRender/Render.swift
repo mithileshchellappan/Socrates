@@ -10,6 +10,10 @@ import SwiftUI
 //
 //   tools/parity/render [--library DIR] [--out DIR] [--only 01-today,03-review]
 //                       [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
+//                       [--week 2026-10-19]
+//
+// `06-calendar` opens on the week of `--week` (default: mockup 06's, Mon 19 Oct 2026); `--now`
+// also fixes Today's clock (the DemoLibrary's is 2026-10-16T09:41, its mail's 15:02).
 //
 // `05-mail` (Mail: the Inbox with its newest message selected) needs a library with mail, e.g.
 // the sample library `swift run --package-path tools/EndToEnd m1-e2e demo --library DIR` writes
@@ -33,8 +37,10 @@ struct RenderOptions {
     var only: Set<String>?
     var schemes: [ColorScheme] = [.light, .dark]
     var settle: Duration = .seconds(3)
-    /// The "now" of screens that show times relative to today (Mail's list).
+    /// The "now" of screens that show times relative to today (Mail's list, Today, Calendar).
     var now: Date?
+    /// The week Calendar shows (mockup 06: Week 43).
+    var week = CalendarDay(year: 2026, month: 10, day: 19)
 
     init(arguments: [String]) throws {
         var index = 0
@@ -55,6 +61,9 @@ struct RenderOptions {
                 let parts = text.dropFirst(11).split(separator: ":").compactMap { Int($0) }
                 let zone = TimeZone(identifier: "Europe/Lisbon") ?? .current
                 now = day.date(minute: parts.count == 2 ? parts[0] * 60 + parts[1] : 0, in: zone)
+            case "--week":
+                guard let day = CalendarDay(rawValue: try value()) else { throw RenderFailure("--week takes 2026-10-19") }
+                week = day
             case "--appearance":
                 switch try value() {
                 case "light": schemes = [.light]
@@ -117,6 +126,7 @@ struct ParityRender {
         prepareDependencies { $0.defaultDatabase = services.database }
         let model = AppModel(services: services, startsProcessing: false)
         model.fixedNow = options.now
+        model.fixedCalendarWeek = options.week
         if let indexer = model.searchIndexer { _ = try await indexer.catchUp(verifyingText: true) }
         await model.filing?.repairDeckTitles()
         // The search screen as if it had been searched (↩): listed under Recent searches. In the
@@ -141,6 +151,7 @@ struct ParityRender {
                 selection: .lecture(dcLecture2.id),
                 reviewTarget: (dcLecture2.id, ReviewTarget(page: 16, time: 2247, request: UUID()))
             ))),
+            RenderShot(name: "06-calendar", window: .main(ParityMode.Launch(selection: .calendar))),
             RenderShot(name: "07-search", window: .main(ParityMode.Launch(selection: .search, query: "paravirtualization"))),
             // Mockup 05: the Inbox, its newest message selected.
             RenderShot(name: "05-mail", window: .main(ParityMode.Launch(selection: .mailScope(.inbox), mailSelection: newestMail))),
