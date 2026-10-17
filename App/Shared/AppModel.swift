@@ -517,7 +517,8 @@ final class AppModel {
         #if os(macOS)
         activationObserver = Task { [weak self] in
             for await _ in NotificationCenter.default.notifications(named: NSApplication.didBecomeActiveNotification) {
-                await self?.refreshClaudeAvailability()
+                // The 60 s cache applies: every switch back to the app must not start two CLI probes.
+                await self?.refreshClaudeAvailability(force: false)
             }
         }
         // Synchronous, while the app still runs: a tool loop's MCP server lives in the app.
