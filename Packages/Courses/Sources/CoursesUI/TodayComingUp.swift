@@ -7,7 +7,9 @@ import SwiftUI
 /// Coming up (mockup 01): one dated list of sessions and items. A course bar marks a class or
 /// event, an open ring something due; one grey gloss line at most; the sources behind one faint
 /// glyph whose popover holds the calendar check and Undo. Hover: the quiet fill, the separators
-/// beside the row hidden.
+/// beside the row hidden. M3.5: open tasks (ring) and mail that needs a reply ("Reply to …",
+/// ring, the subject as its line, the faint envelope; a click opens the mail) follow the dated
+/// rows with an empty right column.
 struct ComingUpSection: View {
     let entries: [ComingUpEntry]
     let courses: [Course.ID: Course]
@@ -17,6 +19,7 @@ struct ComingUpSection: View {
     @Environment(\.deadlineActions) private var deadlineActions
     @Environment(\.studyServices) private var services
     @Environment(\.calendarMirror) private var mirror
+    @Environment(\.openDestination) private var openDestination
     @State private var hoveredID: ComingUpEntry.ID?
 
     var body: some View {
@@ -48,35 +51,51 @@ struct ComingUpSection: View {
         }
     }
 
+    @ViewBuilder
     private func row(_ entry: ComingUpEntry) -> some View {
         let course = entry.courseID.flatMap { courses[$0] }
         let hovered = hoveredID == entry.id
-        return CourseBarRow(
-            color: .course(course),
-            marker: entry.marker == .ring ? .ring : .bar,
-            title: entry.title,
-            gloss: entry.gloss,
-            examStar: entry.isExamAdmission,
-            day: text.day(entry.date),
-            time: time(entry),
-            dayNote: dayNote(entry),
-            isStruck: entry.isCancelled,
-            isHovered: hovered
-        ) {
-            SourceTrailButton(
-                entries: entry.trail, now: now, inCalendar: entry.inCalendar, highlighted: hovered,
-                undo: entry.undoSourceID.map { sourceID in
-                    { @MainActor in run("Undo") { actions in try await actions.undo(sourceID) } }
-                }
-            )
+        if let reply = entry.reply {
+            CourseBarRow(
+                color: .course(course), marker: .ring, title: entry.title, gloss: entry.gloss, day: "", isHovered: hovered
+            ) {
+                SourceGlyph(kinds: [.mail], highlighted: hovered)
+            }
+            .onTapGesture { open(reply) }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text(accessibilityLabel(entry, course: course)))
+            .accessibilityAddTraits(.isButton)
+        } else {
+            CourseBarRow(
+                color: .course(course),
+                marker: entry.marker == .ring ? .ring : .bar,
+                title: entry.title,
+                gloss: entry.gloss,
+                examStar: entry.isExamAdmission,
+                day: entry.date.map(text.day) ?? "",
+                time: time(entry),
+                dayNote: dayNote(entry),
+                isStruck: entry.isCancelled,
+                isHovered: hovered
+            ) {
+                SourceTrailButton(
+                    entries: entry.trail, now: now, inCalendar: entry.inCalendar, highlighted: hovered,
+                    undo: entry.undoSourceID.map { sourceID in
+                        { @MainActor in run("Undo") { actions in try await actions.undo(sourceID) } }
+                    }
+                )
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text(accessibilityLabel(entry, course: course)))
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text(accessibilityLabel(entry, course: course)))
     }
 
     @ViewBuilder
     private func menu(_ entry: ComingUpEntry) -> some View {
-        if let session = entry.session {
+        if let reply = entry.reply {
+            Button("Open Message") { open(reply) }
+            Button("No Reply Needed") { clearNeedsReply(reply.id) }
+        } else if let session = entry.session {
             if session.isCancelled {
                 Button("Restore Session") { schedule.restore(session.id) }
             } else {
@@ -100,10 +119,35 @@ struct ComingUpSection: View {
         }
     }
 
-    /// A session's range, an item's due time; nothing for an all-day item.
+    /// A session's range, an item's due time; nothing for an all-day or undated item.
     private func time(_ entry: ComingUpEntry) -> String? {
-        if let end = entry.end { return text.timeRange(entry.date, end) }
-        return entry.isAllDay ? nil : DayText.time(entry.date, timeZone: text.timeZone)
+        guard let date = entry.date else { return nil }
+        if let end = entry.end { return text.timeRange(date, end) }
+        return entry.isAllDay ? nil : DayText.time(date, timeZone: text.timeZone)
+    }
+
+    /// The mail in Mail.
+    private func open(_ reply: TodayReply) {
+        openDestination(.mail(reply.scope, message: reply.id))
+    }
+
+    /// No Reply Needed: the mail stops asking (`needs_reply` false); a local flag, no server effect.
+    private func clearNeedsReply(_ id: MailMessage.ID) {
+        guard let services else { return }
+        Task {
+            do {
+                let stamp = services.records.currentDate
+                try await services.database.write { db in
+                    try MailMessage.find(id).update {
+                        $0.needsReply = Bool?.some(false)
+                        $0.updatedAt = stamp
+                    }
+                    .execute(db)
+                }
+            } catch {
+                CoursesUILog.ui.error("No Reply Needed failed: \(error.localizedDescription, privacy: .private)")
+            }
+        }
     }
 
     /// "and Fri 13 Nov" (12 pt text under the first day).
@@ -116,7 +160,7 @@ struct ComingUpSection: View {
     }
 
     private func accessibilityLabel(_ entry: ComingUpEntry, course: Course?) -> String {
-        var parts = [course?.name ?? "", entry.title, text.day(entry.date)]
+        var parts = [course?.name ?? "", entry.title, entry.date.map(text.day) ?? ""]
         if let time = time(entry) { parts.append(time) }
         if let note = dayNote(entry) { parts.append(note) }
         if let gloss = entry.gloss { parts.append(gloss) }
