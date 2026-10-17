@@ -16,7 +16,9 @@ let package = Package(
     dependencies: [
         .package(path: "../StudyCore"),
         .package(path: "../StudyUI"),
-        .package(path: "../Capture")
+        .package(path: "../Capture"),
+        // Test-only: real alignment runs for fixture-backed snapshots and anchor tests.
+        .package(path: "../Alignment")
     ],
     targets: [
         .target(
@@ -32,6 +34,7 @@ let package = Package(
                 "Review",
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "StudyUI", package: "StudyUI"),
+                .product(name: "Capture", package: "Capture"),
                 .product(name: "CaptureUI", package: "Capture")
             ]
         ),
