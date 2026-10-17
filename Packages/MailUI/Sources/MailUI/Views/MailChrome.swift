@@ -81,6 +81,43 @@ struct MailGlass<S: Shape>: ViewModifier {
     }
 }
 
+/// The label of a guess the student can change in one click (mockup 05's `.pick`: the route,
+/// the lecture an LMS file went into): optional leading content, the value in secondary and a
+/// small tertiary chevron. Use on a `Menu` with `.quietMenu()`.
+struct PickLabel<Leading: View>: View {
+    let text: String
+    @ViewBuilder var leading: Leading
+
+    var body: some View {
+        HStack(spacing: 5) {
+            leading
+            Text(text)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+extension PickLabel where Leading == EmptyView {
+    init(text: String) {
+        self.init(text: text) { EmptyView() }
+    }
+}
+
+extension View {
+    /// A menu drawn as its own label (no bezel, no system indicator), as the pick menus.
+    func quietMenu() -> some View {
+        menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+    }
+}
+
 /// SF Mono for times (PRD UI rules).
 extension Font {
     static func mailMono(_ size: CGFloat) -> Font {

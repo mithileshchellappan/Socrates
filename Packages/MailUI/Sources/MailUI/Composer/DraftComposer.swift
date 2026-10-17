@@ -163,6 +163,7 @@ struct RecipientField: View {
 
     @State private var entry = ""
     @FocusState private var isFocused: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         FlowLayout(spacing: 6, lineSpacing: 4) {
@@ -172,7 +173,10 @@ struct RecipientField: View {
                     .lineLimit(1)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
-                    .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .background(
+                        .tint.opacity(colorScheme == .dark ? 0.24 : 0.12),
+                        in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    )
                     .help(address.address)
                     .contextMenu {
                         if isEditable {
@@ -181,7 +185,8 @@ struct RecipientField: View {
                     }
             }
             if isEditable {
-                TextField("To", text: $entry, prompt: addresses.isEmpty ? Text("To") : nil)
+                // macOS shows a nil prompt's title as the placeholder: an empty one after tokens.
+                TextField("To", text: $entry, prompt: addresses.isEmpty ? Text("To") : Text(verbatim: ""))
                     .textFieldStyle(.plain)
                     .labelsHidden()
                     .focused($isFocused)

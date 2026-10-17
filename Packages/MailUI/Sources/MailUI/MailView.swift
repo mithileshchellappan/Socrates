@@ -84,7 +84,7 @@ public struct MailView: View {
 
     public var body: some View {
         content
-            .navigationTitle(title)
+            .screenTitle(title, leadingInset: ScreenTitleInset.firstItem)
             .toolbar { toolbar }
             .environment(\.mailFocus, focus)
             .focusedSceneValue(\.mailScreen, commands)
@@ -128,6 +128,7 @@ public struct MailView: View {
             Button("Set Up Mail…", action: setUpMail)
                 .buttonStyle(.borderedProminent)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -464,7 +465,7 @@ private struct SnapshotToolbar: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(title)
-                .font(.system(size: 13, weight: .bold))
+                .font(.title3.weight(.semibold))
             Spacer()
             HStack(spacing: 0) {
                 glyph("arrowshape.turn.up.left")

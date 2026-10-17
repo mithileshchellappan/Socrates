@@ -120,9 +120,22 @@ struct MailReaderRequest: FetchKeyRequest {
             }
             rows.append(FoundRow(item: item, source: source, session: session, lectureSource: moment))
         }
-        return rows.sorted {
-            ($0.item.dueAt ?? .distantFuture, $0.item.createdAt) < ($1.item.dueAt ?? .distantFuture, $1.item.createdAt)
+        return inReadingOrder(rows, subject: message.subject, text: message.bodyText)
+    }
+
+    /// Rows in the order their quotes stand in the mail (the subject first), as the student reads
+    /// it; a quote not found in either goes last, by due date.
+    static func inReadingOrder(_ rows: [FoundRow], subject: String, text: String) -> [FoundRow] {
+        let folded = QuoteMatcher.normalized(text)
+        func position(_ row: FoundRow) -> Int {
+            if let range = QuoteMatcher.offsetRanges(of: row.source.quote, in: folded).first { return range.lowerBound }
+            return QuoteMatcher.ranges(of: row.source.quote, in: subject).isEmpty ? Int.max : -1
         }
+        return rows.map { (row: $0, position: position($0)) }.sorted { lhs, rhs in
+            let left = (lhs.position, lhs.row.item.dueAt ?? .distantFuture, lhs.row.item.createdAt)
+            let right = (rhs.position, rhs.row.item.dueAt ?? .distantFuture, rhs.row.item.createdAt)
+            return left < right
+        }.map(\.row)
     }
 
     /// The rendered body, cached by message version and quotes (an unrelated write re-reads the

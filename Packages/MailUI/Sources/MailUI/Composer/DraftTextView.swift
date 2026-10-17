@@ -79,9 +79,15 @@ extension DraftTextView: NSViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, nsView view: DraftNSTextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width.isFinite, width > 0,
               let container = view.textContainer, let layout = view.layoutManager else { return nil }
+        // Measure at the proposed width, then give the container back the view's own width:
+        // SwiftUI probes with other widths, and when the frame it then sets is unchanged,
+        // `widthTracksTextView` never resizes the container (text one character wide).
         container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         layout.ensureLayout(for: container)
         let used = layout.usedRect(for: container).height
+        if view.frame.width > 0, view.frame.width != width {
+            container.containerSize = NSSize(width: view.frame.width, height: CGFloat.greatestFiniteMagnitude)
+        }
         let minimum = ceil(Self.font.ascender - Self.font.descender + Self.font.leading) + Self.lineSpacing
         return CGSize(width: width, height: max(ceil(used), minimum * 3))
     }

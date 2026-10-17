@@ -166,17 +166,15 @@ private struct RouteMenu: View {
                 Toggle(category.title, isOn: binding(.category(category)))
             }
         } label: {
-            HStack(spacing: 5) {
+            PickLabel(text: label) {
                 if let course = currentCourse {
                     CourseDot(course: course, size: 8)
                 }
-                Text(label)
             }
         }
-        .menuStyle(.button)
-        .buttonStyle(.borderless)
-        .foregroundStyle(.secondary)
-        .fixedSize()
+        .quietMenu()
+        .accessibilityLabel(Text("Route"))
+        .accessibilityValue(Text(label))
     }
 
     private var currentCourse: Course? {

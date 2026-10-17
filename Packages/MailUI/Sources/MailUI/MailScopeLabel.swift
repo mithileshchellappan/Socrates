@@ -17,13 +17,14 @@ public struct MailScopeLabel: View {
     }
 
     public var body: some View {
-        Label {
-            Text(scope.title(courses: counts.courses))
-        } icon: {
+        // The app's sidebar row (16 pt glyph column, accent glyphs), so mail rows line up with
+        // Today, Calendar and the courses.
+        SidebarRowLabel(scope.title(courses: counts.courses)) {
             if case .course(let id) = scope {
                 CourseDot(course: counts.courses[id], size: 9)
             } else {
                 Image(systemName: scope.systemImage)
+                    .foregroundStyle(.tint)
             }
         }
         .badge(counts.count(for: scope))

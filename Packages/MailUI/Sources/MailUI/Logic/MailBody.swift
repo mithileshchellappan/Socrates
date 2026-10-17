@@ -1,4 +1,5 @@
 import Foundation
+import StudyUI
 import SwiftUI
 
 /// A mail body as the reader shows it: paragraphs, headings, list items, preformatted text and
@@ -67,11 +68,6 @@ struct MailBlock: Hashable, Sendable, Identifiable {
 enum FoundQuoteAttribute: AttributedStringKey {
     typealias Value = Bool
     static let name = "StudyPortal.MailUI.foundQuote"
-}
-
-/// The colour of AI provenance marks in mail (the dotted underline under found quotes).
-extension Color {
-    static let mailAI = Color.purple
 }
 
 /// Builds `MailBody` from the sanitized HTML (docs/plan-m2.md §2.8) or from `body_text`.
@@ -232,7 +228,7 @@ enum MailBodyRenderer {
             offset += count + 1
         }
         var style = AttributeContainer()
-        style[AttributeScopes.SwiftUIAttributes.UnderlineStyleAttribute.self] = Text.LineStyle(pattern: .dot, color: .mailAI)
+        style[AttributeScopes.SwiftUIAttributes.UnderlineStyleAttribute.self] = Text.LineStyle(pattern: .dot, color: .ai)
         style[FoundQuoteAttribute.self] = true
         let folded = QuoteMatcher.normalized(joined)
         for quote in quotes {

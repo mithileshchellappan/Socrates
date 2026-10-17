@@ -171,14 +171,11 @@ private struct ExtraLine: View {
                     Button("Open \(Self.lectureName(number: number, title: title))") { actions.openLecture(lectureID) }
                     Button("Change…") { actions.changeFiling(filingID) }
                 } label: {
-                    Text(Self.lectureLabel(number: number, title: title, date: date, dates: dates))
+                    PickLabel(text: Self.lectureLabel(number: number, title: title, date: date, dates: dates))
                 }
-                .menuStyle(.button)
-                .buttonStyle(.borderless)
-                .fixedSize()
+                .quietMenu()
             }
             .font(.system(size: 12))
-            .foregroundStyle(.secondary)
         case .failed(let reason):
             Label(reason.isEmpty ? String(localized: "Not sent") : reason, systemImage: "exclamationmark.triangle")
                 .font(.system(size: 12))
