@@ -5,7 +5,9 @@ import StudyCore
 /// `ChunkDecoder` backed by an in-process WhisperKit pipeline.
 ///
 /// WhisperKit's types are not `Sendable`; this actor owns the one `WhisperKit` instance and is
-/// the only code that touches it.
+/// the only code that touches it. Loading, decoding and unloading all await inside WhisperKit,
+/// where the actor would let another call in, so each of them holds `gate` for its whole run:
+/// an unload never overlaps a decode, and a load waits for a pending unload.
 public actor WhisperKitDecoder: ChunkDecoder {
     public nonisolated let model: WhisperModel
     public nonisolated let store: WhisperModelStore
@@ -18,6 +20,7 @@ public actor WhisperKitDecoder: ChunkDecoder {
     /// caches it until the models are unloaded.
     private var builtFilter: LanguageFilter?
     private var promptTokenCache: [String: [Int]] = [:]
+    private let gate = AsyncGate()
 
     /// Prompt tokens are capped well below Whisper's 223-token limit so a 30 s window keeps room
     /// for its own text.
@@ -76,36 +79,39 @@ public actor WhisperKitDecoder: ChunkDecoder {
     /// Downloads the model if needed and loads it. The first load on a machine compiles the
     /// Core ML model for the device, which takes minutes for large-v3-turbo.
     public func load(progress: @escaping TranscriptionProgressHandler = { _ in }) async throws {
+        await gate.acquire()
+        defer { gate.release() }
+        try await loadHoldingGate(progress: progress)
+    }
+
+    private func loadHoldingGate(progress: @escaping TranscriptionProgressHandler = { _ in }) async throws {
         if kit != nil { return }
-        let folder: URL
+        var folder: URL
+        var fetched = false
         if store.isDownloaded(model) {
             folder = store.folder(for: model)
         } else {
-            progress(TranscriptionProgress(phase: .downloadingModel, fractionCompleted: 0))
-            folder = try await store.download(model) { fraction in
-                progress(TranscriptionProgress(phase: .downloadingModel, fractionCompleted: fraction))
-            }
+            folder = try await download(force: false, progress: progress)
+            fetched = true
         }
         try Task.checkCancellation()
         progress(TranscriptionProgress(phase: .loadingModel, fractionCompleted: 0))
         let started = ContinuousClock.now
-        let config = WhisperKitConfig(
-            model: model.name,
-            downloadBase: store.directory,
-            modelRepo: model.repository,
-            modelFolder: folder.path(percentEncoded: false),
-            tokenizerFolder: store.directory,
-            verbose: false,
-            logLevel: .error,
-            prewarm: false,
-            load: true,
-            download: false
-        )
         let loaded: WhisperKit
         do {
-            loaded = try await WhisperKit(config)
+            loaded = try await makeKit(folder: folder)
         } catch {
-            throw TranscriptionError.modelUnavailable(String(describing: error))
+            guard !fetched, !(error is CancellationError) else { throw error }
+            // A folder that looks complete can still lack files (a download cut short before
+            // completion markers existed, files removed by hand): fetch what is missing once.
+            Log.transcription.error(
+                "Loading \(self.model.name, privacy: .public) failed, checking the download: \(String(describing: error), privacy: .public)"
+            )
+            store.invalidate(model)
+            folder = try await download(force: true, progress: progress)
+            try Task.checkCancellation()
+            progress(TranscriptionProgress(phase: .loadingModel, fractionCompleted: 0))
+            loaded = try await makeKit(folder: folder)
         }
         guard let tokenizer = loaded.tokenizer else {
             throw TranscriptionError.modelUnavailable("tokenizer missing")
@@ -119,11 +125,43 @@ public actor WhisperKitDecoder: ChunkDecoder {
         progress(TranscriptionProgress(phase: .loadingModel, fractionCompleted: 1))
     }
 
+    private func download(force: Bool, progress: @escaping TranscriptionProgressHandler) async throws -> URL {
+        progress(TranscriptionProgress(phase: .downloadingModel, fractionCompleted: 0))
+        return try await store.download(model, force: force) { fraction in
+            progress(TranscriptionProgress(phase: .downloadingModel, fractionCompleted: fraction))
+        }
+    }
+
+    private func makeKit(folder: URL) async throws -> WhisperKit {
+        let config = WhisperKitConfig(
+            model: model.name,
+            downloadBase: store.directory,
+            modelRepo: model.repository,
+            modelFolder: folder.path(percentEncoded: false),
+            tokenizerFolder: store.directory,
+            verbose: false,
+            logLevel: .error,
+            prewarm: false,
+            load: true,
+            download: false
+        )
+        do {
+            return try await WhisperKit(config)
+        } catch {
+            throw TranscriptionError.modelUnavailable(String(describing: error))
+        }
+    }
+
+    /// Releases the model (≈ 1.5 GB). Waits for a decode in progress; the next decode loads it again.
     public func unload() async {
-        await kit?.unloadModels()
+        await gate.acquire()
+        defer { gate.release() }
+        let loaded = kit
         kit = nil
         baseTokenizer = nil
         builtFilter = nil
+        promptTokenCache = [:]
+        await loaded?.unloadModels()
     }
 
     // MARK: - ChunkDecoder
@@ -131,7 +169,10 @@ public actor WhisperKitDecoder: ChunkDecoder {
     public func decode(_ requests: [ChunkDecodeRequest]) async throws -> [Result<ChunkDecodeResult, any Error>] {
         guard !requests.isEmpty else { return [] }
         try Task.checkCancellation()
-        try await load()
+        await gate.acquire()
+        defer { gate.release() }
+        try Task.checkCancellation()
+        try await loadHoldingGate()
 
         // All requests in one WhisperKit call share the language filter, so group by it.
         var results = [Result<ChunkDecodeResult, any Error>?](repeating: nil, count: requests.count)
@@ -287,7 +328,9 @@ public actor WhisperKitDecoder: ChunkDecoder {
 
     /// Raw WhisperKit call for debugging decoder behaviour from TranscribeBench.
     package func rawTranscribe(samples: [Float], options: DecodingOptions) async throws -> [TranscriptionResult] {
-        try await load()
+        await gate.acquire()
+        defer { gate.release() }
+        try await loadHoldingGate()
         try await install(.all)
         guard let kit else { throw TranscriptionError.modelUnavailable("not loaded") }
         return try await kit.transcribe(audioArray: samples, decodeOptions: options)
@@ -310,7 +353,9 @@ public actor WhisperKitDecoder: ChunkDecoder {
         prompt: String? = nil,
         wordTimestamps: Bool = true
     ) async throws -> [BuiltInChunk] {
-        try await load()
+        await gate.acquire()
+        defer { gate.release() }
+        try await loadHoldingGate()
         try await install(LanguageFilter(language))
         guard let kit else { throw TranscriptionError.modelUnavailable("not loaded") }
         var options = decodingOptions(

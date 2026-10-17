@@ -732,8 +732,10 @@ public struct Job: StudyRecord {
     public let id: UUID
     public var stage: JobStage
     public var state: JobState
-    /// 0…1
+    /// 0…1, of `phase` when set, else of the stage.
     public var progress: Double
+    /// Set while a running job prepares (e.g. downloads a model); nil for the stage's own work.
+    public var phase: JobPhase?
     public var error: String?
     @Column("lecture_id") public var lectureID: Lecture.ID?
     @Column("recording_id") public var recordingID: Recording.ID?
@@ -748,6 +750,7 @@ public struct Job: StudyRecord {
         stage: JobStage,
         state: JobState = .queued,
         progress: Double = 0,
+        phase: JobPhase? = nil,
         error: String? = nil,
         lectureID: Lecture.ID? = nil,
         recordingID: Recording.ID? = nil,
@@ -761,6 +764,7 @@ public struct Job: StudyRecord {
         self.stage = stage
         self.state = state
         self.progress = progress
+        self.phase = phase
         self.error = error
         self.lectureID = lectureID
         self.recordingID = recordingID

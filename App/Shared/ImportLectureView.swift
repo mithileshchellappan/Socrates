@@ -113,6 +113,8 @@ struct ImportLectureView: View {
             let course: Course?
             if choice == .new {
                 course = await model.createCourse(draft)
+                // A failed import keeps the sheet open; trying again must not make a second course.
+                if let course { choice = .existing(course.id) }
             } else {
                 course = choice.course(in: courses)
             }

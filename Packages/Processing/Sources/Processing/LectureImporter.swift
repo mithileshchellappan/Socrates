@@ -57,6 +57,11 @@ public struct LectureImporter: Sendable {
     /// `courseID` and `deckURL` fill in what the manifest lacks; the manifest's lecture id is kept
     /// so notes taken live stay attached. A package imported before (its audio already moved into
     /// the library) resolves to its existing recording.
+    ///
+    /// Only packages inside the library's Recordings folder (written by live capture here) lose
+    /// their audio and are marked imported. A package picked anywhere else (a backup, a USB
+    /// drive, an AirDropped iPhone recording) is read and copied but never changed; importing it
+    /// again finds the recording by its id.
     @concurrent
     public func importCapture(
         at url: URL,
@@ -75,15 +80,29 @@ public struct LectureImporter: Sendable {
         if deck == nil, let deckURL {
             deck = try await DeckImporter(services: services).importDeck(at: deckURL, courseID: course.id).0
         }
-        let lecture = try await ensureLecture(
-            id: manifest.lectureID,
-            course: course,
-            title: title ?? deck?.title ?? "",
-            heldAt: manifest.startedAt
-        )
 
-        if manifest.importedAt != nil {
-            guard var recording = try await store.fetch(Recording.self, id: manifest.id) else {
+        let ownsPackage = Self.isInside(url, directory: services.paths.recordings)
+        // A package from elsewhere is never marked imported, so its recording row says it was.
+        let existingRecording = try await store.fetch(Recording.self, id: manifest.id)
+        let alreadyImported = manifest.importedAt != nil || (!ownsPackage && existingRecording != nil)
+        var filedLecture: Lecture?
+        if alreadyImported, let lectureID = existingRecording?.lectureID {
+            filedLecture = try await store.fetch(Lecture.self, id: lectureID)
+        }
+        let lecture: Lecture
+        if let filedLecture {
+            lecture = filedLecture
+        } else {
+            lecture = try await ensureLecture(
+                id: manifest.lectureID,
+                course: course,
+                title: title ?? deck?.title ?? "",
+                heldAt: manifest.startedAt
+            )
+        }
+
+        if alreadyImported {
+            guard var recording = existingRecording else {
                 throw LectureImportError.packageAlreadyImported(package.name)
             }
             if recording.lectureID == nil || recording.courseID == nil {
@@ -91,16 +110,21 @@ public struct LectureImporter: Sendable {
                 recording.courseID = recording.courseID ?? course.id
                 recording = try await store.save(recording)
             }
-            let existing = try await JobRepository(store: store).jobs(lectureID: lecture.id)
+            let recordingID = recording.id
+            let jobCount = try await services.database.read { db in
+                try Job.where { $0.recordingID.eq(recordingID) }.fetchCount(db)
+            }
             return ImportedLecture(
                 lecture: lecture, recording: recording, deck: deck,
-                job: existing.isEmpty ? try await enqueueTranscription(lecture: lecture, recording: recording) : nil,
+                job: jobCount == 0 ? try await enqueueTranscription(lecture: lecture, recording: recording) : nil,
                 wasAlreadyImported: true
             )
         }
 
-        let result = try await LecturePackageImporter(services: services)
-            .importPackage(package, lectureID: lecture.id, courseID: course.id, deckID: deck?.id)
+        let result = try await LecturePackageImporter(services: services).importPackage(
+            package, lectureID: lecture.id, courseID: course.id, deckID: deck?.id,
+            removeAudioAfterImport: ownsPackage, markImported: ownsPackage
+        )
 
         if let deck {
             let shown = result.slideEvents.filter { $0.kind == .show }.compactMap(\.pageNumber)
@@ -234,6 +258,17 @@ public struct LectureImporter: Sendable {
         } catch {
             throw LectureImportError.unreadableAudio(url.lastPathComponent)
         }
+    }
+
+    /// True when `url` lies inside `directory` (symlinks resolved, e.g. /var → /private/var).
+    static func isInside(_ url: URL, directory: URL) -> Bool {
+        func path(_ url: URL) -> String {
+            let resolved = url.standardizedFileURL.resolvingSymlinksInPath().path(percentEncoded: false)
+            return resolved.hasSuffix("/") ? resolved : resolved + "/"
+        }
+        let child = path(url)
+        let parent = path(directory)
+        return child != parent && child.hasPrefix(parent)
     }
 
     static func creationDate(of url: URL) -> Date? {

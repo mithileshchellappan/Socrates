@@ -10,10 +10,14 @@ struct LiveLectureScreen: View {
         if let live = model.live {
             LiveLectureView(
                 session: live.session,
-                context: LiveLectureContext(title: Self.title(for: live), color: Color(hex: live.course.colorHex)),
-                onFinish: { package in model.finishLiveLecture(package) }
+                context: LiveLectureContext(title: Self.title(for: live), color: Color(hex: live.course.colorHex))
             )
+            #if os(macOS)
+            // The course is in the line under the slide; the title only names the window in the
+            // Window menu (mockup 02: no toolbar title).
             .navigationTitle(live.course.name)
+            .toolbar(removing: .title)
+            #endif
         } else {
             ContentUnavailableView {
                 Image(systemName: "record.circle")

@@ -83,6 +83,30 @@ struct LevelMeter: View {
     }
 }
 
+/// The running recording: a pulsing red dot and the elapsed time in SF Mono. Shown in the live
+/// toolbar, and in the main window's toolbar while the live screen is closed.
+public struct RecordingIndicator: View {
+    let session: LiveLectureSession
+
+    public init(session: LiveLectureSession) {
+        self.session = session
+    }
+
+    public var body: some View {
+        HStack(spacing: 6) {
+            RecordingDot(isPulsing: session.phase == .recording)
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                Text(ClockText.string(session.elapsed(at: timeline.date)))
+                    .font(.system(size: 12, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.horizontal, 6)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// Pulsing red dot shown while recording.
 struct RecordingDot: View {
     var isPulsing = true

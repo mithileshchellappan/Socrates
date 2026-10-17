@@ -1,3 +1,4 @@
+import CaptureUI
 import Processing
 import StudyCore
 import SwiftUI
@@ -32,8 +33,16 @@ struct RootView: View {
             .focusedSceneValue(\.sidebarSelection, $selection)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Record", systemImage: "record.circle", action: record)
-                        .labelStyle(.titleAndIcon)
+                    // A recording keeps going with its screen closed; show it here so it is never
+                    // forgotten. Clicking brings the live screen back.
+                    if let session = model.live?.session, session.isCapturing, session.startedAt != nil {
+                        Button(action: record) {
+                            RecordingIndicator(session: session)
+                        }
+                    } else {
+                        Button("Record", systemImage: "record.circle", action: record)
+                            .labelStyle(.titleAndIcon)
+                    }
                 }
             }
             .sheet(item: $model.sheet) { sheet in
@@ -72,9 +81,9 @@ struct RootView: View {
         }
     }
 
-    /// Shows the running live lecture, or sets up a new one.
+    /// Shows the running (or not yet started) live lecture, or sets up a new one.
     private func record() {
-        guard model.live != nil else {
+        guard model.hasOpenCapture else {
             model.sheet = .newCapture
             return
         }

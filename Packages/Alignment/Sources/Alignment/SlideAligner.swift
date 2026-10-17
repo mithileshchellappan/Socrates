@@ -129,8 +129,42 @@ public struct PreparedAlignment: Sendable {
     }
 
     /// Resolves anchors (snap stamps, drop unknown pages, one anchor per step, drop repeats) and decodes.
+    ///
+    /// Anchors that contradict each other leave the decoder no path; rather than an all-OFF
+    /// result, the alignment is redone without OFF anchors, then without anchors (logged), and
+    /// `AlignmentResult.anchors` lists the ones actually used.
     public func align(anchors: [AlignmentAnchor] = []) -> AlignmentResult {
-        let resolved = resolve(anchors)
+        let slideCount = pages.count
+        var resolved = resolve(anchors)
+        var decoded = decode(resolved)
+        if decoded == nil {
+            alignmentLog.error("Anchors leave no valid alignment; dropping OFF anchors")
+            resolved = resolved.filter { $0.anchor.target != .off }
+            decoded = decode(resolved)
+        }
+        if decoded == nil {
+            alignmentLog.error("Slide anchors leave no valid alignment; aligning without anchors")
+            resolved = []
+            decoded = decode([])
+        }
+        let path = decoded ?? [Int](repeating: 2 * slideCount, count: evidence.stepCount)
+        let targets = path.map { $0 < slideCount ? AlignmentTarget.slide(pages[$0]) : .off }
+
+        let spans = makeSpans(path: path, targets: targets, anchors: resolved)
+        let windows = WindowTable(
+            stepDuration: parameters.stepDuration,
+            duration: duration,
+            slideCount: slideCount,
+            similarity: evidence.similarity,
+            offScores: offEmissions,
+            evidence: evidence.evidence,
+            targets: targets
+        )
+        return AlignmentResult(pages: pages, spans: spans, windows: windows, anchors: resolved, duration: duration)
+    }
+
+    /// The decoder's path for these anchors, or nil when they leave none.
+    private func decode(_ resolved: [ResolvedAnchor]) -> [Int]? {
         var constraints: [Int: Decoder.Constraint] = [:]
         let slideIndex = Dictionary(pages.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         for anchor in resolved {
@@ -158,20 +192,7 @@ public struct PreparedAlignment: Sendable {
                 offEnd: Float(parameters.offEndCost)
             )
         )
-        let path = decoder.decode(constraints: constraints, bounds: bounds(for: resolved, slideIndex: slideIndex))
-        let targets = path.map { $0 < slideCount ? AlignmentTarget.slide(pages[$0]) : .off }
-
-        let spans = makeSpans(path: path, targets: targets, anchors: resolved)
-        let windows = WindowTable(
-            stepDuration: parameters.stepDuration,
-            duration: duration,
-            slideCount: slideCount,
-            similarity: evidence.similarity,
-            offScores: offEmissions,
-            evidence: evidence.evidence,
-            targets: targets
-        )
-        return AlignmentResult(pages: pages, spans: spans, windows: windows, anchors: resolved, duration: duration)
+        return decoder.decode(constraints: constraints, bounds: bounds(for: resolved, slideIndex: slideIndex))
     }
 
     // MARK: - Anchors

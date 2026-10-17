@@ -46,7 +46,8 @@ struct Decoder: Sendable {
     enum Constraint: Hashable, Sendable {
         /// The state at this step must be `on(slide)`, entered at this step.
         case slide(Int)
-        /// The state at this step must be an OFF state, entered at this step.
+        /// The state at this step must be an OFF state: entered at this step from a slide, or
+        /// `offStart` when no slide came before (the lecture has not started yet).
         case off
     }
 
@@ -71,8 +72,8 @@ struct Decoder: Sendable {
     var offStartState: Int { 2 * slideCount }
     var offEndState: Int { 2 * slideCount + 1 }
 
-    /// Best state per step.
-    func decode(constraints: [Int: Constraint], bounds: Bounds) -> [Int] {
+    /// Best state per step, or nil when the constraints and bounds leave no path at all.
+    func decode(constraints: [Int: Constraint], bounds: Bounds) -> [Int]? {
         let slides = slideCount
         let states = stateCount
         let offStart = offStartState
@@ -142,6 +143,7 @@ struct Decoder: Sendable {
         // Free end; with no evidence at all (exact ties) the recording is OFF rather than slide 1.
         var state = offStart
         for candidate in 0..<states where previous[candidate] > previous[state] { state = candidate }
+        guard previous[state] > -.infinity else { return nil }
         var path = [Int](repeating: offStart, count: stepCount)
         var step = stepCount - 1
         while step >= 0 {
@@ -284,7 +286,9 @@ struct Decoder: Sendable {
                 state += 1
             }
         case .off?:
-            // Must enter OFF here (from a slide), not stay in it.
+            // Must enter OFF here (from a slide), not stay in it; before any slide, staying in
+            // `offStart` (computed above) is that OFF. Forbidding it made an OFF anchor ahead of a
+            // first-page slide anchor infeasible, and one ahead of a later page forced a slide in.
             slide = 0
             while slide < slides {
                 c[slide] = impossible
@@ -292,7 +296,6 @@ struct Decoder: Sendable {
                 back[slides + slide] = Int32(slide)
                 slide += 1
             }
-            c[offStart] = impossible
             c[offEnd] = bestOn - costs.offEnd + offScore
             back[offEnd] = bestOnSource
         case nil:

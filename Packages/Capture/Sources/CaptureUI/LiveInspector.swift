@@ -1,18 +1,23 @@
 import Capture
 import SwiftUI
 
-/// Which part of the live screen has keyboard focus.
+/// Which part of the live screen has keyboard focus. (Flag text is edited in a popover, which
+/// is its own window on the Mac; its editing state travels as `isEditingFlag` instead.)
 enum LiveField: Hashable {
     case canvas
     case note
-    case flagText
 }
 
 /// The live-lecture inspector: input, provisional captions, quick notes for the slide on
 /// screen, and the stamps list.
+///
+/// The level meter and the captions change several times a second; each reads the session in
+/// its own view, so those updates never re-run this body (the notes editor, the stamps).
 struct LiveInspector: View {
     let session: LiveLectureSession
     var focus: FocusState<LiveField?>.Binding
+    /// True while a flag's text popover is open, so slide keys stay off while typing in it.
+    @Binding var isEditingFlag: Bool
 
     @State private var showsAllStamps = false
 
@@ -25,14 +30,11 @@ struct LiveInspector: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            InputHeader(session: session)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if let captions = session.captions {
-                        CaptionsSection(transcript: captions)
-                        Divider()
-                    }
+                    LiveCaptions(session: session)
                     notes
                     Divider()
                     stamps
@@ -41,19 +43,6 @@ struct LiveInspector: View {
             }
             .scrollIndicators(.automatic)
         }
-    }
-
-    private var header: some View {
-        HStack(spacing: 7) {
-            Image(systemName: session.isInputAvailable ? "mic" : "mic.slash")
-                .foregroundStyle(session.isInputAvailable ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
-                .help(session.inputName ?? "")
-                .accessibilityLabel(Text(session.inputName ?? "Microphone"))
-            LevelMeter(level: session.level, isActive: session.isRecording && session.isInputAvailable)
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
     }
 
     private var notes: some View {
@@ -68,6 +57,7 @@ struct LiveInspector: View {
             .scrollContentBackground(.hidden)
             .padding(.horizontal, Self.textEditorInsetCorrection)
             .frame(minHeight: 96)
+            .disabled(!session.acceptsNotes)
             .focused(focus, equals: .note)
             .onKeyPress(.escape) {
                 focus.wrappedValue = .canvas
@@ -95,7 +85,7 @@ struct LiveInspector: View {
             VStack(spacing: 1) {
                 ForEach(visible) { event in
                     if event.kind == .flag {
-                        FlagRow(session: session, event: event, focus: focus)
+                        FlagRow(session: session, event: event, focus: focus, isEditingFlag: $isEditingFlag)
                     } else {
                         SlideStampRow(
                             event: event,
@@ -107,6 +97,36 @@ struct LiveInspector: View {
                 }
             }
             .padding(.horizontal, -6)
+        }
+    }
+}
+
+/// Microphone and level meter. Reads `session.level` (updated with every audio chunk) here only.
+private struct InputHeader: View {
+    let session: LiveLectureSession
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: session.isInputAvailable ? "mic" : "mic.slash")
+                .foregroundStyle(session.isInputAvailable ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
+                .help(session.inputName ?? "")
+                .accessibilityLabel(Text(session.inputName ?? "Microphone"))
+            LevelMeter(level: session.level, isActive: session.isRecording && session.isInputAvailable)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+    }
+}
+
+/// The captions section while captions run. Reads `session.captions` here only.
+private struct LiveCaptions: View {
+    let session: LiveLectureSession
+
+    var body: some View {
+        if let captions = session.captions {
+            CaptionsSection(transcript: captions)
+            Divider()
         }
     }
 }
@@ -152,6 +172,7 @@ private struct FlagRow: View {
     let session: LiveLectureSession
     let event: LectureEvent
     var focus: FocusState<LiveField?>.Binding
+    @Binding var isEditingFlag: Bool
 
     @State private var isEditing = false
     @State private var draft = ""
@@ -164,7 +185,7 @@ private struct FlagRow: View {
             HStack(spacing: 8) {
                 Image(systemName: "flag.fill")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.red)
                 Text(event.text ?? String(localized: "Flag"))
                     .foregroundStyle(event.text == nil ? .secondary : .primary)
                     .lineLimit(1)
@@ -178,22 +199,43 @@ private struct FlagRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!session.acceptsNotes)
         .popover(isPresented: $isEditing, arrowEdge: .leading) {
-            TextField("Flag", text: $draft)
-                .textFieldStyle(.plain)
-                .focused(focus, equals: .flagText)
-                .onSubmit { commit() }
-                .frame(width: 240)
-                .padding(10)
-                .onAppear { focus.wrappedValue = .flagText }
-                .onDisappear { commit() }
+            FlagTextField(text: $draft, commit: commit)
+        }
+        .onChange(of: isEditing) { _, editing in
+            isEditingFlag = editing
         }
     }
 
+    /// Runs on Return and again when the popover closes (also when it is clicked away).
     private func commit() {
         session.setFlagText(draft, for: event.id)
         isEditing = false
-        focus.wrappedValue = .canvas
+        // Back to the slide, unless the click that closed the popover went into the notes.
+        if focus.wrappedValue != .note {
+            focus.wrappedValue = .canvas
+        }
+    }
+}
+
+/// The popover's text field. It owns its focus: the popover is a separate window on the Mac,
+/// where a focus binding from the live screen does not reach.
+private struct FlagTextField: View {
+    @Binding var text: String
+    let commit: () -> Void
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField("Flag", text: $text)
+            .textFieldStyle(.plain)
+            .focused($isFocused)
+            .onSubmit(commit)
+            .frame(width: 240)
+            .padding(10)
+            .onAppear { isFocused = true }
+            .onDisappear(perform: commit)
     }
 }
 

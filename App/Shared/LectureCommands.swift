@@ -10,9 +10,11 @@ struct LectureCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("New Lecture Capture…") {
-                if model.live != nil {
+                if model.hasOpenCapture {
                     #if os(macOS)
                     openWindow(id: LiveLectureScene.id)
+                    #else
+                    model.isLivePresented = true
                     #endif
                 } else {
                     model.sheet = .newCapture

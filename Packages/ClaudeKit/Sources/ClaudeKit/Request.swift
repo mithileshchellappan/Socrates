@@ -27,7 +27,9 @@ public struct MessageRequest: Sendable, Hashable {
     /// Extra `anthropic-beta` values. Betas required by the request's own fields are added automatically.
     public var betas: Set<String>
     /// Top-level fields ClaudeKit does not model (e.g. `context_management`, `inference_geo`).
-    /// Keys already set by typed fields win.
+    /// Fields ClaudeKit models or bans (`MessageRequest.reservedBodyKeys`, and `effort`/`format`
+    /// inside `output_config`) are not taken from here: `validate()` rejects them and `body`
+    /// drops them, so `extraBody` can never re-introduce a forbidden request shape.
     public var extraBody: JSONObject
 
     public init(
@@ -69,9 +71,18 @@ public struct MessageRequest: Sendable, Hashable {
 
     // MARK: Wire form
 
+    /// Top-level keys `extraBody` may not set: the typed fields own them (even when nil), and
+    /// sampling parameters are rejected by the current models.
+    public static let reservedBodyKeys: Set<String> = [
+        "model", "max_tokens", "messages", "system", "tools", "tool_choice", "thinking", "stop_sequences",
+        "cache_control", "fallbacks", "stream", "temperature", "top_p", "top_k",
+    ]
+    /// Keys inside `output_config` that `extraBody` may not set.
+    public static let reservedOutputConfigKeys: Set<String> = ["effort", "format"]
+
     /// The request body (without `stream`).
     public var body: JSONObject {
-        var object = extraBody
+        var object = extraBody.filter { !Self.reservedBodyKeys.contains($0.key) }
         object["model"] = .string(model.rawValue)
         object["max_tokens"] = .int(maxTokens)
         object["messages"] = .array(messages.map(\.json))
@@ -79,7 +90,8 @@ public struct MessageRequest: Sendable, Hashable {
         if !tools.isEmpty { object["tools"] = .array(tools.map(\.json)) }
         object.set("tool_choice", toolChoice?.json)
         object.set("thinking", thinking?.json)
-        var outputConfig = extraBody.object("output_config") ?? [:]
+        var outputConfig = (extraBody.object("output_config") ?? [:])
+            .filter { !Self.reservedOutputConfigKeys.contains($0.key) }
         outputConfig["effort"] = .string(effort.rawValue)
         outputConfig.set("format", outputFormat?.json)
         object["output_config"] = .object(outputConfig)
@@ -114,6 +126,17 @@ public struct MessageRequest: Sendable, Hashable {
         }
         if fallbacks != nil, fallbacks != .disabled, !model.supportsServerSideFallback {
             throw ClaudeError.invalidArgument("\(model) does not accept server-side fallbacks")
+        }
+        if let key = extraBody.keys.sorted().first(where: Self.reservedBodyKeys.contains) {
+            throw ClaudeError.invalidArgument("extraBody may not set \(key); use the typed field (sampling parameters are not supported)")
+        }
+        if let outputConfig = extraBody["output_config"] {
+            guard let object = outputConfig.objectValue else {
+                throw ClaudeError.invalidArgument("extraBody output_config must be an object")
+            }
+            if let key = object.keys.sorted().first(where: Self.reservedOutputConfigKeys.contains) {
+                throw ClaudeError.invalidArgument("extraBody may not set output_config.\(key); use the typed field")
+            }
         }
     }
 }

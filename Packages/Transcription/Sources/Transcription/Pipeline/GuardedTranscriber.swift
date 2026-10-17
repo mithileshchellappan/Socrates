@@ -113,6 +113,7 @@ public struct GuardedTranscriber: Sendable {
         } else {
             gaps = found.map { SpeechGap(start: $0.range.start, end: $0.range.end, speechSeconds: $0.speechSeconds, recovered: false) }
         }
+        try checkFailures(states: states, decodable: decodable.count, segments: segments)
 
         progress(TranscriptionProgress(phase: .finished, fractionCompleted: 1, decodedSeconds: duration, totalSeconds: duration))
         let elapsed = started.duration(to: .now)
@@ -126,6 +127,30 @@ public struct GuardedTranscriber: Sendable {
             options: options,
             wallTime: Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         )
+    }
+
+    // MARK: - Failed chunks
+
+    /// Share of the decodable chunks that may fail (and stay empty after the missing-speech
+    /// guard) before the whole transcription counts as failed. A few transient failures leave a
+    /// usable transcript; more mean a systemic problem (model unloaded, Core ML out of memory)
+    /// and the job should fail so it can be retried instead of saving a partial transcript.
+    static let maximumLostChunkFraction = 0.05
+
+    /// Throws when too many chunks failed in the first pass and got no text back from the
+    /// missing-speech guard either.
+    func checkFailures(states: [ChunkState], decodable: Int, segments: [TranscribedSegment]) throws {
+        let failed = states.filter(\.failed)
+        guard !failed.isEmpty, decodable > 0 else { return }
+        let recoveredMidpoints = segments.filter { $0.repair == .gapRecovered }.map { ($0.start + $0.end) / 2 }
+        let lost = failed.filter { state in !recoveredMidpoints.contains { state.chunk.time.contains($0) } }
+        let reason = failed.compactMap(\.failure).first ?? "unknown error"
+        Log.transcription.error(
+            "\(failed.count, privacy: .public) of \(decodable, privacy: .public) chunks failed, \(lost.count, privacy: .public) without recovered text: \(reason, privacy: .public)"
+        )
+        if Double(lost.count) > Self.maximumLostChunkFraction * Double(decodable) {
+            throw TranscriptionError.decodingFailed("\(lost.count) of \(decodable) chunks failed (\(reason))")
+        }
     }
 
     // MARK: - Loop guard
@@ -144,11 +169,15 @@ public struct GuardedTranscriber: Sendable {
                 }
                 let outcomes = try await decoder.decode(requests)
                 for (offset, index) in batch.enumerated() where offset < outcomes.count {
-                    guard case .success(let result) = outcomes[offset] else {
-                        if case .failure(let error) = outcomes[offset], error is CancellationError { throw error }
-                        continue
+                    switch outcomes[offset] {
+                    case .success(let result):
+                        states[index].considerRetry(result, temperature: temperature, context: context, detector: loopDetector)
+                    case .failure(let error as CancellationError):
+                        throw error
+                    case .failure(let error):
+                        // The chunk keeps its first-pass text.
+                        Self.logRepairFailure("Loop re-decode", at: states[index].chunk.time.start, error)
                     }
-                    states[index].considerRetry(result, temperature: temperature, context: context, detector: loopDetector)
                 }
             }
             looping = looping.filter { states[$0].loopWords > 0 }
@@ -265,8 +294,15 @@ public struct GuardedTranscriber: Sendable {
                         temperature: 0, fallbackCount: 5, prompt: nil)
             })
             for (offset, piece) in batch.enumerated() where offset < outcomes.count {
-                guard case .success(let result) = outcomes[offset] else {
-                    if case .failure(let error) = outcomes[offset], error is CancellationError { throw error }
+                let result: ChunkDecodeResult
+                switch outcomes[offset] {
+                case .success(let decoded):
+                    result = decoded
+                case .failure(let error as CancellationError):
+                    throw error
+                case .failure(let error):
+                    // The gap stays unrecovered (reported in `Transcript.gaps`).
+                    Self.logRepairFailure("Missing-speech re-decode", at: Double(piece.samples.lowerBound) / rate, error)
                     continue
                 }
                 let pieceTime = TimeRange(start: Double(piece.samples.lowerBound) / rate, end: Double(piece.samples.upperBound) / rate)
@@ -331,6 +367,10 @@ public struct GuardedTranscriber: Sendable {
     static let recoveryLogProbThreshold = -1.0
 
     // MARK: - Helpers
+
+    static func logRepairFailure(_ what: String, at seconds: Double, _ error: any Error) {
+        Log.transcription.error("\(what, privacy: .public) at \(seconds, privacy: .public) s failed: \(String(describing: error), privacy: .public)")
+    }
 
     struct Context: Sendable {
         var samples: [Float]
@@ -404,6 +444,10 @@ struct ChunkState: Sendable {
     var loopsRemaining = 0
     var temperature: Float = 0
     var decoded = false
+    /// Why the first pass failed, if it did.
+    var failure: String?
+
+    var failed: Bool { failure != nil }
 
     init(chunk: PlannedChunk) {
         self.chunk = chunk
@@ -418,7 +462,8 @@ struct ChunkState: Sendable {
             segmentCount: segments.count,
             loopsFound: loopsFound,
             loopsRemaining: loopsRemaining,
-            temperature: temperature
+            temperature: temperature,
+            failed: failed
         )
     }
 
@@ -438,6 +483,7 @@ struct ChunkState: Sendable {
             let start = chunk.time.start
             Log.transcription.error("Chunk at \(start, privacy: .public) s failed: \(String(describing: error), privacy: .public)")
             segments = []
+            failure = String(describing: error)
         }
         let score = Self.loops(in: segments, detector: detector)
         loopsFound = score.loops

@@ -29,14 +29,3 @@ public struct StaticAPIKeyProvider: APIKeyProvider {
 
     public func apiKey() async throws -> String? { key }
 }
-
-/// Reads a key from the process environment (opt-in live tests only).
-public struct EnvironmentAPIKeyProvider: APIKeyProvider {
-    public let variable: String
-
-    public init(variable: String = "ANTHROPIC_API_KEY") { self.variable = variable }
-
-    public func apiKey() async throws -> String? {
-        ProcessInfo.processInfo.environment[variable]
-    }
-}

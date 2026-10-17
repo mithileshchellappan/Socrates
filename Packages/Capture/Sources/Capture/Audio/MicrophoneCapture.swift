@@ -9,6 +9,8 @@ import Foundation
 ///   interruption ends, the engine is rebuilt and a new segment starts: the previous segment
 ///   stays intact and the clock keeps following real time.
 /// - While recording, a `ProcessInfo` activity keeps the Mac from idle-sleeping.
+/// - Nothing it starts keeps it alive: when its owner lets go without stopping, `deinit` stops
+///   the engine and ends the activity (the package is then recovered like after a crash).
 ///
 /// One instance records one lecture.
 public actor MicrophoneCapture: AudioCaptureSource {
@@ -22,6 +24,8 @@ public actor MicrophoneCapture: AudioCaptureSource {
     private var state = State.idle
     private var engine: AVAudioEngine?
     private var writer: SegmentedAudioWriter?
+    /// Set when writing audio failed; the writer keeps its segment list but gets no more audio.
+    private var writerFailed = false
     private var run = 0
     private var firstHostTime: UInt64?
     private var writerTask: Task<Void, Never>?
@@ -31,6 +35,15 @@ public actor MicrophoneCapture: AudioCaptureSource {
     public init(host: HostClock = .system, tapBufferSize: AVAudioFrameCount = 4096) {
         self.host = host
         self.tapBufferSize = tapBufferSize
+    }
+
+    isolated deinit {
+        for task in observerTasks { task.cancel() }
+        writerTask?.cancel()
+        tearDownEngine()
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        broadcaster.finish()
+        status.continuation.finish()
     }
 
     public nonisolated func requestPermission() async -> Bool {
@@ -74,7 +87,13 @@ public actor MicrophoneCapture: AudioCaptureSource {
         self.writer = writer
 
         let chunks = broadcaster.subscribe()
-        writerTask = Task { await self.consume(chunks) }
+        // Weak, so a capture its owner dropped without stopping is released (and stops in deinit).
+        writerTask = Task { [weak self] in
+            for await chunk in chunks {
+                guard let self else { return }
+                await self.write(chunk)
+            }
+        }
 
         let engineStart = host.now()
         clock.setAnchor(.init(sampleTime: 0, hostTime: engineStart))
@@ -87,6 +106,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
             await writerTask?.value
             writerTask = nil
             self.writer = nil
+            writerFailed = false
             state = .idle
             throw error
         }
@@ -137,9 +157,14 @@ public actor MicrophoneCapture: AudioCaptureSource {
         // package reader recovers their lengths, so report what is known and carry on.
         var segments = writer?.segments ?? []
         do {
-            segments = try writer?.finish() ?? segments
+            segments = try writer?.finish(drainingConversion: !writerFailed) ?? segments
         } catch {
             CaptureLog.capture.fault("Closing the last segment failed: \(error.localizedDescription, privacy: .public)")
+        }
+        if writerFailed, let last = segments.indices.last {
+            // A failed write may have left a different number of frames in the file than
+            // counted; without a count the package reader measures the file.
+            segments[last].frameCount = nil
         }
         status.continuation.yield(.segmentsChanged(segments))
         status.continuation.finish()
@@ -148,21 +173,21 @@ public actor MicrophoneCapture: AudioCaptureSource {
 
     // MARK: - Writing
 
-    private func consume(_ chunks: AsyncStream<AudioChunk>) async {
-        for await chunk in chunks {
-            guard let writer else { continue }
-            if firstHostTime == nil {
-                firstHostTime = chunk.hostTime ?? host.now()
+    private func write(_ chunk: AudioChunk) {
+        guard let writer, !writerFailed else { return }
+        if firstHostTime == nil {
+            firstHostTime = chunk.hostTime ?? host.now()
+        }
+        do {
+            if try writer.append(chunk) {
+                status.continuation.yield(.segmentsChanged(writer.segments))
             }
-            do {
-                if try writer.append(chunk) {
-                    status.continuation.yield(.segmentsChanged(writer.segments))
-                }
-            } catch {
-                CaptureLog.capture.fault("Writing audio failed: \(error.localizedDescription, privacy: .public)")
-                status.continuation.yield(.failed(error.localizedDescription))
-                self.writer = nil
-            }
+        } catch {
+            CaptureLog.capture.fault("Writing audio failed: \(error.localizedDescription, privacy: .public)")
+            status.continuation.yield(.failed(error.localizedDescription))
+            // Keep the writer: its segments (with their places on the clock) still describe
+            // the files, and `stop()` closes the open one.
+            writerFailed = true
         }
     }
 

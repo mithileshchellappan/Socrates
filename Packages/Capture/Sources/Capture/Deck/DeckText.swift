@@ -1,5 +1,7 @@
 import Foundation
-import PDFKit
+// PDFKit re-exports AppKit/UIKit; this file uses only PDFDocument/PDFPage text extraction, and the
+// internal import keeps those modules out of Capture's interface (docs/decisions.md).
+internal import PDFKit
 
 /// Text of a slide PDF, for alignment, search and stamp titles.
 public struct DeckText: Sendable, Hashable {

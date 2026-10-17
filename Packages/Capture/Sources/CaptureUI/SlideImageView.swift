@@ -3,16 +3,18 @@ import SwiftUI
 
 /// One slide of a deck, drawn from the deck's bitmap cache at a fixed width.
 ///
-/// No spinner: while a bitmap loads the page shows as blank paper (or the thumbnail, scaled
-/// up, when only that is ready), then the sharp bitmap replaces it.
+/// No spinner and no blank frame on a slide change: a bitmap already in memory (the deck
+/// prefetches the neighbours) is drawn in the same frame the page changes. Otherwise the
+/// previous slide stays (or the thumbnail, scaled up, when only that is ready) until the sharp
+/// bitmap replaces it; only the very first load shows blank paper.
 public struct SlideImageView: View {
     let deck: SlideDeck
     let page: Int
     let pixelWidth: Int
     let cornerRadius: CGFloat
 
+    /// What the last load produced: this page's bitmap or preview, or the previous page's.
     @State private var image: CGImage?
-    @State private var imagePage: Int?
 
     public init(deck: SlideDeck, page: Int, pixelWidth: Int = SlideWidth.display, cornerRadius: CGFloat = 6) {
         self.deck = deck
@@ -25,7 +27,7 @@ public struct SlideImageView: View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         ZStack {
             Color.white
-            if let image, imagePage == page {
+            if let image = deck.cachedImage(page: page, width: pixelWidth) ?? image {
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .interpolation(.high)
@@ -49,22 +51,16 @@ public struct SlideImageView: View {
     }
 
     private func load() async {
-        if let ready = await deck.cachedImage(page: page, width: pixelWidth) {
-            show(ready)
+        if let ready = deck.cachedImage(page: page, width: pixelWidth) {
+            image = ready
             return
         }
-        if pixelWidth > SlideWidth.thumbnail,
-           let preview = await deck.cachedImage(page: page, width: SlideWidth.thumbnail) {
-            show(preview)
+        if pixelWidth > SlideWidth.thumbnail, let preview = deck.cachedImage(page: page, width: SlideWidth.thumbnail) {
+            image = preview
         }
         guard !Task.isCancelled, let sharp = try? await deck.image(page: page, width: pixelWidth),
               !Task.isCancelled
         else { return }
-        show(sharp)
-    }
-
-    private func show(_ image: CGImage) {
-        self.image = image
-        self.imagePage = page
+        image = sharp
     }
 }

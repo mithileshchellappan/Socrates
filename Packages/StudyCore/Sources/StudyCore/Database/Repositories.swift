@@ -326,39 +326,60 @@ public struct JobRepository: Sendable {
         }
     }
 
+    /// Attempts after which a job that keeps being interrupted is failed instead of re-queued.
+    /// A job that crashes the process (a Core ML trap, an iOS memory kill) would otherwise run
+    /// again, and crash again, at every launch.
+    public static let maximumInterruptedAttempts = 3
+
     /// Puts jobs left `running` by a previous process (quit or crash mid-job) back in the queue,
-    /// keeping their attempt count. Call once at launch, before any job runs. Returns them.
+    /// keeping their attempt count. A job already started `maximumAttempts` times is marked
+    /// failed instead (Retry queues a fresh one). Call once at launch, before any job runs.
+    /// Returns the re-queued jobs.
     @discardableResult
-    public func requeueInterrupted() async throws -> [Job] {
-        let interrupted = try await store.database.read { db in
-            try Job.where { $0.state.eq(JobState.running) }.fetchAll(db)
-        }
-        var requeued: [Job] = []
-        for job in interrupted {
-            if let job = try await update(job.id, { job, _ in
-                job.state = .queued
-                job.progress = 0
-            }) {
-                requeued.append(job)
+    public func requeueInterrupted(maximumAttempts: Int = JobRepository.maximumInterruptedAttempts) async throws -> [Job] {
+        let stamp = now()
+        let store = store
+        return try await store.database.write { db in
+            var requeued: [Job] = []
+            for var job in try Job.where({ $0.state.eq(JobState.running) }).fetchAll(db) {
+                job.phase = nil
+                if job.attempt >= maximumAttempts {
+                    job.state = .failed
+                    job.error = String(localized: "Interrupted \(job.attempt) times")
+                    job.finishedAt = stamp
+                } else {
+                    job.state = .queued
+                    job.progress = 0
+                }
+                let stamped = store.stamp(job)
+                try Job.upsert { stamped }.execute(db)
+                if stamped.state == .queued { requeued.append(stamped) }
             }
+            return requeued
         }
-        return requeued
     }
 
+    /// Marks a queued job running. Returns nil (and changes nothing) when the job is gone or no
+    /// longer queued, e.g. cancelled while the runner picked it.
     @discardableResult
     public func start(_ jobID: Job.ID) async throws -> Job? {
-        try await update(jobID) { job, now in
+        try await update(jobID, from: [.queued]) { job, now in
             job.state = .running
             job.attempt += 1
             job.startedAt = now
+            job.progress = 0
+            job.phase = nil
             job.error = nil
         }
     }
 
+    /// Records a running job's progress (of `phase`, or of the stage when nil). Ignored once the
+    /// job has finished.
     @discardableResult
-    public func reportProgress(_ jobID: Job.ID, _ progress: Double) async throws -> Job? {
-        try await update(jobID) { job, _ in
+    public func reportProgress(_ jobID: Job.ID, _ progress: Double, phase: JobPhase? = nil) async throws -> Job? {
+        try await update(jobID, from: [.running]) { job, _ in
             job.progress = min(max(progress, 0), 1)
+            job.phase = phase
         }
     }
 
@@ -368,10 +389,13 @@ public struct JobRepository: Sendable {
         case cancelled
     }
 
+    /// Finishes a job. With `onlyFrom`, only a job currently in one of those states changes;
+    /// otherwise nil is returned.
     @discardableResult
-    public func finish(_ jobID: Job.ID, _ outcome: Outcome) async throws -> Job? {
-        try await update(jobID) { job, now in
+    public func finish(_ jobID: Job.ID, _ outcome: Outcome, onlyFrom states: Set<JobState>? = nil) async throws -> Job? {
+        try await update(jobID, from: states) { job, now in
             job.finishedAt = now
+            job.phase = nil
             switch outcome {
             case .succeeded:
                 job.state = .succeeded
@@ -386,9 +410,22 @@ public struct JobRepository: Sendable {
         }
     }
 
-    private func update(_ jobID: Job.ID, _ change: (inout Job, Date) -> Void) async throws -> Job? {
-        guard var job = try await store.fetch(Job.self, id: jobID) else { return nil }
-        change(&job, now())
-        return try await store.save(job)
+    /// Reads, changes and writes a job in one transaction, so concurrent transitions (a cancel
+    /// while the runner starts the job, a late progress report) never overwrite each other.
+    private func update(
+        _ jobID: Job.ID,
+        from states: Set<JobState>? = nil,
+        _ change: @escaping @Sendable (inout Job, Date) -> Void
+    ) async throws -> Job? {
+        let stamp = now()
+        let store = store
+        return try await store.database.write { db in
+            guard var job = try Job.find(jobID).fetchOne(db) else { return nil }
+            if let states, !states.contains(job.state) { return nil }
+            change(&job, stamp)
+            let stamped = store.stamp(job)
+            try Job.upsert { stamped }.execute(db)
+            return stamped
+        }
     }
 }

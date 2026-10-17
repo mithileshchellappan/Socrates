@@ -9,6 +9,8 @@ public enum ProcessingError: Error, Equatable, Sendable, LocalizedError {
     case missingLecture
     case noAudio
     case noTranscript
+    /// The engine returned no text although the recording has speech.
+    case nothingTranscribed
     case unknownStage(String)
 
     public var errorDescription: String? {
@@ -17,6 +19,7 @@ public enum ProcessingError: Error, Equatable, Sendable, LocalizedError {
         case .missingLecture: String(localized: "The lecture is gone.")
         case .noAudio: String(localized: "The recording has no audio files.")
         case .noTranscript: String(localized: "There is no transcript to align.")
+        case .nothingTranscribed: String(localized: "No text came out of the transcription.")
         case .unknownStage(let stage): String(localized: "Unknown processing step “\(stage)”.")
         }
     }
@@ -52,6 +55,13 @@ public actor LectureProcessor {
     private var loop: Task<Void, Never>?
     private var needsAnotherPass = false
     private var currentJob: (id: Job.ID, task: Task<Void, any Error>)?
+    /// Jobs a cancel found already marked running before `run` had their task: `run` cancels
+    /// them as soon as `start` returns.
+    private var pendingCancels: Set<Job.ID> = []
+
+    /// A transcription that comes back empty although the voice activity detector found at least
+    /// this much speech (seconds) fails instead of saving an empty transcript.
+    static let minimumSpeechForEmptyTranscript = 30.0
 
     /// - Parameters:
     ///   - onIdle: called when the queue runs dry after doing work, e.g. to unload the model.
@@ -77,11 +87,19 @@ public actor LectureProcessor {
 
     // MARK: - Running
 
-    /// Re-queues jobs a previous process left running, and queues alignment for lectures whose
-    /// transcription finished just before a crash. Call once at launch, before `wake()`.
+    /// Re-queues jobs a previous process left running (failing ones interrupted too often),
+    /// queues alignment for lectures whose transcription finished just before a crash, and
+    /// transcription for recordings filed without a job (the app quit between importing a
+    /// capture and queuing it). Call once at launch, before `wake()`.
     @discardableResult
     public func recover() async throws -> [Job] {
         let requeued = try await jobs.requeueInterrupted()
+        let unqueued: [Recording] = try await services.database.read { db in
+            try Recording.where { $0.lectureID.isNot(nil) }.fetchAll(db).filter { recording in
+                try RecordingSegment.where { $0.recordingID.eq(recording.id) }.fetchCount(db) > 0
+                    && Job.where { $0.recordingID.eq(recording.id) }.fetchCount(db) == 0
+            }
+        }
         let orphans: [Job] = try await services.database.read { db in
             let transcribed = try Job
                 .where { $0.stage.eq(JobStage.transcribe) && $0.state.eq(JobState.succeeded) }
@@ -95,6 +113,9 @@ public actor LectureProcessor {
             }
         }
         var queued: [Job] = []
+        for recording in unqueued {
+            queued.append(try await jobs.enqueue(.transcribe, lectureID: recording.lectureID, recordingID: recording.id))
+        }
         for job in orphans {
             guard let lectureID = job.lectureID, let recordingID = job.recordingID,
                   try await deckID(lectureID: lectureID, recordingID: recordingID) != nil
@@ -122,24 +143,34 @@ public actor LectureProcessor {
         await loop?.value
     }
 
-    /// Re-queues the last failed or cancelled stage of a lecture's recording.
+    /// Re-queues the last failed or cancelled stage of a lecture's recording. A later stage whose
+    /// recording has no transcript (it failed or came back empty) re-queues transcription instead.
     @discardableResult
     public func retry(lectureID: Lecture.ID) async throws -> Job? {
         guard let last = try await jobs.jobs(lectureID: lectureID).last,
               last.state == .failed || last.state == .cancelled
         else { return nil }
-        let job = try await jobs.enqueue(last.stage, lectureID: last.lectureID, recordingID: last.recordingID)
+        var stage = last.stage
+        if stage != .transcribe, let recordingID = last.recordingID {
+            let lines = try await services.database.read { db in
+                try TranscriptSegment.where { $0.recordingID.eq(recordingID) }.fetchCount(db)
+            }
+            if lines == 0 { stage = .transcribe }
+        }
+        let job = try await jobs.enqueue(stage, lectureID: last.lectureID, recordingID: last.recordingID)
         wake()
         return job
     }
 
     /// Cancels the running job of a lecture (it is marked cancelled) and drops its queued ones.
     public func cancel(lectureID: Lecture.ID) async throws {
-        for job in try await jobs.jobs(lectureID: lectureID) where job.state == .queued {
-            try await jobs.finish(job.id, .cancelled)
-        }
-        if let currentJob, try await store.fetch(Job.self, id: currentJob.id)?.lectureID == lectureID {
-            currentJob.task.cancel()
+        for job in try await jobs.jobs(lectureID: lectureID) where !job.state.isFinished {
+            if let currentJob, currentJob.id == job.id {
+                currentJob.task.cancel()
+            } else if try await jobs.finish(job.id, .cancelled, onlyFrom: [.queued]) == nil {
+                // No longer queued: `run` is starting it right now.
+                pendingCancels.insert(job.id)
+            }
         }
     }
 
@@ -147,13 +178,23 @@ public actor LectureProcessor {
         var didWork = false
         while needsAnotherPass {
             needsAnotherPass = false
-            while let job = try? await nextJob(), !Task.isCancelled {
-                await run(job)
+            while !Task.isCancelled, let job = try? await nextJob() {
+                guard await run(job) else {
+                    // The job could not be marked running (e.g. the disk is full). Picking it
+                    // again at once would spin; the next `wake()` tries again.
+                    needsAnotherPass = false
+                    break
+                }
                 didWork = true
+            }
+            // `loop` is still set here, so a `wake()` during `onIdle` only asks for another pass
+            // and never starts a second drain that loads the model while it is being unloaded.
+            if didWork, !needsAnotherPass {
+                didWork = false
+                await onIdle()
             }
         }
         loop = nil
-        if didWork { await onIdle() }
     }
 
     /// The stages this processor runs; queued jobs of other stages belong to other runners.
@@ -164,9 +205,22 @@ public actor LectureProcessor {
         try await jobs.active().first { $0.state == .queued && Self.stages.contains($0.stage) }
     }
 
-    private func run(_ queued: Job) async {
+    /// Runs one queued job. Returns false when it could not be marked running.
+    private func run(_ queued: Job) async -> Bool {
         let started = ContinuousClock.now
-        guard let job = try? await jobs.start(queued.id) else { return }
+        let job: Job
+        do {
+            // Nil: cancelled (or deleted) since it was picked.
+            guard let running = try await jobs.start(queued.id) else { return true }
+            job = running
+        } catch {
+            Log.jobs.error("Could not start job \(queued.id, privacy: .public): \(String(describing: error), privacy: .public)")
+            return false
+        }
+        if pendingCancels.remove(job.id) != nil {
+            _ = try? await jobs.finish(job.id, .cancelled)
+            return true
+        }
         observer(.started(job))
         Log.jobs.info("Job \(job.stage.rawValue, privacy: .public) \(job.id, privacy: .public) attempt \(job.attempt)")
 
@@ -198,6 +252,7 @@ public actor LectureProcessor {
         if let finished = try? await store.fetch(Job.self, id: job.id) {
             observer(.finished(finished, seconds: seconds))
         }
+        return true
     }
 
     // MARK: - Transcribe
@@ -226,12 +281,21 @@ public actor LectureProcessor {
         let transcript = try await withProgress(job) { report in
             try await engine.transcribe(audio, options: options) { progress in
                 switch progress.phase {
-                case .downloadingModel, .loadingModel: break
-                default: report(progress.fractionCompleted)
+                case .downloadingModel: report(.downloadingModel, progress.fractionCompleted)
+                case .loadingModel: report(.loadingModel, progress.fractionCompleted)
+                default: report(nil, progress.fractionCompleted)
                 }
             }
         }
         try Task.checkCancellation()
+        if transcript.segments.isEmpty, transcript.speechSeconds >= Self.minimumSpeechForEmptyTranscript {
+            throw ProcessingError.nothingTranscribed
+        }
+        if transcript.failedChunks > 0 {
+            Log.jobs.error(
+                "\(transcript.failedChunks) chunk(s) of \(recording.id, privacy: .public) failed to decode; gaps: \(transcript.gaps.filter { !$0.recovered }.count) unrecovered"
+            )
+        }
 
         let rows = transcript.records(recordingID: recording.id, lectureID: lecture?.id).map(store.stamp)
         var follow: Job?
@@ -332,38 +396,51 @@ public actor LectureProcessor {
     /// Runs `work`, persisting the progress it reports at most every `progressInterval`.
     private func withProgress<T: Sendable>(
         _ job: Job,
-        _ work: (@escaping @Sendable (Double) -> Void) async throws -> T
+        _ work: (@escaping @Sendable (JobPhase?, Double) -> Void) async throws -> T
     ) async throws -> T {
         let latest = ProgressBox()
         let jobs = jobs
         let observer = observer
         let interval = progressInterval
         let writer = Task {
-            var written = 0.0
+            var written = ProgressBox.Value(phase: nil, fraction: 0)
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
                 let value = latest.value
-                guard value - written >= 0.001 else { continue }
+                guard value.phase != written.phase || value.fraction - written.fraction >= 0.001 else { continue }
                 written = value
-                _ = try? await jobs.reportProgress(job.id, value)
-                observer(.progress(job.id, value))
+                _ = try? await jobs.reportProgress(job.id, value.fraction, phase: value.phase)
+                // Tools follow the stage itself; model preparation only shows in the job row.
+                if value.phase == nil { observer(.progress(job.id, value.fraction)) }
             }
         }
         defer { writer.cancel() }
-        return try await work { value in
-            latest.raise(to: value)
+        return try await work { phase, fraction in
+            latest.raise(to: fraction, phase: phase)
         }
     }
 }
 
 /// The latest progress a job reported, shared between the reporting thread and the writer task.
 final class ProgressBox: Sendable {
-    private let storage = Mutex<Double>(0)
+    struct Value: Equatable, Sendable {
+        var phase: JobPhase?
+        var fraction: Double
+    }
 
-    var value: Double { storage.withLock { $0 } }
+    private let storage = Mutex(Value(phase: nil, fraction: 0))
 
-    /// Progress never goes backwards (model loading and repairs report their own phases).
-    func raise(to value: Double) {
-        storage.withLock { $0 = max($0, value) }
+    var value: Value { storage.withLock { $0 } }
+
+    /// Progress never goes backwards within a phase (repairs report their own sub-phases); a new
+    /// phase (model download → model load → transcription) starts its own fraction.
+    func raise(to fraction: Double, phase: JobPhase? = nil) {
+        storage.withLock { value in
+            if value.phase == phase {
+                value.fraction = max(value.fraction, fraction)
+            } else {
+                value = Value(phase: phase, fraction: fraction)
+            }
+        }
     }
 }

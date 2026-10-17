@@ -90,7 +90,8 @@ public final class KeychainSecretStore: SecretStore {
             let legacy = try? operations.read(item, backend: .fileBased) {
             try operations.write(legacy, to: item, backend: .dataProtection)
             try? operations.delete(item, backend: .fileBased)
-            Log.keychain.info("Moved \(key.rawValue, privacy: .public) to the data-protection keychain")
+            // The key name can hold the uni login name; keep it out of the readable log.
+            Log.keychain.info("Moved \(key.rawValue, privacy: .private(mask: .hash)) to the data-protection keychain")
             return try decode(legacy)
         }
         return nil

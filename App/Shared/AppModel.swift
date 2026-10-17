@@ -81,10 +81,17 @@ final class AppModel {
         let openedAt: Date
     }
 
+    /// A live lecture that is recording, or not started yet: Record shows it instead of setting
+    /// up a new one. A finished one is replaced by the next capture.
+    var hasOpenCapture: Bool {
+        guard let session = live?.session else { return false }
+        return session.isCapturing || session.canStartRecording
+    }
+
     /// Opens a live lecture for `course` showing `deck`. Recording starts from the live screen.
     func openLiveLecture(course: Course, deck: Deck?) async throws {
         guard let services else { return }
-        if let live, live.session.isRecording { return }
+        if let live, live.session.isCapturing { return }
         var pages: [DeckPage] = []
         if let deck {
             pages = try await DeckRepository(store: services.records).pages(deckID: deck.id)
@@ -103,16 +110,22 @@ final class AppModel {
             cacheDirectory: services.paths.caches.appending(path: "Slides", directoryHint: .isDirectory),
             pageTexts: pages.isEmpty ? nil : pages.map(\.text)
         )
+        // Filed from here, not from the live screen: Stop and recording failures alike, whether or
+        // not the screen is still open.
+        let courseID = course.id
+        session.onFinalized = { [weak self] package in
+            self?.fileCapture(package, courseID: courseID)
+        }
         live = LiveCapture(session: session, course: course, deck: deck, lectureID: lectureID, openedAt: Date())
     }
 
     /// Files a finished capture into the library and queues its processing.
-    func finishLiveLecture(_ package: LecturePackage) {
-        guard let services, let course = live?.course else { return }
+    private func fileCapture(_ package: LecturePackage, courseID: Course.ID) {
+        guard let services else { return }
         let processor = processor
         Task {
             do {
-                let imported = try await LectureImporter(services: services).importCapture(at: package.url, courseID: course.id)
+                let imported = try await LectureImporter(services: services).importCapture(at: package.url, courseID: courseID)
                 lastImported = imported
                 await processor?.wake()
             } catch {
@@ -122,9 +135,10 @@ final class AppModel {
         }
     }
 
-    /// Lets go of the live session once its screen is closed, unless it is still recording.
+    /// Lets go of the live session once its screen is closed, unless it is starting, recording or
+    /// stopping (it must stay owned until the package is final).
     func closeLiveLecture() {
-        guard let live, !live.session.isRecording, live.session.phase != .stopping else { return }
+        guard let live, !live.session.isCapturing else { return }
         self.live = nil
     }
 

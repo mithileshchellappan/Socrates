@@ -89,6 +89,11 @@ public final class LiveLectureSession {
     public private(set) var endedAt: Date?
     public private(set) var package: LecturePackage?
 
+    /// Called once the package is final: after Stop, or after a recording failure stopped it.
+    /// The owner (not the view) sets it to file the capture, so filing never depends on a screen
+    /// being open.
+    @ObservationIgnored public var onFinalized: (@MainActor (LecturePackage) -> Void)?
+
     @ObservationIgnored private let capture: any AudioCaptureSource
     @ObservationIgnored private let host: HostClock
     @ObservationIgnored private let now: @Sendable () -> Date
@@ -162,6 +167,32 @@ public final class LiveLectureSession {
     // MARK: - Derived state
 
     public var isRecording: Bool { phase == .recording }
+
+    /// Starting, recording or stopping: the session must stay alive.
+    public var isCapturing: Bool {
+        phase == .starting || phase == .recording || phase == .stopping
+    }
+
+    /// Ready, or a start that failed before anything was recorded (e.g. microphone denied). A
+    /// session whose recording failed midway is finished; a new lecture needs a new session.
+    public var canStartRecording: Bool {
+        switch phase {
+        case .ready: true
+        case .failed: package == nil
+        default: false
+        }
+    }
+
+    /// Quick notes and flag text can be edited until recording stops. The package is filed into
+    /// the library then, so later edits would never reach it.
+    public var acceptsNotes: Bool {
+        switch phase {
+        case .ready, .starting, .recording: true
+        case .failed: package == nil
+        case .stopping, .finished: false
+        }
+    }
+
     public var hasDeck: Bool { pageCount > 0 }
     public var canGoNext: Bool { hasDeck && currentPage < pageCount }
     public var canGoPrevious: Bool { hasDeck && currentPage > 1 }
@@ -201,10 +232,7 @@ public final class LiveLectureSession {
     /// Asks for the microphone, creates the lecture package and starts recording. On failure
     /// `phase` becomes `.failed` and nothing is left on disk.
     public func start() async {
-        switch phase {
-        case .ready, .failed: break
-        default: return
-        }
+        guard canStartRecording else { return }
         phase = .starting
         guard await capture.requestPermission() else {
             phase = .failed(.microphoneDenied)
@@ -298,6 +326,7 @@ public final class LiveLectureSession {
         level = 0
         captions = nil
         phase = .finished
+        if let package { onFinalized?(package) }
     }
 
     // MARK: - Slides
@@ -325,16 +354,18 @@ public final class LiveLectureSession {
         return record(.flag, page: hasDeck ? currentPage : nil, text: Self.nonBlank(text), hostTime: hostTime).id
     }
 
-    /// Sets or clears a flag's text.
+    /// Sets or clears a flag's text (until recording stops).
     public func setFlagText(_ text: String, for id: LectureEvent.ID) {
-        guard let index = events.firstIndex(where: { $0.id == id && $0.kind == .flag }) else { return }
+        guard acceptsNotes, let index = events.firstIndex(where: { $0.id == id && $0.kind == .flag }) else { return }
         events[index].text = Self.nonBlank(text)
         persistEvents()
     }
 
     // MARK: - Notes
 
+    /// Sets the quick note of a page (until recording stops).
     public func setNote(_ text: String, forPage page: Int) {
+        guard acceptsNotes else { return }
         let date = now()
         if var note = notes[page] {
             guard note.text != text else { return }
@@ -427,18 +458,23 @@ public final class LiveLectureSession {
             for await status in updates {
                 guard let self else { return }
                 switch status {
-                case .segmentsChanged(let segments):
+                case .segmentsChanged(let segments) where !segments.isEmpty:
                     do {
                         try await writer.updateManifest { $0.segments = segments }
                     } catch {
                         CaptureLog.capture.error("Manifest update failed: \(error.localizedDescription, privacy: .public)")
                     }
+                case .segmentsChanged:
+                    // A capture that lost its writer knows no segments; keep the ones written
+                    // (their start samples place audio after a gap), the reader measures files.
+                    break
                 case .inputChanged(let name):
                     self.inputName = name
                     self.isInputAvailable = name != nil
                 case .inputLost:
                     self.isInputAvailable = false
                 case .failed(let message):
+                    guard self.phase == .recording else { continue }
                     await self.stop()
                     self.phase = .failed(.storage(message))
                 }

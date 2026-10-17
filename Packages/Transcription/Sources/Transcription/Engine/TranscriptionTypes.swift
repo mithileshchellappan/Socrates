@@ -225,10 +225,13 @@ public struct ChunkReport: Hashable, Sendable, Codable {
     public var loopsRemaining: Int
     /// Temperature of the accepted decoding.
     public var temperature: Float
+    /// The first pass failed to decode this chunk (its speech can still come back through the
+    /// missing-speech guard; see `Transcript.gaps`).
+    public var failed: Bool
 
     public init(
         start: Double, end: Double, language: String?, speechSeconds: Double, segmentCount: Int,
-        loopsFound: Int = 0, loopsRemaining: Int = 0, temperature: Float = 0
+        loopsFound: Int = 0, loopsRemaining: Int = 0, temperature: Float = 0, failed: Bool = false
     ) {
         self.start = start
         self.end = end
@@ -238,6 +241,7 @@ public struct ChunkReport: Hashable, Sendable, Codable {
         self.loopsFound = loopsFound
         self.loopsRemaining = loopsRemaining
         self.temperature = temperature
+        self.failed = failed
     }
 }
 
@@ -285,6 +289,9 @@ public struct Transcript: Hashable, Sendable, Codable {
         self.wallTime = wallTime
     }
 
+    /// Chunks the first pass failed to decode (recovered by the missing-speech guard or not).
+    public var failedChunks: Int { chunks.filter(\.failed).count }
+
     /// Languages in order of first appearance with the seconds of audio decoded in each.
     public var languageSeconds: [(language: String, seconds: Double)] {
         var order: [String] = []
@@ -318,9 +325,18 @@ public protocol TranscriptionEngine: Sendable {
     ) async throws -> Transcript
 }
 
-public enum TranscriptionError: Error, Hashable, Sendable {
+public enum TranscriptionError: Error, Hashable, Sendable, LocalizedError {
     case audioUnreadable(String)
     case emptyAudio
     case modelUnavailable(String)
     case decodingFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .audioUnreadable(let name): String(localized: "“\(name)” can’t be read as audio.")
+        case .emptyAudio: String(localized: "The recording has no audio.")
+        case .modelUnavailable(let detail): String(localized: "The transcription model can’t be loaded: \(detail)")
+        case .decodingFailed(let detail): String(localized: "Transcription failed: \(detail)")
+        }
+    }
 }

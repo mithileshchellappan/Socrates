@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2"]
+    public static let migrationIDs = ["v1", "v2", "v3"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -18,6 +18,9 @@ public enum Schema {
         // Foreign key checks are deferred (GRDB's default), so the table rebuild cannot cascade.
         migrator.registerMigration("v2") { db in
             try db.execute(sql: v2)
+        }
+        migrator.registerMigration("v3") { db in
+            try db.execute(sql: v3)
         }
         return migrator
     }
@@ -315,5 +318,11 @@ public enum Schema {
         CREATE INDEX "lecture_deck_span_lecture" ON "lecture_deck_span"("lecture_id", "start_time");
         CREATE INDEX "lecture_deck_span_deck" ON "lecture_deck_span"("deck_id");
         CREATE INDEX "lecture_deck_span_recording" ON "lecture_deck_span"("recording_id");
+        """
+
+    /// v3: `job.phase`, what a running job is doing before its own work starts (e.g. downloading
+    /// the transcription model), so its progress bar can say so. NULL = the stage itself.
+    static let v3 = """
+        ALTER TABLE "job" ADD COLUMN "phase" TEXT;
         """
 }

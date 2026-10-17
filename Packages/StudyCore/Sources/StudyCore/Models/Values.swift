@@ -149,6 +149,16 @@ public struct JobStage: StringKind {
     public static let studyPass: Self = "study_pass"
 }
 
+/// What a running job is doing before (or besides) its stage's own work. `progress` is the
+/// fraction of this phase. A nil phase is the stage itself.
+public struct JobPhase: StringKind {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    public static let downloadingModel: Self = "downloading_model"
+    public static let loadingModel: Self = "loading_model"
+}
+
 // MARK: - JSON values
 
 /// A pointer to where a fact came from. Stored as JSON in `annotation.citations` and

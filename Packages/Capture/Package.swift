@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v26), .iOS(.v26)],
     products: [
         // Core: lecture packages, segmented recording, slide stamps, deck rendering, captions,
-        // import into the database. No SwiftUI, no AppKit/UIKit.
+        // import into the database. No SwiftUI, no AppKit/UIKit API; PDFKit (which re-exports
+        // them) is imported internally for slide text only (docs/decisions.md).
         .library(name: "Capture", targets: ["Capture"]),
         // SwiftUI live-lecture screen and menu commands.
         .library(name: "CaptureUI", targets: ["CaptureUI"])

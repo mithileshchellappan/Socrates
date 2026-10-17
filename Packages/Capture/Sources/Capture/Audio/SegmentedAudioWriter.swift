@@ -81,10 +81,11 @@ public final class SegmentedAudioWriter {
         return changed
     }
 
-    /// Closes the open segment (draining any conversion tail). Returns all segments.
+    /// Closes the open segment, draining any conversion tail unless `drainingConversion` is
+    /// false (after a write error, write nothing more). Returns all segments.
     @discardableResult
-    public func finish() throws -> [AudioSegmentInfo] {
-        try flushAndClose(drainConverter: true)
+    public func finish(drainingConversion: Bool = true) throws -> [AudioSegmentInfo] {
+        try flushAndClose(drainConverter: drainingConversion)
         return segments
     }
 

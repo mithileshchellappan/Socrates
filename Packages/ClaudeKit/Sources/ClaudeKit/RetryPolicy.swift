@@ -62,21 +62,28 @@ public struct RetryPolicy: Sendable, Hashable {
         return base * factor
     }
 
+    /// Longest header delay kept as given (one day); longer ones are clamped to it. Anything
+    /// beyond `maxRetryAfter` falls back to backoff anyway; the clamp keeps the conversion to an
+    /// integer from trapping on values like `1e30`.
+    static let maxHeaderMilliseconds = 86_400_000.0
+
     /// Parses `retry-after-ms` (milliseconds) or `retry-after` (seconds or an HTTP date).
+    /// Header values are untrusted: non-numbers, `inf`, `nan` and negatives are ignored.
     public static func retryAfter(headers: [String: String], now: Date = Date()) -> Duration? {
-        if let value = headers["retry-after-ms"].flatMap(Double.init), value >= 0 {
-            return .milliseconds(Int(value.rounded()))
+        if let value = headers["retry-after-ms"].flatMap(Double.init), value.isFinite, value >= 0 {
+            return .milliseconds(Int(min(value, maxHeaderMilliseconds).rounded()))
         }
         guard let value = headers["retry-after"]?.trimmingCharacters(in: .whitespaces) else { return nil }
-        if let seconds = Double(value), seconds >= 0 {
-            return .milliseconds(Int((seconds * 1000).rounded()))
+        if let seconds = Double(value), seconds.isFinite, seconds >= 0 {
+            return .milliseconds(Int(min(seconds * 1000, maxHeaderMilliseconds).rounded()))
         }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "GMT")
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
         if let date = formatter.date(from: value) {
-            return .milliseconds(max(0, Int((date.timeIntervalSince(now) * 1000).rounded())))
+            let milliseconds = min(max(0, date.timeIntervalSince(now) * 1000), maxHeaderMilliseconds)
+            return .milliseconds(Int(milliseconds.rounded()))
         }
         return nil
     }

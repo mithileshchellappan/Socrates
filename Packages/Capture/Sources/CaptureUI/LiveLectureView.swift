@@ -19,16 +19,17 @@ public struct LiveLectureContext {
 /// Live lecture mode: the slide large, the recording in the toolbar, a filmstrip of nearby
 /// slides, and an inspector with captions, quick notes and stamps (mockup 02-live).
 ///
-/// Install `LiveLectureCommands` for →, Space, ← and F (disabled while a text field has focus).
-/// The slide also handles Space itself where no menu exists (iPad without a keyboard menu).
+/// Install `LiveLectureCommands` for →, Space, ← and F (disabled while a text field has focus)
+/// and `InspectorCommands` to show the inspector again. The slide also handles Space itself
+/// where no menu exists (iPad without a keyboard menu).
 /// The session must be owned by the app, not this view: it keeps recording when the view goes
-/// away.
+/// away, and the owner files the finished package (`LiveLectureSession.onFinalized`).
 public struct LiveLectureView: View {
     let session: LiveLectureSession
     let context: LiveLectureContext?
-    let onFinish: ((LecturePackage) -> Void)?
 
     @FocusState private var focus: LiveField?
+    @State private var isEditingFlag = false
     @State private var showsInspector = true
     @State private var confirmsStop = false
     @State private var slideWidth: CGFloat = 0
@@ -38,14 +39,9 @@ public struct LiveLectureView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
-    public init(
-        session: LiveLectureSession,
-        context: LiveLectureContext? = nil,
-        onFinish: ((LecturePackage) -> Void)? = nil
-    ) {
+    public init(session: LiveLectureSession, context: LiveLectureContext? = nil) {
         self.session = session
         self.context = context
-        self.onFinish = onFinish
     }
 
     public var body: some View {
@@ -59,7 +55,7 @@ public struct LiveLectureView: View {
         .background(.background.secondary)
         .toolbar { toolbar }
         .inspector(isPresented: $showsInspector) {
-            LiveInspector(session: session, focus: $focus)
+            LiveInspector(session: session, focus: $focus, isEditingFlag: $isEditingFlag)
                 .inspectorColumnWidth(min: 260, ideal: 320, max: 440)
         }
         .focusedSceneValue(\.liveLecture, actions)
@@ -81,14 +77,7 @@ public struct LiveLectureView: View {
             if let message = Self.message(for: failure) { Text(message) }
         }
         .onChange(of: session.phase) { _, phase in
-            switch phase {
-            case .failed(let reason):
-                failure = reason
-            case .finished:
-                if let package = session.package { onFinish?(package) }
-            default:
-                break
-            }
+            if case .failed(let reason) = phase { failure = reason }
         }
         .onAppear {
             focus = .canvas
@@ -160,7 +149,7 @@ public struct LiveLectureView: View {
     private var toolbar: some ToolbarContent {
         if session.startedAt != nil, session.phase == .recording || session.phase == .stopping {
             ToolbarItem(placement: .navigation) {
-                recordingIndicator
+                RecordingIndicator(session: session)
             }
         }
         if session.hasDeck {
@@ -188,20 +177,13 @@ public struct LiveLectureView: View {
         ToolbarItem(placement: .primaryAction) {
             recordButton
         }
-    }
-
-    private var recordingIndicator: some View {
-        HStack(spacing: 6) {
-            RecordingDot(isPulsing: session.phase == .recording)
-            TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                Text(ClockText.string(session.elapsed(at: timeline.date)))
-                    .font(.system(size: 12, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(.red)
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                showsInspector.toggle()
+            } label: {
+                Label("Inspector", systemImage: "sidebar.trailing")
             }
         }
-        .padding(.horizontal, 6)
-        .accessibilityElement(children: .combine)
     }
 
     private var slidePosition: some View {
@@ -223,7 +205,7 @@ public struct LiveLectureView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
-            .disabled(session.phase == .starting)
+            .disabled(!session.canStartRecording)
         case .recording, .stopping:
             Button {
                 confirmsStop = true
@@ -246,13 +228,13 @@ public struct LiveLectureView: View {
 
     private var actions: LiveLectureActions {
         let session = session
-        let isEditing = focus == .note || focus == .flagText
+        let isEditing = focus == .note || isEditingFlag
         return LiveLectureActions(
             canGoNext: session.canGoNext,
             canGoPrevious: session.canGoPrevious,
             canFlag: session.isRecording,
             isRecording: session.isRecording,
-            canRecord: session.phase == .ready || { if case .failed = session.phase { true } else { false } }(),
+            canRecord: session.canStartRecording,
             isEditingText: isEditing,
             next: { session.next() },
             previous: { session.previous() },

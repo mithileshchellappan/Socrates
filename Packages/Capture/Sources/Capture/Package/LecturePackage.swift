@@ -108,8 +108,10 @@ public struct LecturePackageContents: Sendable, Hashable {
         manifest.sampleRate > 0 ? Double(endSample) / manifest.sampleRate : 0
     }
 
+    /// The segment's file: always inside the package's audio folder, whatever `segment.file` says.
     public func url(for segment: AudioSegmentInfo) -> URL {
-        package.url(forRelativePath: segment.file)
+        let name = (segment.file as NSString).lastPathComponent
+        return package.audioDirectory.appending(path: name, directoryHint: .notDirectory)
     }
 }
 
@@ -176,10 +178,13 @@ public enum LecturePackageReader {
             let previousEnd = resolved.last?.endSample ?? 0
             var segment = known[sequence] ?? AudioSegmentInfo(
                 sequence: sequence,
-                file: "\(LecturePackage.audioFolder)/\(url.lastPathComponent)",
+                file: "",
                 startSample: previousEnd,
                 startReason: sequence == 1 ? .start : .rollover
             )
+            // Always the file actually found: the manifest's path is untrusted (a package can
+            // come from anywhere) and must never point outside the audio folder.
+            segment.file = "\(LecturePackage.audioFolder)/\(url.lastPathComponent)"
             if segment.frameCount == nil {
                 segment.frameCount = frameCount(of: url)
             }

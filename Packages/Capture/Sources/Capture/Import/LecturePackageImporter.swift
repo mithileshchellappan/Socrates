@@ -10,6 +10,8 @@ extension AnnotationKind {
 public enum LecturePackageImportError: Error, Equatable, Sendable {
     case alreadyImported(String)
     case noAudio(String)
+    /// A segment is not a regular file inside the package's `audio/` folder.
+    case invalidSegment(String)
 }
 
 /// Moves a lecture package (finished or left behind by a crash) into the library: audio
@@ -48,7 +50,9 @@ public struct LecturePackageImporter: Sendable {
     ///
     /// With `removeAudioAfterImport` the package's audio files are deleted once the rows are
     /// committed (the BlobStore holds the copies; on APFS the copy is a clone); the JSON files
-    /// stay as a record and the manifest is marked imported.
+    /// stay as a record. With `markImported` the manifest is marked imported. Both are for
+    /// packages live capture wrote into the library; a package the user picked elsewhere is
+    /// never changed.
     @concurrent
     public func importPackage(
         _ package: LecturePackage,
@@ -56,6 +60,7 @@ public struct LecturePackageImporter: Sendable {
         courseID: Course.ID? = nil,
         deckID: Deck.ID? = nil,
         removeAudioAfterImport: Bool = true,
+        markImported: Bool = true,
         force: Bool = false
     ) async throws -> Result {
         let contents = try LecturePackageReader.read(package)
@@ -65,10 +70,15 @@ public struct LecturePackageImporter: Sendable {
         guard !contents.segments.isEmpty else {
             throw LecturePackageImportError.noAudio(package.url.lastPathComponent)
         }
+        // The manifest is untrusted input: only ever copy (and later delete) regular files that
+        // really sit in this package's audio folder.
+        let audioFiles = try contents.segments.map { segment in
+            try Self.verifiedAudioFile(contents.url(for: segment), in: package)
+        }
 
         var imported: [Int: BlobRef] = [:]
-        for segment in contents.segments {
-            imported[segment.sequence] = try blobs.importFile(at: contents.url(for: segment), mode: .copy)
+        for (segment, file) in zip(contents.segments, audioFiles) {
+            imported[segment.sequence] = try blobs.importFile(at: file, mode: .copy)
         }
         let refs = imported
 
@@ -92,18 +102,37 @@ public struct LecturePackageImporter: Sendable {
         }
 
         if removeAudioAfterImport {
-            for segment in contents.segments {
-                try? FileManager.default.removeItem(at: contents.url(for: segment))
+            for file in audioFiles {
+                try? FileManager.default.removeItem(at: file)
             }
         }
-        _ = try LecturePackageWriter.updateManifest(of: package) { manifest in
-            manifest.importedAt = stamp
-            manifest.segments = contents.segments
+        if markImported {
+            _ = try LecturePackageWriter.updateManifest(of: package) { manifest in
+                manifest.importedAt = stamp
+                manifest.segments = contents.segments
+            }
         }
         CaptureLog.capture.info(
             "Imported \(package.url.lastPathComponent, privacy: .public): \(result.segments.count) segments, \(result.slideEvents.count) stamps"
         )
         return result
+    }
+
+    /// `url` if it is a regular file (not a link) directly inside the package's audio folder,
+    /// which must not be a link either.
+    static func verifiedAudioFile(_ url: URL, in package: LecturePackage) throws -> URL {
+        let folderPath = package.audioDirectory.standardizedFileURL.path(percentEncoded: false).trimmingSuffix("/")
+        let file = url.standardizedFileURL
+        // Without a trailing slash, so a linked folder is seen as the link it is.
+        let folder = URL(filePath: folderPath, directoryHint: .notDirectory)
+        let folderIsLink = (try? folder.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+        let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard !folderIsLink, values?.isRegularFile == true, values?.isSymbolicLink != true,
+              file.deletingLastPathComponent().path(percentEncoded: false).trimmingSuffix("/") == folderPath
+        else {
+            throw LecturePackageImportError.invalidSegment(url.lastPathComponent)
+        }
+        return file
     }
 
     /// Imports every package in `directory` not imported yet, skipping `excluding` (the one being
@@ -252,6 +281,12 @@ public enum QuickNoteBlocks {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         guard let data = try? encoder.encode(blocks) else { return "[]" }
         return String(decoding: data, as: UTF8.self)
+    }
+}
+
+extension String {
+    fileprivate func trimmingSuffix(_ suffix: String) -> String {
+        hasSuffix(suffix) ? String(dropLast(suffix.count)) : self
     }
 }
 

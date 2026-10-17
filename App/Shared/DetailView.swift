@@ -132,11 +132,11 @@ struct JobStatusView: View {
             switch job.state {
             case .queued, .running:
                 ProgressView(value: job.progress) {
-                    if !compact { Text(job.stage.progressTitle) }
+                    if !compact { Text(job.progressTitle) }
                 }
                 .progressViewStyle(.linear)
                 .frame(width: compact ? 72 : 140)
-                .help(job.stage.progressTitle)
+                .help(job.progressTitle)
             case .failed:
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
@@ -145,6 +145,15 @@ struct JobStatusView: View {
                 EmptyView()
             }
         }
+    }
+}
+
+extension Job {
+    /// What the bar measures: model preparation (first use) or the stage itself.
+    var progressTitle: String {
+        if phase == .downloadingModel { return String(localized: "Downloading model") }
+        if phase == .loadingModel { return String(localized: "Loading model") }
+        return stage.progressTitle
     }
 }
 

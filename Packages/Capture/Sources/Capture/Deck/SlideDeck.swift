@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import StudyCore
+import Synchronization
 
 public enum SlideDeckError: Error, Equatable, Sendable {
     case unreadablePDF(String)
@@ -13,7 +14,9 @@ public enum SlideDeckError: Error, Equatable, Sendable {
 /// a byte-bounded in-memory LRU and PNGs on disk keyed by deck SHA-256, page and width.
 ///
 /// The actor serializes access to the `CGPDFDocument`. Long warm-ups (`prerender`) yield
-/// between pages so an interactive request is served within one page render.
+/// between pages so an interactive request is served within one page render. The memory LRU
+/// is readable without the actor (`cachedImage`), so a view shows a prefetched slide in the
+/// same frame the page changes, even while the actor renders.
 public actor SlideDeck {
     public nonisolated let url: URL
     /// Lowercase hex SHA-256 of the PDF.
@@ -24,10 +27,7 @@ public actor SlideDeck {
     public nonisolated let cache: SlideImageCache
 
     private let document: CGPDFDocument
-    private let memoryBudget: Int
-    private var memory: [SlideRenderKey: CGImage] = [:]
-    private var recency: [SlideRenderKey] = []
-    private var memoryBytes = 0
+    private nonisolated let memory: SlideMemoryCache
     /// Pages rendered from the PDF (cache misses), for tests and diagnostics.
     public private(set) var renderCount = 0
 
@@ -44,7 +44,7 @@ public actor SlideDeck {
             document.page(at: number).map(SlidePageRenderer.displaySize(of:)) ?? .zero
         }
         self.cache = SlideImageCache(root: cacheDirectory)
-        self.memoryBudget = memoryBudgetBytes
+        self.memory = SlideMemoryCache(budget: memoryBudgetBytes)
     }
 
     /// Width / height of a page (16:9 when unknown).
@@ -57,18 +57,18 @@ public actor SlideDeck {
     /// The bitmap of `page` at `width` pixels: from memory, else disk, else rendered (and cached).
     public func image(page: Int, width: Int) throws -> CGImage {
         let key = SlideRenderKey(deckSHA256: sha256, page: page, pixelWidth: width)
-        if let image = memory[key] {
-            touch(key)
+        if let image = memory.image(for: key) {
             return image
         }
         let image = try loadOrRender(key)
-        remember(image, for: key)
+        memory.insert(image, for: key)
         return image
     }
 
-    /// The bitmap if it is in memory right now (never blocks on disk or rendering).
-    public func cachedImage(page: Int, width: Int) -> CGImage? {
-        memory[SlideRenderKey(deckSHA256: sha256, page: page, pixelWidth: width)]
+    /// The bitmap if it is in memory right now. Never waits for the actor, disk or rendering,
+    /// so a view can call it while drawing.
+    public nonisolated func cachedImage(page: Int, width: Int) -> CGImage? {
+        memory.image(for: SlideRenderKey(deckSHA256: sha256, page: page, pixelWidth: width))
     }
 
     /// Loads `pages` at `width` into memory (rendering when needed), nearest first.
@@ -87,7 +87,7 @@ public actor SlideDeck {
             for page in 1...pageCount {
                 if Task.isCancelled { return }
                 let key = SlideRenderKey(deckSHA256: sha256, page: page, pixelWidth: width)
-                if memory[key] == nil, !cache.contains(key) {
+                if !memory.contains(key), !cache.contains(key) {
                     do {
                         try cache.store(try render(key), for: key)
                     } catch {
@@ -123,21 +123,56 @@ public actor SlideDeck {
         return image
     }
 
-    private func remember(_ image: CGImage, for key: SlideRenderKey) {
-        memory[key] = image
-        memoryBytes += image.bytesPerRow * image.height
-        touch(key)
-        while memoryBytes > memoryBudget, recency.count > 1 {
-            let oldest = recency.removeFirst()
-            if let evicted = memory.removeValue(forKey: oldest) {
-                memoryBytes -= evicted.bytesPerRow * evicted.height
+}
+
+/// A byte-bounded LRU of slide bitmaps behind a lock, readable from any thread.
+final class SlideMemoryCache: Sendable {
+    private struct State {
+        var images: [SlideRenderKey: CGImage] = [:]
+        var recency: [SlideRenderKey] = []
+        var bytes = 0
+    }
+
+    let budget: Int
+    private let state = Mutex(State())
+
+    init(budget: Int) {
+        self.budget = budget
+    }
+
+    /// The bitmap for `key`, marking it recently used.
+    func image(for key: SlideRenderKey) -> CGImage? {
+        state.withLock { state in
+            guard let image = state.images[key] else { return nil }
+            Self.touch(key, in: &state)
+            return image
+        }
+    }
+
+    func contains(_ key: SlideRenderKey) -> Bool {
+        state.withLock { $0.images[key] != nil }
+    }
+
+    func insert(_ image: CGImage, for key: SlideRenderKey) {
+        let budget = budget
+        state.withLock { state in
+            if let previous = state.images.updateValue(image, forKey: key) {
+                state.bytes -= previous.bytesPerRow * previous.height
+            }
+            state.bytes += image.bytesPerRow * image.height
+            Self.touch(key, in: &state)
+            while state.bytes > budget, state.recency.count > 1 {
+                let oldest = state.recency.removeFirst()
+                if let evicted = state.images.removeValue(forKey: oldest) {
+                    state.bytes -= evicted.bytesPerRow * evicted.height
+                }
             }
         }
     }
 
-    private func touch(_ key: SlideRenderKey) {
-        if let index = recency.firstIndex(of: key) { recency.remove(at: index) }
-        recency.append(key)
+    private static func touch(_ key: SlideRenderKey, in state: inout State) {
+        if let index = state.recency.firstIndex(of: key) { state.recency.remove(at: index) }
+        state.recency.append(key)
     }
 }
 
