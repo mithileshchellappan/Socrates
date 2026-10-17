@@ -30,6 +30,8 @@ public actor SearchIndexer {
     private let changes = ChangeCounter()
     private var observation: AnyDatabaseCancellable?
     private var loop: Task<Void, Never>?
+    private var isCatchingUp = false
+    private var catchUpAgain = false
 
     /// Tables whose changes can make chunks stale.
     static let observedTables = ["transcript_segment", "deck_page", "note", "lecture_deck_span", "lecture", "deck", "recording"]
@@ -116,19 +118,32 @@ public actor SearchIndexer {
         return report
     }
 
+    /// Catches up, logging what it did. A change that arrives while a catch-up is suspended on
+    /// the database (the actor is reentrant) runs one more pass afterwards instead of a second
+    /// catch-up alongside.
     private func catchUpLogged() async {
-        do {
-            let started = ContinuousClock.now
-            let report = try await catchUp()
-            guard !report.isEmpty else { return }
-            let elapsed = ContinuousClock.now - started
-            Log.search.info("""
-                Indexed \(report.recordings) transcripts, \(report.decks) decks, \(report.notes) notes \
-                (\(report.chunks) chunks, \(report.removed) removed) in \(elapsed.formatted(.units(allowed: [.milliseconds])), privacy: .public)
-                """)
-        } catch {
-            Log.search.error("Search indexing failed: \(String(describing: error), privacy: .public)")
+        guard !isCatchingUp else {
+            catchUpAgain = true
+            return
         }
+        isCatchingUp = true
+        defer { isCatchingUp = false }
+        repeat {
+            catchUpAgain = false
+            do {
+                let started = ContinuousClock.now
+                let report = try await catchUp()
+                if !report.isEmpty {
+                    let elapsed = ContinuousClock.now - started
+                    Log.search.info("""
+                        Indexed \(report.recordings) transcripts, \(report.decks) decks, \(report.notes) notes \
+                        (\(report.chunks) chunks, \(report.removed) removed) in \(elapsed.formatted(.units(allowed: [.milliseconds])), privacy: .public)
+                        """)
+                }
+            } catch {
+                Log.search.error("Search indexing failed: \(String(describing: error), privacy: .public)")
+            }
+        } while catchUpAgain
     }
 
     // MARK: - Units
