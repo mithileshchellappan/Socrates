@@ -316,7 +316,7 @@ public struct MailExtractor: Sendable {
         let date = now()
         var applied = try await services.database.write { db -> Applied in
             var applied = Applied()
-            var writer = ItemWriter(db: db, store: store, message: message, apiCallID: apiCallID, timeZone: timeZone)
+            var writer = ItemWriter(db: db, store: store, message: message, apiCallID: apiCallID, timeZone: timeZone, date: date)
             for candidate in candidates {
                 let result = try writer.write(candidate)
                 applied.itemsCreated += result.created ? 1 : 0
@@ -345,6 +345,8 @@ struct ItemWriter {
     let message: MailMessage
     let apiCallID: APICall.ID?
     let timeZone: TimeZone
+    /// When the extraction ran (`created_at` of new items and sources; the digest's "added").
+    let date: Date
 
     struct Result {
         var created = false
@@ -400,7 +402,7 @@ struct ItemWriter {
             courseID: candidate.courseID, kind: candidate.kind, title: candidate.title, dueAt: candidate.due,
             isAllDay: candidate.allDay, status: .open, sourceQuote: candidate.quote, createdBy: .agent,
             lectureSessionID: sessionID, room: candidate.room, inCalendar: candidate.addsToCalendar,
-            createdAt: store.currentDate
+            createdAt: date
         ))
         try TrackedItem.upsert { item }.execute(db)
         try insertSource(itemID: item.id, candidate: candidate, calendarAdded: candidate.addsToCalendar)
@@ -411,7 +413,7 @@ struct ItemWriter {
         let source = store.stamp(TrackedItemSource(
             trackedItemID: itemID, kind: .mail, mailMessageID: message.id, rfcMessageID: message.rfcMessageID,
             quote: candidate.quote, confidence: candidate.confidence, calendarAdded: calendarAdded, apiCallID: apiCallID,
-            createdAt: store.currentDate
+            createdAt: date
         ))
         try TrackedItemSource.upsert { source }.execute(db)
     }

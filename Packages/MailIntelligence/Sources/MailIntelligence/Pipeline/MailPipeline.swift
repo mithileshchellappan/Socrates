@@ -55,7 +55,9 @@ public actor MailPipeline {
         search = MailSearch(services: services)
         actions = TrackedItemActions(services: services, now: now)
         digest = MailDigestBuilder(services: services)
-        costGuard = MailCostGuard(database: services.database, dailyLimitUSD: dailyCostLimitUSD, now: now)
+        costGuard = MailCostGuard(
+            database: services.database, dailyLimitUSD: dailyCostLimitUSD, timeZone: MailIntelligenceModule.timeZone, now: now
+        )
     }
 
     /// Recovers drafts a quit left `generating`, starts observing mail and rules, and runs a first
@@ -69,25 +71,31 @@ public actor MailPipeline {
             MailIntelligence.log.error("Draft recovery failed: \(String(describing: error), privacy: .public)")
         }
 
-        let (stream, continuation) = AsyncStream.makeStream(of: Bool.self, bufferingPolicy: .unbounded)
+        // One pending signal at most (a sync burst becomes one pass); whether the rules changed
+        // is a flag beside it, so a rules signal is never lost behind a mail signal.
+        let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let rulesFlag = ChangeFlag()
         let onError: @Sendable (any Error) -> Void = { error in
             MailIntelligence.log.error("Mail observation failed: \(String(describing: error), privacy: .public)")
         }
         // New and re-routed mail (rows added or removed, or their route changed).
         observations.append(DatabaseRegionObservation(
             tracking: SQLRequest<Row>(sql: "SELECT id, category, course_id FROM mail_message")
-        ).start(in: services.database, onError: onError, onChange: { _ in continuation.yield(false) }))
+        ).start(in: services.database, onError: onError, onChange: { _ in continuation.yield() }))
         // Course Settings ▸ Mail.
         observations.append(DatabaseRegionObservation(
             tracking: SQLRequest<Row>(sql: "SELECT * FROM mail_rule")
-        ).start(in: services.database, onError: onError, onChange: { _ in continuation.yield(true) }))
+        ).start(in: services.database, onError: onError, onChange: { _ in
+            rulesFlag.raise()
+            continuation.yield()
+        }))
 
         let debounce = debounce
         loop = Task { [weak self] in
-            for await rules in stream {
-                if rules { await self?.noteRulesChanged() }
+            for await _ in stream {
                 // A quiet moment first, so a sync burst is handled in one pass.
                 do { try await Task.sleep(for: debounce) } catch { return }
+                if rulesFlag.lower() { await self?.noteRulesChanged() }
                 await self?.wake()
             }
         }
@@ -178,5 +186,21 @@ public actor MailPipeline {
     /// A client and a saved API key.
     private var canUseModel: Bool {
         client != nil && services.secrets.hasSecret(for: .anthropicAPIKey)
+    }
+}
+
+/// A flag the database observation raises (synchronously, on its own queue) and the pipeline's
+/// loop lowers.
+final class ChangeFlag: Sendable {
+    private let state = Mutex(false)
+
+    func raise() { state.withLock { $0 = true } }
+
+    /// Lowers the flag; returns whether it was raised.
+    func lower() -> Bool {
+        state.withLock { raised in
+            defer { raised = false }
+            return raised
+        }
     }
 }

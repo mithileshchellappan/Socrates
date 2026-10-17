@@ -40,7 +40,7 @@ public struct MailRouter: Sendable {
         var report = Report()
         let database = services.database
         let ids = try await database.read { db in
-            try MailMessage.where { $0.category.is(nil) }.order(by: \.receivedAt).select(\.id).fetchAll(db)
+            try MailMessage.where { $0.category.is(nil) }.order { ($0.receivedAt, $0.id) }.select(\.id).fetchAll(db)
         }
         guard !ids.isEmpty else { return report }
         let mailboxes = try await MailboxDirectory.load(database)
@@ -286,7 +286,7 @@ public struct MailRouter: Sendable {
 
     private func fetch(_ ids: [MailMessage.ID]) async throws -> [MailMessage] {
         try await services.database.read { db in
-            try MailMessage.where { $0.id.in(ids) }.order(by: \.receivedAt).fetchAll(db)
+            try MailMessage.where { $0.id.in(ids) }.order { ($0.receivedAt, $0.id) }.fetchAll(db)
         }
     }
 }

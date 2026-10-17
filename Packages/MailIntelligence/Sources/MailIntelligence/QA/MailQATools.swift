@@ -159,15 +159,13 @@ public enum MailQATools {
         let course = courseID
         let messages = try await database.read { db -> [MailMessage] in
             let synced = try Mailbox.where { $0.role.in([MailboxRole?.some(.inbox), MailboxRole?.some(.archive)]) }.select(\.id).fetchAll(db)
-            return try MailMessage
-                .where { $0.mailboxID.in(synced) && $0.receivedAt.gte(since) }
-                .order { $0.receivedAt.desc() }
-                .limit(400)
-                .fetchAll(db)
-                .filter { (course == nil || $0.courseID == course) && (!unreadOnly || !$0.isSeen) }
+            var query = MailMessage.where { $0.mailboxID.in(synced) && $0.receivedAt.gte(since) }
+            if let course { query = query.where { $0.courseID.eq(Course.ID?.some(course)) } }
+            if unreadOnly { query = query.where { !$0.isSeen } }
+            return try query.order { $0.receivedAt.desc() }.limit(listLimit).fetchAll(db)
         }
         guard !messages.isEmpty else { return .text("No mail.") }
-        let envelopes = messages.prefix(listLimit).map {
+        let envelopes = messages.map {
             MailEnvelope.render($0, id: $0.id.uuidString.lowercased(), budget: MailEnvelope.Budget.snippet, body: $0.snippet.isEmpty ? $0.bodyText : $0.snippet)
         }
         return .text(envelopes.joined(separator: "\n\n"))
