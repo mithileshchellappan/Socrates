@@ -139,6 +139,11 @@ enum ParityMode {
     /// com.example.studyportal.parity and clears its defaults before each launch, so no window
     /// frame or column width is remembered from an earlier shot.)
     static func prepareApp() {
+        // The parity copy (`tools/parity/shoot`) only ever opens a library copy: launched without
+        // parity arguments it would open the real library, so it quits instead.
+        if options == nil, Bundle.main.bundleIdentifier == "com.example.studyportal.parity" {
+            exit(0)
+        }
         if let appearance = options?.appearance {
             NSApplication.shared.appearance = NSAppearance(named: appearance)
         }
@@ -168,8 +173,12 @@ enum ParityMode {
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? CGRect(origin: .zero, size: windowSize)
         let origin = CGPoint(x: (visible.midX - windowSize.width / 2).rounded(), y: visible.maxY - windowSize.height)
         window.setFrame(CGRect(origin: origin, size: windowSize), display: true)
-        window.makeKeyAndOrderFront(nil)
+        // Quiet shots (the default of tools/parity/shoot): stay behind the user's windows, never activate.
+        if quiet { window.orderBack(nil) } else { window.makeKeyAndOrderFront(nil) }
     }
+
+    /// `-StudyPortalQuiet YES`: parity shots must not take the focus from whatever the user is doing.
+    private static var quiet: Bool { UserDefaults.standard.bool(forKey: "StudyPortalQuiet") }
 
     // MARK: - Run
 
@@ -182,7 +191,7 @@ enum ParityMode {
             guard let route = options.route else { throw Failure("Unknown route \(options.routeText)") }
             let main = try await window(.main)
             configure(main)
-            NSApp.activate()
+            if !quiet { NSApp.activate() }
             // What a launch does to a library before the window shows it.
             if let indexer = model.searchIndexer { _ = try await indexer.catchUp(verifyingText: true) }
             await model.filing?.repairDeckTitles()
@@ -220,7 +229,7 @@ enum ParityMode {
                 try await importPreview(model: model, services: services, size: main.contentView?.bounds.size ?? windowSize)
             }
             try await Task.sleep(for: options.settle)
-            let active = await activate(shown)
+            let active = quiet ? false : await activate(shown)
             shown.displayIfNeeded()
             try await Task.sleep(for: .milliseconds(250))
             writeMarker([
@@ -234,17 +243,23 @@ enum ParityMode {
 
     /// The shot shows the window as key in the active app (coloured window controls, accent
     /// selection), as the mockups do. Cooperative activation is refused while the user works in
-    /// another app, so after a few polite requests the app insists (debug builds only).
+    /// another app; `tools/parity/shoot` then brings the app forward with AppleScript, which macOS
+    /// honours. Waits up to 5 s for either (debug builds only).
     private static func activate(_ window: NSWindow) async -> Bool {
-        for attempt in 0..<12 {
+        let deadline = ContinuousClock.now + .seconds(5)
+        var attempt = 0
+        while ContinuousClock.now < deadline {
             if NSApp.isActive, window.isKeyWindow { return true }
-            if attempt < 4 {
-                NSApp.activate()
-            } else {
-                (NSApp as any ForcedActivation).activate(ignoringOtherApps: true)
+            if attempt % 5 == 0 {
+                if attempt < 10 {
+                    NSApp.activate()
+                } else {
+                    (NSApp as any ForcedActivation).activate(ignoringOtherApps: true)
+                }
+                window.makeKeyAndOrderFront(nil)
             }
-            window.makeKeyAndOrderFront(nil)
-            try? await Task.sleep(for: .milliseconds(250))
+            attempt += 1
+            try? await Task.sleep(for: .milliseconds(100))
         }
         return NSApp.isActive && window.isKeyWindow
     }
