@@ -18,7 +18,12 @@ let package = Package(
         .package(path: "../ClaudeKit"),
         // `Lemmatizer` only (public, frozen in M2): mail chunks get the same `lemma_text` as
         // transcripts, so the search engine matches them alike.
-        .package(path: "../Search")
+        .package(path: "../Search"),
+        // Already in the graph through SQLiteData (same pin as Search); used directly for raw
+        // FTS5 SQL and `DatabaseRegionObservation` (SQLiteData re-exports only a few GRDB types).
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0"),
+        // Tests only: `DemoLibrary.mail` (mockup 05 as rows) for the opt-in live check.
+        .package(path: "../StudyUI")
     ],
     targets: [
         .target(
@@ -26,7 +31,8 @@ let package = Package(
             dependencies: [
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "ClaudeKit", package: "ClaudeKit"),
-                .product(name: "Search", package: "Search")
+                .product(name: "Search", package: "Search"),
+                .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),
     ],
