@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -25,6 +25,10 @@ public enum Schema {
         migrator.registerMigration("v4") { db in
             try db.execute(sql: v4)
         }
+        migrator.registerMigration("v5") { db in
+            try db.execute(sql: v5)
+            try copyLegacyMailRules(db)
+        }
         return migrator
     }
 
@@ -34,6 +38,8 @@ public enum Schema {
         "lecture_deck_span", "recording_segment", "slide_event", "transcript_segment", "api_call",
         "note", "annotation", "tracked_item", "job",
         "semester", "filing",
+        "mail_account", "mailbox", "mail_rule", "mail_message", "mail_attachment", "mail_draft",
+        "tracked_item_source",
     ]
 
     /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
@@ -463,4 +469,234 @@ public enum Schema {
           INSERT INTO "search_trigram" ("rowid", "text") VALUES (new."id", new."text");
         END;
         """
+
+    /// v5 (milestone 2): university mail.
+    ///
+    /// - `mail_account` (no secrets: the password is the Keychain item named by `keychain_item`),
+    ///   `mailbox` (path, role, sync checkpoint), `mail_message` (headers, flags, body text,
+    ///   sanitized HTML and raw blobs, routing, extraction state), `mail_attachment`, `mail_rule`
+    ///   (replaces `course.mail_rules`, whose entries are copied over), `mail_draft`;
+    /// - `tracked_item_source`: where a tracked item was read (mail now; transcript and chat in
+    ///   M3) with the exact quote, whether it put the item in the calendar, and Undo;
+    /// - `tracked_item`: `lecture_session_id` and `room` (room changes, cancellations),
+    ///   `in_calendar` and `calendar_synced_at` (the calendar mirror writes deadline events);
+    /// - `search_chunk.mail_message_id` for `mail` chunks.
+    static let v5 = """
+        CREATE TABLE "mail_account" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "display_name" TEXT NOT NULL DEFAULT '',
+          "email_address" TEXT NOT NULL DEFAULT '',
+          "username" TEXT NOT NULL DEFAULT '',
+          "imap_host" TEXT NOT NULL DEFAULT '',
+          "imap_port" INTEGER NOT NULL DEFAULT 993,
+          "imap_security" TEXT NOT NULL DEFAULT 'tls',
+          "smtp_host" TEXT NOT NULL DEFAULT '',
+          "smtp_port" INTEGER NOT NULL DEFAULT 587,
+          "smtp_security" TEXT NOT NULL DEFAULT 'starttls',
+          "smtp_fallback_host" TEXT,
+          "smtp_fallback_port" INTEGER,
+          "smtp_fallback_security" TEXT,
+          "keychain_item" TEXT NOT NULL DEFAULT '',
+          "sync_since" TEXT,
+          "is_enabled" INTEGER NOT NULL DEFAULT 1,
+          "last_sync_at" TEXT,
+          "last_error" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+
+        CREATE TABLE "mailbox" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "account_id" TEXT NOT NULL REFERENCES "mail_account"("id") ON DELETE CASCADE,
+          "path" TEXT NOT NULL DEFAULT '',
+          "name" TEXT NOT NULL DEFAULT '',
+          "delimiter" TEXT,
+          "role" TEXT,
+          "is_synced" INTEGER NOT NULL DEFAULT 0,
+          "uid_validity" INTEGER,
+          "highest_modseq" INTEGER,
+          "last_uid" INTEGER NOT NULL DEFAULT 0,
+          "uid_next" INTEGER,
+          "synced_since" TEXT,
+          "last_synced_at" TEXT,
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "mailbox_account_path" ON "mailbox"("account_id", "path");
+
+        CREATE TABLE "mail_rule" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE CASCADE,
+          "category" TEXT,
+          "kind" TEXT NOT NULL DEFAULT 'sender',
+          "pattern" TEXT NOT NULL DEFAULT '',
+          "origin" TEXT NOT NULL DEFAULT 'user',
+          "sort_order" INTEGER NOT NULL DEFAULT 0,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "mail_rule_course" ON "mail_rule"("course_id", "sort_order");
+
+        CREATE TABLE "mail_message" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "account_id" TEXT NOT NULL REFERENCES "mail_account"("id") ON DELETE CASCADE,
+          "mailbox_id" TEXT NOT NULL REFERENCES "mailbox"("id") ON DELETE CASCADE,
+          "uid" INTEGER,
+          "rfc_message_id" TEXT NOT NULL DEFAULT '',
+          "in_reply_to" TEXT NOT NULL DEFAULT '',
+          "reference_ids" TEXT NOT NULL DEFAULT '[]',
+          "thread_id" TEXT NOT NULL DEFAULT '',
+          "from_name" TEXT NOT NULL DEFAULT '',
+          "from_address" TEXT NOT NULL DEFAULT '',
+          "reply_to" TEXT NOT NULL DEFAULT '[]',
+          "to_addresses" TEXT NOT NULL DEFAULT '[]',
+          "cc_addresses" TEXT NOT NULL DEFAULT '[]',
+          "subject" TEXT NOT NULL DEFAULT '',
+          "sent_at" TEXT,
+          "received_at" TEXT NOT NULL,
+          "is_seen" INTEGER NOT NULL DEFAULT 0,
+          "is_flagged" INTEGER NOT NULL DEFAULT 0,
+          "is_answered" INTEGER NOT NULL DEFAULT 0,
+          "keywords" TEXT NOT NULL DEFAULT '[]',
+          "flags_changed_at" TEXT,
+          "move_to_mailbox_id" TEXT REFERENCES "mailbox"("id") ON DELETE SET NULL,
+          "size" INTEGER NOT NULL DEFAULT 0,
+          "snippet" TEXT NOT NULL DEFAULT '',
+          "body_text" TEXT NOT NULL DEFAULT '',
+          "html_sha256" TEXT NOT NULL DEFAULT '',
+          "html_path" TEXT NOT NULL DEFAULT '',
+          "raw_sha256" TEXT NOT NULL DEFAULT '',
+          "raw_path" TEXT NOT NULL DEFAULT '',
+          "parse_version" INTEGER NOT NULL DEFAULT 0,
+          "language" TEXT NOT NULL DEFAULT '',
+          "list_id" TEXT NOT NULL DEFAULT '',
+          "headers" TEXT NOT NULL DEFAULT '{}',
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE SET NULL,
+          "category" TEXT,
+          "routing_source" TEXT,
+          "routing_rule_id" TEXT REFERENCES "mail_rule"("id") ON DELETE SET NULL,
+          "routing_confidence" REAL,
+          "routed_at" TEXT,
+          "routing_api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "extraction_state" TEXT NOT NULL DEFAULT 'pending',
+          "extraction_attempts" INTEGER NOT NULL DEFAULT 0,
+          "extracted_at" TEXT,
+          "extraction_api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "mail_message_mailbox_uid" ON "mail_message"("mailbox_id", "uid");
+        CREATE INDEX "mail_message_mailbox_received" ON "mail_message"("mailbox_id", "received_at");
+        CREATE INDEX "mail_message_account" ON "mail_message"("account_id");
+        CREATE INDEX "mail_message_rfc_id" ON "mail_message"("rfc_message_id");
+        CREATE INDEX "mail_message_thread" ON "mail_message"("thread_id");
+        CREATE INDEX "mail_message_course_received" ON "mail_message"("course_id", "received_at");
+        CREATE INDEX "mail_message_category" ON "mail_message"("category");
+        CREATE INDEX "mail_message_extraction" ON "mail_message"("extraction_state");
+        CREATE INDEX "mail_message_move" ON "mail_message"("move_to_mailbox_id");
+        CREATE INDEX "mail_message_rule" ON "mail_message"("routing_rule_id");
+        CREATE INDEX "mail_message_routing_call" ON "mail_message"("routing_api_call_id");
+        CREATE INDEX "mail_message_extraction_call" ON "mail_message"("extraction_api_call_id");
+
+        CREATE TABLE "mail_attachment" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "mail_message_id" TEXT NOT NULL REFERENCES "mail_message"("id") ON DELETE CASCADE,
+          "part" TEXT NOT NULL DEFAULT '',
+          "file_name" TEXT NOT NULL DEFAULT '',
+          "mime_type" TEXT NOT NULL DEFAULT 'application/octet-stream',
+          "size" INTEGER NOT NULL DEFAULT 0,
+          "content_id" TEXT NOT NULL DEFAULT '',
+          "is_inline" INTEGER NOT NULL DEFAULT 0,
+          "blob_sha256" TEXT NOT NULL DEFAULT '',
+          "blob_path" TEXT NOT NULL DEFAULT '',
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "mail_attachment_message" ON "mail_attachment"("mail_message_id");
+
+        CREATE TABLE "mail_draft" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "account_id" TEXT NOT NULL REFERENCES "mail_account"("id") ON DELETE CASCADE,
+          "mail_message_id" TEXT REFERENCES "mail_message"("id") ON DELETE SET NULL,
+          "in_reply_to" TEXT NOT NULL DEFAULT '',
+          "reference_ids" TEXT NOT NULL DEFAULT '[]',
+          "to_addresses" TEXT NOT NULL DEFAULT '[]',
+          "cc_addresses" TEXT NOT NULL DEFAULT '[]',
+          "bcc_addresses" TEXT NOT NULL DEFAULT '[]',
+          "subject" TEXT NOT NULL DEFAULT '',
+          "body" TEXT NOT NULL DEFAULT '',
+          "generated_body" TEXT,
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE SET NULL,
+          "state" TEXT NOT NULL DEFAULT 'draft',
+          "error" TEXT,
+          "rfc_message_id" TEXT NOT NULL DEFAULT '',
+          "send_started_at" TEXT,
+          "sent_at" TEXT,
+          "sent_copy_saved_at" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "mail_draft_account" ON "mail_draft"("account_id");
+        CREATE INDEX "mail_draft_message" ON "mail_draft"("mail_message_id");
+        CREATE INDEX "mail_draft_state" ON "mail_draft"("state");
+        CREATE INDEX "mail_draft_course" ON "mail_draft"("course_id");
+        CREATE INDEX "mail_draft_call" ON "mail_draft"("api_call_id");
+
+        CREATE TABLE "tracked_item_source" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "tracked_item_id" TEXT NOT NULL REFERENCES "tracked_item"("id") ON DELETE CASCADE,
+          "kind" TEXT NOT NULL DEFAULT 'mail',
+          "mail_message_id" TEXT REFERENCES "mail_message"("id") ON DELETE SET NULL,
+          "rfc_message_id" TEXT NOT NULL DEFAULT '',
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE SET NULL,
+          "recording_id" TEXT REFERENCES "recording"("id") ON DELETE SET NULL,
+          "time" REAL,
+          "quote" TEXT NOT NULL DEFAULT '',
+          "confidence" REAL NOT NULL DEFAULT 1,
+          "calendar_added" INTEGER NOT NULL DEFAULT 0,
+          "undone_at" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "tracked_item_source_item" ON "tracked_item_source"("tracked_item_id");
+        CREATE INDEX "tracked_item_source_mail" ON "tracked_item_source"("mail_message_id");
+        CREATE INDEX "tracked_item_source_rfc_id" ON "tracked_item_source"("rfc_message_id");
+        CREATE INDEX "tracked_item_source_lecture" ON "tracked_item_source"("lecture_id");
+        CREATE INDEX "tracked_item_source_recording" ON "tracked_item_source"("recording_id");
+        CREATE INDEX "tracked_item_source_call" ON "tracked_item_source"("api_call_id");
+
+        ALTER TABLE "tracked_item" ADD COLUMN "lecture_session_id" TEXT REFERENCES "lecture_session"("id") ON DELETE SET NULL;
+        ALTER TABLE "tracked_item" ADD COLUMN "room" TEXT;
+        ALTER TABLE "tracked_item" ADD COLUMN "in_calendar" INTEGER NOT NULL ON CONFLICT REPLACE DEFAULT 0;
+        ALTER TABLE "tracked_item" ADD COLUMN "calendar_synced_at" TEXT;
+        CREATE INDEX "tracked_item_session" ON "tracked_item"("lecture_session_id");
+
+        ALTER TABLE "search_chunk" ADD COLUMN "mail_message_id" TEXT REFERENCES "mail_message"("id") ON DELETE CASCADE;
+        CREATE INDEX "search_chunk_mail" ON "search_chunk"("mail_message_id");
+        """
+
+    /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row
+    /// (from → sender, list_id → list_id, subject → subject). The column stays, unread.
+    static func copyLegacyMailRules(_ db: Database) throws {
+        for courseID in try String.fetchAll(db, sql: #"SELECT "id" FROM "course" ORDER BY "sort_order", "name""#) {
+            guard let json = try String.fetchOne(db, sql: #"SELECT "mail_rules" FROM "course" WHERE "id" = ?"#, arguments: [courseID]),
+                  let rules = try? JSONDecoder().decode([MailRoutingRule].self, from: Data(json.utf8)) else { continue }
+            for (index, rule) in rules.enumerated() {
+                let pattern = rule.contains.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !pattern.isEmpty else { continue }
+                let kind: MailRuleKind = switch rule.field {
+                case .from: .sender
+                case .listID: .listID
+                default: .subject
+                }
+                try db.execute(
+                    sql: """
+                        INSERT INTO "mail_rule" ("id", "course_id", "kind", "pattern", "origin", "sort_order", "created_at", "updated_at")
+                        VALUES (?, ?, ?, ?, 'user', ?, datetime('now', 'subsec'), datetime('now', 'subsec'))
+                        """,
+                    arguments: [UUID().uuidString.lowercased(), courseID, kind.rawValue, pattern, index]
+                )
+            }
+        }
+    }
 }

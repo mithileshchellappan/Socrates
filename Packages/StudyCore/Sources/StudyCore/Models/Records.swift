@@ -37,6 +37,7 @@ public struct Course: StudyRecord {
     @Column("exam_rules") public var examRules: String
     /// When recording consent was recorded; nil = recording disabled for this course.
     @Column("recording_consent_at") public var recordingConsentAt: Date?
+    /// Legacy (v1): copied into `mail_rule` rows by v5 and never read since; edit `MailRule`s.
     @Column("mail_rules", as: [MailRoutingRule].JSONRepresentation.self)
     public var mailRules: [MailRoutingRule]
     @Column("sort_order") public var sortOrder: Int
@@ -709,12 +710,24 @@ public struct TrackedItem: StudyRecord {
     @Column("due_at") public var dueAt: Date?
     @Column("is_all_day") public var isAllDay: Bool
     public var status: TrackedItemStatus
-    /// Exact quote the item was extracted from.
+    /// Exact quote the item was extracted from (the first source's; every source's quote is on
+    /// its `TrackedItemSource` row).
     @Column("source_quote") public var sourceQuote: String
+    /// Legacy (v1) pointers; since v5 provenance lives in `tracked_item_source` rows.
     @Column("source_refs", as: [SourceRef].JSONRepresentation.self) public var sourceRefs: [SourceRef]
     /// EventKit `calendarItemExternalIdentifier` in the "Study Portal" calendar.
     @Column("calendar_event_id") public var calendarEventID: String?
     @Column("created_by") public var createdBy: Author
+    /// v5: the lecture session a room change or cancellation is about (or a deadline is tied to).
+    @Column("lecture_session_id") public var lectureSessionID: LectureSession.ID?
+    /// v5: the new room of a room change; where an exam or event takes place.
+    public var room: String?
+    /// v5: the item belongs in the "Study Portal" calendar (set automatically for verified
+    /// deadlines, by Add to Calendar otherwise); the calendar mirror writes events for open items
+    /// with a due date where this is true and removes the others.
+    @Column("in_calendar") public var inCalendar: Bool
+    /// v5: when the calendar event last matched this row (`updatedAt` at that moment).
+    @Column("calendar_synced_at") public var calendarSyncedAt: Date?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
 
@@ -731,6 +744,10 @@ public struct TrackedItem: StudyRecord {
         sourceRefs: [SourceRef] = [],
         calendarEventID: String? = nil,
         createdBy: Author = .agent,
+        lectureSessionID: LectureSession.ID? = nil,
+        room: String? = nil,
+        inCalendar: Bool = false,
+        calendarSyncedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -746,9 +763,19 @@ public struct TrackedItem: StudyRecord {
         self.sourceRefs = sourceRefs
         self.calendarEventID = calendarEventID
         self.createdBy = createdBy
+        self.lectureSessionID = lectureSessionID
+        self.room = room
+        self.inCalendar = inCalendar
+        self.calendarSyncedAt = calendarSyncedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
+
+    /// True when the calendar event must be written or removed.
+    public var needsCalendarSync: Bool { calendarSyncedAt.map { $0 < updatedAt } ?? true }
+
+    /// An event belongs in the calendar for this item.
+    public var wantsCalendarEvent: Bool { inCalendar && status == .open && dueAt != nil }
 }
 
 // MARK: - Bookkeeping

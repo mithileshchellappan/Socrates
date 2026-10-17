@@ -73,13 +73,23 @@ public struct CourseDot: View {
 /// from that second (the action decides how).
 public struct TimeChip: View {
     private let seconds: Double
+    private let prefix: String?
     private let showsPlayGlyph: Bool
     private let action: () -> Void
 
-    public init(_ seconds: Double, showsPlayGlyph: Bool = false, action: @escaping () -> Void) {
+    /// `prefix` names the lecture when the chip is away from it ("L2" → "L2 · 0:37": mail,
+    /// Today, Course Settings).
+    public init(_ seconds: Double, prefix: String? = nil, showsPlayGlyph: Bool = false, action: @escaping () -> Void) {
         self.seconds = seconds
+        self.prefix = prefix
         self.showsPlayGlyph = showsPlayGlyph
         self.action = action
+    }
+
+    /// "L2 · 0:37", or "0:37" without a prefix.
+    public var label: String {
+        guard let prefix, !prefix.isEmpty else { return TimeText.clock(seconds) }
+        return "\(prefix) · \(TimeText.clock(seconds))"
     }
 
     public var body: some View {
@@ -89,7 +99,7 @@ public struct TimeChip: View {
                     Image(systemName: "play.fill")
                         .imageScale(.small)
                 }
-                Text(TimeText.clock(seconds))
+                Text(verbatim: label)
                     .monospacedDigit()
             }
             .font(.system(.caption2, design: .monospaced))

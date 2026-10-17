@@ -49,6 +49,12 @@ packages:
     path: Packages/Review
   Search:
     path: Packages/Search
+  Mail:
+    path: Packages/Mail
+  MailIntelligence:
+    path: Packages/MailIntelligence
+  MailUI:
+    path: Packages/MailUI
 
 targets:
   StudyPortal:
@@ -145,3 +151,10 @@ targets:
         product: Search
       - package: Search
         product: SearchUI
+      # M2 (docs/plan-m2.md): mail transport, mail intelligence, Mail screen.
+      - package: Mail
+        product: Mail
+      - package: MailIntelligence
+        product: MailIntelligence
+      - package: MailUI
+        product: MailUI

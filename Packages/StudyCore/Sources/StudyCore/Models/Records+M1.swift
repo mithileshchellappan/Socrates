@@ -143,8 +143,8 @@ public struct Filing: StudyRecord {
 
 // MARK: - Search index
 
-/// One searchable piece of text (a stretch of transcript, a slide, a note), derived from the
-/// library by the Search module and never synced.
+/// One searchable piece of text (a stretch of transcript, a slide, a note, a stretch of mail),
+/// derived from the library by the Search module (mail: MailIntelligence) and never synced.
 ///
 /// Not a `StudyRecord`: the integer primary key is the rowid the FTS5 tables (`SearchText`,
 /// `SearchTrigram`) index as external content; triggers keep them in step with this table, and
@@ -162,6 +162,8 @@ public struct SearchChunk: Hashable, Sendable {
     @Column("page_number") public var pageNumber: Int?
     @Column("recording_id") public var recordingID: Recording.ID?
     @Column("note_id") public var noteID: Note.ID?
+    /// v5: the mail message a `mail` chunk was cut from.
+    @Column("mail_message_id") public var mailMessageID: MailMessage.ID?
     /// Seconds on the recording clock.
     @Column("start_time") public var startTime: Double?
     @Column("end_time") public var endTime: Double?

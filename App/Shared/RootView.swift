@@ -136,6 +136,9 @@ struct RootView: View {
             query = text
             selection = .search
         case .course(let id): selection = .course(id)
+        case .mail:
+            // M2 integration routes the scope and message to the Mail screen (docs/plan-m2.md §6).
+            selection = .mail
         case .lecture(let id, var target):
             // A fresh request: opening the same hit again moves there again.
             target.request = UUID()

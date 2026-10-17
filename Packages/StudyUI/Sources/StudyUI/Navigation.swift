@@ -17,8 +17,27 @@ public enum StudyDestination: Hashable, Sendable {
     case course(Course.ID)
     /// A lecture's review screen, optionally at a slide and/or second.
     case lecture(Lecture.ID, ReviewTarget)
+    /// The Mail screen showing `scope`, with `message` selected (M2).
+    case mail(MailScope, message: MailMessage.ID?)
 
     public static func lecture(_ id: Lecture.ID) -> StudyDestination { .lecture(id, ReviewTarget()) }
+
+    /// A message in the Inbox (search hits, Today's mail line, a deadline's source).
+    public static func mail(_ messageID: MailMessage.ID) -> StudyDestination { .mail(.inbox, message: messageID) }
+}
+
+/// Which messages the Mail screen lists: the sidebar's mail rows (mockup 05).
+public enum MailScope: Hashable, Sendable {
+    /// Every message in the Inbox, course mail included.
+    case inbox
+    /// One course's mail (Inbox and Archive).
+    case course(Course.ID)
+    /// A category's mail other than `course`: University, Newsletters.
+    case category(MailCategory)
+    /// Drafts not sent yet (`mail_draft` rows in `draft`, `generating` or `failed`).
+    case drafts
+    /// The Sent mailbox.
+    case sent
 }
 
 /// Where the review screen should open: a slide, a moment on the recording clock, or both (the

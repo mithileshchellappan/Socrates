@@ -5,16 +5,19 @@ import NaturalLanguage
 ///
 /// Not thread-safe (NLTagger is not): one instance per indexing pass or query. Reusing one tagger
 /// across many texts is what keeps a 90-minute transcript under the indexing budget.
-final class Lemmatizer {
+///
+/// Public since M2 (frozen): MailIntelligence writes `mail` chunks with the same `lemma_text`, so
+/// the search engine matches mail as it matches transcripts. Keep these signatures.
+public final class Lemmatizer {
     private let tagger = NLTagger(tagSchemes: [.lemma])
     private let recognizer = NLLanguageRecognizer()
 
-    init() {
+    public init() {
         recognizer.languageConstraints = [.german, .english]
     }
 
     /// "de" or "en" for `text`, else `fallback`. Short or mixed texts fall back.
-    func language(of text: String, fallback: String) -> String {
+    public func language(of text: String, fallback: String) -> String {
         recognizer.reset()
         recognizer.processString(text)
         let hypotheses = recognizer.languageHypotheses(withMaximum: 2)
@@ -26,7 +29,7 @@ final class Lemmatizer {
 
     /// One lower-cased lemma per word of `text` (as `Tokenizer` cuts it), space separated, so the
     /// n-th lemma belongs to the n-th word. A word without a lemma stands for itself.
-    func lemmaText(of text: String, language: String) -> String {
+    public func lemmaText(of text: String, language: String) -> String {
         let tokens = Tokenizer.tokens(in: text)
         guard !tokens.isEmpty else { return "" }
         let lemmas = tagLemmas(text, language: language)
