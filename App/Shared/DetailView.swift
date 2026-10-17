@@ -25,15 +25,14 @@ struct DetailView: View {
             PlaceholderScreen(item: item)
         case .search:
             SearchResultsView(query: query, submits: searchSubmits)
-        case .course(let id):
-            CourseSettingsView(courseID: id, changeDeck: changeDeck)
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Import", systemImage: "plus") { model.filingCenter?.importFiles(to: .course(id)) }
-                            .labelStyle(.titleAndIcon)
-                    }
-                }
-                .id(id)
+        case .course(let id), .courseSettings(let id):
+            CourseSettingsView(
+                courseID: id,
+                changeDeck: changeDeck,
+                importFiles: { model.filingCenter?.importFiles(to: .course(id)) },
+                newCourse: { model.sheet = .newCourse }
+            )
+            .id(id)
         case .lecture(let id):
             if let services = model.services {
                 LectureReviewView(

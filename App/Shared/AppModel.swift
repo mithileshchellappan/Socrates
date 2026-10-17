@@ -243,10 +243,16 @@ final class AppModel {
 
     struct LiveCapture {
         let session: LiveLectureSession
-        let course: Course
+        var course: Course
         let deck: Deck?
         let lectureID: Lecture.ID
         let openedAt: Date
+        /// The class being recorded (the session a recording started now is filed to), if the
+        /// course has one around now: its number, start and room name the live screen's line.
+        var lectureSession: LectureSession?
+        /// Where the finished recording goes, once the student changed it on the live screen
+        /// (otherwise smart import files it by its course and start time).
+        var filingDestination: FilingDestination?
     }
 
     /// A live lecture that is recording, or not started yet: Record shows it instead of setting
@@ -282,22 +288,36 @@ final class AppModel {
         // Filed from here, not from the live screen: Stop and recording failures alike, whether or
         // not the screen is still open.
         session.onFinalized = { [weak self] package in
-            self?.fileCapture(package)
+            self?.fileCapture(package, lectureID: lectureID)
         }
         // Consent can be withdrawn in Course Settings after the lecture was opened.
         session.consentCheck = { [services] in
             (try? await services.records.fetch(Course.self, id: courseID))?.recordsLectures ?? false
         }
-        live = LiveCapture(session: session, course: course, deck: deck, lectureID: lectureID, openedAt: Date())
+        let openedAt = Date()
+        let lectureSession = try? await CourseSchedule(services: services).session(forRecordingAt: openedAt, courseID: courseID)
+        live = LiveCapture(session: session, course: course, deck: deck, lectureID: lectureID, openedAt: openedAt, lectureSession: lectureSession)
     }
 
     /// Files a finished capture through smart import (its course from the manifest, its session
-    /// by start time), with a toast, and queues its processing.
-    private func fileCapture(_ package: LecturePackage) {
+    /// by start time, unless the student chose them on the live screen), with a toast, and
+    /// queues its processing.
+    private func fileCapture(_ package: LecturePackage, lectureID: Lecture.ID) {
         guard let filingCenter else { return }
+        let destination = live?.lectureID == lectureID ? live?.filingDestination : nil
         Task {
-            await filingCenter.file([package.url])
+            await filingCenter.file([package.url], to: destination)
         }
+    }
+
+    /// Change on the live screen: the recording belongs to `session` of `course` (or to the
+    /// course, when it has no such class).
+    func changeLiveFiling(course: Course, session: LectureSession?) {
+        guard var capture = live else { return }
+        capture.course = course
+        capture.lectureSession = session
+        capture.filingDestination = session.map { .session($0.id) } ?? .course(course.id)
+        live = capture
     }
 
     #if DEBUG

@@ -11,7 +11,11 @@ extension Color {
     /// variant in dark (`CourseColor.dark`, mockups: #0a84ff → #409cff). Nil for anything else.
     public init?(hex: String) {
         guard let light = CourseColor.rgb(hex: hex) else { return nil }
-        let dark = CourseColor.dark(light)
+        self.init(light: light, dark: CourseColor.dark(light))
+    }
+
+    /// One sRGB colour in light appearance, another in dark.
+    init(light: CourseColor.RGB, dark: CourseColor.RGB) {
         #if canImport(AppKit)
         self.init(nsColor: NSColor(name: nil) { appearance in
             let rgb = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
@@ -36,8 +40,13 @@ extension Color {
     public static let professor = Color.orange
 
     /// The AI mark: the sparkle before AI text and on "Suggested" (the text itself stays
-    /// secondary). Purple is reserved for it.
-    public static let ai = Color.purple
+    /// secondary), and AI pins. Purple is reserved for it (the mockups' #8a56d1, #bf8cff dark).
+    public static let ai = Color(light: CourseColor.RGB(0x8a56d1), dark: CourseColor.RGB(0xbf8cff))
+
+    /// The accent at 12 % (light) or 24 % (dark), as the mockups' accent-soft: time chips.
+    static func accentSoft(_ colorScheme: ColorScheme) -> Color {
+        Color.accentColor.opacity(colorScheme == .dark ? 0.24 : 0.12)
+    }
 }
 
 /// Course colours as sRGB components, and their dark-appearance variants.
@@ -189,6 +198,7 @@ public struct TimeChip: View {
     private let prefix: String?
     private let showsPlayGlyph: Bool
     private let action: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
     /// `prefix` names the lecture when the chip is away from it ("L2" → "L2 · 0:37": mail,
     /// Today, Course Settings).
@@ -215,14 +225,25 @@ public struct TimeChip: View {
                 Text(verbatim: label)
                     .monospacedDigit()
             }
-            .font(.system(.caption2, design: .monospaced))
+            .font(.chip)
             .padding(.horizontal, 7)
             .padding(.vertical, 1)
             .foregroundStyle(.tint)
-            .background(.tint.opacity(0.14), in: Capsule())
+            .background(Color.accentSoft(colorScheme), in: Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text("Play from \(TimeText.clock(seconds))"))
+    }
+}
+
+extension Font {
+    /// Time and slide chips: SF Mono at the mockups' 10.5 pt on the Mac.
+    static var chip: Font {
+        #if os(macOS)
+        .system(size: 10.5, design: .monospaced)
+        #else
+        .system(.caption2, design: .monospaced)
+        #endif
     }
 }
 
@@ -240,7 +261,7 @@ public struct SlideChip: View {
         Button(action: action) {
             Text(verbatim: "S\(page)")
                 .monospacedDigit()
-                .font(.system(.caption2, design: .monospaced))
+                .font(.chip)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 1)
                 .foregroundStyle(.secondary)

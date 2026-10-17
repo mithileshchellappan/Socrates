@@ -19,13 +19,14 @@ public struct AIMark: View {
     public var body: some View {
         Image(systemName: "sparkle")
             .imageScale(.small)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.ai)
             .accessibilityLabel(Text("AI"))
     }
 }
 
 /// A round marker for who a pin or line speaks for: you (accent, person), the professor (orange,
-/// mortarboard) or AI (grey, sparkle). `inline` is the small size used inside text rows.
+/// mortarboard) or AI (purple, sparkle), as white outline glyphs. `inline` is the small size used
+/// inside text rows.
 public struct ProvenancePin: View {
     private let layer: AnnotationLayer
     private let size: CGFloat
@@ -37,7 +38,7 @@ public struct ProvenancePin: View {
 
     public var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: size * 0.55, weight: .bold))
+            .font(.system(size: size * 0.55, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: size, height: size)
             .background(fill, in: Circle())
@@ -46,8 +47,8 @@ public struct ProvenancePin: View {
 
     private var symbol: String {
         switch layer {
-        case .user: "person.fill"
-        case .professor: "graduationcap.fill"
+        case .user: "person"
+        case .professor: "graduationcap"
         case .ai: "sparkle"
         }
     }
@@ -56,7 +57,7 @@ public struct ProvenancePin: View {
         switch layer {
         case .user: AnyShapeStyle(.tint)
         case .professor: AnyShapeStyle(Color.professor)
-        case .ai: AnyShapeStyle(.gray)
+        case .ai: AnyShapeStyle(Color.ai)
         }
     }
 

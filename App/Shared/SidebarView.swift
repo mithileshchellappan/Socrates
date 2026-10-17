@@ -1,25 +1,23 @@
 import Courses
 import Filing
 import FilingUI
+import SearchUI
 import StudyCore
 import StudyUI
 import SwiftUI
 
-/// The main window's sidebar (mockups 01, 03, 07, 10): Today, Calendar, Mail (unread count),
+/// The main window's sidebar (mockups 01, 03, 07, 08, 10): Today, Calendar, Mail (unread count),
 /// Search; then the courses as flat rows. A course opens to its lectures ("L2 · Virtualization &
-/// IaaS", Tue 13 Oct) and its next session in secondary text ("L3", "Mon 19 Oct, 12:15"). Courses
-/// start closed (01, 07); the course of the open lecture or course opens itself (03), and while
-/// files are dragged in, the predicted course opens with the predicted row outlined (10). Small
-/// disclosure chevrons show once any course is open. The semester and Settings at the bottom (New
-/// Course on a course's screen, 08). Files dropped on a course, lecture or session row are filed
-/// exactly there.
+/// IaaS", Tue 13 Oct) and its next session in secondary text ("L3", "Mon 19 Oct, 12:15"), and on
+/// its screen to a selected "Course Settings" row (08). Courses start closed (01, 07); the course
+/// of the open lecture or course opens itself (03), and while files are dragged in, the predicted
+/// course opens with the predicted row lit (10, `filingDropTarget`). Small disclosure chevrons show
+/// once any course is open. Recent searches on the Search screen (07). The semester and Settings at
+/// the bottom (New Course on a course's screen, 08). Files dropped on a course, lecture or session
+/// row are filed exactly there.
 struct SidebarView: View {
     @Binding var selection: SidebarItem?
     let center: FilingCenter
-    /// The last queries searched for, newest first (shown on the Search screen, mockup 07).
-    var recentSearches: [String] = []
-    /// Searches again for a recent query.
-    var search: (String) -> Void = { _ in }
 
     @Environment(AppModel.self) private var model
     @FetchAll(Course.order { ($0.sortOrder, $0.name) }) private var courses
@@ -39,15 +37,20 @@ struct SidebarView: View {
     ) private var unreadMail = 0
     /// The open courses, as comma-separated IDs (kept per window).
     @SceneStorage("sidebar.openCourses") private var openCourses = ""
+    /// The course files being dragged in would go to: open while they are dragged, and a little
+    /// longer, since moving from the window onto a sidebar row ends one drop target's drag a
+    /// moment before the row's begins.
+    @State private var dragCourseID: Course.ID?
+    @State private var dragEnding: Task<Void, Never>?
+    /// `center.dropCount` when the drag began: a drop keeps the course open.
+    @State private var dropsBeforeDrag = 0
 
     /// The mockups' 228 pt glass panel (a 236 pt column with its inset).
     static let idealWidth: CGFloat = 228
 
-    init(selection: Binding<SidebarItem?>, center: FilingCenter, recentSearches: [String] = [], search: @escaping (String) -> Void = { _ in }) {
+    init(selection: Binding<SidebarItem?>, center: FilingCenter) {
         _selection = selection
         self.center = center
-        self.recentSearches = recentSearches
-        self.search = search
         // Sessions from yesterday on: enough to find each course's next one. Rounded to the day,
         // so the request stays the same while the window re-creates the sidebar (each keystroke
         // in the search field) and its observation is not restarted.
@@ -58,10 +61,9 @@ struct SidebarView: View {
     var body: some View {
         let latestJobs = Self.latestJobs(jobs)
         let now = Date()
-        let predicted = predictedPlace
-        let open = openCourseIDs.union(predicted.map { [$0.course.id] } ?? [])
+        let open = openCourseIDs.union(dragCourseID.map { [$0] } ?? [])
         // While files are dragged in, lecture rows are titles only (mockup 10).
-        let showsDates = center.drag == nil
+        let showsDates = center.drag == nil && dragCourseID == nil
         List(selection: $selection) {
             ForEach(SidebarItem.destinations, id: \.self) { item in
                 NavigationLink(value: item) {
@@ -84,14 +86,12 @@ struct SidebarView: View {
                     courseRow(
                         course,
                         disclosure: open.isEmpty ? .none : (hasChildren ? .shown(isOpen: isOpen) : .hidden),
-                        canOpen: hasChildren,
-                        isPredicted: predicted?.destination == .course(course.id)
+                        canOpen: hasChildren
                     )
                     if isOpen {
                         ForEach(courseLectures) { lecture in
                             NavigationLink(value: SidebarItem.lecture(lecture.id)) {
                                 LectureSidebarRow(lecture: lecture, job: latestJobs[lecture.id], showsDate: showsDates)
-                                    .predictedDrop(predicted.map { $0.destination == .lecture(lecture.id) || $0.lectureID == lecture.id } ?? false)
                             }
                             .filingDropTarget(.lecture(lecture.id), center: center)
                             .contextMenu {
@@ -102,30 +102,21 @@ struct SidebarView: View {
                         }
                         if let next {
                             SessionSidebarRow(session: next, showsDate: showsDates)
-                                .predictedDrop(predicted.map { $0.destination == .session(next.id) || ($0.lectureID == nil && $0.sessionID == next.id) } ?? false)
                                 .filingDropTarget(.session(next.id), center: center)
+                        }
+                        if selection == .courseSettings(course.id) {
+                            // Mockup 08: the course's screen is its settings, selected in its course.
+                            NavigationLink(value: SidebarItem.courseSettings(course.id)) {
+                                CourseSettingsSidebarRow()
+                            }
                         }
                     }
                 }
             }
 
-            if selection == .search, !recentSearches.isEmpty {
-                Section("Recent searches") {
-                    ForEach(recentSearches, id: \.self) { query in
-                        Button {
-                            search(query)
-                        } label: {
-                            Label {
-                                Text(query)
-                                    .lineLimit(1)
-                            } icon: {
-                                Image(systemName: "clock")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+            if selection == .search {
+                // The last searches, newest first (mockup 07); nothing until something was searched.
+                RecentSearchesSection()
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -142,11 +133,14 @@ struct SidebarView: View {
             switch item {
             case .lecture(let id):
                 if let courseID = lectures.first(where: { $0.id == id })?.courseID { setOpen(courseID, true) }
-            case .course(let id):
+            case .course(let id), .courseSettings(let id):
                 setOpen(id, true)
             default:
                 break
             }
+        }
+        .onChange(of: center.predictedCourseID) { _, courseID in
+            followDrag(to: courseID)
         }
     }
 
@@ -160,7 +154,7 @@ struct SidebarView: View {
         case shown(isOpen: Bool)
     }
 
-    private func courseRow(_ course: Course, disclosure: Disclosure, canOpen: Bool, isPredicted: Bool) -> some View {
+    private func courseRow(_ course: Course, disclosure: Disclosure, canOpen: Bool) -> some View {
         NavigationLink(value: SidebarItem.course(course.id)) {
             HStack(spacing: 8) {
                 if disclosure != .none {
@@ -171,7 +165,6 @@ struct SidebarView: View {
                 Text(course.name)
                     .lineLimit(1)
             }
-            .predictedDrop(isPredicted)
         }
         .filingDropTarget(.course(course.id), center: center)
         .contextMenu {
@@ -206,7 +199,7 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 8) {
-                if case .course = selection {
+                if selection?.settingsCourseID != nil {
                     // Mockup 08: New Course on a course's screen, the semester at the right.
                     Button {
                         model.sheet = .newCourse
@@ -262,11 +255,25 @@ struct SidebarView: View {
         if text != openCourses { openCourses = text }
     }
 
-    /// Where the files being dragged in would go (the drop HUD's first choice), unless the
-    /// pointer is over a row, which then shows its own outline.
-    private var predictedPlace: FilingPlace? {
-        guard let drag = center.drag, !drag.isOverRow else { return nil }
-        return drag.predictions.first?.places.first
+    /// Opens the course files being dragged in would go to, for that drag only: when it ends
+    /// without a drop, the course closes again (after a moment, see `dragCourseID`); a drop
+    /// leaves it open, showing where the files went.
+    private func followDrag(to courseID: Course.ID?) {
+        dragEnding?.cancel()
+        dragEnding = nil
+        if let courseID {
+            if dragCourseID == nil { dropsBeforeDrag = center.dropCount }
+            dragCourseID = courseID
+            return
+        }
+        guard dragCourseID != nil else { return }
+        dragEnding = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            if let course = dragCourseID, center.dropCount != dropsBeforeDrag { setOpen(course, true) }
+            dragCourseID = nil
+            dragEnding = nil
+        }
     }
 
     /// The course's next lecture that has no lecture row yet (one in progress counts); for a
@@ -343,6 +350,8 @@ struct LectureSidebarRow: View {
 struct SessionSidebarRow: View {
     let session: LectureSession
     var showsDate = true
+    /// Lit as the place files being dragged in go (mockup 10): the title then reads as primary.
+    @Environment(\.isFilingTarget) private var isFilingTarget
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -355,7 +364,7 @@ struct SessionSidebarRow: View {
                     .lineLimit(1)
             }
         }
-        .foregroundStyle(.secondary)
+        .foregroundStyle(isFilingTarget ? .primary : .secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, childIndent)
         .padding(.vertical, 3)
@@ -369,19 +378,17 @@ struct SessionSidebarRow: View {
     }
 }
 
-extension View {
-    /// The outline of the row the files being dragged in would be filed to (mockup 10): the same
-    /// accent fill and 1.5 pt outline a row shows when they are dragged over it.
-    func predictedDrop(_ isPredicted: Bool) -> some View {
-        background {
-            if isPredicted {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.12))
-                    .strokeBorder(Color.accentColor, lineWidth: 1.5)
-                    .padding(.horizontal, -8)
-                    .padding(.vertical, -2)
-            }
+/// A course's "Course Settings" row, under its lectures while its settings are open (mockup 08).
+struct CourseSettingsSidebarRow: View {
+    var body: some View {
+        Label {
+            Text("Course Settings")
+                .lineLimit(1)
+        } icon: {
+            Image(systemName: "gearshape")
+                .foregroundStyle(.tint)
         }
+        .padding(.leading, childIndent)
     }
 }
 

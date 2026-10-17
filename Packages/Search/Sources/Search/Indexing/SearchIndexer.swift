@@ -113,9 +113,10 @@ public actor SearchIndexer {
         try await catchUp(verifyingText: false)
     }
 
-    /// `verifyingText` also re-chunks sources an earlier build cut differently (`IndexState.outdatedText`).
+    /// `verifyingText` also re-chunks sources an earlier build cut differently
+    /// (`IndexState.outdatedText`), as `start()` does once per launch.
     @discardableResult
-    func catchUp(verifyingText: Bool) async throws -> Report {
+    public func catchUp(verifyingText: Bool) async throws -> Report {
         var report = Report()
         var work = try await database.read { db in try IndexState.staleUnits(db) }
         if verifyingText {

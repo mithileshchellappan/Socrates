@@ -21,7 +21,7 @@ struct StudyPortalApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: MainWindow.id) {
             #if DEBUG && os(macOS)
             if SnapshotRunner.directory != nil {
                 SnapshotRunnerView(model: model)

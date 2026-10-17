@@ -53,6 +53,17 @@ public struct FilingPlace: Sendable, Hashable {
         self.destination = destination
         self.confidence = confidence
     }
+
+    /// Whether the sidebar row of `row` stands for this place: its own destination's row, its
+    /// lecture's row once the lecture exists, or its session's row while it has none.
+    public func isShown(byRowOf row: FilingDestination) -> Bool {
+        if row == destination { return true }
+        switch row {
+        case .lecture(let id): return lectureID == id
+        case .session(let id): return lectureID == nil && sessionID == id
+        case .course: return false
+        }
+    }
 }
 
 /// One destination smart import considered for a file, with the evidence for it.

@@ -76,8 +76,7 @@ public struct CourseSettingsView: View {
                 Color.clear
             }
         }
-        .navigationTitle("Course Settings")
-        .navigationSubtitle(draft?.name ?? course?.name ?? "")
+        .screenTitle(String(localized: "Course Settings"), subtitle: draft?.name ?? course?.name ?? "")
         .toolbar { toolbar }
         .fileImporter(isPresented: $importsCalendar, allowedContentTypes: calendarTypes, allowsMultipleSelection: true) { result in
             importCalendar(result)
@@ -258,6 +257,10 @@ public struct CourseSettingsView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        #if os(macOS)
+        // The title is a toolbar item (`screenTitle`): this keeps Import and More trailing.
+        ToolbarSpacer(.flexible)
+        #endif
         ToolbarItemGroup(placement: .primaryAction) {
             if let importFiles {
                 Button("Import", systemImage: "plus", action: importFiles)

@@ -62,7 +62,7 @@ enum SnapshotRunner {
             }
             var shots: [Shot] = [Shot(name: "01-today", item: .today)]
             if let cc = courses.first(where: { $0.name == "Data Centers" }) {
-                shots.append(Shot(name: "08-course-settings", item: .course(cc.id)))
+                shots.append(Shot(name: "08-course-settings", item: .courseSettings(cc.id)))
             }
             if let id = lecture("Data Centers", 2) {
                 shots.append(Shot(name: "03-review-dc-l2", item: .lecture(id), target: (id, ReviewTarget(page: 16, time: 2247)), size: CGSize(width: 1440, height: 900)))

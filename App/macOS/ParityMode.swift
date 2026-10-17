@@ -4,6 +4,7 @@ import Capture
 import CaptureUI
 import Filing
 import FilingUI
+import SearchUI
 import StudyCore
 import StudyUI
 import SwiftUI
@@ -183,7 +184,7 @@ enum ParityMode {
             configure(main)
             NSApp.activate()
             // What a launch does to a library before the window shows it.
-            if let indexer = model.searchIndexer { _ = try await indexer.catchUp() }
+            if let indexer = model.searchIndexer { _ = try await indexer.catchUp(verifyingText: true) }
             await model.filing?.repairDeckTitles()
 
             var shown = main
@@ -192,12 +193,16 @@ enum ParityMode {
                 show(Launch(selection: .today))
             case .course(let name):
                 // Course Settings is the course's screen.
-                show(Launch(selection: .course(try course(name, services: services).id)))
+                show(Launch(selection: .courseSettings(try course(name, services: services).id)))
             case .lecture(let courseName, let number, let slide, let time):
                 let (_, lecture) = try lecture(courseName, number, services: services)
                 let target = ReviewTarget(page: slide, time: time, request: UUID())
                 show(Launch(selection: .lecture(lecture.id), reviewTarget: (lecture.id, target)))
             case .search(let text):
+                // As if it had been searched (↩): the sidebar lists it under Recent searches.
+                var recent = RecentSearches(storage: UserDefaults.standard.string(forKey: RecentSearches.storageKey) ?? "")
+                recent.record(text)
+                UserDefaults.standard.set(recent.storage, forKey: RecentSearches.storageKey)
                 show(Launch(selection: .search, query: text))
             case .livePreview(let courseName, let number, let slide):
                 show(Launch(selection: .today))
@@ -334,7 +339,22 @@ enum ParityMode {
             page: page, elapsed: elapsed, stamps: stamps, captions: captions,
             level: 0.55, inputName: previewInput, note: note
         )
-        return AppModel.LiveCapture(session: session, course: course, deck: deck, lectureID: lecture.id, openedAt: lecture.heldAt ?? Date())
+        // The lecture's class: its session, else the course's lecture session of its number.
+        var lectureSession: LectureSession?
+        if let sessionID = lecture.lectureSessionID {
+            lectureSession = try await services.records.fetch(LectureSession.self, id: sessionID)
+        } else if let number = lecture.number {
+            let courseID = course.id
+            lectureSession = try await services.database.read { db in
+                try LectureSession
+                    .where { $0.courseID.eq(courseID) && $0.kind.eq(SessionKind.lecture) && $0.number.eq(number) && !$0.isCancelled }
+                    .fetchOne(db)
+            }
+        }
+        return AppModel.LiveCapture(
+            session: session, course: course, deck: deck, lectureID: lecture.id, openedAt: lecture.heldAt ?? Date(),
+            lectureSession: lectureSession
+        )
     }
 
     /// Caption runs from a segment's words (unsure words dotted), up to `end` for the line still

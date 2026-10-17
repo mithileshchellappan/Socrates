@@ -114,7 +114,7 @@ struct FilingDropTargetModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         // Lit under the cursor, and while files dragged over the window would go here.
-        let isLit = isTargeted || center.predictedDestination == destination
+        let isLit = isTargeted || center.predictedPlace?.isShown(byRowOf: destination) == true
         content
             .environment(\.isFilingTarget, isLit)
             .listRowBackground(isLit ? FilingTargetHighlight() : nil)
@@ -148,48 +148,6 @@ struct FilingTargetHighlight: View {
             .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.24 : 0.12))
             .overlay(shape.strokeBorder(Color.accentColor, lineWidth: 1.5))
             .padding(.horizontal, 10)
-    }
-}
-
-extension View {
-    /// Keeps the course dragged files would go to expanded in an outline sidebar while they are
-    /// dragged, so its lit row shows. A course it opened closes again when the drag ends without
-    /// a drop; other courses stay as they are.
-    public func revealsFilingTarget(_ center: FilingCenter, collapsed: Binding<Set<Course.ID>>) -> some View {
-        modifier(RevealFilingTargetModifier(center: center, collapsed: collapsed))
-    }
-}
-
-struct RevealFilingTargetModifier: ViewModifier {
-    let center: FilingCenter
-    @Binding var collapsed: Set<Course.ID>
-    /// Courses this drag expanded.
-    @State private var opened: Set<Course.ID> = []
-    @State private var dropsBefore = 0
-    @State private var closing: Task<Void, Never>?
-
-    func body(content: Content) -> some View {
-        content.onChange(of: center.predictedCourseID) { old, new in
-            if let new {
-                if old == nil, closing == nil { dropsBefore = center.dropCount }
-                closing?.cancel()
-                closing = nil
-                if collapsed.contains(new) {
-                    collapsed.remove(new)
-                    opened.insert(new)
-                }
-            } else {
-                // Moving from the window onto a sidebar row can end one drag a moment before the
-                // row takes it: wait before closing anything.
-                closing = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(400))
-                    guard !Task.isCancelled else { return }
-                    if center.dropCount == dropsBefore { collapsed.formUnion(opened) }
-                    opened = []
-                    closing = nil
-                }
-            }
-        }
     }
 }
 

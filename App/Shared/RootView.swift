@@ -15,9 +15,8 @@ struct RootView: View {
     @State private var selection: SidebarItem?
     @State private var columns: NavigationSplitViewVisibility = .all
     @State private var query = ""
-    /// The last three queries submitted, newest first, one per line (the sidebar lists them on
-    /// the Search screen).
-    @AppStorage("recentSearches") private var recentSearchText = ""
+    /// Back and Forward (Go menu; the course screen's toolbar chevrons, mockup 08).
+    @State private var history = ScreenHistory()
     /// Where the review screen opened from a search hit or Today's hero goes: one request, for
     /// that opening only (the sidebar going elsewhere drops it, so a later visit resumes where
     /// review left off).
@@ -27,7 +26,7 @@ struct RootView: View {
     @State private var searchSubmits = 0
 
     init(selection: SidebarItem? = .today, query: String = "", reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil) {
-        _selection = State(initialValue: selection)
+        _selection = State(initialValue: selection?.screen)
         _query = State(initialValue: query)
         _reviewTarget = State(initialValue: reviewTarget)
     }
@@ -41,104 +40,136 @@ struct RootView: View {
                 description: Text(launchError)
             )
         } else if let center = model.filingCenter {
-            NavigationSplitView(columnVisibility: $columns) {
-                SidebarView(selection: $selection, center: center, recentSearches: recentSearches) { text in
-                    query = text
+            splitView(center: center)
+                .environment(\.isSearchFieldFocused, searchFocused)
+                .focusedSceneValue(\.sidebarSelection, $selection)
+                .focusedSceneValue(\.focusSearch) {
+                    let hadField = showsSearchField
                     selection = .search
-                }
-                    #if os(macOS)
-                    // The toggle is the content toolbar's (`sidebarToggle`), as in mockups 01 and
-                    // 10. Removing the system one drops the sidebar's column width: set it again.
-                    .toolbar(removing: .sidebarToggle)
-                    .navigationSplitViewColumnWidth(min: 200, ideal: SidebarView.idealWidth, max: 320)
-                    #endif
-            } detail: {
-                NavigationStack {
-                    DetailView(
-                        item: selection ?? .today,
-                        query: query,
-                        searchSubmits: searchSubmits,
-                        target: reviewTarget,
-                        record: record
-                    )
-                    #if os(macOS)
-                    .toolbar { sidebarToggle }
-                    #endif
-                }
-                .id(selection)
-                .toolbar { trailingItems(center: center) }
-            }
-            .searchable(text: $query, placement: .toolbar, prompt: Text("Search lectures and notes"))
-            .searchFocused($searchFocused)
-            .onChange(of: query) { _, text in
-                if !text.trimmingCharacters(in: .whitespaces).isEmpty, selection != .search { selection = .search }
-            }
-            .onSubmit(of: .search) {
-                let text = query.trimmingCharacters(in: .whitespaces)
-                guard !text.isEmpty else { return }
-                selection = .search
-                searchSubmits += 1
-                remember(text)
-            }
-            .onChange(of: selection) { _, item in
-                // The target was for the lecture `open` showed; anywhere else drops it.
-                if case .lecture(let id) = item, id == reviewTarget?.lectureID { return }
-                reviewTarget = nil
-            }
-            .environment(\.isSearchFieldFocused, searchFocused)
-            .focusedSceneValue(\.sidebarSelection, $selection)
-            .focusedSceneValue(\.focusSearch) {
-                selection = .search
-                searchFocused = true
-            }
-            .smartImport(center)
-            .environment(\.openDestination, OpenDestinationAction(open))
-            .environment(\.studyServices, model.services)
-            .environment(\.calendarMirror, model.calendarMirror)
-            .sheet(item: $model.sheet) { sheet in
-                switch sheet {
-                case .newCapture:
-                    CaptureSetupView()
-                case .newCourse:
-                    NewCourseView { course in selection = .course(course.id) }
-                        .environment(\.studyServices, model.services)
-                }
-            }
-            .alert(
-                "Couldn’t finish",
-                isPresented: Binding(get: { model.failure != nil }, set: { if !$0 { model.failure = nil } }),
-                presenting: model.failure
-            ) { _ in
-                Button("OK") {}
-            } message: { message in
-                Text(message)
-            }
-            #if os(iOS)
-            .fullScreenCover(isPresented: $model.isLivePresented, onDismiss: { model.closeLiveLecture() }) {
-                NavigationStack {
-                    LiveLectureScreen()
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button(role: .close) { model.isLivePresented = false }
-                            }
+                    searchFocused = true
+                    if !hadField {
+                        // The field comes back with the Search screen: focus it once it is there.
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(80))
+                            searchFocused = true
                         }
+                    }
                 }
-                .environment(model)
+                .focusedSceneValue(\.screenHistory, ScreenHistoryActions(
+                    canGoBack: history.canGoBack,
+                    canGoForward: history.canGoForward,
+                    back: { go(back: true) },
+                    forward: { go(back: false) }
+                ))
+                .smartImport(center)
+                .environment(\.openDestination, OpenDestinationAction(open))
+                .environment(\.studyServices, model.services)
+                .environment(\.calendarMirror, model.calendarMirror)
+                .sheet(item: $model.sheet) { sheet in
+                    switch sheet {
+                    case .newCapture:
+                        CaptureSetupView()
+                    case .newCourse:
+                        NewCourseView { course in selection = .courseSettings(course.id) }
+                            .environment(\.studyServices, model.services)
+                    }
+                }
+                .alert(
+                    "Couldn’t finish",
+                    isPresented: Binding(get: { model.failure != nil }, set: { if !$0 { model.failure = nil } }),
+                    presenting: model.failure
+                ) { _ in
+                    Button("OK") {}
+                } message: { message in
+                    Text(message)
+                }
+                #if os(iOS)
+                .fullScreenCover(isPresented: $model.isLivePresented, onDismiss: { model.closeLiveLecture() }) {
+                    NavigationStack {
+                        LiveLectureScreen()
+                            .toolbar {
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button(role: .close) { model.isLivePresented = false }
+                                }
+                            }
+                    }
+                    .environment(model)
+                }
+                #endif
+                .background { CalendarSessionsWatcher() }
+                #if os(macOS)
+                .background { MainWindowReader() }
+                #endif
+        }
+    }
+
+    /// The sidebar and the screen, with the window's search field.
+    private func splitView(center: FilingCenter) -> some View {
+        NavigationSplitView(columnVisibility: $columns) {
+            // A course's row shows its settings, selected as the course's "Course Settings"
+            // row (mockup 08).
+            SidebarView(selection: Binding(get: { selection }, set: { selection = $0?.screen }), center: center)
+                #if os(macOS)
+                // The toggle is the content toolbar's (`sidebarToggle`), as in mockups 01 and
+                // 10. Removing the system one drops the sidebar's column width: set it again.
+                .toolbar(removing: .sidebarToggle)
+                .navigationSplitViewColumnWidth(min: 200, ideal: SidebarView.idealWidth, max: 320)
+                #endif
+        } detail: {
+            NavigationStack {
+                DetailView(
+                    item: selection ?? .today,
+                    query: query,
+                    searchSubmits: searchSubmits,
+                    target: reviewTarget,
+                    record: record
+                )
+                // The search field (mockups 01, 07), not on a lecture or a course (03, 08: the
+                // slide stepper and inspector header, Import, own the toolbar there; ⌘F still
+                // searches). Here, not on the split view: there it shows on every screen.
+                .modifier(SearchFieldModifier(isShown: showsSearchField, text: $query, focused: $searchFocused) {
+                    let text = query.trimmingCharacters(in: .whitespaces)
+                    guard !text.isEmpty else { return }
+                    selection = .search
+                    searchSubmits += 1
+                })
+                #if os(macOS)
+                .toolbar {
+                    sidebarToggle
+                    historyButtons
+                }
+                #endif
             }
-            #endif
-            .background { CalendarSessionsWatcher() }
+            // A new stack per screen; the top-level screens share one, so the search field (and
+            // its focus while typing on Today opens Search) stays.
+            .id(selection.map(DetailIdentity.init) ?? .topLevel)
+            .toolbar { trailingItems(center: center) }
+        }
+        .onChange(of: query) { _, text in
+            if !text.trimmingCharacters(in: .whitespaces).isEmpty, selection != .search { selection = .search }
+        }
+        .onChange(of: selection) { old, item in
+            history.visit(from: old, to: item)
+            // The target was for the lecture `open` showed; anywhere else drops it.
+            if case .lecture(let id) = item, id == reviewTarget?.lectureID { return }
+            reviewTarget = nil
         }
     }
 
     private var isToday: Bool { (selection ?? .today) == .today }
 
-    private var recentSearches: [String] {
-        recentSearchText.split(separator: "\n").map(String.init)
+    /// The toolbar search field shows on the top-level screens, not on a lecture or a course.
+    private var showsSearchField: Bool {
+        switch selection ?? .today {
+        case .today, .calendar, .mail, .search: true
+        case .course, .courseSettings, .lecture: false
+        }
     }
 
-    private func remember(_ text: String) {
-        let recent = [text] + recentSearches.filter { $0.localizedCaseInsensitiveCompare(text) != .orderedSame }
-        recentSearchText = recent.prefix(3).joined(separator: "\n")
+    /// Back or Forward through the screens this window showed.
+    private func go(back: Bool) {
+        guard let item = history.step(back: back, from: selection) else { return }
+        selection = item
     }
 
     /// The content toolbar's trailing end (mockup 01): [● Record] […] in their own glass, then the
@@ -147,9 +178,9 @@ struct RootView: View {
     /// screen, so it is never forgotten, and brings the live screen back.
     @ToolbarContentBuilder
     private func trailingItems(center: FilingCenter) -> some ToolbarContent {
-        if isToday {
-            // Today's title is a toolbar item (`screenTitle`), not the flexible system title: this
-            // keeps Record and More at the trailing end.
+        if isToday || selection == .search {
+            // Today's and Search's titles are toolbar items (`screenTitle`), not the flexible
+            // system title: this keeps Record, More and the search field at the trailing end.
             ToolbarSpacer(.flexible, placement: .primaryAction)
         }
         if let session = model.live?.session, session.isCapturing, session.startedAt != nil {
@@ -202,6 +233,22 @@ struct RootView: View {
             }
         }
     }
+
+    /// ‹ › before the course screen's title (mockup 08), in one glass group. Go ▸ Back and Forward
+    /// (⌘[ ⌘]) work on every screen.
+    @ToolbarContentBuilder
+    private var historyButtons: some ToolbarContent {
+        if selection?.settingsCourseID != nil {
+            ToolbarItemGroup(placement: .navigation) {
+                Button("Back", systemImage: "chevron.left") { go(back: true) }
+                    .disabled(!history.canGoBack)
+                    .help("Back")
+                Button("Forward", systemImage: "chevron.right") { go(back: false) }
+                    .disabled(!history.canGoForward)
+                    .help("Forward")
+            }
+        }
+    }
     #endif
 
     /// Routes a feature screen's request: the sidebar selection, plus where a lecture opens.
@@ -212,7 +259,7 @@ struct RootView: View {
         case .search(let text):
             query = text
             selection = .search
-        case .course(let id): selection = .course(id)
+        case .course(let id): selection = .courseSettings(id)
         case .mail:
             // M2 integration routes the scope and message to the Mail screen (docs/plan-m2.md §6).
             selection = .mail
@@ -235,6 +282,38 @@ struct RootView: View {
         #else
         model.isLivePresented = true
         #endif
+    }
+}
+
+/// The window's search field (in the toolbar), on the screens that have one; ↩ runs `submit`.
+private struct SearchFieldModifier: ViewModifier {
+    let isShown: Bool
+    @Binding var text: String
+    var focused: FocusState<Bool>.Binding
+    let submit: () -> Void
+
+    func body(content: Content) -> some View {
+        if isShown {
+            content
+                .searchable(text: $text, placement: .toolbar, prompt: Text("Search lectures and notes"))
+                .searchFocused(focused)
+                .onSubmit(of: .search, submit)
+        } else {
+            content
+        }
+    }
+}
+
+/// The detail column's stack identity: one for the top-level screens, one per course or lecture.
+private enum DetailIdentity: Hashable {
+    case topLevel
+    case screen(SidebarItem)
+
+    init(_ item: SidebarItem) {
+        switch item {
+        case .today, .calendar, .mail, .search: self = .topLevel
+        case .course, .courseSettings, .lecture: self = .screen(item)
+        }
     }
 }
 

@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Live lecture mode gets its own window on the Mac (mockup 02-live: no sidebar, inspector).
-/// One at a time; closing it keeps a running recording going.
+/// Live lecture mode gets its own window on the Mac (mockup 02-live: the sidebar collapsed to a
+/// toolbar button that brings the library window forward; inspector). One at a time; closing it
+/// keeps a running recording going.
 struct LiveLectureScene: Scene {
     static let id = "live-lecture"
     let model: AppModel

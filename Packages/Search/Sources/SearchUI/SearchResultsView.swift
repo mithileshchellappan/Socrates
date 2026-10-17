@@ -58,10 +58,7 @@ public struct SearchResultsView: View {
 
     public var body: some View {
         content
-            .navigationTitle("Search")
-            #if os(macOS)
-            .navigationSubtitle(subtitle)
-            #endif
+            .screenTitle(String(localized: "Search"), subtitle: subtitle)
             .task(id: SearchKey(query: searchQuery, chunks: chunkCount, indexedAt: indexedAt)) {
                 await search()
             }
@@ -129,9 +126,10 @@ public struct SearchResultsView: View {
         }
     }
 
-    private var subtitle: Text {
-        guard !searchQuery.isEmpty, let results else { return Text(verbatim: "") }
-        return Text("^[\(results.count) result](inflect: true)")
+    /// "8 results".
+    private var subtitle: String {
+        guard !searchQuery.isEmpty, let results else { return "" }
+        return String(AttributedString(localized: "^[\(results.count) result](inflect: true)").characters)
     }
 
     // MARK: - Filters
