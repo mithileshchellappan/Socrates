@@ -33,6 +33,15 @@ enum LineDecision: Sendable {
 enum ChildProcess {
     static let standardErrorLimit = 64 * 1024
 
+    /// The children running now (their pids), so the app's quit can end them.
+    private static let running = Mutex<Set<pid_t>>([])
+
+    /// SIGTERM to every child still running (the app is quitting: a tool loop's server lives in
+    /// the app, and nothing would read the child's output).
+    static func terminateAll() {
+        for pid in running.withLock({ $0 }) { kill(pid, SIGTERM) }
+    }
+
     /// Launches `spec` and calls `onLine` with every stdout line (without its "\n"), in order, on
     /// the calling task. Returns once the child has exited. Throws `CancellationError` when the
     /// calling task was cancelled (the child is killed first) and whatever `onLine` throws (the
@@ -55,12 +64,17 @@ enum ChildProcess {
 
         let exit = ExitSignal()
         process.terminationHandler = { process in
+            _ = running.withLock { $0.remove(process.processIdentifier) }
             exit.exited(status: process.terminationStatus, reason: process.terminationReason)
         }
         do {
             try process.run()
         } catch {
             throw ClaudeError.claudeCode("could not start \(spec.executable.lastPathComponent) (\(error.localizedDescription))")
+        }
+        let pid = process.processIdentifier
+        running.withLock { pids in
+            if process.isRunning { pids.insert(pid) }
         }
 
         return try await withTaskCancellationHandler {

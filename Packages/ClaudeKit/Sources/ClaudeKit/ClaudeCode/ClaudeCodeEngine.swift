@@ -88,6 +88,13 @@ public actor ClaudeCodeEngine: ClaudeBackend {
 
     public nonisolated var kind: ClaudeBackendKind { .claudeCode }
 
+    /// Ends every `claude` process the app started (SIGTERM), for the app's quit
+    /// (`NSApplication.willTerminateNotification`): a tool loop's MCP server lives in the app and
+    /// stops with it, so a child left running could not finish its run.
+    public static func terminateRunningProcesses() {
+        ChildProcess.terminateAll()
+    }
+
     // MARK: - Availability
 
     public func availability() async -> ClaudeAvailability {
@@ -224,15 +231,17 @@ public actor ClaudeCodeEngine: ClaudeBackend {
         }
     }
 
-    /// Launches until isolation holds and the session flag fits: `--safe-mode` first (or the
-    /// variant that worked for this CLI version), else `--setting-sources ""`; `--session-id` ↔
-    /// `--resume` swapped once when the CLI says the session is in use or unknown.
+    /// Launches until isolation holds and the session flag fits: `--setting-sources ""` first (or
+    /// the variant that worked for this CLI version; the live check found that `--safe-mode` also
+    /// drops the `--mcp-config` server in 2.1.268, and a relaunch repeats the prompt in the
+    /// session), else `--safe-mode`; `--session-id` ↔ `--resume` swapped once when the CLI says
+    /// the session is in use or unknown.
     private func toolLoop(
         _ call: ClaudeCodeCall, maxIterations: Int, prompt: [JSONValue], handler: @escaping ToolHandler,
         onEvent: @escaping @Sendable (ToolLoopEvent) async -> Void
     ) async throws -> ToolLoopResult {
         let version = await current().availability.status?.version ?? "unknown"
-        var variant = state.isolation[version] ?? .safeMode
+        var variant = state.isolation[version] ?? .noSettingSources
         var tried: Set<IsolationVariant> = []
         var session: SessionFlag = call.context.session.map { $0.resumes ? .resume($0.id) : .start($0.id) } ?? .none
         var swappedSession = false
