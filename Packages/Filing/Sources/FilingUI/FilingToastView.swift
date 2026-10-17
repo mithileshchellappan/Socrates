@@ -38,8 +38,8 @@ struct FilingToastView: View {
 
     private var outcome: FilingOutcome { toast.outcome }
 
-    /// Mockup 10's toast width.
-    static let width: CGFloat = 424
+    /// Mockup 10's toast width, plus room for the longest course name beside the buttons.
+    static let width: CGFloat = 444
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
