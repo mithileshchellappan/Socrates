@@ -60,7 +60,9 @@ public struct RecordStore: Sendable {
         }
     }
 
-    func stamp<Record: StudyRecord>(_ record: Record) -> Record {
+    /// `record` with `updatedAt` set to now, for writes that batch several tables in one
+    /// `database.write` transaction.
+    public func stamp<Record: StudyRecord>(_ record: Record) -> Record {
         var record = record
         record.updatedAt = now()
         return record

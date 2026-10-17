@@ -8,12 +8,16 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1"]
+    public static let migrationIDs = ["v1", "v2"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in
             try db.execute(sql: v1)
+        }
+        // Foreign key checks are deferred (GRDB's default), so the table rebuild cannot cascade.
+        migrator.registerMigration("v2") { db in
+            try db.execute(sql: v2)
         }
         return migrator
     }
@@ -280,5 +284,36 @@ public enum Schema {
         CREATE INDEX "job_state" ON "job"("state", "created_at");
         CREATE INDEX "job_lecture" ON "job"("lecture_id");
         CREATE INDEX "job_recording" ON "job"("recording_id");
+        """
+
+    /// v2: `lecture_deck_span.first_page` / `last_page` become nullable. A timed span with no
+    /// pages is an off-slide stretch (admin talk, Q&A, breaks) from the aligner's OFF state.
+    /// SQLite cannot drop NOT NULL in place, so the table is rebuilt; `recording_id` gains the
+    /// index every other foreign column has.
+    static let v2 = """
+        CREATE TABLE "lecture_deck_span_v2" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "lecture_id" TEXT NOT NULL REFERENCES "lecture"("id") ON DELETE CASCADE,
+          "deck_id" TEXT NOT NULL REFERENCES "deck"("id") ON DELETE CASCADE,
+          "first_page" INTEGER,
+          "last_page" INTEGER,
+          "recording_id" TEXT REFERENCES "recording"("id") ON DELETE SET NULL,
+          "start_time" REAL,
+          "end_time" REAL,
+          "source" TEXT NOT NULL DEFAULT 'auto',
+          "confidence" REAL NOT NULL DEFAULT 1,
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        INSERT INTO "lecture_deck_span_v2"
+          ("id", "lecture_id", "deck_id", "first_page", "last_page", "recording_id",
+           "start_time", "end_time", "source", "confidence", "updated_at")
+          SELECT "id", "lecture_id", "deck_id", "first_page", "last_page", "recording_id",
+                 "start_time", "end_time", "source", "confidence", "updated_at"
+          FROM "lecture_deck_span";
+        DROP TABLE "lecture_deck_span";
+        ALTER TABLE "lecture_deck_span_v2" RENAME TO "lecture_deck_span";
+        CREATE INDEX "lecture_deck_span_lecture" ON "lecture_deck_span"("lecture_id", "start_time");
+        CREATE INDEX "lecture_deck_span_deck" ON "lecture_deck_span"("deck_id");
+        CREATE INDEX "lecture_deck_span_recording" ON "lecture_deck_span"("recording_id");
         """
 }

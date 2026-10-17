@@ -56,6 +56,38 @@ public struct LectureRepository: Sendable {
         }
     }
 
+    /// Timed spans (aligner output: slide visits and off-slide stretches) of one recording, in time order.
+    public func timedSpans(lectureID: Lecture.ID, recordingID: Recording.ID) async throws -> [LectureDeckSpan] {
+        try await store.database.read { db in
+            try LectureDeckSpan
+                .where { $0.lectureID.eq(lectureID) && $0.recordingID.eq(recordingID) && $0.startTime.isNot(nil) }
+                .order(by: \.startTime)
+                .fetchAll(db)
+        }
+    }
+
+    /// Replaces every timed span of one recording of a lecture in one transaction. One aligner run
+    /// yields a single consistent timeline that mixes automatic, stamp and manual spans, so all of
+    /// them are rewritten together. Coarse spans (no times) are kept.
+    @discardableResult
+    public func replaceTimedSpans(
+        lectureID: Lecture.ID,
+        recordingID: Recording.ID,
+        with spans: [LectureDeckSpan]
+    ) async throws -> [LectureDeckSpan] {
+        let stamped = spans.map(store.stamp)
+        try await store.database.write { db in
+            try LectureDeckSpan
+                .where { $0.lectureID.eq(lectureID) && $0.recordingID.eq(recordingID) && $0.startTime.isNot(nil) }
+                .delete()
+                .execute(db)
+            for span in stamped {
+                try LectureDeckSpan.upsert { span }.execute(db)
+            }
+        }
+        return stamped
+    }
+
     /// Replaces all spans of `source` for a lecture (e.g. a new aligner run) in one transaction.
     /// Spans from other sources (stamps, manual) are kept.
     @discardableResult
@@ -285,6 +317,32 @@ public struct JobRepository: Sendable {
                 .order(by: \.createdAt)
                 .fetchAll(db)
         }
+    }
+
+    /// Jobs of a lecture, oldest first.
+    public func jobs(lectureID: Lecture.ID) async throws -> [Job] {
+        try await store.database.read { db in
+            try Job.where { $0.lectureID.eq(lectureID) }.order(by: \.createdAt).fetchAll(db)
+        }
+    }
+
+    /// Puts jobs left `running` by a previous process (quit or crash mid-job) back in the queue,
+    /// keeping their attempt count. Call once at launch, before any job runs. Returns them.
+    @discardableResult
+    public func requeueInterrupted() async throws -> [Job] {
+        let interrupted = try await store.database.read { db in
+            try Job.where { $0.state.eq(JobState.running) }.fetchAll(db)
+        }
+        var requeued: [Job] = []
+        for job in interrupted {
+            if let job = try await update(job.id, { job, _ in
+                job.state = .queued
+                job.progress = 0
+            }) {
+                requeued.append(job)
+            }
+        }
+        return requeued
     }
 
     @discardableResult

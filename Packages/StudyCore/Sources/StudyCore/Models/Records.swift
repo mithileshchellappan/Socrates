@@ -276,13 +276,15 @@ public struct Lecture: StudyRecord {
 ///
 /// Used at two granularities: a coarse span ("slides 1–37 of deck X", no times) and, from the
 /// aligner, one span per slide visit with `startTime`/`endTime` on the recording clock.
+/// A timed span without pages is an off-slide stretch (admin talk, Q&A, a break).
 @Table("lecture_deck_span")
 public struct LectureDeckSpan: StudyRecord {
     public let id: UUID
     @Column("lecture_id") public var lectureID: Lecture.ID
     @Column("deck_id") public var deckID: Deck.ID
-    @Column("first_page") public var firstPage: Int
-    @Column("last_page") public var lastPage: Int
+    /// Nil (with `lastPage`) for an off-slide stretch.
+    @Column("first_page") public var firstPage: Int?
+    @Column("last_page") public var lastPage: Int?
     @Column("recording_id") public var recordingID: Recording.ID?
     @Column("start_time") public var startTime: Double?
     @Column("end_time") public var endTime: Double?
@@ -295,8 +297,8 @@ public struct LectureDeckSpan: StudyRecord {
         id: UUID = UUID(),
         lectureID: Lecture.ID,
         deckID: Deck.ID,
-        firstPage: Int,
-        lastPage: Int,
+        firstPage: Int?,
+        lastPage: Int?,
         recordingID: Recording.ID? = nil,
         startTime: Double? = nil,
         endTime: Double? = nil,
@@ -316,6 +318,12 @@ public struct LectureDeckSpan: StudyRecord {
         self.confidence = confidence
         self.updatedAt = updatedAt
     }
+
+    /// True for a timed stretch that is on no slide.
+    public var isOffSlide: Bool { firstPage == nil && startTime != nil }
+
+    /// True for an aligner span (has times), false for a coarse page range.
+    public var isTimed: Bool { startTime != nil }
 }
 
 // MARK: - Recording

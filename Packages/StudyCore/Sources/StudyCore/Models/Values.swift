@@ -98,6 +98,9 @@ public struct SlideEventKind: StringKind {
     public static let show: Self = "show"
     /// The student flagged this moment (F).
     public static let flag: Self = "flag"
+    /// "Slide starts here" set by hand in review: `pageNumber` starts at `sampleTime`, or an
+    /// off-slide stretch starts there when `pageNumber` is nil. Used as given by the aligner.
+    public static let manual: Self = "manual"
 }
 
 /// Where a recording came from.
