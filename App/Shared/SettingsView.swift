@@ -1,7 +1,17 @@
+import MailUI
 import StudyCore
 import SwiftUI
 
-/// Account settings. The API key goes straight to the Keychain and is never shown again.
+/// The Settings window's tabs; "Set Up Mail…" opens Accounts.
+enum SettingsTab: String, Hashable {
+    case semester
+    case accounts
+
+    static let storageKey = "StudyPortal.settingsTab"
+}
+
+/// Account settings: the Claude API key and (on the Mac, where mail syncs) the uni mail account.
+/// The key and the password go straight to the Keychain and are never shown again.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var draft = ""
@@ -31,11 +41,19 @@ struct SettingsView: View {
                         Button("Remove", role: .destructive, action: remove)
                     }
                     Spacer()
-                    Button("Save", action: save)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(trimmedDraft.isEmpty)
+                    // Filled only while there is a key to save: the window keeps one filled button.
+                    if trimmedDraft.isEmpty {
+                        Button("Save", action: save)
+                            .disabled(true)
+                    } else {
+                        Button("Save", action: save)
+                            .buttonStyle(.borderedProminent)
+                    }
                 }
             }
+            #if os(macOS)
+            MailAccountSettingsView()
+            #endif
         }
         .formStyle(.grouped)
         .disabled(model.services == nil)

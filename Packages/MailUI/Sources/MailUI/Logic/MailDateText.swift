@@ -52,9 +52,13 @@ struct MailDateText: Sendable {
         return "\(self.day(date)), \(time)"
     }
 
-    /// "13:37" (the locale's hour cycle).
+    /// "13:37": 24-hour whatever the region, like every time in the app (`SessionText.time`,
+    /// the mockups).
     func clock(_ date: Date) -> String {
-        date.formatted(Date.FormatStyle(locale: locale, timeZone: timeZone).hour().minute())
+        date.formatted(Date.VerbatimFormatStyle(
+            format: "\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
+            locale: Locale(identifier: "en_US_POSIX"), timeZone: timeZone, calendar: Calendar(identifier: .gregorian)
+        ))
     }
 
     /// "Tue 13 Oct" (`DayText`).

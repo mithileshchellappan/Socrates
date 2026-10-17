@@ -1,18 +1,20 @@
 import CoursesUI
+import MailUI
 import StudyUI
 import SwiftUI
 
-/// The macOS Settings window (⌘,).
+/// The macOS Settings window (⌘,): Semester, and Accounts (the Claude key and the uni mail account).
 struct SettingsScene: Scene {
     let model: AppModel
+    @AppStorage(SettingsTab.storageKey) private var tab = SettingsTab.semester
 
     var body: some Scene {
         Settings {
-            TabView {
-                Tab("Semester", systemImage: "calendar") {
+            TabView(selection: $tab) {
+                Tab("Semester", systemImage: "calendar", value: SettingsTab.semester) {
                     SemesterSettingsView()
                 }
-                Tab("Accounts", systemImage: "person.crop.circle") {
+                Tab("Accounts", systemImage: "person.crop.circle", value: SettingsTab.accounts) {
                     SettingsView()
                 }
             }
@@ -20,6 +22,7 @@ struct SettingsScene: Scene {
             .environment(model)
             .environment(\.studyServices, model.services)
             .environment(\.calendarMirror, model.calendarMirror)
+            .environment(\.mailActions, model.mailActions)
         }
     }
 }

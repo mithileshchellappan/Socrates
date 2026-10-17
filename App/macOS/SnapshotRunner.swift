@@ -11,7 +11,8 @@ import SwiftUI
 ///
 ///     STUDYPORTAL_DATA_ROOT=<library copy> STUDYPORTAL_SNAPSHOTS=<folder> StudyPortal.app/Contents/MacOS/StudyPortal
 ///
-/// Shots (light and dark): Today, Course Settings of Data Centers, the review of DC lecture 2
+/// Shots (light and dark): Today, Mail (Inbox with the newest message, its course, Drafts), Course
+/// Settings of Data Centers, the review of DC lecture 2
 /// (slide 16, 37:27) and CL lecture 1 (slide 11, 7:25), Search for "paravirtualization" and
 /// "ELIZA", and the drop HUD over Today for the files in `STUDYPORTAL_SNAPSHOT_DROP` (paths
 /// separated by ":"), after filing those in `STUDYPORTAL_SNAPSHOT_FILE` (their toasts). Filing
@@ -33,6 +34,8 @@ enum SnapshotRunner {
         var item: SidebarItem
         var query = ""
         var target: (lectureID: Lecture.ID, target: ReviewTarget)?
+        /// The message selected on Mail.
+        var message: MailMessage.ID?
         var drop: [URL] = []
         /// Filed just before the shot (its toasts show).
         var file: [URL] = []
@@ -70,6 +73,15 @@ enum SnapshotRunner {
             if let id = lecture("Computational Linguistics", 1) {
                 shots.append(Shot(name: "03-review-cl-l1", item: .lecture(id), target: (id, ReviewTarget(page: 11, time: 445)), size: CGSize(width: 1440, height: 900)))
             }
+            // Mail (mockup 05): the Inbox with its newest message, a course's mail, Drafts.
+            let newest = try await services.database.read { db in
+                try MailMessage.order { $0.receivedAt.desc() }.fetchOne(db)
+            }
+            shots.append(Shot(name: "05-mail", item: .mailScope(.inbox), message: newest?.id))
+            if let courseID = newest?.courseID {
+                shots.append(Shot(name: "05-mail-course", item: .mailScope(.course(courseID))))
+            }
+            shots.append(Shot(name: "05-mail-drafts", item: .mailScope(.drafts)))
             shots.append(Shot(name: "07-search-paravirtualization", item: .search, query: "paravirtualization"))
             shots.append(Shot(name: "07-search-eliza", item: .search, query: "ELIZA"))
             let drop = files("STUDYPORTAL_SNAPSHOT_DROP")
@@ -138,7 +150,7 @@ enum SnapshotRunner {
     /// ordered-in window on a locked or sleeping display is occluded and stops drawing its scroll
     /// views), lets it settle, and draws the whole window, toolbar included.
     static func render(_ shot: Shot, scheme: ColorScheme, model: AppModel, to url: URL) async throws {
-        let root = RootView(selection: shot.item, query: shot.query, reviewTarget: shot.target)
+        let root = RootView(selection: shot.item, query: shot.query, reviewTarget: shot.target, mailSelection: shot.message)
             .environment(model)
         let host = NSHostingView(rootView: root)
         host.sceneBridgingOptions = .all

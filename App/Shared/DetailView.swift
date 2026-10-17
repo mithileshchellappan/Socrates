@@ -1,18 +1,20 @@
 import CoursesUI
 import FilingUI
+import MailUI
 import ReviewUI
 import SearchUI
 import StudyCore
 import StudyUI
 import SwiftUI
 
-/// Routes the sidebar selection to its screen. Calendar (M3) and Mail (M2) are empty until their
-/// milestone.
+/// Routes the sidebar selection to its screen. Calendar (M3) is empty until its milestone.
 struct DetailView: View {
     let item: SidebarItem
     let query: String
     var searchSubmits = 0
     let target: (lectureID: Lecture.ID, target: ReviewTarget)?
+    /// The message selected on Mail (in Drafts, the draft).
+    var mailSelection: Binding<MailMessage.ID?> = .constant(nil)
     let record: () -> Void
 
     @Environment(AppModel.self) private var model
@@ -21,8 +23,13 @@ struct DetailView: View {
         switch item {
         case .today:
             TodayView(record: record)
-        case .calendar, .mail:
+        case .calendar:
             PlaceholderScreen(item: item)
+        case .mail:
+            MailView(scope: .inbox, selection: mailSelection, query: query, now: model.fixedNow)
+        case .mailScope(let scope):
+            // The window's search field ("Search mail") filters the list.
+            MailView(scope: scope, selection: mailSelection, query: query, now: model.fixedNow)
         case .search:
             SearchResultsView(query: query, submits: searchSubmits)
         case .course(let id), .courseSettings(let id):

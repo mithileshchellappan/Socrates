@@ -1,12 +1,14 @@
 import Courses
 import Filing
 import FilingUI
+import MailUI
 import SearchUI
 import StudyCore
 import StudyUI
 import SwiftUI
 
-/// The main window's sidebar (mockups 01, 03, 07, 08, 10): Today, Calendar, Mail (unread count),
+/// The main window's sidebar (mockups 01, 03, 05, 07, 08, 10): Today, Calendar, Mail (unread count;
+/// on Mail, its lists under it: Inbox, the courses, University, Newsletters, Drafts, Sent),
 /// Search; then the courses as flat rows, on the mockups' 29 pt pitch. Courses start closed (01,
 /// 07). On a lecture's screen every course with lectures opens to them ("L2 · Virtualization &
 /// IaaS", Tue 13 Oct) and its next session in secondary text ("L3", "Mon 19 Oct, 12:15") (03); on a
@@ -86,7 +88,17 @@ struct SidebarView: View {
                             .foregroundStyle(.tint)
                     }
                 }
-                .badge(item == .mail ? unreadMail : 0)
+                // On Mail the Inbox row below carries the count.
+                .badge(item == .mail && selection?.isMail != true ? unreadMail : 0)
+                if item == .mail, selection?.isMail == true {
+                    // Mockup 05: Mail's lists under the Mail row while one shows.
+                    ForEach(mailScopes, id: \.self) { scope in
+                        NavigationLink(value: SidebarItem.mailScope(scope)) {
+                            MailScopeLabel(scope: scope)
+                                .padding(.leading, courseScreenIndent)
+                        }
+                    }
+                }
             }
 
             Section {
@@ -156,6 +168,11 @@ struct SidebarView: View {
         .onChange(of: center.predictedCourseID) { _, courseID in
             followDrag(to: courseID)
         }
+    }
+
+    /// Mail's lists in mockup 05's order: Inbox; the courses; University, Newsletters; Drafts, Sent.
+    private var mailScopes: [MailScope] {
+        [.inbox] + courses.map { .course($0.id) } + [.category(.university), .category(.newsletter), .drafts, .sent]
     }
 
     // MARK: - Rows

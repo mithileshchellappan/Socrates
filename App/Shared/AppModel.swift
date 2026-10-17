@@ -1,14 +1,22 @@
 import CalendarSync
 import Capture
+import ClaudeKit
 import Courses
 import Filing
 import FilingUI
 import Foundation
+import Mail
+import MailIntelligence
+import MailUI
 import Observation
 import Processing
 import Search
 import StudyCore
+import StudyUI
 import Transcription
+#if os(macOS)
+import AppKit
+#endif
 
 /// App-wide state and the services wired up at launch. Views read it from the environment.
 @Observable
@@ -28,6 +36,21 @@ final class AppModel {
     let calendarMirror: CalendarMirror?
     /// Keeps the keyword search index in step with transcripts, slides and notes.
     let searchIndexer: SearchIndexer?
+    /// Claude for mail routing, extraction and reply drafts: the key is read from the Keychain at
+    /// each call, every call is logged to `api_call`. Without a key nothing is sent.
+    let claude: ClaudeClient?
+    /// Mail intelligence: routes by rules always, indexes mail for search, and runs the model
+    /// steps (routing beyond rules, extraction, drafts) only once an API key is saved.
+    let mailPipeline: MailPipeline?
+    #if os(macOS)
+    /// IMAP sync of the uni account (INBOX IDLE, a pass every 5 minutes and on wake). Mac only
+    /// until the library syncs between devices, like the calendar mirror.
+    let mailEngine: MailSyncEngine?
+    /// SMTP for drafts the student sends (the Send button only).
+    let mailSender: MailSender?
+    #endif
+    /// What the Mail screen and the mail account settings ask the app to do (`\.mailActions`).
+    @ObservationIgnored private(set) var mailActions = MailActions()
 
     /// The lecture being captured, owned here so recording outlives its window.
     private(set) var live: LiveCapture?
@@ -37,6 +60,9 @@ final class AppModel {
     var isLivePresented = false
     /// A failure to show once (opening a deck, a live capture).
     var failure: String?
+    /// A fixed "now" for screens that show times relative to today (off-screen renders of the
+    /// sample library); nil follows the clock.
+    var fixedNow: Date?
 
     /// Recordings whose transcription just finished (from the processor's observer).
     @ObservationIgnored private let transcribed: AsyncStream<Recording.ID>
@@ -45,6 +71,7 @@ final class AppModel {
     @ObservationIgnored private let runsBackgroundWork: Bool
     @ObservationIgnored private var spokenContentPass: Task<Void, Never>?
     @ObservationIgnored private var calendarAccessAsked = false
+    @ObservationIgnored private var wakeObserver: Task<Void, Never>?
 
     init(services: StudyServices?, launchError: String? = nil, startsProcessing: Bool = true) {
         self.services = services
@@ -79,8 +106,14 @@ final class AppModel {
             filing = service
             filingCenter = FilingCenter(service: service)
             searchIndexer = SearchIndexer(services: services)
+            let claude = ClaudeClient.studyPortal(services: services)
+            self.claude = claude
+            let pipeline = MailPipeline(services: services, client: claude)
+            mailPipeline = pipeline
             #if os(macOS)
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
+            mailEngine = startsProcessing ? MailSyncEngine(services: services, onNewMail: { _ in await pipeline.wake() }) : nil
+            mailSender = startsProcessing ? MailSender(services: services) : nil
             #else
             calendarMirror = nil
             #endif
@@ -89,6 +122,12 @@ final class AppModel {
             filingCenter = nil
             searchIndexer = nil
             calendarMirror = nil
+            claude = nil
+            mailPipeline = nil
+            #if os(macOS)
+            mailEngine = nil
+            mailSender = nil
+            #endif
         }
         filingCenter?.didFile = { [weak self] outcomes in
             // New slides may settle a recording that was transcribed before they came.
@@ -96,6 +135,7 @@ final class AppModel {
                 self?.filesWereFiled()
             }
         }
+        mailActions = makeMailActions()
     }
 
     static func launch() -> AppModel {
@@ -183,7 +223,35 @@ final class AppModel {
                 await filingCenter?.refresh(changed)
             }
         }
+        startMail(services: services)
         await syncCalendar(full: true)
+    }
+
+    /// Mail on the Mac: the pipeline (rules routing and the search index at once, model steps once
+    /// a key is saved), drafts a quit left sending checked against Sent (never resent), then the
+    /// sync when an account exists; waking from sleep fetches new mail.
+    private func startMail(services: StudyServices) {
+        #if os(macOS)
+        guard let mailPipeline, let mailEngine, let mailSender else { return }
+        Task {
+            await mailPipeline.start()
+        }
+        Task {
+            guard await Self.hasMailAccount(services) else { return }
+            await mailSender.recoverInterruptedSends()
+            await mailEngine.start()
+        }
+        wakeObserver = Task {
+            for await _ in NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification) {
+                await mailEngine.syncNow()
+                await mailPipeline.wake()
+            }
+        }
+        #endif
+    }
+
+    static func hasMailAccount(_ services: StudyServices) async -> Bool {
+        ((try? await MailAccountRepository(store: services.records).current()) ?? nil) != nil
     }
 
     /// A transcript landed: an unsure recording may now be filed by what was said.
@@ -214,12 +282,13 @@ final class AppModel {
 
     // MARK: - Calendar
 
-    /// Brings the "Study Portal" calendar in line with the sessions. Calendar access is asked for
-    /// only once a course shown in the calendar has a session; until then nothing is written.
+    /// Brings the "Study Portal" calendar in line with the sessions and the deadlines from mail.
+    /// Calendar access is asked for only once a course shown in the calendar has a session or a
+    /// deadline wants an event; until then nothing is written.
     func syncCalendar(full: Bool = false) async {
         guard let calendarMirror, let services else { return }
         do {
-            if !calendarAccessAsked, try await Self.hasCalendarSessions(services) {
+            if !calendarAccessAsked, try await CalendarMirror.hasCalendarWork(services) {
                 calendarAccessAsked = true
                 _ = try await calendarMirror.requestAccess()
             }
@@ -230,14 +299,6 @@ final class AppModel {
         }
     }
 
-    /// True when a course shown in the calendar has a session that is not cancelled.
-    static func hasCalendarSessions(_ services: StudyServices) async throws -> Bool {
-        try await services.database.read { db in
-            let visible = try Course.where { $0.showsInCalendar }.fetchAll(db).map(\.id)
-            guard !visible.isEmpty else { return false }
-            return try LectureSession.where { !$0.isCancelled && $0.courseID.in(visible) }.fetchCount(db) > 0
-        }
-    }
 
     // MARK: - Live capture
 
@@ -375,10 +436,106 @@ final class AppModel {
 
     func storeAPIKey(_ key: String) throws {
         try services?.secrets.setSecret(key, for: .anthropicAPIKey)
+        // Mail waiting for the model (routing beyond rules, extraction) goes now.
+        let pipeline = mailPipeline
+        Task { await pipeline?.wake() }
     }
 
     func removeAPIKey() throws {
         try services?.secrets.removeSecret(for: .anthropicAPIKey)
+    }
+}
+
+// MARK: - Mail actions
+
+extension AppModel {
+    /// The Mail screen's effects, each wired to exactly one place (docs/plan-m2.md §7.4): the sync
+    /// engine (Get Mail, read, flag, archive, attachments), the sender (Send), the router (a
+    /// route correction), the drafter (Reply, Stop), the item actions (Undo, Restore, Add to
+    /// Calendar, Discard), the course schedule (Confirm), mail search and the account verifier.
+    /// Calendar changes are mirrored at once. Without the sync engine (iOS, snapshots) the
+    /// server-side actions stay inert.
+    fileprivate func makeMailActions() -> MailActions {
+        guard let services, let pipeline = mailPipeline else { return MailActions() }
+        let schedule = CourseSchedule(services: services)
+        let items = pipeline.actions
+        let calendar: @Sendable () async -> Void = { [weak self] in await self?.syncCalendar() }
+        var actions = MailActions(
+            route: { id, route in _ = try await pipeline.router.correct(id, to: route) },
+            draftReply: { id in try await pipeline.drafter.draftReply(to: id) },
+            stopDrafting: { id in await pipeline.drafter.stop(id) },
+            undo: { id in
+                _ = try await items.undo(id)
+                await calendar()
+            },
+            restore: { id in
+                _ = try await items.restore(id)
+                await calendar()
+            },
+            addToCalendar: { id in
+                _ = try await items.addToCalendar(id)
+                await calendar()
+            },
+            confirmProposal: { id in
+                switch try await items.sessionChange(for: id) {
+                case .room(let sessionID, let room)?: _ = try await schedule.setRoom(sessionID, room: room)
+                case .cancel(let sessionID)?: _ = try await schedule.cancel(sessionID)
+                case nil: break
+                }
+                _ = try await items.settle(id, confirmed: true)
+                await calendar()
+            },
+            discardProposal: { id in _ = try await items.settle(id, confirmed: false) },
+            search: { query, scope in try await Self.searchMail(query, in: scope, pipeline: pipeline, services: services) },
+            verifyAccount: { account, password in try await MailAccountVerifier().verify(account, password: password) },
+            changeFiling: { [weak self] filingID in await self?.filingCenter?.presentChange(filingID) }
+        )
+        #if os(macOS)
+        if let engine = mailEngine, let sender = mailSender {
+            actions.syncNow = { await engine.syncNow() }
+            actions.setSeen = { ids, seen in try await engine.setSeen(ids, seen) }
+            actions.setFlagged = { id, flagged in try await engine.setFlagged(id, flagged) }
+            actions.archive = { id in try await engine.archive(id) }
+            actions.openAttachment = { id in try await engine.attachmentFile(id) }
+            actions.send = { id in try await sender.send(id) }
+            // A saved account (or password) logs in again; the first save starts the sync. Not
+            // awaited: Save returns at once, the first pass runs in the background.
+            actions.accountSaved = { _ in
+                Task {
+                    await engine.retry()
+                    await pipeline.wake()
+                }
+            }
+        }
+        #endif
+        return actions
+    }
+
+    /// The toolbar search on Mail: mail search in the scope; Drafts are matched here (they have no
+    /// search chunks).
+    nonisolated static func searchMail(
+        _ query: String, in scope: MailScope, pipeline: MailPipeline, services: StudyServices
+    ) async throws -> [MailMessage.ID] {
+        let place: MailSearchScope.Place
+        switch scope {
+        case .inbox: place = .inbox
+        case .course(let id): place = .course(id)
+        case .category(let category): place = .category(category)
+        case .sent: place = .sent
+        case .drafts:
+            let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !needle.isEmpty else { return [] }
+            let open: [MailDraftState] = [.generating, .draft, .failed]
+            return try await services.database.read { db in
+                try MailDraft.where { $0.state.in(open) }.order { $0.updatedAt.desc() }.fetchAll(db)
+                    .filter { draft in
+                        [draft.subject, draft.body, draft.to.map(\.address).joined(separator: " "), draft.to.map(\.name).joined(separator: " ")]
+                            .contains { $0.localizedStandardContains(needle) }
+                    }
+                    .map(\.id)
+            }
+        }
+        return try await pipeline.search.search(query, in: MailSearchScope(place)).map(\.messageID)
     }
 }
 

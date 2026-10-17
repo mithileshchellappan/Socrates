@@ -77,6 +77,11 @@ targets:
         NSMicrophoneUsageDescription: Records lectures you choose to record.
         NSSpeechRecognitionUsageDescription: Shows live captions while a lecture is recorded.
         NSCalendarsFullAccessUsageDescription: Shows your classes and deadlines and keeps the Study Portal calendar up to date.
+        # studyportal://session/<id> and studyportal://item/<id>: links on the Study Portal
+        # calendar's events open the lecture or the mail a deadline was read from.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.example.studyportal
+            CFBundleURLSchemes: [studyportal]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
         UILaunchScreen: {}

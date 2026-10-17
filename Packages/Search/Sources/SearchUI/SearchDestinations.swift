@@ -12,6 +12,8 @@ extension SearchHit {
             .lecture(id, ReviewTarget(page: page, time: time, plays: plays, recordingID: recording))
         case .course(let id):
             .course(id)
+        case .mail(let id):
+            .mail(id)
         case nil:
             nil
         }

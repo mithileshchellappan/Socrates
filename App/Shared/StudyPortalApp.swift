@@ -1,6 +1,7 @@
 import CaptureUI
 import CoursesUI
 import FilingUI
+import MailUI
 import ReviewUI
 import StudyCore
 import SwiftUI
@@ -51,6 +52,7 @@ struct StudyPortalApp: App {
             GoCommands()
             ReviewCommands()
             LiveLectureCommands()
+            MailCommands()
         }
 
         #if os(macOS)

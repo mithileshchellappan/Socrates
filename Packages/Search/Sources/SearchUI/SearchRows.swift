@@ -22,7 +22,7 @@ struct SearchHitRow: View {
                 // "display" draws larger and heavier at the waveform's 13 pt. Its pencil (a note)
                 // is an outline about 11 pt across: SF's reads as a thin slash below 14 pt medium.
                 .font(Self.glyphFont(hit.kind))
-                .foregroundStyle(hit.kind == .note ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.professor))
+                .foregroundStyle(Self.glyphStyle(hit.kind))
                 .frame(width: 16, height: 16)
                 .padding(.top, 1)
                 .accessibilityHidden(true)
@@ -80,6 +80,7 @@ struct SearchHitRow: View {
         switch kind {
         case .transcript: .system(size: 13)
         case .slide: .system(size: 11)
+        case .mail: .system(size: 12)
         default: .system(size: 14, weight: .medium)
         }
     }
@@ -88,7 +89,17 @@ struct SearchHitRow: View {
         switch kind {
         case .transcript: "waveform"
         case .slide: "display"
+        case .mail: "envelope"
         default: "pencil"
+        }
+    }
+
+    /// The professor's words in amber, the student's notes in the accent, mail in secondary.
+    static func glyphStyle(_ kind: SearchChunkKind) -> AnyShapeStyle {
+        switch kind {
+        case .note: AnyShapeStyle(.tint)
+        case .mail: AnyShapeStyle(.secondary)
+        default: AnyShapeStyle(Color.professor)
         }
     }
 
@@ -161,6 +172,15 @@ struct SearchGroupHeader: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.primary)
                     .layoutPriority(1)
+            } else if group.kind == .mail {
+                Image(systemName: "envelope")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
+                Text("Mail")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                    .layoutPriority(1)
             } else {
                 CourseDot(course: group.course, size: 9)
                 Text(verbatim: group.course?.name ?? group.deck?.title ?? "")
@@ -168,7 +188,7 @@ struct SearchGroupHeader: View {
                     .foregroundStyle(.primary)
                     .layoutPriority(1)
             }
-            if let subtitle = isCollapsed && group.kind == .notes ? collapsedLabel : subtitle, !subtitle.isEmpty {
+            if let subtitle = isCollapsed && (group.kind == .notes || group.kind == .mail) ? collapsedLabel : subtitle, !subtitle.isEmpty {
                 Text(verbatim: subtitle)
                     .foregroundStyle(.secondary)
             }
@@ -232,6 +252,9 @@ extension SearchResults {
             return course?.lecturerSurname ?? course?.shortName ?? ""
         case .slide:
             return hit.page.map { "Slide \($0)" } ?? ""
+        case .mail:
+            // Collapsed: the subject (mockup 07); a row: who wrote it and the subject.
+            return [hit.sender, hit.title].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
         default:
             var parts: [String] = []
             var place = course.map { $0.shortName.isEmpty ? $0.name : $0.shortName } ?? ""

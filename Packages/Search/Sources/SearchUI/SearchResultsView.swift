@@ -4,7 +4,7 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// The search screen (mockup 07 without tutor, "Also searched" and web): All | Lectures | Notes
+/// The search screen (mockup 07 without tutor, "Also searched" and web): All | Lectures | Notes | Mail
 /// and a course scope above the hits, grouped by course and lecture, notes last, on one surface
 /// that scrolls under the toolbar.
 ///
@@ -138,7 +138,8 @@ public struct SearchResultsView: View {
             FilterSegments(selection: $scope, label: "Show", options: [
                 .init(value: .all, title: "All"),
                 .init(value: .lectures, title: "Lectures"),
-                .init(value: .notes, title: "Notes")
+                .init(value: .notes, title: "Notes"),
+                .init(value: .mail, title: "Mail")
             ])
             Spacer(minLength: 8)
             Menu {
@@ -194,7 +195,10 @@ public struct SearchResultsView: View {
         var rows: [Row] = []
         for group in results.groups {
             if isCollapsed(group, in: results) {
-                rows.append(.header(group, collapsedLabel: group.hits.first.map(results.label(for:)) ?? ""))
+                // Mail collapses to its best message's subject (mockup 07).
+                let first = group.hits.first
+                let label = group.kind == .mail ? first?.title : first.map(results.label(for:))
+                rows.append(.header(group, collapsedLabel: label ?? ""))
             } else {
                 rows.append(.header(group, collapsedLabel: nil))
                 for (index, hit) in group.hits.enumerated() {

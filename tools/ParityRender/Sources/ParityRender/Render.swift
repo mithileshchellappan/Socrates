@@ -9,7 +9,12 @@ import SwiftUI
 // parity-render: the six mockup screens of a parity library copy, drawn off screen.
 //
 //   tools/parity/render [--library DIR] [--out DIR] [--only 01-today,03-review]
-//                       [--appearance light|dark|both] [--settle SECONDS]
+//                       [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
+//
+// `05-mail` (Mail: the Inbox with its newest message selected) needs a library with mail, e.g.
+// the sample library `swift run --package-path tools/EndToEnd m1-e2e demo --library DIR` writes
+// (mockup 05's mail) or the m2-e2e library; `--now` fixes the clock the mail list's times are
+// relative to (the university's time zone).
 //
 // Builds the app's real views (`RootView` with its sidebar and toolbar, `LiveLectureScreen`) in
 // windows that are never ordered on screen, at the mockups' 1440×900 points, and writes
@@ -28,6 +33,8 @@ struct RenderOptions {
     var only: Set<String>?
     var schemes: [ColorScheme] = [.light, .dark]
     var settle: Duration = .seconds(3)
+    /// The "now" of screens that show times relative to today (Mail's list).
+    var now: Date?
 
     init(arguments: [String]) throws {
         var index = 0
@@ -42,6 +49,12 @@ struct RenderOptions {
             case "--out": output = URL(filePath: try value(), directoryHint: .isDirectory).standardizedFileURL
             case "--only": only = Set(try value().split(separator: ",").map(String.init))
             case "--settle": settle = .seconds(Double(try value()) ?? 3)
+            case "--now":
+                let text = try value()
+                guard let day = CalendarDay(rawValue: String(text.prefix(10))) else { throw RenderFailure("--now takes 2026-10-16T15:02") }
+                let parts = text.dropFirst(11).split(separator: ":").compactMap { Int($0) }
+                let zone = TimeZone(identifier: "Europe/Lisbon") ?? .current
+                now = day.date(minute: parts.count == 2 ? parts[0] * 60 + parts[1] : 0, in: zone)
             case "--appearance":
                 switch try value() {
                 case "light": schemes = [.light]
@@ -103,6 +116,7 @@ struct ParityRender {
         let services = try ParityMode.services(parity)
         prepareDependencies { $0.defaultDatabase = services.database }
         let model = AppModel(services: services, startsProcessing: false)
+        model.fixedNow = options.now
         if let indexer = model.searchIndexer { _ = try await indexer.catchUp(verifyingText: true) }
         await model.filing?.repairDeckTitles()
         // The search screen as if it had been searched (↩): listed under Recent searches. In the
@@ -111,6 +125,12 @@ struct ParityRender {
         recent.record("paravirtualization")
         UserDefaults.standard.register(defaults: [RecentSearches.storageKey: recent.storage])
 
+        let newestMail = try await services.database.read { db in
+            try MailMessage
+                .where { $0.mailboxID.in(Mailbox.where { $0.role.eq(MailboxRole?.some(.inbox)) }.select(\.id)) }
+                .order { $0.receivedAt.desc() }
+                .fetchOne(db)?.id
+        }
         let cc = try ParityMode.course("Data Centers", services: services)
         let (_, dcLecture2) = try ParityMode.lecture("Data Centers", 2, services: services)
         var shots: [RenderShot] = [
@@ -122,6 +142,8 @@ struct ParityRender {
                 reviewTarget: (dcLecture2.id, ReviewTarget(page: 16, time: 2247, request: UUID()))
             ))),
             RenderShot(name: "07-search", window: .main(ParityMode.Launch(selection: .search, query: "paravirtualization"))),
+            // Mockup 05: the Inbox, its newest message selected.
+            RenderShot(name: "05-mail", window: .main(ParityMode.Launch(selection: .mailScope(.inbox), mailSelection: newestMail))),
             RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id)))),
             RenderShot(name: "10-import", window: .main(ParityMode.Launch(selection: .today))) { model, size in
                 try await ParityMode.importPreview(model: model, services: services, size: size)
@@ -161,7 +183,7 @@ struct ParityRender {
         switch shot.window {
         case .main(let launch):
             content = AnyView(
-                RootView(selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget)
+                RootView(selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget, mailSelection: launch.mailSelection)
                     .environment(model)
             )
         case .live:

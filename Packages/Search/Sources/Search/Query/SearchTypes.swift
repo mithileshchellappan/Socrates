@@ -3,18 +3,21 @@ import StudyCore
 
 /// What to search for.
 public struct SearchQuery: Hashable, Sendable {
-    /// Which kinds of hits to show (the All | Lectures | Notes filter).
+    /// Which kinds of hits to show (the All | Lectures | Notes | Mail filter).
     public enum Scope: String, CaseIterable, Hashable, Sendable {
         case all
         /// Transcripts and slides.
         case lectures
         case notes
+        /// University mail (the chunks MailIntelligence indexes), one hit per message.
+        case mail
 
         var kinds: [SearchChunkKind] {
             switch self {
-            case .all: [.transcript, .slide, .note]
+            case .all: [.transcript, .slide, .note, .mail]
             case .lectures: [.transcript, .slide]
             case .notes: [.note]
+            case .mail: [.mail]
             }
         }
     }
@@ -55,6 +58,8 @@ public enum SearchTarget: Hashable, Sendable {
     case lecture(Lecture.ID, page: Int?, time: Double?, plays: Bool, recording: Recording.ID? = nil)
     /// A course page (a slide of a deck no lecture uses yet, a course-level note).
     case course(Course.ID)
+    /// A mail message (the Mail screen, Inbox, with it selected).
+    case mail(MailMessage.ID)
 }
 
 /// Marks the matched words in a `SearchHit.snippet`; SearchUI highlights these runs.
@@ -83,8 +88,11 @@ public struct SearchHit: Identifiable, Hashable, Sendable {
     /// Every query term matched (directly or through the slide on screen), not just some.
     public var matchesAllTerms: Bool
     public var target: SearchTarget?
-    /// A note's own title (its first heading); nil for other hits and untitled notes.
+    /// A note's own title (its first heading), a mail's subject; nil for other hits and untitled notes.
     public var title: String? = nil
+    /// A mail hit's message and its sender's name (else address).
+    public var mailMessageID: MailMessage.ID? = nil
+    public var sender: String? = nil
 }
 
 /// Hits of one lecture (or of one deck no lecture uses, or the student's notes), best first.
@@ -94,6 +102,8 @@ public struct SearchGroup: Identifiable, Hashable, Sendable {
         case deck(Deck.ID)
         /// "Your notes".
         case notes
+        /// Mail, one hit per message.
+        case mail
     }
 
     public var kind: Kind
@@ -108,7 +118,7 @@ public struct SearchGroup: Identifiable, Hashable, Sendable {
 public struct SearchResults: Hashable, Sendable {
     public var query: SearchQuery
     /// Courses with hits in order of their best hit, each course's lectures/decks likewise, then
-    /// "Your notes".
+    /// "Your notes", then Mail.
     public var groups: [SearchGroup]
     /// Course of every group and hit, for labels (lecturer surname, short name).
     public var courses: [Course.ID: Course]

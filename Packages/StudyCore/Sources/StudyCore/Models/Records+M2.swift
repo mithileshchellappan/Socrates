@@ -122,7 +122,7 @@ public struct Mailbox: StudyRecord {
     @Column("is_synced") public var isSynced: Bool
     /// IMAP UIDVALIDITY of the stored UIDs; nil before the first sync.
     @Column("uid_validity") public var uidValidity: Int64?
-    /// CONDSTORE HIGHESTMODSEQ when the server and client support it (unused by SwiftMail 1.9).
+    /// CONDSTORE HIGHESTMODSEQ: the QRESYNC checkpoint of the last pass (nil without CONDSTORE).
     @Column("highest_modseq") public var highestModSeq: Int64?
     /// Highest UID stored; new mail is UID > lastUID.
     @Column("last_uid") public var lastUID: Int64

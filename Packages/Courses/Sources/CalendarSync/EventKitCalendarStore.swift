@@ -102,6 +102,7 @@ public actor EventKitCalendarStore: CalendarStore {
         event.location = value.location
         event.url = value.url
         event.notes = value.notes
+        event.isAllDay = value.isAllDay
         event.startDate = value.startsAt
         event.endDate = value.endsAt
         try store.save(event, span: .thisEvent, commit: true)
@@ -137,7 +138,8 @@ public actor EventKitCalendarStore: CalendarStore {
             url: event.url,
             notes: event.notes,
             startsAt: event.startDate,
-            endsAt: event.endDate
+            endsAt: event.endDate,
+            isAllDay: event.isAllDay
         )
     }
 

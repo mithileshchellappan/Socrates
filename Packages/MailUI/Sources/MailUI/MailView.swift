@@ -159,6 +159,10 @@ public struct MailView: View {
         MailMessageList(
             rows: list.rows,
             selection: Binding(get: { selection }, set: { id in
+                // A message asked for from elsewhere (a search hit, a deadline's source) may not
+                // be among the rows yet (they load after the screen opens, or it is in another
+                // list): the list's clearing of a selection it does not know is ignored.
+                if id == nil, let current = selection, !list.rows.contains(where: { $0.id == current }) { return }
                 composingDraftID = nil
                 selection = id
             }),

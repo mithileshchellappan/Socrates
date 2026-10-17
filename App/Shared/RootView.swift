@@ -2,6 +2,7 @@ import CalendarSync
 import CaptureUI
 import CoursesUI
 import FilingUI
+import MailUI
 import Processing
 import StudyCore
 import StudyUI
@@ -11,8 +12,15 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     #endif
+    /// The Settings window's tab ("Set Up Mail…" opens Accounts).
+    @AppStorage(SettingsTab.storageKey) private var settingsTab = SettingsTab.semester
     @State private var selection: SidebarItem?
+    /// The message selected on Mail (in Drafts, the draft).
+    @State private var mailSelection: MailMessage.ID?
+    /// `open(.mail(scope, message:))` chose the message along with the list: keep it.
+    @State private var keepsMailSelection = false
     @State private var columns: NavigationSplitViewVisibility = .all
     @State private var query = ""
     /// Back and Forward (Go menu; the course screen's toolbar chevrons, mockup 08).
@@ -25,10 +33,16 @@ struct RootView: View {
     /// ↩ in the search field: the search screen opens its selected (or first) hit.
     @State private var searchSubmits = 0
 
-    init(selection: SidebarItem? = .today, query: String = "", reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil) {
+    init(
+        selection: SidebarItem? = .today,
+        query: String = "",
+        reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil,
+        mailSelection: MailMessage.ID? = nil
+    ) {
         _selection = State(initialValue: selection?.screen)
         _query = State(initialValue: query)
         _reviewTarget = State(initialValue: reviewTarget)
+        _mailSelection = State(initialValue: mailSelection)
     }
 
     var body: some View {
@@ -65,6 +79,8 @@ struct RootView: View {
                 .environment(\.openDestination, OpenDestinationAction(open))
                 .environment(\.studyServices, model.services)
                 .environment(\.calendarMirror, model.calendarMirror)
+                .environment(\.mailActions, mailActions)
+                .onOpenURL(perform: openURL)
                 .sheet(item: $model.sheet) { sheet in
                     switch sheet {
                     case .newCapture:
@@ -97,6 +113,7 @@ struct RootView: View {
                 }
                 #endif
                 .background { CalendarSessionsWatcher() }
+                .background { CalendarItemsWatcher() }
                 #if os(macOS)
                 .background { MainWindowReader() }
                 #endif
@@ -122,6 +139,7 @@ struct RootView: View {
                     query: query,
                     searchSubmits: searchSubmits,
                     target: reviewTarget,
+                    mailSelection: $mailSelection,
                     record: record
                 )
                 #if os(iOS)
@@ -129,7 +147,7 @@ struct RootView: View {
                 // slide stepper and inspector header, Import, own the toolbar there; ⌘F still
                 // searches). Here, not on the split view: there it shows on every screen. (The Mac
                 // draws its own field in `trailingItems`.)
-                .modifier(SearchFieldModifier(isShown: showsSearchField, text: $query, focused: $searchFocused, submit: submitSearch))
+                .modifier(SearchFieldModifier(isShown: showsSearchField, prompt: searchPrompt, text: $query, focused: $searchFocused, submit: submitSearch))
                 #endif
                 #if os(macOS)
                 .toolbar {
@@ -144,10 +162,22 @@ struct RootView: View {
             .toolbar { trailingItems(center: center) }
         }
         .onChange(of: query) { _, text in
+            // Typing on Mail filters the mail list ("Search mail"); elsewhere it opens Search.
+            guard selection?.isMail != true else { return }
             if !text.trimmingCharacters(in: .whitespaces).isEmpty, selection != .search { selection = .search }
         }
         .onChange(of: selection) { old, item in
             history.visit(from: old, to: item)
+            // Mail's search and the library's are different questions: entering or leaving Mail
+            // starts with an empty field.
+            if (old?.isMail == true) != (item?.isMail == true), !query.isEmpty { query = "" }
+            // Another list starts with nothing selected (a Drafts selection is a draft's id),
+            // unless the message was asked for with the list.
+            if keepsMailSelection {
+                keepsMailSelection = false
+            } else if item?.isMail == true, old != item {
+                mailSelection = nil
+            }
             // The target was for the lecture `open` showed; anywhere else drops it.
             if case .lecture(let id) = item, id == reviewTarget?.lectureID { return }
             reviewTarget = nil
@@ -156,15 +186,35 @@ struct RootView: View {
 
     private var isToday: Bool { (selection ?? .today) == .today }
 
+    /// "Search mail" on Mail (mockup 05), the whole library elsewhere (mockup 01).
+    private var searchPrompt: LocalizedStringKey {
+        selection?.isMail == true ? "Search mail" : "Search lectures, notes, mail"
+    }
+
+    /// The Mail screen's actions with "Set Up Mail…" opening Settings on its Accounts tab.
+    private var mailActions: MailActions {
+        var actions = model.mailActions
+        #if os(macOS)
+        let openSettings = openSettings
+        let settingsTab = $settingsTab
+        actions.openAccountSettings = {
+            settingsTab.wrappedValue = .accounts
+            openSettings()
+        }
+        #endif
+        return actions
+    }
+
     /// The toolbar search field shows on the top-level screens, not on a lecture or a course.
     private var showsSearchField: Bool {
         (selection ?? .today).isTopLevel
     }
 
-    /// ↩ in the search field: the Search screen opens its selected (or first) hit.
+    /// ↩ in the search field: the Search screen opens its selected (or first) hit. (On Mail the
+    /// list filters as the student types.)
     private func submitSearch() {
         let text = query.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty, selection?.isMail != true else { return }
         selection = .search
         searchSubmits += 1
     }
@@ -190,8 +240,7 @@ struct RootView: View {
         #if os(macOS)
         if showsSearchField {
             ToolbarItem(placement: .primaryAction) {
-                // "Search lectures, notes, mail" once mail is searchable (M2).
-                ToolbarSearchField(text: $query, prompt: "Search lectures and notes", focused: $searchFocused, submit: submitSearch)
+                ToolbarSearchField(text: $query, prompt: searchPrompt, focused: $searchFocused, submit: submitSearch)
             }
         }
         #endif
@@ -293,14 +342,53 @@ struct RootView: View {
             query = text
             selection = .search
         case .course(let id): selection = .courseSettings(id)
-        case .mail:
-            // M2 integration routes the scope and message to the Mail screen (docs/plan-m2.md §6).
-            selection = .mail
+        case .mail(let scope, let message):
+            mailSelection = message
+            keepsMailSelection = selection != .mailScope(scope)
+            selection = .mailScope(scope)
         case .lecture(let id, var target):
             // A fresh request: opening the same hit again moves there again.
             target.request = UUID()
             reviewTarget = (id, target)
             selection = .lecture(id)
+        }
+    }
+
+    /// `studyportal://` links from the Study Portal calendar: a session opens its lecture (else its
+    /// course), a deadline the mail it was read from (else its course).
+    private func openURL(_ url: URL) {
+        guard let services = model.services else { return }
+        if let sessionID = CalendarMirror.sessionID(from: url) {
+            Task {
+                let (lecture, session) = try await services.database.read { db in
+                    (
+                        try Lecture.where { $0.lectureSessionID.eq(LectureSession.ID?.some(sessionID)) }.fetchOne(db),
+                        try LectureSession.find(sessionID).fetchOne(db)
+                    )
+                }
+                if let lecture {
+                    open(.lecture(lecture.id))
+                } else if let session {
+                    open(.course(session.courseID))
+                }
+            }
+        } else if let itemID = CalendarMirror.itemID(from: url) {
+            Task {
+                let (item, source) = try await services.database.read { db in
+                    (
+                        try TrackedItem.find(itemID).fetchOne(db),
+                        try TrackedItemSource
+                            .where { $0.trackedItemID.eq(itemID) && $0.mailMessageID.isNot(nil) }
+                            .order(by: \.createdAt)
+                            .fetchOne(db)
+                    )
+                }
+                if let messageID = source?.mailMessageID {
+                    open(.mail(messageID))
+                } else if let courseID = item?.courseID {
+                    open(.course(courseID))
+                }
+            }
         }
     }
 
@@ -350,6 +438,7 @@ struct ToolbarGlyph: View {
 /// The window's search field (in the toolbar), on the screens that have one; ↩ runs `submit`.
 private struct SearchFieldModifier: ViewModifier {
     let isShown: Bool
+    let prompt: LocalizedStringKey
     @Binding var text: String
     var focused: FocusState<Bool>.Binding
     let submit: () -> Void
@@ -357,7 +446,7 @@ private struct SearchFieldModifier: ViewModifier {
     func body(content: Content) -> some View {
         if isShown {
             content
-                .searchable(text: $text, placement: .toolbar, prompt: Text("Search lectures and notes"))
+                .searchable(text: $text, placement: .toolbar, prompt: Text(prompt))
                 .searchFocused(focused)
                 .onSubmit(of: .search, submit)
         } else {
@@ -374,6 +463,21 @@ private enum DetailIdentity: Hashable {
 
     init(_ item: SidebarItem) {
         self = item.isTopLevel ? .topLevel : .screen(item)
+    }
+}
+
+/// Mirrors deadlines from mail as they come, go (Undo) or change: asks for Calendar access the
+/// first time one wants an event.
+private struct CalendarItemsWatcher: View {
+    @Environment(AppModel.self) private var model
+    @FetchAll(TrackedItem.where { $0.inCalendar || $0.calendarEventID.isNot(nil) }) private var items
+
+    var body: some View {
+        Color.clear
+            .task(id: items.map(\.updatedAt)) {
+                guard items.contains(where: \.needsCalendarSync) else { return }
+                await model.syncCalendar()
+            }
     }
 }
 

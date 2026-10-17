@@ -316,6 +316,7 @@ struct Retrieval {
         var page: Int?
         var recordingID: Recording.ID?
         var noteID: Note.ID?
+        var mailMessageID: MailMessage.ID?
         var start: Double?
         var text: String
         var lemmaText: String
@@ -329,15 +330,16 @@ struct Retrieval {
         guard !chosen.isEmpty else { return SearchResults(query: query) }
         var chunks: [Int64: Chunk] = [:]
         let rows = try Row.fetchCursor(db, sql: """
-            SELECT id, kind, course_id, lecture_id, deck_id, page_number, recording_id, note_id, start_time, text, lemma_text
+            SELECT id, kind, course_id, lecture_id, deck_id, page_number, recording_id, note_id, start_time, text, lemma_text,
+                   mail_message_id
             FROM search_chunk WHERE id IN (SELECT value FROM json_each(?))
             """, arguments: [Self.json(chosen.map(\.candidate.id))])
         while let row = try rows.next() {
             let id: Int64 = row[0]
             chunks[id] = Chunk(
                 id: id, kind: SearchChunkKind(rawValue: row[1]), courseID: uuid(row[2]), lectureID: uuid(row[3]),
-                deckID: uuid(row[4]), page: row[5], recordingID: uuid(row[6]), noteID: uuid(row[7]), start: row[8],
-                text: row[9], lemmaText: row[10]
+                deckID: uuid(row[4]), page: row[5], recordingID: uuid(row[6]), noteID: uuid(row[7]),
+                mailMessageID: uuid(row[11]), start: row[8], text: row[9], lemmaText: row[10]
             )
         }
 
@@ -354,9 +356,28 @@ struct Retrieval {
             for note in try Note.where({ $0.id.in(noteIDs) }).fetchAll(db) { noteTitles[note.id] = note.searchTitle }
         }
 
+        let messageIDs = Set(chunks.values.compactMap { $0.kind == .mail ? $0.mailMessageID : nil })
+        var messages: [MailMessage.ID: MailMessage] = [:]
+        if !messageIDs.isEmpty {
+            for message in try MailMessage.where({ $0.id.in(Array(messageIDs)) }).fetchAll(db) { messages[message.id] = message }
+        }
+
         var hits: [SearchHit] = []
+        var mailSeen: Set<MailMessage.ID> = []
         for entry in chosen {
             guard let meta = chunks[entry.candidate.id] else { continue }
+            if meta.kind == .mail {
+                // One hit per message: its best chunk (`chosen` is best first).
+                guard let messageID = meta.mailMessageID, let message = messages[messageID],
+                      mailSeen.insert(messageID).inserted else { continue }
+                hits.append(SearchHit(
+                    id: meta.id, kind: .mail, courseID: meta.courseID ?? message.courseID,
+                    snippet: Snippet.make(text: meta.text, lemmaText: meta.lemmaText, matchers: matchers),
+                    matchesAllTerms: entry.all, target: .mail(messageID), title: message.subject, mailMessageID: messageID,
+                    sender: message.fromName.isEmpty ? message.fromAddress : message.fromName
+                ))
+                continue
+            }
             var hit = SearchHit(
                 id: meta.id, kind: meta.kind, courseID: meta.courseID, lectureID: meta.lectureID, deckID: meta.deckID,
                 page: meta.page, recordingID: meta.recordingID, noteID: meta.noteID, time: meta.start,
@@ -420,7 +441,8 @@ struct Retrieval {
         return nil
     }
 
-    /// Courses in order of their best hit, each course's lectures and decks likewise, then the notes.
+    /// Courses in order of their best hit, each course's lectures and decks likewise, then the
+    /// notes, then mail (one hit per message).
     static func group(
         _ hits: [SearchHit],
         courses: [Course.ID: Course],
@@ -430,10 +452,14 @@ struct Retrieval {
         var groups: [SearchGroup] = []
         var index: [SearchGroup.Kind: Int] = [:]
         var notes: [SearchHit] = []
+        var mail: [SearchHit] = []
         for hit in hits {
             let kind: SearchGroup.Kind
             if hit.kind == .note {
                 notes.append(hit)
+                continue
+            } else if hit.kind == .mail {
+                mail.append(hit)
                 continue
             } else if let lectureID = hit.lectureID, lectures[lectureID] != nil {
                 kind = .lecture(lectureID)
@@ -460,6 +486,7 @@ struct Retrieval {
         for group in groups where !courseOrder.contains(group.course?.id) { courseOrder.append(group.course?.id) }
         var ordered = courseOrder.flatMap { courseID in groups.filter { $0.course?.id == courseID } }
         if !notes.isEmpty { ordered.append(SearchGroup(kind: .notes, course: nil, lecture: nil, deck: nil, hits: notes)) }
+        if !mail.isEmpty { ordered.append(SearchGroup(kind: .mail, course: nil, lecture: nil, deck: nil, hits: mail)) }
         return ordered
     }
 }

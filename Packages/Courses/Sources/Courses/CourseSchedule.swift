@@ -172,6 +172,13 @@ public struct CourseSchedule: Sendable {
         try await edit(sessionID, now: now) { $0.isCancelled = false }
     }
 
+    /// Moves a session to another room, keeping its time (a confirmed room change from mail).
+    @discardableResult
+    public func setRoom(_ sessionID: LectureSession.ID, room: String, now: Date = Date()) async throws -> LectureSession? {
+        let room = room.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await edit(sessionID, now: now) { $0.room = room }
+    }
+
     /// Moves a session to another time (and room, when given).
     @discardableResult
     public func move(

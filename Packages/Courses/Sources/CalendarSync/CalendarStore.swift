@@ -78,6 +78,8 @@ public struct CalendarEvent: Hashable, Sendable {
     public var notes: String?
     public var startsAt: Date
     public var endsAt: Date
+    /// An all-day event (a deadline without a time): `startsAt` is the day's start.
+    public var isAllDay: Bool
 
     public init(
         id: String? = nil,
@@ -86,7 +88,8 @@ public struct CalendarEvent: Hashable, Sendable {
         url: URL? = nil,
         notes: String? = nil,
         startsAt: Date,
-        endsAt: Date
+        endsAt: Date,
+        isAllDay: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -95,6 +98,7 @@ public struct CalendarEvent: Hashable, Sendable {
         self.notes = notes
         self.startsAt = startsAt
         self.endsAt = endsAt
+        self.isAllDay = isAllDay
     }
 
     /// Same visible content (identifier ignored; empty and missing text are the same).
@@ -103,7 +107,8 @@ public struct CalendarEvent: Hashable, Sendable {
             && (location ?? "") == (other.location ?? "")
             && url == other.url
             && (notes ?? "") == (other.notes ?? "")
+            && isAllDay == other.isAllDay
             && abs(startsAt.timeIntervalSince(other.startsAt)) < 1
-            && abs(endsAt.timeIntervalSince(other.endsAt)) < 1
+            && (isAllDay || abs(endsAt.timeIntervalSince(other.endsAt)) < 1)
     }
 }

@@ -1,4 +1,5 @@
 import StudyCore
+import StudyUI
 import SwiftUI
 
 /// What the main window shows: a top-level screen, one of a course's screens (mockup 08: its
@@ -6,7 +7,12 @@ import SwiftUI
 enum SidebarItem: Hashable {
     case today
     case calendar
+    /// The Mail row. Choosing it shows the Inbox, `mailScope(.inbox)`, selected as the Mail row's
+    /// "Inbox" child (mockup 05).
     case mail
+    /// One of Mail's lists (mockup 05: Inbox, a course, University, Newsletters, Drafts, Sent),
+    /// listed under the Mail row while one shows.
+    case mailScope(MailScope)
     case search
     /// The course's row. Choosing it shows the course's screen, `courseSettings` (mockup 08: the
     /// course's own "Course Settings" row is the one selected).
@@ -28,7 +34,7 @@ enum SidebarItem: Hashable {
         switch self {
         case .today: String(localized: "Today")
         case .calendar: String(localized: "Calendar")
-        case .mail: String(localized: "Mail")
+        case .mail, .mailScope: String(localized: "Mail")
         case .search: String(localized: "Search")
         case .course: String(localized: "Course")
         case .courseLectures: String(localized: "Lectures")
@@ -39,24 +45,34 @@ enum SidebarItem: Hashable {
         }
     }
 
-    /// What choosing this item shows: a course's row stands for its settings.
+    /// What choosing this item shows: a course's row stands for its settings, the Mail row for
+    /// the Inbox.
     var screen: SidebarItem {
         if case .course(let id) = self { return .courseSettings(id) }
+        if self == .mail { return .mailScope(.inbox) }
         return self
+    }
+
+    /// Mail's lists (the Mail row stands for the Inbox).
+    var isMail: Bool {
+        switch self {
+        case .mail, .mailScope: true
+        default: false
+        }
     }
 
     /// The course whose screen this is (its lectures, slides, notes or settings).
     var courseScreenID: Course.ID? {
         switch self {
         case .course(let id), .courseLectures(let id), .courseSlides(let id), .courseNotes(let id), .courseSettings(let id): id
-        case .today, .calendar, .mail, .search, .lecture: nil
+        case .today, .calendar, .mail, .mailScope, .search, .lecture: nil
         }
     }
 
     /// Today, Calendar, Mail and Search: the screens with the toolbar search field.
     var isTopLevel: Bool {
         switch self {
-        case .today, .calendar, .mail, .search: true
+        case .today, .calendar, .mail, .mailScope, .search: true
         case .course, .courseLectures, .courseSlides, .courseNotes, .courseSettings, .lecture: false
         }
     }
@@ -65,7 +81,7 @@ enum SidebarItem: Hashable {
         switch self {
         case .today: "sun.max"
         case .calendar: "calendar"
-        case .mail: "envelope"
+        case .mail, .mailScope: "envelope"
         case .search: "magnifyingglass"
         case .course: "books.vertical"
         case .courseLectures: "waveform"
@@ -139,7 +155,7 @@ struct GoCommands: Commands {
         CommandMenu("Go") {
             // ⌘1 … ⌘4
             ForEach(Array(SidebarItem.destinations.enumerated()), id: \.element) { index, item in
-                Button(item.title) { selection?.wrappedValue = item }
+                Button(item.title) { selection?.wrappedValue = item.screen }
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
                     .disabled(selection == nil)
             }

@@ -67,6 +67,7 @@ enum ParityMode {
         var selection: SidebarItem
         var query = ""
         var reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)?
+        var mailSelection: MailMessage.ID?
     }
 
     static let windowSize = CGSize(width: 1440, height: 900)
@@ -506,7 +507,7 @@ struct ParityRootView: View {
     var body: some View {
         Group {
             if let launch {
-                RootView(selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget)
+                RootView(selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget, mailSelection: launch.mailSelection)
                     .environment(model)
             } else {
                 Color.clear
