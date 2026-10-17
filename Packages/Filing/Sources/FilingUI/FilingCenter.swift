@@ -1,0 +1,290 @@
+import Filing
+import Foundation
+import Observation
+import StudyCore
+
+/// The window's smart import state: the drag prediction the HUD shows, the toasts after a drop,
+/// the change sheet and the file importer. One per main window; the app owns it next to its
+/// `FilingService`.
+@MainActor
+@Observable
+public final class FilingCenter {
+    public let service: FilingService
+
+    /// A drag over the window: where it is and where its files would go.
+    public struct Drag: Equatable {
+        /// Cursor position in the window's content.
+        public var location: CGPoint
+        /// Where the HUD sits (it stops following the cursor when there is a choice to drop on).
+        public var anchor: CGPoint
+        public var predictions: [FilingPrediction]
+        /// The HUD row under the cursor (drop there to file to that place), or the Change row.
+        public var targeted: HUDTarget?
+        /// Over a sidebar lecture or session row: the row shows the destination instead.
+        public var isOverRow: Bool
+    }
+
+    /// A drop target inside the HUD.
+    public enum HUDTarget: Hashable {
+        case place(Int)
+        case change
+    }
+
+    /// One filed (or failed) file after a drop.
+    public struct Toast: Identifiable, Equatable {
+        public let id: UUID
+        public var outcome: FilingOutcome
+        /// Undo or Change is running.
+        public var isWorking = false
+
+        public init(id: UUID = UUID(), outcome: FilingOutcome) {
+            self.id = id
+            self.outcome = outcome
+        }
+
+        /// Filed for sure (or failed): goes away on its own. Unsure ones wait for the user.
+        var dismissesItself: Bool {
+            switch outcome.status {
+            case .filed, .known, .failed: true
+            case .review, .needsCourse: false
+            }
+        }
+    }
+
+    /// Identifies the filing the change sheet edits.
+    public struct ChangeRequest: Identifiable, Hashable {
+        public let id: Filing.ID
+    }
+
+    public internal(set) var drag: Drag?
+    public internal(set) var toasts: [Toast] = []
+    /// The change sheet's filing; set to present it.
+    public var changing: ChangeRequest?
+    /// File ▸ Import… presents the file importer.
+    public var isImporterPresented = false
+
+    /// Seconds a confident toast stays (while not hovered).
+    @ObservationIgnored var toastLifetime: Duration = .seconds(8)
+    static let maximumToasts = 4
+    /// Space the HUD keeps from the cursor (mockup 10: to the right of the dragged file).
+    static let hudOffset = CGSize(width: 62, height: -34)
+
+    @ObservationIgnored var containerSize: CGSize = .zero
+    @ObservationIgnored var hudFrames: [HUDTarget: CGRect] = [:]
+    @ObservationIgnored private var predictTask: Task<Void, Never>?
+    @ObservationIgnored private var dismissTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var hovered: Set<UUID> = []
+    @ObservationIgnored private var rowTargets = 0
+
+    public init(service: FilingService) {
+        self.service = service
+    }
+
+    // MARK: - Drag
+
+    /// A drag with `urls` (nil while the files cannot be read yet) entered at `location`.
+    func dragEntered(at location: CGPoint, urls: @escaping @MainActor () async -> [URL]) {
+        drag = Drag(location: location, anchor: hudAnchor(for: location), predictions: [], targeted: nil, isOverRow: rowTargets > 0)
+        predictTask?.cancel()
+        let service = service
+        predictTask = Task { [weak self] in
+            let files = await urls()
+            guard !files.isEmpty, !Task.isCancelled else { return }
+            let predictions = await service.predict(files)
+            guard !Task.isCancelled, let self, var drag = self.drag else { return }
+            drag.predictions = predictions
+            if !self.followsCursor(predictions) {
+                drag.anchor = self.hudAnchor(for: drag.location)
+            }
+            self.drag = drag
+        }
+    }
+
+    func dragMoved(to location: CGPoint) {
+        guard var drag else { return }
+        drag.location = location
+        if followsCursor(drag.predictions) {
+            drag.anchor = hudAnchor(for: location)
+            drag.targeted = nil
+        } else {
+            drag.targeted = hudFrames.first { $0.value.insetBy(dx: -2, dy: -2).contains(location) }?.key
+        }
+        if drag != self.drag { self.drag = drag }
+    }
+
+    func dragExited() {
+        predictTask?.cancel()
+        drag = nil
+        hudFrames = [:]
+    }
+
+    /// The files were dropped on the window (not on a sidebar row).
+    func dropped(urls: [URL]) {
+        let drag = self.drag
+        dragExited()
+        guard !urls.isEmpty else { return }
+        var destination: FilingDestination?
+        var opensChange = false
+        if let drag, let targeted = drag.targeted, let prediction = drag.predictions.first {
+            switch targeted {
+            case .place(let index) where prediction.places.indices.contains(index):
+                destination = prediction.places[index].destination
+            case .change:
+                opensChange = true
+            default:
+                break
+            }
+        }
+        Task { await file(urls, to: destination, openChange: opensChange) }
+    }
+
+    /// A sidebar row became (or stopped being) the drop target.
+    func rowTargeted(_ isTargeted: Bool) {
+        rowTargets = max(0, rowTargets + (isTargeted ? 1 : -1))
+        drag?.isOverRow = rowTargets > 0
+    }
+
+    /// The HUD follows the cursor while it shows one destination; with a choice it stays put so
+    /// the cursor can reach a row.
+    private func followsCursor(_ predictions: [FilingPrediction]) -> Bool {
+        guard predictions.count == 1, let prediction = predictions.first else { return true }
+        return prediction.places.count <= 1
+    }
+
+    private func hudAnchor(for location: CGPoint) -> CGPoint {
+        let width = DropHUD.width
+        let height = DropHUD.estimatedHeight
+        var x = location.x + Self.hudOffset.width
+        var y = location.y + Self.hudOffset.height
+        if containerSize.width > 0 {
+            if x + width > containerSize.width - 12 { x = location.x - Self.hudOffset.width - width + 20 }
+            x = min(max(12, x), max(12, containerSize.width - width - 12))
+            y = min(max(12, y), max(12, containerSize.height - height - 12))
+        }
+        return CGPoint(x: x, y: y)
+    }
+
+    // MARK: - Filing
+
+    /// Files `urls` (drop, sidebar row, File ▸ Import…) and shows a toast per file.
+    public func file(_ urls: [URL], to destination: FilingDestination? = nil) async {
+        await file(urls, to: destination, openChange: false)
+    }
+
+    private func file(_ urls: [URL], to destination: FilingDestination?, openChange: Bool) async {
+        let outcomes = await service.file(urls, to: destination)
+        for outcome in outcomes { show(outcome) }
+        if openChange, let filing = outcomes.first(where: { $0.filing != nil })?.filing {
+            changing = ChangeRequest(id: filing.id)
+        }
+    }
+
+    func show(_ outcome: FilingOutcome) {
+        let toast = Toast(outcome: outcome)
+        toasts.append(toast)
+        while toasts.count > Self.maximumToasts, let oldest = toasts.first(where: \.dismissesItself) ?? toasts.first {
+            dismiss(oldest.id)
+        }
+        scheduleDismissal(toast.id)
+    }
+
+    public func dismiss(_ id: Toast.ID) {
+        dismissTasks.removeValue(forKey: id)?.cancel()
+        hovered.remove(id)
+        toasts.removeAll { $0.id == id }
+    }
+
+    func setHovering(_ id: Toast.ID, _ isHovering: Bool) {
+        if isHovering {
+            hovered.insert(id)
+            dismissTasks.removeValue(forKey: id)?.cancel()
+        } else {
+            hovered.remove(id)
+            scheduleDismissal(id)
+        }
+    }
+
+    private func scheduleDismissal(_ id: Toast.ID) {
+        guard let toast = toasts.first(where: { $0.id == id }), toast.dismissesItself, !hovered.contains(id) else { return }
+        dismissTasks[id]?.cancel()
+        let lifetime = toastLifetime
+        dismissTasks[id] = Task { [weak self] in
+            try? await Task.sleep(for: lifetime)
+            guard !Task.isCancelled else { return }
+            self?.dismiss(id)
+        }
+    }
+
+    /// Undo from a toast: removes what the filing created.
+    func undo(_ id: Toast.ID) async {
+        guard let index = toasts.firstIndex(where: { $0.id == id }), let filing = toasts[index].outcome.filing else { return }
+        toasts[index].isWorking = true
+        do {
+            try await service.undo(filing.id)
+            dismiss(id)
+        } catch {
+            update(id) { $0.isWorking = false }
+        }
+    }
+
+    /// Files the toast's file to one of its alternatives (one click on a review toast).
+    func move(_ id: Toast.ID, to place: FilingPlace) async {
+        guard let filing = toasts.first(where: { $0.id == id })?.outcome.filing else { return }
+        update(id) { $0.isWorking = true }
+        await change(filing.id, to: place.destination, newLectureIn: nil)
+    }
+
+    /// Opens the change sheet for a filing.
+    public func presentChange(_ filingID: Filing.ID) {
+        changing = ChangeRequest(id: filingID)
+    }
+
+    /// Moves a filing (change sheet, alternatives) and refreshes its toast.
+    func change(_ filingID: Filing.ID, to destination: FilingDestination?, newLectureIn courseID: Course.ID?) async {
+        do {
+            let filing: Filing
+            if let courseID {
+                filing = try await service.changeToNewLecture(filingID, courseID: courseID)
+            } else if let destination {
+                filing = try await service.change(filingID, to: destination)
+            } else {
+                return
+            }
+            let place = try await service.place(of: filing)
+            for index in toasts.indices where toasts[index].outcome.filing?.id == filingID {
+                toasts[index].outcome.filing = filing
+                toasts[index].outcome.place = place
+                toasts[index].outcome.status = .filed
+                toasts[index].outcome.alternatives = []
+                toasts[index].isWorking = false
+                scheduleDismissal(toasts[index].id)
+            }
+        } catch {
+            for index in toasts.indices where toasts[index].outcome.filing?.id == filingID {
+                toasts[index].isWorking = false
+            }
+        }
+    }
+
+    private func update(_ id: Toast.ID, _ change: (inout Toast) -> Void) {
+        guard let index = toasts.firstIndex(where: { $0.id == id }) else { return }
+        change(&toasts[index])
+    }
+
+    /// File ▸ Import…
+    public func importFiles() {
+        isImporterPresented = true
+    }
+
+    // MARK: - Previews and snapshots
+
+    /// Shows a drag prediction without a drag (snapshots, previews).
+    func preview(predictions: [FilingPrediction], at location: CGPoint, targeted: HUDTarget? = nil) {
+        drag = Drag(location: location, anchor: hudAnchor(for: location), predictions: predictions, targeted: targeted, isOverRow: false)
+    }
+
+    /// Shows a toast without filing anything (snapshots, previews); it stays until dismissed.
+    func preview(toast outcome: FilingOutcome) {
+        toasts.append(Toast(outcome: outcome))
+    }
+}

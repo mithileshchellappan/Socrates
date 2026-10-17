@@ -55,6 +55,13 @@ extension FilingService {
         }
     }
 
+    /// A filed file's slide count or duration (seconds).
+    public func size(of filing: Filing) async throws -> (pageCount: Int?, duration: Double?) {
+        if let id = filing.deckID, let deck = try await store.fetch(Deck.self, id: id) { return (deck.pageCount, nil) }
+        if let id = filing.recordingID, let recording = try await store.fetch(Recording.self, id: id) { return (nil, recording.duration) }
+        return (nil, nil)
+    }
+
     /// The filing, if it still exists.
     public func filing(_ id: Filing.ID) async throws -> Filing? {
         try await store.fetch(Filing.self, id: id)
