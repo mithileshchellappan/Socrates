@@ -14,6 +14,20 @@ public enum ClockText {
     }
 }
 
+/// Text styles of the live screen. On the Mac these are the mockup's sizes (02-live): 11 pt
+/// section labels and their actions, a 12 pt filing line.
+enum LiveFont {
+    #if os(macOS)
+    static let sectionLabel = Font.subheadline.weight(.semibold)
+    static let sectionAction = Font.subheadline.weight(.medium)
+    static let filingLine = Font.callout
+    #else
+    static let sectionLabel = Font.caption.weight(.semibold)
+    static let sectionAction = Font.caption.weight(.medium)
+    static let filingLine = Font.caption
+    #endif
+}
+
 /// Small grey section heading used in the inspector ("Captions", "Notes", "Stamps").
 struct SectionLabel<Accessory: View>: View {
     let title: LocalizedStringKey
@@ -22,7 +36,8 @@ struct SectionLabel<Accessory: View>: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(title)
-                .font(.caption.weight(.semibold))
+                .font(LiveFont.sectionLabel)
+                .tracking(0.22)
                 .foregroundStyle(.secondary)
             accessory
         }
@@ -55,16 +70,16 @@ struct TimeChip: View {
             .foregroundStyle(Color.accentColor)
             .padding(.horizontal, 7)
             .padding(.vertical, 1)
-            .background(Color.accentColor.opacity(0.12), in: Capsule())
+            .background(.accentSoft, in: Capsule())
     }
 }
 
-/// Input level as five bars.
+/// Input level as five bars of uneven height (a meter, not a signal-strength staircase).
 struct LevelMeter: View {
     let level: Float
     var isActive = true
 
-    private static let heights: [CGFloat] = [4, 7, 9, 11, 12]
+    private static let heights: [CGFloat] = [4, 7, 11, 8, 12]
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 2) {

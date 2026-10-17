@@ -8,11 +8,20 @@ public struct LiveLectureContext {
     public var color: Color?
     /// Shows "Change" to fix a wrong match.
     public var onChange: (() -> Void)?
+    /// Shows a sidebar button as the toolbar's first item (mockup 02: the window's sidebar is
+    /// collapsed). Leave nil when the window has a system sidebar toggle of its own.
+    public var onShowSidebar: (() -> Void)?
 
-    public init(title: String, color: Color? = nil, onChange: (() -> Void)? = nil) {
+    public init(
+        title: String,
+        color: Color? = nil,
+        onChange: (() -> Void)? = nil,
+        onShowSidebar: (() -> Void)? = nil
+    ) {
         self.title = title
         self.color = color
         self.onChange = onChange
+        self.onShowSidebar = onShowSidebar
     }
 }
 
@@ -20,7 +29,8 @@ public struct LiveLectureContext {
 /// slides, and an inspector with captions, quick notes and stamps (mockup 02-live).
 ///
 /// Install `LiveLectureCommands` for →, Space, ← and F (disabled while a text field has focus)
-/// and `InspectorCommands` to show the inspector again. The slide also handles Space itself
+/// and `InspectorCommands` to show the inspector again (View ▸ Show Inspector, ⌃⌘I: the Mac
+/// toolbar has no inspector button, as in the mockup). The slide also handles Space itself
 /// where no menu exists (iPad without a keyboard menu).
 /// The session must be owned by the app, not this view: it keeps recording when the view goes
 /// away, and the owner files the finished package (`LiveLectureSession.onFinalized`).
@@ -52,11 +62,15 @@ public struct LiveLectureView: View {
                 FilmstripView(session: session, deck: deck)
             }
         }
-        .background(.background.secondary)
+        // The canvas colour runs up behind the toolbar's glass, with no toolbar band or hairline.
+        .background(.background.secondary, ignoresSafeAreaEdges: .all)
         .toolbar { toolbar }
+        #if os(macOS)
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        #endif
         .inspector(isPresented: $showsInspector) {
             LiveInspector(session: session, focus: $focus, isEditingFlag: $isEditingFlag)
-                .inspectorColumnWidth(min: 260, ideal: 320, max: 440)
+                .inspectorColumnWidth(min: 280, ideal: 336, max: 440)
         }
         .focusedSceneValue(\.liveLecture, actions)
         .confirmationDialog("Stop recording?", isPresented: $confirmsStop) {
@@ -127,7 +141,7 @@ public struct LiveLectureView: View {
     private func metaRow(_ context: LiveLectureContext) -> some View {
         HStack(spacing: 8) {
             if let color = context.color {
-                Circle().fill(color).frame(width: 8, height: 8)
+                Circle().fill(color).frame(width: 9, height: 9)
             }
             Text(context.title)
                 .lineLimit(1)
@@ -136,29 +150,59 @@ public struct LiveLectureView: View {
             if let onChange = context.onChange {
                 Button("Change", action: onChange)
                     .buttonStyle(.plain)
+                    .fontWeight(.medium)
                     .foregroundStyle(.tint)
+                    .padding(.horizontal, 6)
+                    .contentShape(Rectangle())
             }
         }
-        .font(.caption)
+        // As tall with or without Change, so the slide does not move.
+        .frame(minHeight: 20)
+        .font(LiveFont.filingLine)
         .foregroundStyle(.secondary)
     }
 
     // MARK: - Toolbar
 
+    /// Mac: the slide controls and Stop sit at the trailing edge of the main column, just left
+    /// of the inspector. iPhone/iPad: in the navigation bar's trailing group.
+    #if os(macOS)
+    private static let controlsPlacement = ToolbarItemPlacement.automatic
+    /// The recording and the slide position: leading, after the sidebar button and in a capsule
+    /// of their own (navigation items share one).
+    private static let statusPlacement = ToolbarItemPlacement.primaryAction
+    #else
+    private static let controlsPlacement = ToolbarItemPlacement.primaryAction
+    private static let statusPlacement = ToolbarItemPlacement.navigation
+    #endif
+
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        if session.startedAt != nil, session.phase == .recording || session.phase == .stopping {
+        if let showSidebar = context?.onShowSidebar {
             ToolbarItem(placement: .navigation) {
+                Button(action: showSidebar) {
+                    Label("Show Sidebar", systemImage: "sidebar.leading")
+                }
+                .help("Show Sidebar")
+            }
+        }
+        if session.startedAt != nil, session.phase == .recording || session.phase == .stopping {
+            ToolbarItem(placement: Self.statusPlacement) {
+                // 12 pt either side inside the glass, as the mockup's capsule.
                 RecordingIndicator(session: session)
+                    .padding(.horizontal, 6)
             }
         }
         if session.hasDeck {
-            ToolbarItem(placement: .navigation) {
+            ToolbarItem(placement: Self.statusPlacement) {
                 slidePosition
             }
             .sharedBackgroundVisibility(.hidden)
         }
-        ToolbarItemGroup(placement: .primaryAction) {
+        #if os(macOS)
+        ToolbarSpacer(.flexible)
+        #endif
+        ToolbarItemGroup(placement: Self.controlsPlacement) {
             Button { session.previous() } label: {
                 Label("Previous Slide", systemImage: "chevron.left")
             }
@@ -168,15 +212,21 @@ public struct LiveLectureView: View {
             }
             .disabled(!session.canGoNext)
             Button { session.flag() } label: {
-                Label("Flag", systemImage: "flag")
-                    .labelStyle(.titleAndIcon)
+                Label {
+                    Text("Flag").fontWeight(.regular)
+                } icon: {
+                    Image(systemName: "flag")
+                }
+                .labelStyle(.titleAndIcon)
             }
             .disabled(!session.isRecording)
         }
-        ToolbarSpacer(.fixed, placement: .primaryAction)
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarSpacer(.fixed, placement: Self.controlsPlacement)
+        ToolbarItem(placement: Self.controlsPlacement) {
             recordButton
         }
+        #if os(iOS)
+        // No menu bar to reopen it from (the Mac has View ▸ Show Inspector, ⌃⌘I).
         ToolbarItem(placement: .primaryAction) {
             Button {
                 showsInspector.toggle()
@@ -184,11 +234,13 @@ public struct LiveLectureView: View {
                 Label("Inspector", systemImage: "sidebar.trailing")
             }
         }
+        #endif
     }
 
     private var slidePosition: some View {
         Text("Slide \(session.currentPage) \(Text("of \(session.pageCount)").fontWeight(.regular).foregroundStyle(.secondary))")
             .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.primary)
             .monospacedDigit()
             .fixedSize()
     }
@@ -210,18 +262,29 @@ public struct LiveLectureView: View {
             Button {
                 confirmsStop = true
             } label: {
-                Label("Stop", systemImage: "stop.fill")
-                    .labelStyle(.titleAndIcon)
+                stopLabel
                     .foregroundStyle(.red)
             }
             .disabled(session.phase == .stopping)
         case .finished:
             Button {} label: {
-                Label("Stop", systemImage: "stop.fill")
-                    .labelStyle(.titleAndIcon)
+                stopLabel
             }
             .disabled(true)
         }
+    }
+
+    /// A small rounded stop square and "Stop" in regular weight (mockup 02). A shape, not the
+    /// stop.fill symbol, which the toolbar draws at its own (twice the size) icon scale.
+    private var stopLabel: some View {
+        Label {
+            Text("Stop").fontWeight(.regular)
+        } icon: {
+            RoundedRectangle(cornerRadius: 1.75, style: .continuous)
+                .frame(width: 7.5, height: 7.5)
+                .accessibilityHidden(true)
+        }
+        .labelStyle(.titleAndIcon)
     }
 
     // MARK: - Commands

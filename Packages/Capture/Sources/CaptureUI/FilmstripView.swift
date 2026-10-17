@@ -49,15 +49,26 @@ struct FilmstripView: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-        .background(.background)
+        // The strip ends at the main column; nothing scrolls on under the inspector.
+        .clipped()
+        .background(Color.contentBackground)
     }
 
-    /// Scroll offset that puts the centre of `page` at 65 % of the visible width.
+    /// Scroll offset that puts the centre of `page` at about 65 % of the visible width, rounded
+    /// down to a whole thumbnail so the strip starts with a whole one at the inset.
     private func offset(for page: Int, viewport: CGFloat) -> CGFloat {
-        let center = Self.inset + CGFloat(page - 1) * Self.stride + (Self.stride - Self.spacing) / 2
-        let content = 2 * Self.inset + CGFloat(max(1, session.pageCount)) * Self.stride - Self.spacing
+        Self.offset(for: page, pageCount: session.pageCount, viewport: viewport)
+    }
+
+    static func offset(for page: Int, pageCount: Int, viewport: CGFloat) -> CGFloat {
+        let center = inset + CGFloat(page - 1) * stride + (stride - spacing) / 2
+        let content = 2 * inset + CGFloat(max(1, pageCount)) * stride - spacing
         let maxOffset = max(0, content - viewport)
-        return min(maxOffset, max(0, center - viewport * 0.65))
+        let first = ((center - viewport * 0.65) / stride).rounded(.down)
+        guard first >= 1 else { return 0 }
+        // Just past the end of the thumbnail before it, so no sliver of that one shows.
+        let aligned = first * stride + max(0, inset - spacing - itemPadding)
+        return min(maxOffset, aligned)
     }
 }
 

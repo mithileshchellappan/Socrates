@@ -20,6 +20,7 @@ struct LiveInspector: View {
     @Binding var isEditingFlag: Bool
 
     @State private var showsAllStamps = false
+    @Environment(\.pixelLength) private var pixelLength
 
     /// Lines the editor's text up with the section label (the text view's line fragment padding).
     #if os(macOS)
@@ -28,9 +29,18 @@ struct LiveInspector: View {
     private static let textEditorInsetCorrection: CGFloat = -4
     #endif
 
+    /// Note text: 13 pt with a 1.45 line height (mockup 02).
+    private static let noteFont = Font.system(size: 13)
+    private static let noteLineSpacing: CGFloat = 3
+
     var body: some View {
+        // The sections follow the header with 12 pt between every part (mockup 02).
         VStack(spacing: 0) {
+            #if os(iOS)
             InputHeader(session: session)
+                .padding(.horizontal, 12)
+                .frame(height: 52)
+            #endif
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -39,38 +49,70 @@ struct LiveInspector: View {
                     Divider()
                     stamps
                 }
-                .padding(12)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
             }
             .scrollIndicators(.automatic)
         }
+        // Opaque, with a hairline along its leading edge from the top of the window down:
+        // nothing of the main column shows through.
+        .background(Color.inspectorBackground)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(.separator)
+                .frame(width: pixelLength)
+                .ignoresSafeArea()
+        }
+        #if os(macOS)
+        // On the Mac the header shares the toolbar's row, over the inspector; the main column's
+        // controls then end at the inspector's edge.
+        .toolbar {
+            ToolbarItem {
+                InputHeader(session: session)
+                    .padding(.horizontal, 2)
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarSpacer(.flexible)
+        }
+        #endif
     }
 
     private var notes: some View {
         let page = session.currentPage
-        return VStack(alignment: .leading, spacing: 6) {
+        let text = Binding(
+            get: { session.note(forPage: page) },
+            set: { session.setNote($0, forPage: page) }
+        )
+        return VStack(alignment: .leading, spacing: 12) {
             SectionLabel("Notes")
-            TextEditor(text: Binding(
-                get: { session.note(forPage: page) },
-                set: { session.setNote($0, forPage: page) }
-            ))
-            .font(.system(size: 13))
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, Self.textEditorInsetCorrection)
-            .frame(minHeight: 96)
-            .disabled(!session.acceptsNotes)
-            .focused(focus, equals: .note)
-            .onKeyPress(.escape) {
-                focus.wrappedValue = .canvas
-                return .handled
-            }
-            .accessibilityLabel(Text("Notes for slide \(page)"))
+            // As tall as the note plus a line for the caret (the hidden copy sets the height),
+            // so Stamps follows closely; a long note scrolls inside the editor.
+            Text(verbatim: text.wrappedValue + "\n ")
+                .font(Self.noteFont)
+                .lineSpacing(Self.noteLineSpacing)
+                .frame(maxWidth: .infinity, minHeight: 40, maxHeight: 320, alignment: .topLeading)
+                .hidden()
+                .overlay {
+                    TextEditor(text: text)
+                        .font(Self.noteFont)
+                        .lineSpacing(Self.noteLineSpacing)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, Self.textEditorInsetCorrection)
+                        .disabled(!session.acceptsNotes)
+                        .focused(focus, equals: .note)
+                        .onKeyPress(.escape) {
+                            focus.wrappedValue = .canvas
+                            return .handled
+                        }
+                        .accessibilityLabel(Text("Notes for slide \(page)"))
+                }
         }
     }
 
     private var stamps: some View {
         let all = session.stamps
         let visible = showsAllStamps ? all : Array(all.suffix(3))
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 12) {
             SectionLabel("Stamps") {
                 Spacer()
                 if all.count > 3 {
@@ -78,7 +120,7 @@ struct LiveInspector: View {
                         showsAllStamps.toggle()
                     }
                     .buttonStyle(.plain)
-                    .font(.caption.weight(.medium))
+                    .font(LiveFont.sectionAction)
                     .foregroundStyle(.tint)
                 }
             }
@@ -108,14 +150,15 @@ private struct InputHeader: View {
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: session.isInputAvailable ? "mic" : "mic.slash")
+                .font(.system(size: 13))
                 .foregroundStyle(session.isInputAvailable ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
                 .help(session.inputName ?? "")
                 .accessibilityLabel(Text(session.inputName ?? "Microphone"))
             LevelMeter(level: session.level, isActive: session.isRecording && session.isInputAvailable)
+            #if os(iOS)
             Spacer()
+            #endif
         }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
     }
 }
 
@@ -139,8 +182,8 @@ private struct SlideStampRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "rectangle.on.rectangle")
-                .font(.caption)
+            Image(systemName: "display")
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             label
                 .lineLimit(1)
@@ -149,10 +192,11 @@ private struct SlideStampRow: View {
             TimeChip(seconds: time)
         }
         .font(.system(size: 12.5))
+        .frame(minHeight: StampMetrics.lineHeight)
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
         .background(
-            isCurrent ? AnyShapeStyle(Color.accentColor.opacity(0.12)) : AnyShapeStyle(.clear),
+            isCurrent ? AnyShapeStyle(.accentSoft) : AnyShapeStyle(.clear),
             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
         )
         .accessibilityElement(children: .combine)
@@ -194,6 +238,7 @@ private struct FlagRow: View {
                 TimeChip(seconds: session.time(of: event))
             }
             .font(.system(size: 12.5))
+            .frame(minHeight: StampMetrics.lineHeight)
             .padding(.vertical, 4)
             .padding(.horizontal, 6)
             .contentShape(Rectangle())
@@ -239,37 +284,43 @@ private struct FlagTextField: View {
     }
 }
 
+/// Stamp and flag rows: a 17.5 pt line in 4 pt padding, 1 pt apart (a 26.5 pt step).
+private enum StampMetrics {
+    static let lineHeight: CGFloat = 17.5
+}
+
 private struct CaptionsSection: View {
     let transcript: CaptionTranscript
 
     var body: some View {
-        let lines = Array(transcript.allLines.suffix(3))
-        VStack(alignment: .leading, spacing: 6) {
+        let rows = transcript.rows()
+        VStack(alignment: .leading, spacing: 12) {
             SectionLabel("Captions") {
                 Text(transcript.languageCode)
                     .font(.system(size: 9.5, weight: .bold))
+                    .tracking(0.38)
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 4)
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator, lineWidth: 0.5))
             }
             VStack(alignment: .leading, spacing: 1) {
-                ForEach(lines) { line in
-                    let isNow = line.id == lines.last?.id
+                ForEach(rows) { row in
+                    let isNow = row.id == rows.last?.id
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(ClockText.string(line.start))
+                        Text(ClockText.string(row.start))
                             .font(.system(size: 10.5, design: .monospaced))
                             .monospacedDigit()
                             .foregroundStyle(isNow ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
-                            .frame(width: 38, alignment: .leading)
-                        Text(Self.attributed(line))
+                            .frame(width: 34, alignment: .leading)
+                        Text(Self.attributed(row))
                             .font(.system(size: 12.5))
-                            .lineSpacing(1.5)
+                            .lineSpacing(2.75)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.vertical, 4)
                     .padding(.horizontal, 6)
                     .background(
-                        isNow ? AnyShapeStyle(Color.accentColor.opacity(0.12)) : AnyShapeStyle(.clear),
+                        isNow ? AnyShapeStyle(.accentSoft) : AnyShapeStyle(.clear),
                         in: RoundedRectangle(cornerRadius: 7, style: .continuous)
                     )
                 }
@@ -278,16 +329,17 @@ private struct CaptionsSection: View {
         }
     }
 
-    /// Low-confidence words dotted; text still settling in grey.
-    static func attributed(_ line: CaptionTranscript.Line) -> AttributedString {
+    /// Settled words in the primary colour, the words still settling lighter after them;
+    /// low-confidence words dotted.
+    static func attributed(_ row: CaptionRow) -> AttributedString {
         var result = AttributedString()
-        for run in line.runs {
+        for (run, isSettling) in row.settled.map({ ($0, false) }) + row.settling.map({ ($0, true) }) {
             var part = AttributedString(run.text)
             if run.isLowConfidence {
-                part.underlineStyle = Text.LineStyle(pattern: .dot, color: .secondary)
+                part.underlineStyle = Text.LineStyle(pattern: .dot, color: .tertiaryLabel)
             }
-            if !line.isFinal {
-                part.foregroundColor = .secondary
+            if isSettling {
+                part.foregroundColor = .tertiaryLabel
             }
             result += part
         }
