@@ -588,18 +588,34 @@ enum ClaudeCodeRun {
 
     /// One tool-loop launch (docs/plan-m35.md §3.5). Throws `RunRelaunch` when the engine should
     /// launch again with another isolation variant or session flag.
+    ///
+    /// M5 (docs/plan-m5.md §5.1): `.webSearch` / `.webFetch` beside the custom tools become the
+    /// CLI's own WebSearch / WebFetch (`--tools` names only those asked for, `--allowedTools` adds
+    /// them after the MCP server); the init check then expects exactly the app's tools plus those
+    /// built-ins. The CLI's tool_use / tool_result blocks of its web tools are appended like any
+    /// other turn, and the run records one more ledger row for the web tools' own (unstreamed)
+    /// calls. Domain filters cannot be expressed on the CLI: logged and ignored.
     static func toolLoop(
         _ call: ClaudeCodeCall, maxIterations: Int, prompt: [JSONValue], variant: IsolationVariant,
         session: SessionFlag, handler: @escaping ToolHandler,
         onEvent: @escaping @Sendable (ToolLoopEvent) async -> Void
     ) async throws -> ToolLoopResult {
         let request = call.request
-        let tools = try request.tools.map { tool -> CustomTool in
-            guard case .custom(let custom) = tool else {
-                throw ClaudeError.invalidArgument("Claude Code tool loops take custom tools only, not \(tool.name)")
+        var tools: [CustomTool] = []
+        var webTools: [Tool] = []
+        for tool in request.tools {
+            switch tool {
+            case .custom(let custom): tools.append(custom)
+            case .webSearch, .webFetch: webTools.append(tool)
+            default:
+                throw ClaudeError.invalidArgument("Claude Code tool loops take custom tools, web search and web fetch, not \(tool.name)")
             }
-            return custom
         }
+        // The CLI's built-in tools this loop may use (nil: none).
+        let web = try WebToolSet(webTools)
+        let builtIns = web?.names ?? []
+        let runStarted = Date()
+        let runClock = ContinuousClock.now
         let matcher = ToolUseMatcher()
         let toolTurns = ClaudeCodeQueue()
         let server = MCPToolServer(tools: tools) { name, arguments in
@@ -638,8 +654,9 @@ enum ClaudeCodeRun {
         else { throw ClaudeError.claudeCodeProcess("could not write the tool server's configuration") }
         defer { try? fileManager.removeItem(at: configFile) }
 
-        let arguments = call.commonArguments + variant.arguments + [
-            "--mcp-config", configFile.path, "--strict-mcp-config", "--allowedTools", "mcp__\(MCPToolServer.serverName)",
+        let allowed = ["mcp__\(MCPToolServer.serverName)"] + builtIns
+        let arguments = call.arguments(tools: builtIns.joined(separator: ",")) + variant.arguments + [
+            "--mcp-config", configFile.path, "--strict-mcp-config", "--allowedTools", allowed.joined(separator: ","),
             "--permission-mode", "dontAsk", "--disable-slash-commands", "--max-turns", String(maxIterations),
         ] + session.arguments
         let spec = ChildProcessSpec(
@@ -675,7 +692,7 @@ enum ClaudeCodeRun {
                 case "system" where object.string("subtype") == "init":
                     guard !initChecked else { return .proceed }
                     initChecked = true
-                    guard isolationHolds(object, variant: variant) else {
+                    guard isolationHolds(object, variant: variant, builtIns: builtIns) else {
                         isolationFailed = true
                         return .stop
                     }
@@ -756,6 +773,12 @@ enum ClaudeCodeRun {
             ClaudeClient.logger.notice("Claude Code isolation \(variant.rawValue, privacy: .public) failed its init check")
             throw RunRelaunch.isolation
         }
+        if web != nil {
+            // WebSearch / WebFetch make their own API calls inside the CLI (not streamed): one
+            // more ledger row for the run, priced from `modelUsage`, as one-shot web runs do.
+            await call.recordUnstreamedCost(
+                result: output.result, streamed: tracker.completed, startedAt: runStarted, elapsed: ContinuousClock.now - runClock)
+        }
         if tracker.completed.isEmpty {
             let texts = output.failureTexts(standardError: processResult.standardError)
             if texts.contains(where: { $0.contains("already in use") }) { throw RunRelaunch.sessionInUse }
@@ -784,22 +807,25 @@ enum ClaudeCodeRun {
         throw failure
     }
 
-    /// The `system/init` check: the app's server connected and no tool but its own.
-    static func isolationHolds(_ initLine: JSONObject, variant: IsolationVariant) -> Bool {
+    /// The `system/init` check: the app's server connected and no other server connected; the
+    /// tools exactly the app's own (`mcp__studyportal__*`) plus the built-ins the loop asked for
+    /// (M5: WebSearch / WebFetch), each of those present.
+    static func isolationHolds(_ initLine: JSONObject, variant: IsolationVariant, builtIns: [String] = []) -> Bool {
         let servers = initLine.array("mcp_servers") ?? []
-        let connected = servers.contains {
-            $0["name"]?.stringValue == MCPToolServer.serverName && $0["status"]?.stringValue == "connected"
-        }
-        let foreign = (initLine.array("tools") ?? []).compactMap(\.stringValue).filter {
-            !$0.hasPrefix(ClaudeCodeCall.toolPrefix)
-        }
-        if !connected || !foreign.isEmpty {
+        func isConnected(_ server: JSONValue) -> Bool { server["status"]?.stringValue == "connected" }
+        let connected = servers.contains { $0["name"]?.stringValue == MCPToolServer.serverName && isConnected($0) }
+        let otherServers = servers.filter { $0["name"]?.stringValue != MCPToolServer.serverName && isConnected($0) }
+        let listed = (initLine.array("tools") ?? []).compactMap(\.stringValue)
+        let foreign = listed.filter { !$0.hasPrefix(ClaudeCodeCall.toolPrefix) && !builtIns.contains($0) }
+        let missing = builtIns.filter { !listed.contains($0) }
+        let holds = connected && otherServers.isEmpty && foreign.isEmpty && missing.isEmpty
+        if !holds {
             let statuses = servers.map { "\($0["name"]?.stringValue ?? "?")=\($0["status"]?.stringValue ?? "?")" }
             ClaudeClient.logger.notice(
-                "Claude Code init (\(variant.rawValue, privacy: .public)): servers \(statuses.joined(separator: ","), privacy: .public), other tools \(foreign.joined(separator: ","), privacy: .public)"
+                "Claude Code init (\(variant.rawValue, privacy: .public)): servers \(statuses.joined(separator: ","), privacy: .public), other tools \(foreign.joined(separator: ","), privacy: .public), missing \(missing.joined(separator: ","), privacy: .public)"
             )
         }
-        return connected && foreign.isEmpty
+        return holds
     }
 }
 
