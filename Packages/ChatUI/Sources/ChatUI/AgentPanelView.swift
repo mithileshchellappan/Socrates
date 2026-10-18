@@ -26,7 +26,8 @@ struct AgentPanelView: View {
     let sendContext: @MainActor () -> AgentContext
     let maxThreadHeight: CGFloat
     let headerPlacement: HeaderPlacement
-    let moved: ((CGSize) -> Void)?
+    /// The compact panel's drag (nil: not movable).
+    let move: PanelMove?
     let moveEnded: ((CGSize) -> Void)?
 
     @Environment(\.agentPanelActions) private var actions
@@ -41,7 +42,7 @@ struct AgentPanelView: View {
         sendContext: @escaping @MainActor () -> AgentContext,
         maxThreadHeight: CGFloat,
         headerPlacement: HeaderPlacement = .inline,
-        moved: ((CGSize) -> Void)? = nil,
+        move: PanelMove? = nil,
         moveEnded: ((CGSize) -> Void)? = nil
     ) {
         self.style = style
@@ -50,7 +51,7 @@ struct AgentPanelView: View {
         self.sendContext = sendContext
         self.maxThreadHeight = maxThreadHeight
         self.headerPlacement = headerPlacement
-        self.moved = moved
+        self.move = move
         self.moveEnded = moveEnded
         historyQuery = FetchAll(
             AgentConversation.where { $0.kind.eq(ConversationKind.app) }.order { $0.createdAt.desc() }.limit(AgentPanelView.historyLimit)
@@ -71,8 +72,28 @@ struct AgentPanelView: View {
     private var conversationID: AgentConversation.ID? { model.conversationID(newest: newest) }
 
     var body: some View {
+        if headerPlacement == .toolbar {
+            panel
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
+                .toolbar {
+                    // Only while shown: SwiftUI keeps a hidden inspector's content (and this item) alive.
+                    if model.mode == .expanded {
+                        ToolbarItem(placement: .automatic) {
+                            header
+                                .frame(width: max(0, columnWidth - AgentPanelMetrics.toolbarTrailingInset))
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                    }
+                }
+        } else {
+            // No toolbar content from the compact panel: its updates never touch the window's toolbar.
+            panel
+        }
+    }
+
+    private var panel: some View {
         let conversationID = conversationID
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             switch headerPlacement {
             case .inline:
                 header
@@ -93,17 +114,6 @@ struct AgentPanelView: View {
                 .padding(.bottom, style == .compact ? 8 : 12)
         }
         .frame(maxHeight: style == .expanded ? .infinity : nil, alignment: .top)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
-        .toolbar {
-            // Only while shown: SwiftUI keeps a hidden inspector's content (and this item) alive.
-            if headerPlacement == .toolbar, model.mode == .expanded {
-                ToolbarItem(placement: .automatic) {
-                    header
-                        .frame(width: max(0, columnWidth - AgentPanelMetrics.toolbarTrailingInset))
-                }
-                .sharedBackgroundVisibility(.hidden)
-            }
-        }
     }
 
     // MARK: Header
@@ -111,7 +121,7 @@ struct AgentPanelView: View {
     private var header: some View {
         AgentPanelHeader(
             model: model, history: history, conversationID: conversationID, isExpanded: style == .expanded,
-            moved: moved, moveEnded: moveEnded
+            move: move, moveEnded: moveEnded
         )
         .padding(.leading, style == .compact ? 6 : 8)
         .padding(.trailing, style == .compact ? 6 : 10)
@@ -140,11 +150,12 @@ struct AgentPanelView: View {
     }
 
     /// ↩ or Send: the words and files go with the context as it is now (the playhead at ↩); the
-    /// words show at once as a pending bubble.
+    /// words show at once as a pending bubble. One message at a time: nothing while one is being
+    /// handed over or not stored yet (`pending`), or while the agent answers; never empty.
     private func send(to conversationID: AgentConversation.ID?) {
         let text = model.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let files = model.attachments
-        guard !text.isEmpty || !files.isEmpty, !model.isRunning, !model.isSending, model.reading == 0 else { return }
+        guard !text.isEmpty || !files.isEmpty, model.canSendNow else { return }
         let actions = actions
         let context = sendContext()
         let model = model
@@ -179,12 +190,14 @@ private struct AgentPanelHeader: View {
     let history: [AgentConversation]
     let conversationID: AgentConversation.ID?
     let isExpanded: Bool
-    let moved: ((CGSize) -> Void)?
+    let move: PanelMove?
     let moveEnded: ((CGSize) -> Void)?
 
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
     @State private var showsMemory = false
+    /// A drag is in flight (a cancelled one puts the panel back).
+    @GestureState private var isMoving = false
 
     var body: some View {
         HStack(spacing: 2) {
@@ -216,12 +229,18 @@ private struct AgentPanelHeader: View {
         .foregroundStyle(.secondary)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
+        // Window coordinates: the translation does not change as the panel moves under the
+        // pointer. It only goes into `PanelMove` (read where the panel is placed, not here).
         .gesture(
             DragGesture(minimumDistance: 3, coordinateSpace: .global)
-                .onChanged { moved?($0.translation) }
-                .onEnded { moveEnded?($0.translation) },
-            isEnabled: moved != nil
+                .updating($isMoving) { _, moving, _ in moving = true }
+                .onChanged { value in move?.translation = value.translation }
+                .onEnded { value in moveEnded?(value.translation) },
+            isEnabled: move != nil
         )
+        .onChange(of: isMoving) { _, moving in
+            if !moving, let move, move.translation != .zero { move.translation = .zero }
+        }
         .sheet(isPresented: $showsMemory) {
             ChatMemorySheet()
         }

@@ -68,8 +68,8 @@ final class AgentPanelModel {
 
     /// Which exchanges the compact panel shows.
     enum ThreadWindow: Hashable {
-        /// Those sent since it opened (and task results since then): at rest only the title row
-        /// and the composer.
+        /// Those sent since it opened (and task results since then), and always at least the
+        /// conversation's latest exchange: an answer never hides behind ⤢.
         case since(Date)
         /// A conversation picked in the title menu: its last exchange.
         case last
@@ -120,6 +120,10 @@ final class AgentPanelModel {
     var now: Date { fixedNow ?? Date() }
     var isOpen: Bool { mode != .closed }
 
+    /// A message may go now: none is being handed over or waiting for its stored turn, the agent
+    /// is not answering, no file is still being read.
+    var canSendNow: Bool { !isSending && pending == nil && !isRunning && reading == 0 }
+
     /// The conversation on screen: a new chat's (nil until its first message), else the picked
     /// one, else the newest.
     func conversationID(newest: AgentConversation.ID?) -> AgentConversation.ID? {
@@ -127,7 +131,7 @@ final class AgentPanelModel {
     }
 
     /// ⌘J, the launcher, Calendar's [+]: opens compact (or expanded) with the caret in the
-    /// composer; a compact panel opened again shows only its title row and composer.
+    /// composer; a compact panel opened again shows the conversation's latest exchange.
     func open(expanded: Bool = false) {
         if mode == .closed {
             shown = .since(Date())
@@ -375,6 +379,10 @@ private struct AgentContextReader: ViewModifier {
 /// The floating panel: the inspector's opaque surface, radius 14, a soft panel shadow, 336 wide,
 /// as tall as its content up to half the window; moved by dragging its title row, kept inside
 /// the window.
+///
+/// A drag moves it by an offset alone: the title row writes the translation into `PanelMove`,
+/// which only `PanelPlacement` reads, so the thread, the composer and their queries are not
+/// evaluated or laid out again while it moves; the place is stored once, when the drag ends.
 struct CompactAgentPanel: View {
     let model: AgentPanelModel
     let context: AgentContext
@@ -382,39 +390,29 @@ struct CompactAgentPanel: View {
     @Binding var position: String
     let windowSize: CGSize
 
-    @State private var drag: CGSize = .zero
+    @State private var move = PanelMove()
     @State private var size = CGSize(width: AgentPanelMetrics.compactWidth, height: 90)
     @State private var isDropTargeted = false
 
     var body: some View {
-        let offset = clamped(Self.parse(position), adding: drag)
-        let shape = RoundedRectangle(cornerRadius: AgentPanelMetrics.radius, style: .continuous)
+        let bounds = PanelBounds(windowSize: windowSize, panelSize: size)
+        let stored = bounds.clamp(Self.parse(position))
+        let move = move
         AgentPanelView(
             style: .compact, model: model, context: context, sendContext: sendContext,
             maxThreadHeight: Self.maxThreadHeight(windowHeight: windowSize.height),
-            moved: { translation in drag = translation },
+            move: move,
             moveEnded: { translation in
-                let end = clamped(Self.parse(position), adding: translation)
-                drag = .zero
-                position = Self.format(end)
+                position = Self.format(bounds.clamp(stored, adding: translation))
+                move.translation = .zero
             }
         )
-        .frame(width: AgentPanelMetrics.compactWidth)
-        .background(PanelSurface(), in: shape)
-        .clipShape(shape)
-        .overlay {
-            shape.strokeBorder(.separator, lineWidth: 0.5)
-        }
-        .overlay {
-            if isDropTargeted {
-                shape.strokeBorder(Color.accentColor, lineWidth: 2)
-            }
-        }
-        .shadow(color: .black.opacity(0.22), radius: 20, y: 12)
+        .modifier(CompactPanelChrome(isDropTargeted: isDropTargeted))
         .agentFileDrop(model: model, isTargeted: $isDropTargeted)
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
-        .reservesPanelSpace(size.height + AgentPanelMetrics.margin + 8, isActive: offset.height < 1)
-        .offset(x: -offset.width, y: -offset.height)
+        // The stored place, not the drag: the toasts' room changes once, when the drag ends.
+        .reservesPanelSpace(size.height + AgentPanelMetrics.margin + 8, isActive: stored.height < 1)
+        .modifier(PanelPlacement(move: move, stored: stored, bounds: bounds))
         .padding(.trailing, AgentPanelMetrics.margin)
         .padding(.bottom, AgentPanelMetrics.margin)
         .transition(.opacity)
@@ -425,17 +423,6 @@ struct CompactAgentPanel: View {
         max(80, (windowHeight > 0 ? windowHeight : 740) / 2 - 110)
     }
 
-    /// The stored offset plus a drag (a drag right or down moves toward the corner), kept inside
-    /// the window under the toolbar.
-    private func clamped(_ stored: CGSize, adding translation: CGSize) -> CGSize {
-        let maxX = max(0, windowSize.width - size.width - 2 * AgentPanelMetrics.margin)
-        let maxY = max(0, windowSize.height - size.height - 2 * AgentPanelMetrics.margin - AgentPanelMetrics.toolbarHeight)
-        return CGSize(
-            width: min(max(0, stored.width - translation.width), maxX),
-            height: min(max(0, stored.height - translation.height), maxY)
-        )
-    }
-
     static func parse(_ text: String) -> CGSize {
         let parts = text.split(separator: ",").compactMap { Double($0) }
         guard parts.count == 2 else { return .zero }
@@ -444,6 +431,75 @@ struct CompactAgentPanel: View {
 
     static func format(_ offset: CGSize) -> String {
         "\(Int(offset.width.rounded())),\(Int(offset.height.rounded()))"
+    }
+}
+
+/// The compact panel's drag in flight (window points; right and down positive): written by the
+/// title row's gesture, read only by `PanelPlacement`.
+@MainActor
+@Observable
+final class PanelMove {
+    var translation: CGSize = .zero
+}
+
+/// Where the compact panel may go: its offset from the window's bottom-trailing corner, inside
+/// the window under the toolbar, on whole points (the drag and the stored place agree, so the
+/// panel does not shift when the drag ends).
+struct PanelBounds: Equatable {
+    var maxX: CGFloat
+    var maxY: CGFloat
+
+    init(windowSize: CGSize, panelSize: CGSize) {
+        maxX = max(0, (windowSize.width - panelSize.width - 2 * AgentPanelMetrics.margin).rounded(.down))
+        maxY = max(0, (windowSize.height - panelSize.height - 2 * AgentPanelMetrics.margin - AgentPanelMetrics.toolbarHeight).rounded(.down))
+    }
+
+    /// An offset plus a drag (a drag right or down moves toward the corner), kept inside.
+    func clamp(_ offset: CGSize, adding translation: CGSize = .zero) -> CGSize {
+        CGSize(
+            width: min(max(0, (offset.width - translation.width).rounded()), maxX),
+            height: min(max(0, (offset.height - translation.height).rounded()), maxY)
+        )
+    }
+}
+
+/// Places the compact panel: its stored offset plus the drag in flight. Only this modifier reads
+/// the drag, so a drag re-evaluates nothing inside the panel.
+private struct PanelPlacement: ViewModifier {
+    let move: PanelMove
+    let stored: CGSize
+    let bounds: PanelBounds
+
+    func body(content: Content) -> some View {
+        let offset = bounds.clamp(stored, adding: move.translation)
+        content.offset(x: -offset.width, y: -offset.height)
+    }
+}
+
+/// The compact panel's surface, edge and shadow (the window's panel and its render). The shadow
+/// is the surface shape's (the panel is opaque): drawn from a plain shape, not from the panel's
+/// contents, so moving the panel only moves it.
+struct CompactPanelChrome: ViewModifier {
+    var isDropTargeted = false
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: AgentPanelMetrics.radius, style: .continuous)
+        content
+            .frame(width: AgentPanelMetrics.compactWidth)
+            .clipShape(shape)
+            .background {
+                shape
+                    .fill(PanelSurface())
+                    .shadow(color: .black.opacity(0.22), radius: 20, y: 12)
+            }
+            .overlay {
+                shape.strokeBorder(.separator, lineWidth: 0.5)
+            }
+            .overlay {
+                if isDropTargeted {
+                    shape.strokeBorder(Color.accentColor, lineWidth: 2)
+                }
+            }
     }
 }
 
@@ -570,16 +626,11 @@ public struct AgentPanelSnapshot: View {
         let context = context
         switch style {
         case .compact:
-            let shape = RoundedRectangle(cornerRadius: AgentPanelMetrics.radius, style: .continuous)
             AgentPanelView(
                 style: .compact, model: model, context: context.settled, sendContext: { context },
                 maxThreadHeight: CompactAgentPanel.maxThreadHeight(windowHeight: windowHeight)
             )
-            .frame(width: AgentPanelMetrics.compactWidth)
-            .background(PanelSurface(), in: shape)
-            .clipShape(shape)
-            .overlay { shape.strokeBorder(.separator, lineWidth: 0.5) }
-            .shadow(color: .black.opacity(0.22), radius: 20, y: 12)
+            .modifier(CompactPanelChrome())
         case .expanded:
             AgentPanelView(
                 style: .expanded, model: model, context: context.settled, sendContext: { context }, maxThreadHeight: .infinity,

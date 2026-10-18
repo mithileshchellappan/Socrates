@@ -32,6 +32,9 @@ public actor AgentRuntime {
     let additionalSpecs: [ConversationKind: SpecProvider]
     let conversationSpecs: [ConversationKind: ConversationSpecProvider]
     private var tasks: [AgentConversation.ID: Task<Void, Never>] = [:]
+    /// Conversations whose next message `send` is storing (between its busy check and its run's
+    /// launch; the actor is reentrant at every await): a second message meanwhile is busy too.
+    private var sending: Set<AgentConversation.ID> = []
     /// The answer being written, per conversation (M3.5: the chat streams it into place).
     private let live = LiveReplies()
 
@@ -163,7 +166,9 @@ public actor AgentRuntime {
     ) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !context.isEmpty else { throw RuntimeError.emptyText }
-        guard tasks[id] == nil else { throw RuntimeError.busy }
+        guard tasks[id] == nil, !sending.contains(id) else { throw RuntimeError.busy }
+        sending.insert(id)
+        defer { sending.remove(id) }
         guard let conversation = try await services.records.fetch(AgentConversation.self, id: id) else {
             throw RuntimeError.unknownConversation
         }

@@ -39,9 +39,10 @@ import SwiftUI
 // available, so the agent panel's launcher shows. On a copy seeded with
 // `tools/parity/seed --library <copy> --ma-sample` it adds the agent panel's shots (ma, mockup
 // agent-panel-mockups.html §1–4): `ma-review` (compact, on DC L2 slide 12 at 29:44, the Weekend
-// plan's first exchange), `ma-calendar` (compact on Week 43, as just opened: title row and
-// composer), `ma-calendar-expanded` (the right sidebar: the whole Weekend plan with the 7 change
-// rows) and `ma-today-files` (compact on Today, the QEMU conversation with its file tiles).
+// plan's first exchange), `ma-review-reopened` (compact as ⌘J opens it again: the conversation's
+// latest exchange), `ma-calendar` (compact on Week 43, the same exchange), `ma-calendar-expanded`
+// (the right sidebar: the whole Weekend plan with the 7 change rows) and `ma-today-files`
+// (compact on Today, the QEMU conversation with its file tiles).
 //
 // `--calendar-sample` (a library with mockup 06's rows, e.g. .data/parity/m3/library): adds an
 // exam review from a timetable file (Mon 19 Oct, 11:00), a Data Centers exam (Fri 23 Oct,
@@ -235,6 +236,13 @@ struct ParityRender {
                 selection: .lecture(dcLecture2.id),
                 reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
                 panel: panel(.compact, weekendPlan, exchanges: 0..<1)
+            ))),
+            // Opened again (no exchange range): the conversation's latest exchange, never only the
+            // title row and the composer.
+            RenderShot(name: "ma-review-reopened", window: .main(ParityMode.Launch(
+                selection: .lecture(dcLecture2.id),
+                reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
+                panel: panel(.compact, weekendPlan)
             ))),
             // §2: the same conversation after Go ▸ Calendar (its context line "DC Lecture 2").
             RenderShot(name: "ma-calendar", window: .main(ParityMode.Launch(selection: .calendar, panel: panel(.compact, weekendPlan, exchanges: 0..<1)))),
