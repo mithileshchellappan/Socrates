@@ -78,7 +78,10 @@ public struct InkView: View, Equatable {
 /// - `tool` nil: draws only and lets clicks through (pins and menus under it keep working).
 /// - Pen and highlighter: a drag adds one stroke (a click adds a dot); the stroke in progress is
 ///   drawn on its own layer, so the finished strokes are not redrawn while it grows.
-/// - Eraser: a drag removes every stroke it touches.
+/// - Eraser: a drag removes every stroke it touches (a 7 pt ring under the pointer shows its
+///   reach).
+/// - While a tool is on the pointer is a crosshair (Mac); a finished stroke is thinned to the
+///   points that shape it.
 /// - Every stroke and every erase gesture is one undo step on the window's `UndoManager` (⌘Z /
 ///   ⇧⌘Z); the steps are dropped when the canvas leaves the screen, so give the canvas an `.id`
 ///   per drawing (per slide page) and an undo never lands on another page.
@@ -113,7 +116,9 @@ public struct InkCanvas: View {
 
 // MARK: - Input
 
-/// The drag that draws or erases, and the stroke in progress.
+/// The drag that draws or erases, and the stroke in progress (on its own layer, so the finished
+/// strokes are not redrawn while it grows). A crosshair pointer while the tool is on (Mac); the
+/// eraser shows its reach as a ring under the pointer.
 private struct InkInput: View {
     @Binding var drawing: InkDrawing
     let tool: InkTool
@@ -126,26 +131,47 @@ private struct InkInput: View {
     @State private var live: [InkPoint] = []
     /// The drawing when the current gesture began.
     @State private var before: InkDrawing?
-    /// The eraser's last position in view points.
+    /// The eraser's last position in view points (while erasing).
     @State private var lastEraser: CGPoint?
+    /// The pointer over the canvas (the eraser's ring).
+    @State private var hover: CGPoint?
 
     /// The eraser's reach in view points.
-    private static let eraserRadius: Double = 6
+    private static let eraserRadius: Double = 7
     /// Points closer than this (view points) to the previous one are skipped.
     private static let minimumSpacing: Double = 1
+    /// A finished stroke keeps only the points that move it by more than this (view points); the
+    /// curve through the midpoints hides the difference.
+    private static let simplification: Double = 0.3
 
     var body: some View {
         let stroke = liveStroke
         let drawing = drawing
         let surface = surface
         let scheme = colorScheme
+        let ring = tool == .eraser ? (lastEraser ?? hover) : nil
         Canvas { context, size in
-            guard let stroke else { return }
-            InkRenderer.draw([stroke], of: drawing, in: context, size: size, surface: surface, scheme: scheme)
+            if let stroke {
+                InkRenderer.draw([stroke], of: drawing, in: context, size: size, surface: surface, scheme: scheme)
+            }
+            if let ring {
+                let radius = Self.eraserRadius
+                let circle = Path(ellipseIn: CGRect(x: ring.x - radius, y: ring.y - radius, width: radius * 2, height: radius * 2))
+                // The slide is white paper in both appearances; a sketch follows the appearance.
+                let edge: GraphicsContext.Shading = surface == .slide ? .color(.black.opacity(0.45)) : .style(.secondary)
+                context.stroke(circle, with: edge, lineWidth: 1)
+            }
         }
         .blendMode(surface == .slide && tool == .highlighter ? .multiply : .normal)
         .contentShape(Rectangle())
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+        #if os(macOS)
+        .pointerStyle(.rectSelection)
+        .onContinuousHover { phase in
+            guard tool == .eraser else { return }
+            if case .active(let location) = phase { hover = location } else { hover = nil }
+        }
+        #endif
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .onChanged { changed(at: $0.location) }
@@ -165,16 +191,17 @@ private struct InkInput: View {
         if before == nil { before = drawing }
         let frame = frame
         if tool == .eraser {
+            // Every stroke the ring passed over since the last event, not only where it lands.
             let from = lastEraser ?? location
             let distance = hypot(location.x - from.x, location.y - from.y)
-            let steps = max(1, Int(distance / 3))
+            let steps = max(1, Int((distance / (Self.eraserRadius / 2)).rounded(.up)))
             var erased = drawing
             for step in 1...steps {
                 let t = Double(step) / Double(steps)
                 let point = CGPoint(x: from.x + (location.x - from.x) * t, y: from.y + (location.y - from.y) * t)
                 erased = erased.erasing(at: frame.drawingPoint(point), radius: Self.eraserRadius / frame.scale)
             }
-            if erased != drawing { drawing = erased }
+            if erased.strokes.count != drawing.strokes.count { drawing = erased }
             lastEraser = location
             return
         }
@@ -195,12 +222,42 @@ private struct InkInput: View {
             return
         }
         guard var stroke = liveStroke else { return }
+        stroke.points = InkSimplifier.simplified(stroke.points, tolerance: Self.simplification / frame.scale)
         // A click is a dot.
         if stroke.points.count == 1 { stroke.points.append(stroke.points[0]) }
         var next = drawing
         next.strokes.append(stroke)
         drawing = next
         InkUndo.register(undoManager, target: undoTarget, drawing: $drawing, restoring: before, current: next)
+    }
+}
+
+/// Ramer–Douglas–Peucker: the points a polyline needs to stay within `tolerance` of itself, so a
+/// slow drag does not store a point per pixel.
+enum InkSimplifier {
+    static func simplified(_ points: [InkPoint], tolerance: Double) -> [InkPoint] {
+        guard points.count > 2, tolerance > 0 else { return points }
+        var keeps = [Bool](repeating: false, count: points.count)
+        keeps[0] = true
+        keeps[points.count - 1] = true
+        var ranges = [(first: 0, last: points.count - 1)]
+        while let range = ranges.popLast() {
+            guard range.last > range.first + 1 else { continue }
+            var farthest = range.first
+            var distance = 0.0
+            for index in (range.first + 1)..<range.last {
+                let candidate = points[index].distance(toSegment: points[range.first], points[range.last])
+                if candidate > distance {
+                    distance = candidate
+                    farthest = index
+                }
+            }
+            guard distance > tolerance else { continue }
+            keeps[farthest] = true
+            ranges.append((range.first, farthest))
+            ranges.append((farthest, range.last))
+        }
+        return points.indices.filter { keeps[$0] }.map { points[$0] }
     }
 }
 

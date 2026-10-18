@@ -51,6 +51,18 @@ final class ReviewModel {
     /// A pin the student just added: its card opens for typing.
     var newPinID: Annotation.ID?
 
+    /// M6: the tool drawing on the slide (Mac: the toolbar's pen / highlighter / eraser, P H E);
+    /// nil: drawing is off and clicks on the slide pass through.
+    private(set) var inkTool: InkTool?
+    /// The pen or highlighter the eraser goes back to.
+    @ObservationIgnored private var drawingTool: InkTool = .pen
+    /// The deck's pages with ink (the rail's pencil, with the slides that have notes).
+    var inkPages: Set<Int> = []
+    /// What the flags' undo steps are registered with (dropped when the screen closes).
+    @ObservationIgnored let flagUndo = FlagUndoTarget()
+    /// Flag writes and their undo and redo, one after another.
+    @ObservationIgnored private var flagWrite: Task<Void, Never>?
+
     init(
         lecture: Lecture, course: Course?, recording: Recording?, recordings: [Recording] = [], deckID: Deck.ID?, deck: SlideDeck?,
         session: ReviewSession, services: StudyServices, realign: @escaping AnchorEditor.Realign
@@ -119,12 +131,17 @@ final class ReviewModel {
                 timeline = SlideTimeline(try await LectureRepository(store: store).timedSpans(lectureID: lectureID, recordingID: recording.id))
                 player = newPlayer
             }
+            var inkPages: Set<Int> = []
+            if let deckRow, deck != nil {
+                inkPages = try await SlideInkRepository(store: store).pages(deckID: deckRow.id)
+            }
             guard !Task.isCancelled else { return nil }
             let session = ReviewSession(player: player, pageCount: deck?.pageCount ?? 0, timeline: timeline)
             let model = ReviewModel(
                 lecture: lecture, course: course, recording: recording, recordings: all, deckID: deckRow?.id, deck: deck,
                 session: session, services: services, realign: realign
             )
+            model.inkPages = inkPages
             let resume = recording?.id == all.first?.id ? lecture.reviewPosition : nil
             await session.open(page: target.page, time: target.time, plays: target.plays && !Task.isCancelled, resume: resume)
             return model
@@ -287,6 +304,79 @@ final class ReviewModel {
         }
     }
 
+    // MARK: - Ink and flags (M6)
+
+    /// Drawing needs a slide: a deck on screen.
+    var canDraw: Bool { deck != nil && deckID != nil }
+
+    /// A flag needs the recording on screen.
+    var canFlag: Bool { recording != nil && player != nil }
+
+    /// Pen or highlighter: on, or off when it is the tool on (one at a time). Eraser (only while
+    /// drawing): on, or back to the pen or highlighter. Drawing turns Follow off, so the slide
+    /// stays put while the student draws.
+    func toggleInkTool(_ tool: InkTool) {
+        guard canDraw else { return }
+        switch tool {
+        case .eraser:
+            guard let current = inkTool else { return }
+            inkTool = current == .eraser ? drawingTool : .eraser
+        case .pen, .highlighter:
+            inkTool = inkTool == tool ? nil : tool
+            if inkTool != nil { drawingTool = tool }
+        }
+        if inkTool != nil { session.setFollowing(false) }
+    }
+
+    /// Esc, or Follow turned back on.
+    func stopDrawing() {
+        inkTool = nil
+    }
+
+    /// The rail's pencil follows a page's ink as it is drawn and erased.
+    func setPage(_ page: Int, hasInk: Bool) {
+        guard inkPages.contains(page) != hasInk else { return }
+        if hasInk { inkPages.insert(page) } else { inkPages.remove(page) }
+    }
+
+    /// Flag (F): the student's flag at the playhead on the recording on screen, with the slide on
+    /// screen. The red scrubber mark comes back through observation; Edit ▸ Undo removes it.
+    func flag(undoManager: UndoManager?) {
+        guard let recording, let player else { return }
+        let rate = recording.sampleRate > 0 ? recording.sampleRate : 48_000
+        let event = SlideEvent(
+            recordingID: recording.id,
+            lectureID: lecture.id,
+            kind: .flag,
+            deckID: deck == nil ? nil : deckID,
+            pageNumber: session.shownPage,
+            sampleTime: Int64((max(0, player.time) * rate).rounded()),
+            wallClock: services.records.currentDate
+        )
+        writeFlag(event, adds: true, undoManager: undoManager)
+    }
+
+    /// Adds or removes the flag and registers the opposite step.
+    private func writeFlag(_ event: SlideEvent, adds: Bool, undoManager: UndoManager?) {
+        let edits = edits
+        let previous = flagWrite
+        flagWrite = Task {
+            await previous?.value
+            do {
+                if adds {
+                    try await edits.addFlag(event)
+                } else {
+                    try await edits.deleteFlag(event.id)
+                }
+            } catch {
+                ReviewLog.logger.error("Saving a flag failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        undoManager?.registerUndo(withTarget: flagUndo) { [weak self] _ in
+            self?.writeFlag(event, adds: !adds, undoManager: undoManager)
+        }
+    }
+
     func toggleReviewed(isReviewed: Bool) {
         keeper.toggleReviewed(isReviewed: isReviewed)
     }
@@ -304,6 +394,10 @@ final class ReviewModel {
         player?.pause()
     }
 }
+
+/// The identity a review's flag undo steps are registered with.
+@MainActor
+final class FlagUndoTarget {}
 
 enum ReviewLog {
     static let logger = Log.logger(category: "review")

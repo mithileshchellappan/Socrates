@@ -1,5 +1,6 @@
 import Review
 import StudyCore
+import StudyUI
 import SwiftUI
 
 /// What the review screen in the key window can do right now, published as a focused scene value
@@ -34,6 +35,15 @@ public struct ReviewActions {
     public var toggleThumbnails: () -> Void
     public var toggleTranscript: () -> Void
 
+    /// M6 (Mac): drawing on the slide (with a deck) and flags (with a recording).
+    public var canDraw: Bool
+    /// The tool on; nil while not drawing.
+    public var inkTool: InkTool?
+    public var canFlag: Bool
+    public var toggleInkTool: (InkTool) -> Void
+    public var stopDrawing: () -> Void
+    public var flag: () -> Void
+
     public init(
         hasAudio: Bool, isPlaying: Bool, canGoPrevious: Bool, canGoNext: Bool, canFollow: Bool, isFollowing: Bool,
         canSetSlideStart: Bool, isReviewed: Bool, isEditingText: Bool,
@@ -42,8 +52,17 @@ public struct ReviewActions {
         slideStartsHere: @escaping () -> Void, toggleReviewed: @escaping () -> Void,
         canToggleThumbnails: Bool = false, areThumbnailsCollapsed: Bool = false,
         canToggleTranscript: Bool = false, isTranscriptCollapsed: Bool = false,
-        toggleThumbnails: @escaping () -> Void = {}, toggleTranscript: @escaping () -> Void = {}
+        toggleThumbnails: @escaping () -> Void = {}, toggleTranscript: @escaping () -> Void = {},
+        canDraw: Bool = false, inkTool: InkTool? = nil, canFlag: Bool = false,
+        toggleInkTool: @escaping (InkTool) -> Void = { _ in }, stopDrawing: @escaping () -> Void = {},
+        flag: @escaping () -> Void = {}
     ) {
+        self.canDraw = canDraw
+        self.inkTool = inkTool
+        self.canFlag = canFlag
+        self.toggleInkTool = toggleInkTool
+        self.stopDrawing = stopDrawing
+        self.flag = flag
         self.canToggleThumbnails = canToggleThumbnails
         self.areThumbnailsCollapsed = areThumbnailsCollapsed
         self.canToggleTranscript = canToggleTranscript
@@ -75,6 +94,11 @@ public struct ReviewActions {
     var followEnabled: Bool { canFollow && !isEditingText }
     var slideStartEnabled: Bool { canSetSlideStart && !isEditingText }
     var reviewedEnabled: Bool { !isEditingText }
+    var drawEnabled: Bool { canDraw && !isEditingText }
+    /// The eraser joins while a tool is on.
+    var eraserEnabled: Bool { drawEnabled && inkTool != nil }
+    var stopDrawingEnabled: Bool { inkTool != nil && !isEditingText }
+    var flagEnabled: Bool { canFlag && !isEditingText }
 }
 
 extension FocusedValues {
@@ -83,7 +107,8 @@ extension FocusedValues {
 }
 
 /// The Review menu: Play/Pause (Space), Back/Forward 15 Seconds (⌥← / ⌥→), Previous/Next Slide
-/// (← / →), Follow Playback (⇧⌘F), Slide Starts Here (⌘\), Mark as Reviewed (⇧⌘R). Reads the
+/// (← / →), Follow Playback (⇧⌘F), Slide Starts Here (⌘\), Mark as Reviewed (⇧⌘R); M6 on the Mac:
+/// Flag (F), Pen (P), Highlighter (H), Eraser (E, while drawing), Stop Drawing (Esc). Reads the
 /// focused review screen's actions; everything is disabled while a text field has focus. In the
 /// View menu after the sidebar: Hide/Show Thumbnails (⌥⌘1) and Hide/Show Transcript (⌥⌘2).
 ///
@@ -124,6 +149,12 @@ public struct ReviewCommands: Commands {
             .keyboardShortcut(focused ? KeyboardShortcut("f", modifiers: [.command, .shift]) : nil)
             .disabled(review?.followEnabled != true)
             Divider()
+            #if os(macOS)
+            // M6: the student's flag at the playhead (no text, no dialog; Edit ▸ Undo removes it).
+            Button("Flag") { review?.flag() }
+                .keyboardShortcut(review?.flagEnabled == true ? KeyboardShortcut("f", modifiers: []) : nil)
+                .disabled(review?.flagEnabled != true)
+            #endif
             Button("Slide Starts Here") { review?.slideStartsHere() }
                 .keyboardShortcut(focused ? KeyboardShortcut("\\", modifiers: [.command]) : nil)
                 .disabled(review?.slideStartEnabled != true)
@@ -133,6 +164,17 @@ public struct ReviewCommands: Commands {
             ))
             .keyboardShortcut(focused ? KeyboardShortcut("r", modifiers: [.command, .shift]) : nil)
             .disabled(review?.reviewedEnabled != true)
+            #if os(macOS)
+            // M6: drawing on the slide (pen and highlighter one at a time, the eraser while
+            // drawing, Esc ends it). Plain keys, attached only while they work (decision 161).
+            Divider()
+            inkToggle("Pen", .pen, key: "p", enabled: review?.drawEnabled == true)
+            inkToggle("Highlighter", .highlighter, key: "h", enabled: review?.drawEnabled == true)
+            inkToggle("Eraser", .eraser, key: "e", enabled: review?.eraserEnabled == true)
+            Button("Stop Drawing") { review?.stopDrawing() }
+                .keyboardShortcut(review?.stopDrawingEnabled == true ? KeyboardShortcut(.escape, modifiers: []) : nil)
+                .disabled(review?.stopDrawingEnabled != true)
+            #endif
         }
         CommandGroup(after: .sidebar) {
             Button(review?.areThumbnailsCollapsed == true ? LocalizedStringKey("Show Thumbnails") : "Hide Thumbnails") {
@@ -147,6 +189,17 @@ public struct ReviewCommands: Commands {
             .disabled(review?.canToggleTranscript != true)
         }
     }
+
+    #if os(macOS)
+    private func inkToggle(_ title: LocalizedStringKey, _ tool: InkTool, key: Character, enabled: Bool) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { review?.inkTool == tool },
+            set: { _ in review?.toggleInkTool(tool) }
+        ))
+        .keyboardShortcut(enabled ? KeyboardShortcut(KeyEquivalent(key), modifiers: []) : nil)
+        .disabled(!enabled)
+    }
+    #endif
 }
 
 /// Publishes the screen's `ReviewActions`. Its own view, so the state it reads (playing, slide,
@@ -160,6 +213,8 @@ struct ReviewActionsPublisher: View {
     /// stays true until the search is cancelled, which would detach the review keys while a
     /// search hit plays).
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
+    /// The window's: Flag's undo step goes there (as the ink canvas's do).
+    @Environment(\.undoManager) private var undoManager
     /// The screen's layout (`ReviewContent` reads the same value and animates the change).
     @AppStorage(ReviewLayout.storageKey) private var layout = ReviewLayout()
 
@@ -182,6 +237,7 @@ struct ReviewActionsPublisher: View {
         let player = model.player
         let isReviewed = (lecture.first ?? model.lecture).reviewedAt != nil
         let layout = $layout
+        let undoManager = undoManager
         return ReviewActions(
             hasAudio: player?.hasAudio == true,
             isPlaying: player?.isPlaying == true,
@@ -205,7 +261,13 @@ struct ReviewActionsPublisher: View {
             canToggleTranscript: model.deck != nil && model.recording != nil,
             isTranscriptCollapsed: layout.wrappedValue.isTranscriptCollapsed,
             toggleThumbnails: { layout.wrappedValue.isRailCollapsed.toggle() },
-            toggleTranscript: { layout.wrappedValue.isTranscriptCollapsed.toggle() }
+            toggleTranscript: { layout.wrappedValue.isTranscriptCollapsed.toggle() },
+            canDraw: model.canDraw,
+            inkTool: model.inkTool,
+            canFlag: model.canFlag,
+            toggleInkTool: { model.toggleInkTool($0) },
+            stopDrawing: { model.stopDrawing() },
+            flag: { model.flag(undoManager: undoManager) }
         )
     }
 }
