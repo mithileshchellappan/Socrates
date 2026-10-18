@@ -269,11 +269,13 @@ struct AnswerText: Equatable {
                 guard let citation = checked[index] else {
                     // Dropped: no gap before punctuation or the end of a line.
                     if case .text(let previous)? = pieces.last, previous.hasSuffix(" ") {
-                        var following: String?
-                        if index + 1 < raw.count, case .text(let text) = raw[index + 1] { following = text }
-                        if following.map({ $0.isEmpty || ".,;:!?)\n ".contains($0.first ?? " ") }) ?? true {
-                            pieces[pieces.count - 1] = .text(String(previous.dropLast()))
+                        let strips: Bool
+                        switch index + 1 < raw.count ? raw[index + 1] : nil {
+                        case nil: strips = true
+                        case .text(let following)?: strips = following.first.map { ".,;:!?)\n ".contains($0) } ?? true
+                        case .citation?: strips = false
                         }
+                        if strips { pieces[pieces.count - 1] = .text(String(previous.dropLast())) }
                     }
                     continue
                 }
