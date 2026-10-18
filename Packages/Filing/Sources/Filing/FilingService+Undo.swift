@@ -134,6 +134,7 @@ extension FilingService {
         guard var recording = try Recording.find(recordingID).fetchOne(db) else { throw FilingError.missing }
         let noLecture: Lecture.ID? = nil
         let noCourse: Course.ID? = nil
+        if let oldLectureID { try dropStudyPass(of: oldLectureID, builtOn: recordingID, in: db) }
         recording.lectureID = nil
         recording.courseID = nil
         let stamped = store.stamp(recording)
@@ -154,7 +155,7 @@ extension FilingService {
             .update { $0.lectureID = noLecture; $0.updatedAt = now }.execute(db)
         try Note.where { $0.recordingID.eq(recordingID) }
             .update { $0.lectureID = noLecture; $0.courseID = noCourse; $0.updatedAt = now }.execute(db)
-        try Annotation.where { $0.recordingID.eq(recordingID) }
+        try Annotation.where { $0.recordingID.eq(recordingID) && $0.studyUnitID.is(nil) }
             .update { $0.lectureID = noLecture; $0.updatedAt = now }.execute(db)
         try LectureDeckSpan.where { $0.recordingID.eq(recordingID) }.delete().execute(db)
         try Job.where { $0.recordingID.eq(recordingID) && $0.stage.eq(JobStage.align) && $0.state.eq(JobState.queued) }
@@ -222,12 +223,12 @@ extension FilingService {
     }
 
     /// Nothing but this filing refers to the lecture: no recording, slides, notes, annotations
-    /// or other filing.
+    /// of the student's own or other filing (the study pass's rows go with the lecture).
     static func lectureIsUnused(_ lectureID: Lecture.ID, except filingID: Filing.ID, in db: Database) throws -> Bool {
         let recordings = try Recording.where { $0.lectureID.eq(lectureID) }.fetchCount(db)
         let spans = try LectureDeckSpan.where { $0.lectureID.eq(lectureID) }.fetchCount(db)
         let notes = try Note.where { $0.lectureID.eq(lectureID) }.fetchCount(db)
-        let annotations = try Annotation.where { $0.lectureID.eq(lectureID) }.fetchCount(db)
+        let annotations = try Annotation.where { $0.lectureID.eq(lectureID) && $0.studyUnitID.is(nil) }.fetchCount(db)
         let filings = try Filing.where { $0.lectureID.eq(lectureID) && $0.id.neq(filingID) }.fetchCount(db)
         return recordings + spans + notes + annotations + filings == 0
     }

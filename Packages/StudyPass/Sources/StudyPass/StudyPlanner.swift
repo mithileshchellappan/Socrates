@@ -1,4 +1,6 @@
 import ClaudeKit
+import CryptoKit
+import Deadlines
 import Foundation
 import StudyCore
 
@@ -57,10 +59,22 @@ struct ReadBlock: Sendable {
 
 /// A further-reading pick of synthesis: a topic row with its query (`detail`) and slide.
 struct ResearchPick: Sendable {
-    var topicID: Annotation.ID
     var title: String
     var query: String
     var page: Int?
+
+    /// "research:" + 12 hex characters of SHA-256(folded title, query, slide): a synthesis re-run
+    /// that picks the same topic keeps its done unit and its further-reading rows (the topic
+    /// row's id changes with every re-run).
+    var unitKey: String {
+        var hasher = SHA256()
+        for part in [TextFolding.fold(title), TextFolding.fold(query), page.map(String.init) ?? "-"] {
+            hasher.update(data: Data(part.utf8))
+            hasher.update(data: Data([0]))
+        }
+        let hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return StudyPlanner.researchPrefix + hex.prefix(12)
+    }
 }
 
 /// One unit as planned now.
@@ -110,10 +124,13 @@ enum StudyPlanner {
             stage: .synthesize, key: synthesisKey, work: .synthesize, prompt: skipSynthesis ? nil : synthesis,
             inputHash: synthesis.inputHash(model: SynthesisStage.model, effort: SynthesisStage.effort), skip: skipSynthesis))
 
+        var researchKeys: Set<String> = []
         for pick in researchPicks(rows) {
+            let key = pick.unitKey
+            guard researchKeys.insert(key).inserted else { continue }
             let prompt = ResearchStage.prompt(pick, in: material)
             specs.append(UnitSpec(
-                stage: .research, key: researchPrefix + pick.topicID.uuidString.lowercased(), work: .research(pick),
+                stage: .research, key: key, work: .research(pick),
                 prompt: prompt, inputHash: prompt.inputHash(model: ResearchStage.model, effort: ResearchStage.effort), skip: false))
         }
         return specs
@@ -199,7 +216,7 @@ enum StudyPlanner {
         rows.annotations(.topic, of: .synthesize).compactMap { topic in
             guard let query = topic.detail, !query.isEmpty else { return nil }
             let page = topic.citations.first { $0.kind == .slide }?.pageNumber ?? topic.pageNumber
-            return ResearchPick(topicID: topic.id, title: topic.body, query: query, page: page)
+            return ResearchPick(title: topic.body, query: query, page: page)
         }
     }
 

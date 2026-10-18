@@ -89,12 +89,16 @@ struct StudyPrompt: Sendable {
     var schema: JSONValue
     /// The user turn's text (after any images).
     var text: String
+    /// What the hash takes instead of `text`: `text` without what never warrants a re-run (the
+    /// course's name, the lecturers, the day). Nil: `text` itself.
+    var hashedText: String?
     /// Figure slides sent as images before the text (read units).
     var imagePages: [Int] = []
     /// What else the call depends on and the text does not show (the deck file of the images).
     var extraInputs: [String] = []
 
-    /// SHA-256 (hex) of everything that goes into the call + `StudyPass.promptVersion`.
+    /// SHA-256 (hex) of everything that goes into the call (`hashedText` for the text) +
+    /// `StudyPass.promptVersion`.
     func inputHash(model: ClaudeModel, effort: Effort) -> String {
         var hasher = SHA256()
         func add(_ part: String) {
@@ -106,7 +110,7 @@ struct StudyPrompt: Sendable {
         add(effort.rawValue)
         add(system)
         add((try? schema.serializedString()) ?? "")
-        add(text)
+        add(hashedText ?? text)
         for page in imagePages { add("image:\(page)") }
         for input in extraInputs { add(input) }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
@@ -162,7 +166,8 @@ enum TextRules {
 
     /// A line where the professor points at the exam (DE/EN, plan §3.3): Klausur, Prüfung,
     /// prüfungsrelevant, wichtig, merken, exam, important, you should know, will be asked,
-    /// relevant, test.
+    /// relevant, test. "exam" and "relevant" are whole words ("example", "examine" and
+    /// "relevance" are no cue); Klausur, Prüfung and wichtig match as prefixes.
     static func isExamCue(_ text: String) -> Bool {
         let words = TextFolding.words(text)
         for word in words {
@@ -173,8 +178,13 @@ enum TextRules {
         return examPhrases.contains { folded.contains($0) }
     }
 
-    static let examWords: Set<String> = ["merken", "merkt", "merke", "test", "tests", "relevant", "important"]
-    static let examPrefixes = ["klausur", "prufung", "exam", "wichtig", "relevan"]
+    static let examWords: Set<String> = [
+        "merken", "merkt", "merke", "test", "tests", "important",
+        // "exam-relevant" folds to "exam" + "relevant".
+        "exam", "exams", "examination", "examinations", "examen",
+        "relevant", "relevante", "relevanten", "relevanter", "relevantes",
+    ]
+    static let examPrefixes = ["klausur", "prufung", "wichtig"]
     static let examPhrases = [" you should know ", " you need to know ", " will be asked ", " should remember "]
 
     // MARK: Folded spans

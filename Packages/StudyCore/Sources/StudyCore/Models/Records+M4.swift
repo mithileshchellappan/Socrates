@@ -18,7 +18,8 @@ public struct StudyUnit: StudyRecord {
     @Column("lecture_id") public var lectureID: Lecture.ID
     public var stage: StudyStage
     /// Stable within (lecture, stage): "p13-24" (deck pages 13–24), "t0-15" (minutes, a lecture
-    /// without a deck), "lecture" (synthesis), "research:<topic annotation id>".
+    /// without a deck), "lecture" (synthesis), "research:<12 hex of SHA-256 of the pick's title,
+    /// query and slide>".
     public var key: String
     /// SHA-256 (hex) of the unit's exact prompt inputs + `StudyPass.promptVersion`.
     @Column("input_hash") public var inputHash: String

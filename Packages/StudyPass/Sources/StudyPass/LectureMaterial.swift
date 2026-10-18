@@ -129,6 +129,32 @@ struct LectureMaterial: Sendable {
         return PromptText.escape(parts.joined(separator: ". ")) + "."
     }
 
+    /// `header` as the input hash sees it: the lecture and its language. A course rename, a
+    /// lecturer or the day never sends a unit again (the prompt still carries them).
+    var hashedHeader: String {
+        PromptText.escape("\(lectureName). Spoken language: \(language.isEmpty ? "unknown" : language)") + "."
+    }
+
+    /// The course's glossary terms that a word of `texts` starts like (folded; the first 5
+    /// letters, a shorter term word whole): a glossary edit sends only the blocks it concerns.
+    func glossaryTerms(matching texts: [String]) -> [String] {
+        let terms = course?.glossaryTerms ?? []
+        guard !terms.isEmpty else { return [] }
+        var words: Set<String> = []
+        var stems: Set<Substring> = []
+        for text in texts {
+            for word in TextFolding.words(text) {
+                words.insert(word)
+                if word.count >= 5 { stems.insert(word.prefix(5)) }
+            }
+        }
+        return terms.filter { term in
+            TextFolding.words(term).contains { word in
+                word.count < 5 ? words.contains(word) : stems.contains(word.prefix(5))
+            }
+        }
+    }
+
     // MARK: - Loading
 
     /// Nil when the lecture is gone or has no transcript lines.

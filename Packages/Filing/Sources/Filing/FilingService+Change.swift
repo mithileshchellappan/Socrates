@@ -174,6 +174,18 @@ extension FilingService {
 
     // MARK: - Moving rows
 
+    /// A recording leaves a lecture whose study pass was built on it: the lecture's study units
+    /// go, and with them (CASCADE) every row the pass wrote for it (summaries, exam hints, said in
+    /// class, topics, further reading, its internal notes). The pass builds the lecture again
+    /// from what stays; the recording's new lecture gets its own pass.
+    static func dropStudyPass(of lectureID: Lecture.ID, builtOn recordingID: Recording.ID, in db: Database) throws {
+        let built = try Annotation
+            .where { $0.lectureID.eq(lectureID) && $0.recordingID.eq(recordingID) && $0.studyUnitID.isNot(nil) }
+            .fetchCount(db)
+        guard built > 0 else { return }
+        try StudyUnit.where { $0.lectureID.eq(lectureID) }.delete().execute(db)
+    }
+
     static func moveRecording(
         _ recordingID: Recording.ID, kind: FilingKind, from oldLectureID: Lecture.ID?, to lecture: Lecture,
         in db: Database, store: RecordStore, now: Date
@@ -183,6 +195,7 @@ extension FilingService {
         let courseID: Course.ID? = lecture.courseID
         let oldDeck = try oldLectureID.flatMap { try alignmentDeck(lectureID: $0, recordingID: recordingID, in: db) }
 
+        if let oldLectureID { try dropStudyPass(of: oldLectureID, builtOn: recordingID, in: db) }
         recording.lectureID = lecture.id
         recording.courseID = lecture.courseID
         let stampedRecording = store.stamp(recording)
@@ -193,7 +206,8 @@ extension FilingService {
             .update { $0.lectureID = newID; $0.updatedAt = now }.execute(db)
         try Note.where { $0.recordingID.eq(recordingID) }
             .update { $0.lectureID = newID; $0.courseID = courseID; $0.updatedAt = now }.execute(db)
-        try Annotation.where { $0.recordingID.eq(recordingID) }
+        // The student's own rows move; the study pass's stay with their lecture's units.
+        try Annotation.where { $0.recordingID.eq(recordingID) && $0.studyUnitID.is(nil) }
             .update { $0.lectureID = newID; $0.updatedAt = now }.execute(db)
         try Job.where { $0.recordingID.eq(recordingID) }
             .update { $0.lectureID = newID; $0.updatedAt = now }.execute(db)

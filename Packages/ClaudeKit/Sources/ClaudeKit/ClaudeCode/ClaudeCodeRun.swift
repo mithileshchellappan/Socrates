@@ -493,7 +493,15 @@ enum ClaudeCodeRun {
                     if forward { await onEvent(event) }
                     let (started, elapsed) = tracker.takeSegment()
                     await call.record(message, error: nil, startedAt: started, elapsed: elapsed)
-                    guard !structured, answer == nil else { return .proceed }
+                    guard answer == nil else { return .proceed }
+                    if structured {
+                        // The structured output comes in the result line. A cut-off or declined
+                        // message is final too: the CLI would ask the model again (one more full
+                        // call per attempt).
+                        guard [.maxTokens, .refusal, .modelContextWindowExceeded].contains(message.stopReason) else { return .proceed }
+                        answer = message
+                        return .stop
+                    }
                     // The CLI runs its web tools and calls the model again.
                     if web != nil, message.stopReason == .toolUse || message.stopReason == .pauseTurn { return .proceed }
                     answer = message
@@ -521,7 +529,7 @@ enum ClaudeCodeRun {
         }
 
         if let answer {
-            if web != nil {
+            if web != nil || structured {
                 for event in syntheticEvents(for: answer) { await onEvent(event) }
             }
             return answer

@@ -55,8 +55,9 @@ enum ResearchStage {
         """
 
     static func prompt(_ pick: ResearchPick, in material: LectureMaterial) -> StudyPrompt {
-        var text = "Course: \(PromptText.escape(material.courseName.isEmpty ? "unknown" : material.courseName)). "
-        text += "Spoken language: \(material.language.isEmpty ? "unknown" : material.language).\n"
+        // The course's name goes first; the hash leaves it out (a rename never searches again).
+        let course = "Course: \(PromptText.escape(material.courseName.isEmpty ? "unknown" : material.courseName)). "
+        var text = "Spoken language: \(material.language.isEmpty ? "unknown" : material.language).\n"
         text += "Find further reading for this topic and return the JSON.\n\n"
         text += "<topic>\(PromptText.escape(pick.title))</topic>\n"
         text += "<query>\(PromptText.escape(pick.query))</query>\n"
@@ -64,7 +65,9 @@ enum ResearchStage {
             let slide = PromptText.clipped(material.slideText(page), limit: slideCharacters)
             text += "<slide n=\"\(page)\">\(PromptText.escape(slide))</slide>\n"
         }
-        return StudyPrompt(system: system, schema: schema, text: text, extraInputs: ["tools:WebSearch,WebFetch@\(maxTurns)"])
+        return StudyPrompt(
+            system: system, schema: schema, text: course + text, hashedText: text,
+            extraInputs: ["tools:WebSearch,WebFetch@\(maxTurns)"])
     }
 
     /// The sources the app's own fetch confirmed, as further-reading rows (title, byline, a web

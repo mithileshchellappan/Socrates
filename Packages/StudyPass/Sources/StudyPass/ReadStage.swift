@@ -126,8 +126,11 @@ enum ReadStage {
 
     static func prompt(_ block: ReadBlock, in material: LectureMaterial) -> StudyPrompt {
         let images = imagePages(block, in: material)
-        var text = material.header + "\n"
-        let glossary = material.course?.glossaryTerms ?? []
+        // The header goes first; the hash sees it without course, lecturers and day.
+        var text = ""
+        let pages = Set(block.sections.compactMap { material.sections[$0].page })
+        let glossary = material.glossaryTerms(
+            matching: block.lines.map { material.lines[$0].original } + pages.sorted().map(material.slideText))
         if !glossary.isEmpty {
             text += "<glossary>\(PromptText.escape(glossary.joined(separator: "; ")))</glossary>\n"
         }
@@ -156,7 +159,9 @@ enum ReadStage {
         }
         text += "</block>"
         let deckInput = images.isEmpty ? [] : ["deck:\(material.deck?.blobSHA256 ?? "")@\(imageWidth)"]
-        return StudyPrompt(system: system(german: material.isGerman), schema: schema, text: text, imagePages: images, extraInputs: deckInput)
+        return StudyPrompt(
+            system: system(german: material.isGerman), schema: schema, text: material.header + "\n" + text,
+            hashedText: material.hashedHeader + "\n" + text, imagePages: images, extraInputs: deckInput)
     }
 
     /// `<line id="l17" t="37:27" flagged="1">…</line>` per line (the original text).

@@ -1,3 +1,4 @@
+import Deadlines
 import Foundation
 import StudyCore
 
@@ -9,8 +10,9 @@ struct StudyWriter: Sendable {
     let store: RecordStore
 
     /// Writes a unit's verified result: its old rows go, the new ones (with `study_unit_id`) come,
-    /// the block's lines get their patches, the unit is `done`. Nothing is written (false) when
-    /// the unit is gone or its inputs changed while the call ran.
+    /// the block's lines get their patches, the unit is `done`. A new row that matches a row the
+    /// student hid (`hiddenKey`) stays hidden (plan §5: Hide holds through re-runs). Nothing is
+    /// written (false) when the unit is gone or its inputs changed while the call ran.
     func finish(_ unitID: StudyUnit.ID, expectedHash: String, result: UnitResult, apiCallID: APICall.ID?, now: Date) async throws -> Bool {
         let store = store
         let annotations = result.annotations.map { annotation in
@@ -21,8 +23,13 @@ struct StudyWriter: Sendable {
         }
         return try await database.write { db in
             guard var unit = try StudyUnit.find(unitID).fetchOne(db), unit.inputHash == expectedHash else { return false }
+            var hidden: [String: Date] = [:]
+            for row in try Annotation.where({ $0.studyUnitID.eq(unitID) && $0.hiddenAt.isNot(nil) }).fetchAll(db) {
+                if let date = row.hiddenAt { hidden[Self.hiddenKey(row)] = date }
+            }
             try Annotation.where { $0.studyUnitID.eq(unitID) }.delete().execute(db)
-            for annotation in annotations {
+            for var annotation in annotations {
+                if !hidden.isEmpty, let date = hidden[Self.hiddenKey(annotation)] { annotation.hiddenAt = date }
                 try Annotation.upsert { annotation }.execute(db)
             }
             for (segmentID, proposed) in result.patches ?? [:] {
@@ -39,6 +46,28 @@ struct StudyWriter: Sendable {
             let stamped = store.stamp(unit)
             try StudyUnit.upsert { stamped }.execute(db)
             return true
+        }
+    }
+
+    /// What makes a re-run's row "the same item" as one the student hid: the professor's words
+    /// and said-in-class items by their quote (said also by category), a summary by its slide
+    /// (the lecture's: page nil), further reading by its link, anything else by kind, slide and
+    /// text.
+    static func hiddenKey(_ row: Annotation) -> String {
+        let quote = TextFolding.fold(row.citations.first { $0.kind == .transcript }?.quote ?? row.body)
+        let page = row.pageNumber.map(String.init) ?? "-"
+        switch row.kind {
+        case .examHint, .highlight:
+            return "professor|" + quote
+        case .notOnSlides:
+            return "said|\(row.category?.rawValue ?? "-")|" + quote
+        case .summary:
+            return "summary|" + page
+        case .furtherReading:
+            let link = row.citations.first { $0.kind == .web }?.url?.absoluteString.lowercased()
+            return "reading|" + (link ?? TextFolding.fold(row.body))
+        default:
+            return "\(row.kind.rawValue)|\(page)|\(row.category?.rawValue ?? "-")|" + TextFolding.fold(row.body)
         }
     }
 
@@ -69,16 +98,17 @@ struct StudyWriter: Sendable {
         first.offset < second.offset + max(second.from.count, 1) && second.offset < first.offset + max(first.from.count, 1)
     }
 
-    /// A failed attempt (service trouble never comes here): `failed` after the third, else it
-    /// stays `pending`. The error is readable and holds no transcript text.
-    func countFailure(_ unitID: StudyUnit.ID, error: String, apiCallID: APICall.ID?) async throws {
+    /// A failed attempt (service trouble never comes here): `failed` after the third (at once
+    /// when `final`: an answer cut off at twice the cap, a refusal), else it stays `pending`. The
+    /// error is readable and holds no transcript text.
+    func countFailure(_ unitID: StudyUnit.ID, error: String, apiCallID: APICall.ID?, final: Bool = false) async throws {
         let store = store
         try await database.write { db in
             guard var unit = try StudyUnit.find(unitID).fetchOne(db) else { return }
             unit.attempts += 1
             unit.error = String(error.prefix(300))
             unit.apiCallID = apiCallID ?? unit.apiCallID
-            if unit.attempts >= StudyUnit.maximumAttempts {
+            if final || unit.attempts >= StudyUnit.maximumAttempts {
                 unit.state = .failed
                 unit.finishedAt = store.currentDate
             }
@@ -105,12 +135,14 @@ struct StudyWriter: Sendable {
         }
     }
 
-    /// Notional dollars the lecture's study calls cost so far (`api_call.cost_usd`, purpose
-    /// `study.*`).
-    func spent(lectureID: Lecture.ID) async throws -> Double {
+    /// Notional dollars the lecture's study calls started since `since` cost (`api_call.cost_usd`,
+    /// purpose `study.*`, failed calls included).
+    func spent(lectureID: Lecture.ID, since: Date) async throws -> Double {
         try await database.read { db in
             try APICall
-                .where { $0.lectureID.eq(lectureID) && $0.purpose.like(StudyStage.callPurposePrefix + "%") }
+                .where {
+                    $0.lectureID.eq(lectureID) && $0.purpose.like(StudyStage.callPurposePrefix + "%") && $0.createdAt.gte(since)
+                }
                 .select { $0.costUSD.sum() }
                 .fetchOne(db)?
                 .flatMap { $0 } ?? 0

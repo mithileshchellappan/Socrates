@@ -192,8 +192,8 @@ enum SynthesisStage {
 
     static func prompt(_ material: LectureMaterial, rows: PassRows) -> StudyPrompt {
         let notes = ReadNotes(material, rows: rows)
-        var text = material.header + "\n"
-        text += "Read the essentials of this lecture and return the JSON.\n\n<lecture>\n"
+        // The header goes first; the hash sees it without course, lecturers and day.
+        var text = "Read the essentials of this lecture and return the JSON.\n\n<lecture>\n"
         if !material.lecturePages.isEmpty {
             text += "<slides>\n"
             for page in material.lecturePages {
@@ -216,7 +216,9 @@ enum SynthesisStage {
             previous = index
         }
         text += "</transcript>\n</lecture>"
-        return StudyPrompt(system: system(german: material.isGerman), schema: schema, text: text)
+        return StudyPrompt(
+            system: system(german: material.isGerman), schema: schema, text: material.header + "\n" + text,
+            hashedText: material.hashedHeader + "\n" + text)
     }
 
     // MARK: - Verification

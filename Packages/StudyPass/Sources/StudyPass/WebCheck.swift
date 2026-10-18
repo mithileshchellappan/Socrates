@@ -7,8 +7,8 @@ import StudyCore
 /// `URLSession` (no cookies, no cache), GET over https only, 8 s, at most 1 MB read. A source is
 /// kept when the answer is 2xx and at least 70 % of the title's words appear in the page's
 /// `<title>`, its `citation_title`, or its first 64 KB of text (a PDF: its Title metadata). A DOI
-/// is checked against `api.crossref.org/works/<doi>` instead. Pages are data: nothing in them is
-/// followed or shown.
+/// is checked against `api.crossref.org/works/<doi>` instead and linked as `doi.org/<doi>`. Pages
+/// are data: nothing in them is followed or shown.
 struct WebCheck: Sendable {
     struct Verified: Sendable {
         /// What the further-reading row links to.
@@ -42,10 +42,11 @@ struct WebCheck: Sendable {
         let words = TextFolding.titleWords(title)
         guard !words.isEmpty else { return nil }
         if let doi {
-            guard let text = await crossref(doi), Self.share(of: words, in: text) >= Self.requiredShare else { return nil }
-            let link = URL(string: url).flatMap { $0.scheme?.lowercased() == "https" ? $0 : nil }
-                ?? URL(string: "https://doi.org/" + doi)
-            return link.map { Verified(url: $0, pageText: text) }
+            // Only Crossref was reached: the row links the DOI itself, never the model's own url
+            // (a page read during the run could have planted it beside a real DOI).
+            guard let text = await crossref(doi), Self.share(of: words, in: text) >= Self.requiredShare,
+                  let link = URL(string: "https://doi.org/" + Self.encodedDOI(doi)) else { return nil }
+            return Verified(url: link, pageText: text)
         }
         guard let link = URL(string: url), link.scheme?.lowercased() == "https", link.host != nil,
               case let (data, type, final)? = await fetch(link) else { return nil }
@@ -96,8 +97,7 @@ struct WebCheck: Sendable {
 
     /// Crossref's record of a DOI as text (titles, container, authors, years); nil when unknown.
     func crossref(_ doi: String) async -> String? {
-        let encoded = doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "?#"))) ?? doi
-        guard let url = URL(string: "https://api.crossref.org/works/" + encoded),
+        guard let url = URL(string: "https://api.crossref.org/works/" + Self.encodedDOI(doi)),
               case let (data, _, _)? = await fetch(url),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let message = root["message"] as? [String: Any] else { return nil }
@@ -142,6 +142,11 @@ struct WebCheck: Sendable {
         guard !words.isEmpty else { return 0 }
         let found = Set(TextFolding.words(entities(text)))
         return Double(words.filter(found.contains).count) / Double(words.count)
+    }
+
+    /// A DOI as a URL path ("?" and "#" escaped too).
+    static func encodedDOI(_ doi: String) -> String {
+        doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "?#"))) ?? doi
     }
 
     /// "10.1145/945445.945462" from a bare DOI, "doi:…" or a doi.org link; nil otherwise.
