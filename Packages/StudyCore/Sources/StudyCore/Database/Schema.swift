@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -49,6 +49,10 @@ public enum Schema {
         migrator.registerMigration("v10") { db in
             try db.execute(sql: v10)
         }
+        // ma, additive only (new tables and a nullable column).
+        migrator.registerMigration("v11") { db in
+            try db.execute(sql: v11)
+        }
         return migrator
     }
 
@@ -64,6 +68,7 @@ public enum Schema {
         "study_unit",
         "agent_memory",
         "slide_ink",
+        "agent_task", "agent_change", "agent_event", "agent_reminder",
     ]
 
     /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
@@ -870,6 +875,116 @@ public enum Schema {
           "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
         ) STRICT;
         CREATE INDEX "slide_ink_page" ON "slide_ink"("deck_id", "page_number");
+        """
+
+    /// v11 (ma: one agent across the app). docs/plan-agent.md §3. `agent_event` and `agent_task`
+    /// reference each other (SQLite checks foreign keys on writes, not on CREATE); `target_id` has
+    /// no foreign key (the target table varies).
+    static let v11 = """
+        CREATE TABLE "agent_event" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT 'mail',
+          "state" TEXT NOT NULL DEFAULT 'pending',
+          "source_key" TEXT NOT NULL DEFAULT '',
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE SET NULL,
+          "mail_message_id" TEXT REFERENCES "mail_message"("id") ON DELETE SET NULL,
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE SET NULL,
+          "recording_id" TEXT REFERENCES "recording"("id") ON DELETE SET NULL,
+          "detail" TEXT,
+          "attempts" INTEGER NOT NULL DEFAULT 0,
+          "error" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "task_id" TEXT REFERENCES "agent_task"("id") ON DELETE SET NULL,
+          "triaged_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "agent_event_state" ON "agent_event"("state", "created_at");
+        CREATE INDEX "agent_event_source" ON "agent_event"("source_key");
+
+        CREATE TABLE "agent_task" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT 'other',
+          "title" TEXT NOT NULL DEFAULT '',
+          "goal" TEXT NOT NULL DEFAULT '',
+          "input_summary" TEXT NOT NULL DEFAULT '',
+          "model" TEXT NOT NULL DEFAULT '',
+          "effort" TEXT NOT NULL DEFAULT 'medium',
+          "tools" TEXT NOT NULL DEFAULT '[]',
+          "state" TEXT NOT NULL DEFAULT 'queued',
+          "parent_conversation_id" TEXT REFERENCES "agent_conversation"("id") ON DELETE SET NULL,
+          "conversation_id" TEXT REFERENCES "agent_conversation"("id") ON DELETE SET NULL,
+          "event_id" TEXT REFERENCES "agent_event"("id") ON DELETE SET NULL,
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE SET NULL,
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE SET NULL,
+          "result" TEXT,
+          "error" TEXT,
+          "attempts" INTEGER NOT NULL DEFAULT 0,
+          "created_by" TEXT NOT NULL DEFAULT 'agent',
+          "paused_until" TEXT,
+          "started_at" TEXT,
+          "finished_at" TEXT,
+          "reported_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "agent_task_state" ON "agent_task"("state", "created_at");
+        CREATE INDEX "agent_task_parent" ON "agent_task"("parent_conversation_id");
+        CREATE INDEX "agent_task_conversation" ON "agent_task"("conversation_id");
+        CREATE INDEX "agent_task_event" ON "agent_task"("event_id");
+
+        CREATE TABLE "agent_change" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT '',
+          "target_table" TEXT NOT NULL DEFAULT '',
+          "target_id" TEXT,
+          "title" TEXT NOT NULL DEFAULT '',
+          "summary" TEXT NOT NULL DEFAULT '',
+          "before" TEXT,
+          "after" TEXT,
+          "source_kind" TEXT NOT NULL DEFAULT 'mail',
+          "mail_message_id" TEXT REFERENCES "mail_message"("id") ON DELETE SET NULL,
+          "rfc_message_id" TEXT NOT NULL DEFAULT '',
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE SET NULL,
+          "recording_id" TEXT REFERENCES "recording"("id") ON DELETE SET NULL,
+          "time" REAL,
+          "conversation_id" TEXT REFERENCES "agent_conversation"("id") ON DELETE SET NULL,
+          "task_id" TEXT REFERENCES "agent_task"("id") ON DELETE SET NULL,
+          "event_id" TEXT REFERENCES "agent_event"("id") ON DELETE SET NULL,
+          "quote" TEXT NOT NULL DEFAULT '',
+          "confidence" REAL NOT NULL DEFAULT 1,
+          "model" TEXT NOT NULL DEFAULT '',
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "tracked_item_source_id" TEXT REFERENCES "tracked_item_source"("id") ON DELETE SET NULL,
+          "superseded_by" TEXT REFERENCES "agent_change"("id") ON DELETE SET NULL,
+          "applied_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "undone_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "agent_change_applied" ON "agent_change"("applied_at");
+        CREATE INDEX "agent_change_target" ON "agent_change"("target_table", "target_id");
+        CREATE INDEX "agent_change_source" ON "agent_change"("tracked_item_source_id");
+        CREATE INDEX "agent_change_task" ON "agent_change"("task_id");
+        CREATE INDEX "agent_change_event" ON "agent_change"("event_id");
+
+        CREATE TABLE "agent_reminder" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "title" TEXT NOT NULL DEFAULT '',
+          "body" TEXT NOT NULL DEFAULT '',
+          "fire_at" TEXT NOT NULL,
+          "tracked_item_id" TEXT REFERENCES "tracked_item"("id") ON DELETE CASCADE,
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE SET NULL,
+          "delivered_at" TEXT,
+          "cancelled_at" TEXT,
+          "created_by" TEXT NOT NULL DEFAULT 'agent',
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "agent_reminder_fire" ON "agent_reminder"("fire_at");
+        CREATE INDEX "agent_reminder_item" ON "agent_reminder"("tracked_item_id");
+
+        ALTER TABLE "agent_turn" ADD COLUMN "context" TEXT;
         """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row

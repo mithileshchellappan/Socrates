@@ -9,6 +9,7 @@ import Foundation
 /// | `[[9a7d94d1 37:59]]` | that moment on the lecture's first recording (`1:03:42` past an hour) |
 /// | `[[9a7d94d1/b680d175 37:59]]` | that moment on another recording of the lecture |
 /// | `[[web https://…]]` | a web page |
+/// | `[[change 1a2b3c4d]]` | an automatic change (ma: `agent_change` whose id starts with it), drawn as a change row |
 ///
 /// Parsing is pure; whether a marker may show is decided from the rows (ChatUI): the key must
 /// name exactly one lecture, the slide be a page of its deck, the moment lie in the recording, a
@@ -21,6 +22,9 @@ public enum ChatCitation: Hashable, Sendable {
     case moment(lecture: String, recording: String?, seconds: Int)
     /// A web page (http or https).
     case web(URL)
+    /// ma: an automatic change of the activity log, by the first 8 hex of its `agent_change` id
+    /// (the panel draws a change row: the item's name, what happened, the time, Undo on hover).
+    case change(key: String)
 
     /// The key of a lecture or recording id: its first 8 hex digits, lower case ("9a7d94d1").
     public static func key(_ id: UUID) -> String {
@@ -42,7 +46,7 @@ public enum ChatCitation: Hashable, Sendable {
     public var lectureKey: String? {
         switch self {
         case .slide(let lecture, _), .moment(let lecture, _, _): lecture
-        case .web: nil
+        case .web, .change: nil
         }
     }
 
@@ -58,6 +62,7 @@ public enum ChatCitation: Hashable, Sendable {
         case .moment(let lecture, let recording, let seconds):
             "[[\(lecture)\(recording.map { "/" + $0 } ?? "") \(Self.clock(seconds))]]"
         case .web(let url): "[[web \(url.absoluteString)]]"
+        case .change(let key): "[[change \(key)]]"
         }
     }
 
@@ -88,6 +93,12 @@ public enum ChatCitation: Hashable, Sendable {
             guard !text.contains(where: \.isWhitespace), let url = URL(string: text),
                   let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http", url.host != nil else { return nil }
             self = .web(url)
+            return
+        }
+        if body.hasPrefix("change ") {
+            let key = body.dropFirst(7).trimmingCharacters(in: .whitespaces)
+            guard Self.isKey(key[...]) else { return nil }
+            self = .change(key: key)
             return
         }
         let parts = body.split(separator: " ")

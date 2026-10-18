@@ -70,6 +70,9 @@ public struct AgentTurn: StudyRecord {
     @Column("stop_reason") public var stopReason: String?
     /// The call that produced an assistant turn.
     @Column("api_call_id") public var apiCallID: APICall.ID?
+    /// v11 (ma): what a user turn of an `app` conversation was sent with besides its words (the
+    /// context, the thread's context line, the attachments); nil otherwise.
+    @Column(as: AgentTurnContext?.JSONRepresentation.self) public var context: AgentTurnContext?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
 
@@ -81,6 +84,7 @@ public struct AgentTurn: StudyRecord {
         message: String,
         stopReason: String? = nil,
         apiCallID: APICall.ID? = nil,
+        context: AgentTurnContext? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -91,6 +95,7 @@ public struct AgentTurn: StudyRecord {
         self.message = message
         self.stopReason = stopReason
         self.apiCallID = apiCallID
+        self.context = context
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

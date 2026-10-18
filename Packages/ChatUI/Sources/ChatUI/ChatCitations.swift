@@ -97,10 +97,14 @@ struct CitationCheck: Sendable {
         case unknownRecording = "moment_unknown_recording"
         case momentOutsideRecording = "moment_outside_recording"
         case pageNotInResults = "web_not_in_tool_results"
+        /// ma: a change row marker; the agent panel draws these (until then not shown).
+        case changeMarker = "change_marker"
     }
 
     func check(_ citation: ChatCitation) -> Result<CheckedCitation, DropError> {
         switch citation {
+        case .change:
+            return .failure(DropError(.changeMarker))
         case .web(let url):
             guard let key = Self.normalized(url), let found = webPages[key] else { return .failure(DropError(.pageNotInResults)) }
             return .success(.web(found))

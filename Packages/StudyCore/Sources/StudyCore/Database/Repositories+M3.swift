@@ -18,14 +18,16 @@ public struct ConversationRepository: Sendable {
     }
 
     /// Appends one turn at the next sequence number, in one transaction with the conversation's
-    /// `updated_at`. `message` is the turn's JSON, verbatim.
+    /// `updated_at`. `message` is the turn's JSON, verbatim. ma: `context` is what a user turn of
+    /// an `app` conversation carried besides its words (`agent_turn.context`).
     @discardableResult
     public func append(
         to conversationID: AgentConversation.ID,
         role: AgentRole,
         message: String,
         stopReason: String? = nil,
-        apiCallID: APICall.ID? = nil
+        apiCallID: APICall.ID? = nil,
+        context: AgentTurnContext? = nil
     ) async throws -> AgentTurn {
         let store = store
         return try await store.database.write { db in
@@ -35,7 +37,7 @@ public struct ConversationRepository: Sendable {
                 .fetchOne(db) ?? nil
             let turn = store.stamp(AgentTurn(
                 conversationID: conversationID, sequence: (last ?? -1) + 1, role: role, message: message,
-                stopReason: stopReason, apiCallID: apiCallID, createdAt: store.currentDate
+                stopReason: stopReason, apiCallID: apiCallID, context: context, createdAt: store.currentDate
             ))
             try AgentTurn.insert { turn }.execute(db)
             let stamp = store.currentDate
@@ -63,6 +65,18 @@ public struct ConversationRepository: Sendable {
             }
             .execute(db)
             return try AgentConversation.find(conversationID).fetchOne(db)
+        }
+    }
+
+    /// ma: the newest conversations of `kind` first (the panel's history menu, grouped by day of
+    /// `updated_at`).
+    public func conversations(kind: ConversationKind, limit: Int = 50) async throws -> [AgentConversation] {
+        try await store.database.read { db in
+            try AgentConversation
+                .where { $0.kind.eq(kind) }
+                .order { $0.updatedAt.desc() }
+                .limit(limit)
+                .fetchAll(db)
         }
     }
 
