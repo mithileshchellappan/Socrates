@@ -152,8 +152,14 @@ public actor AgentRuntime {
 
     /// Appends the student's next message (after its `context` blocks) to a conversation that is
     /// not running and runs it again.
+    ///
+    /// ma: the run's trace starts as "read untrusted content" when the conversation has read any
+    /// before (a turn whose context carried an open mail, a call of a tool that reads untrusted
+    /// content) or the caller says so (`readUntrustedContent`: a mail task's result it carries):
+    /// that text stays in the history, so a web task it spawns never gets it.
     public func send(
-        _ text: String, context: [ContentBlock] = [], turnContext: AgentTurnContext? = nil, to id: AgentConversation.ID
+        _ text: String, context: [ContentBlock] = [], turnContext: AgentTurnContext? = nil, readUntrustedContent: Bool = false,
+        to id: AgentConversation.ID
     ) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !context.isEmpty else { throw RuntimeError.emptyText }
@@ -162,7 +168,9 @@ public actor AgentRuntime {
             throw RuntimeError.unknownConversation
         }
         let spec = try await spec(for: conversation.kind, conversationID: id)
-        var history = try await Self.history(conversations.turns(id))
+        let stored = try await conversations.turns(id)
+        var history = try Self.history(stored)
+        let readUntrusted = readUntrustedContent || Self.readUntrustedContent(stored, history: history, tools: spec.tools)
         // A run that stopped between a tool call and its result: answer the calls still open
         // first (the API needs a result for each), in the same new user turn.
         var blocks: [ContentBlock] = []
@@ -182,7 +190,19 @@ public actor AgentRuntime {
         try await conversations.append(to: id, role: .user, message: try Self.encode(turn), context: turnContext)
         history.append(turn)
         try await conversations.setState(id, .running)
-        launch(conversation, spec: spec, history: history, studentText: trimmed, turnContext: turnContext)
+        launch(conversation, spec: spec, history: history, studentText: trimmed, turnContext: turnContext, readUntrusted: readUntrusted)
+    }
+
+    /// ma: whether untrusted content reached the conversation in an earlier turn: a user turn
+    /// whose context carried an open mail, or an assistant turn that called a tool reading
+    /// untrusted content (mail).
+    static func readUntrustedContent(_ stored: [AgentTurn], history: [MessageParam], tools: ToolSet) -> Bool {
+        if stored.contains(where: { $0.role == .user && $0.context?.context?.mailMessageID != nil }) { return true }
+        let readers = Set(tools.tools.filter(\.readsUntrustedContent).map(\.name))
+        guard !readers.isEmpty else { return false }
+        return history.contains { turn in
+            turn.role == .assistant && turn.content.blocks.contains { block in block.toolUse.map { readers.contains($0.name) } ?? false }
+        }
     }
 
     /// Stops a running conversation (it ends `failed`).
@@ -250,10 +270,11 @@ public actor AgentRuntime {
 
     private func launch(
         _ conversation: AgentConversation, spec: ConversationSpec, history: [MessageParam], studentText: String,
-        turnContext: AgentTurnContext? = nil
+        turnContext: AgentTurnContext? = nil, readUntrusted: Bool = false
     ) {
-        // ma: an open mail in the turn's context is untrusted content this run has read.
-        let trace = RunTrace(readUntrustedContent: turnContext?.context?.mailMessageID != nil)
+        // ma: an open mail in the turn's context is untrusted content this run has read, as is
+        // what an earlier turn of the conversation read (`readUntrusted`).
+        let trace = RunTrace(readUntrustedContent: readUntrusted || turnContext?.context?.mailMessageID != nil)
         let context = ToolContext(
             conversationID: conversation.id, studentText: studentText, now: now(), trace: trace, turnContext: turnContext
         )

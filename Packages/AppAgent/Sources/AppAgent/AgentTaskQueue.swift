@@ -4,6 +4,18 @@ import Foundation
 import GRDB
 import StudyCore
 import StudyPass
+import Synchronization
+
+/// Set synchronously when the app quits (`AppAgent.prepareForQuit`, before the `claude`
+/// processes are ended): a run that fails because its process was ended then writes nothing, so
+/// a task stays `running` (re-queued at the next launch) and a triage batch stays `pending`.
+final class QuitSignal: Sendable {
+    private let flag = Mutex(false)
+
+    var isSet: Bool { flag.withLock { $0 } }
+
+    func set() { flag.withLock { $0 = true } }
+}
 
 /// The sub-agent task queue (docs/plan-agent.md §4 "Tasks"): FIFO (the student's and the panel's
 /// before triage's: `AgentTaskRepository.claim`), at most `limit` running (2; 1 under memory
@@ -22,6 +34,7 @@ actor AgentTaskQueue {
     let client: ClaudeClient
     let runtime: AgentRuntime
     let studyPass: StudyPassPipeline?
+    let quit: QuitSignal
     let now: @Sendable () -> Date
 
     /// Tasks running at once (`AgentTask.defaultParallel`; the app lowers it under memory pressure).
@@ -33,11 +46,15 @@ actor AgentTaskQueue {
     private var pauseWake: Task<Void, Never>?
     private var stopping = false
 
-    init(services: StudyServices, client: ClaudeClient, runtime: AgentRuntime, studyPass: StudyPassPipeline?, now: @escaping @Sendable () -> Date) {
+    init(
+        services: StudyServices, client: ClaudeClient, runtime: AgentRuntime, studyPass: StudyPassPipeline?, quit: QuitSignal,
+        now: @escaping @Sendable () -> Date
+    ) {
         self.services = services
         self.client = client
         self.runtime = runtime
         self.studyPass = studyPass
+        self.quit = quit
         self.now = now
     }
 
@@ -71,7 +88,7 @@ actor AgentTaskQueue {
 
     /// Starts queued tasks while slots are free, stops running ones whose row was cancelled.
     func wake() async {
-        guard !stopping else { return }
+        guard !stopping, !quit.isSet else { return }
         await stopCancelled()
         let free = limit - running.count
         guard free > 0 else { return }
@@ -80,23 +97,18 @@ actor AgentTaskQueue {
             schedulePauseWake(at: until)
             return
         }
-        // Without Claude Code, model tasks wait; a study pass task needs no model.
-        let ready = availability.isReady
+        // Without Claude Code, model tasks are not claimed at all (they stay queued, no write, so
+        // the observation does not wake the queue again); a study pass task needs no model.
+        // `AppModel.refreshClaudeAvailability` wakes the agent when Claude Code turns ready.
+        let kinds: [AgentTaskKind]? = availability.isReady ? nil : [.studyPass]
         let claimed: [AgentTask]
         do {
-            claimed = try await tasks.claim(slots: limit, now: now()).filter { running[$0.id] == nil }
+            claimed = try await tasks.claim(slots: limit, now: now(), kinds: kinds).filter { running[$0.id] == nil }
         } catch {
             AppAgentModule.log.error("Claiming tasks failed: \(String(describing: error), privacy: .public)")
             return
         }
-        for task in claimed {
-            if task.kind != .studyPass, !ready {
-                // Back to the queue until Claude Code is there (no attempt spent).
-                try? await requeue(task)
-                continue
-            }
-            run(task)
-        }
+        for task in claimed { run(task) }
     }
 
     /// Fewer (or the default number of) tasks at once from now on; running ones are not stopped.
@@ -149,19 +161,6 @@ actor AgentTaskQueue {
         await wake()
     }
 
-    private func requeue(_ task: AgentTask) async throws {
-        let stamp = services.records.currentDate
-        let attempts = max(0, task.attempts - 1)
-        try await services.database.write { db in
-            try AgentTask.find(task.id).update {
-                $0.state = AgentTaskState.queued
-                $0.attempts = attempts
-                $0.updatedAt = stamp
-            }
-            .execute(db)
-        }
-    }
-
     private func runStudyPass(_ task: AgentTask) async {
         guard let lectureID = task.lectureID, let studyPass else {
             try? await tasks.finish(task.id, .failed, error: "The study pass does not run on this device.")
@@ -188,12 +187,14 @@ actor AgentTaskQueue {
                 try await runtime.send("Continue the task where you stopped, then give its result.", to: conversation)
             }
         } catch {
+            if stopping || quit.isSet { return }
             AppAgentModule.log.error("A task could not start: \(String(describing: error), privacy: .public)")
             try? await tasks.finish(task.id, .failed, error: Self.readable(error))
             return
         }
         let ended = await runtime.outcome(conversation)
-        if stopping { return }
+        // The app quits (its process was ended): the row stays `running` for `requeueInterrupted`.
+        if stopping || quit.isSet { return }
         // Cancelled meanwhile (the row says so): nothing more to write.
         if let row = try? await services.records.fetch(AgentTask.self, id: task.id), row.state == .cancelled { return }
         if ended?.state == .finished {

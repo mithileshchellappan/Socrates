@@ -13,7 +13,12 @@ import UserNotifications
 ///   relevant for exam admission gets reminders 24 h and 2 h before it closes; a registration
 ///   window (a deadline whose title or details say register / Anmeldung) the day before.
 /// - Authorization is asked when the first reminder is due to be scheduled.
-/// - Cancelled reminders (Undo of their change, the item done or undone) never fire.
+/// - Cancelled reminders (Undo of their change, the item done, moved or undone) never fire.
+/// - `AppAgent` follows `agent_reminder` (a reminder set, moved or cancelled anywhere checks
+///   again); the timer always waits for the next reminder, however far away.
+/// - Never stale: a reminder more than an hour late (the Mac was off), or whose item is no longer
+///   open, has no date, closes before it, or (an automatic one) moved since it was planned, is
+///   cancelled instead of shown.
 actor ReminderCenter {
     let services: StudyServices
     let changeLog: ChangeLog
@@ -29,8 +34,16 @@ actor ReminderCenter {
 
     var reminders: AgentReminderRepository { AgentReminderRepository(store: services.records) }
 
+    /// The source kind of the reminders planned here (their change rows).
+    static let automatic = SourceRef.Kind(rawValue: "agent")
+    /// The planned offsets before an item's date (exam admission: both; a registration: the day).
+    static let offsets: [TimeInterval] = [24 * 3_600, 2 * 3_600]
+    /// A reminder later than this is not shown any more.
+    static let lateness: TimeInterval = 3_600
+
     /// Plans the automatic reminders, delivers what is due and sleeps until the next one.
     func check() async {
+        #if os(macOS)
         do {
             try await planAutomatic()
             try await deliverDue()
@@ -38,6 +51,7 @@ actor ReminderCenter {
         } catch {
             AppAgentModule.log.error("Reminders failed: \(String(describing: error), privacy: .public)")
         }
+        #endif
     }
 
     func stop() {
@@ -56,11 +70,18 @@ actor ReminderCenter {
                     .where { $0.status.eq(TrackedItemStatus.open) && $0.dueAt.gt(Date?.some(date)) }
                     .fetchAll(db),
                 reminders: try AgentReminder.where { $0.trackedItemID.isNot(nil) }.fetchAll(db),
+                undone: try AgentChange
+                    .where { $0.targetTable.eq(AgentChangeTarget.reminder) && $0.undoneAt.isNot(nil) }
+                    .fetchAll(db).compactMap(\.targetID),
                 courses: try Course.all.fetchAll(db)
             )
         }
         let names = Dictionary(rows.courses.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
-        let existing = Dictionary(grouping: rows.reminders, by: { $0.trackedItemID })
+        // A reminder the student undid is never planned again; one cancelled because its item
+        // moved, was done or undone may be planned again when the item comes back to that moment.
+        let undone = Set(rows.undone)
+        let standing = rows.reminders.filter { $0.cancelledAt == nil || undone.contains($0.id) }
+        let existing = Dictionary(grouping: standing, by: { $0.trackedItemID })
         for item in rows.items where !item.kind.isSessionChange && !item.kind.isSessionProposal {
             guard let due = item.dueAt else { continue }
             var offsets: [TimeInterval] = []
@@ -76,7 +97,7 @@ actor ReminderCenter {
                 guard !known.contains(where: { abs($0.fireAt.timeIntervalSince(fire)) < 60 }) else { continue }
                 let body = ChangeSummary.dayTime(due, allDay: item.isAllDay) + (item.courseID.flatMap { names[$0] }.map { " · \($0)" } ?? "")
                 let quote = item.sourceQuote.isEmpty ? item.title : item.sourceQuote
-                let origin = ChangeLog.Origin(source: .external(SourceRef.Kind(rawValue: "agent"), reference: item.id.uuidString.lowercased()), sourceDate: date, model: "")
+                let origin = ChangeLog.Origin(source: .external(Self.automatic, reference: item.id.uuidString.lowercased()), sourceDate: date, model: "")
                 _ = try await changeLog.apply(
                     .reminder(itemID: item.id, courseID: item.courseID, title: item.title, body: body, fireAt: fire), quote: quote, origin: origin
                 )
@@ -87,7 +108,15 @@ actor ReminderCenter {
     // MARK: Delivery
 
     func deliverDue() async throws {
-        let due = try await reminders.pending(before: now().addingTimeInterval(30))
+        let date = now()
+        var due: [AgentReminder] = []
+        for reminder in try await reminders.pending(before: date.addingTimeInterval(30)) {
+            if try await isStale(reminder, now: date) {
+                try await reminders.cancel(reminder.id)
+            } else {
+                due.append(reminder)
+            }
+        }
         guard !due.isEmpty else { return }
         #if os(macOS)
         guard await authorize() else { return }
@@ -106,6 +135,27 @@ actor ReminderCenter {
             }
         }
         #endif
+    }
+
+    /// Whether a due reminder should not be shown any more (it is cancelled instead).
+    func isStale(_ reminder: AgentReminder, now date: Date) async throws -> Bool {
+        if date.timeIntervalSince(reminder.fireAt) > Self.lateness { return true }
+        guard let itemID = reminder.trackedItemID else { return false }
+        let reminderID = reminder.id
+        let rows = try await services.database.read { db in
+            (
+                item: try TrackedItem.find(itemID).fetchOne(db),
+                change: try AgentChange
+                    .where { $0.targetTable.eq(AgentChangeTarget.reminder) && $0.targetID.eq(UUID?.some(reminderID)) }
+                    .fetchOne(db)
+            )
+        }
+        guard let item = rows.item, item.status == .open, let due = item.dueAt, due > reminder.fireAt else { return true }
+        // An automatic reminder fires a planned time before the item's date: else the item moved.
+        if rows.change?.sourceKind == Self.automatic {
+            return !Self.offsets.contains { abs(due.addingTimeInterval(-$0).timeIntervalSince(reminder.fireAt)) < 60 }
+        }
+        return false
     }
 
     /// Asks for notification permission once (the first time a reminder is due).
@@ -128,12 +178,15 @@ actor ReminderCenter {
         #endif
     }
 
-    /// Sleeps until the next pending reminder (at most a day; a wake plans again).
+    /// Sleeps until the next pending reminder still to come, however far away (a reminder that
+    /// could not be shown waits for the next check, never a busy timer).
     func scheduleNext() async throws {
         timer?.cancel()
-        let next = try await reminders.pending(before: now().addingTimeInterval(86_400)).first
+        timer = nil
+        let date = now()
+        let next = try await reminders.pending(before: .distantFuture).first { $0.fireAt > date }
         guard let next else { return }
-        let delay = max(1, next.fireAt.timeIntervalSince(now()))
+        let delay = max(1, next.fireAt.timeIntervalSince(date))
         timer = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }

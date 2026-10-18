@@ -342,8 +342,9 @@ public actor CalendarMirror {
     /// ma: whether the event of a synced session was moved, re-roomed or deleted in another
     /// calendar app and is kept as it is for now. The first time a version of such an edit is
     /// seen it is recorded as a `calendar` event (`agent_event`, detail = what changed); while
-    /// triage has not decided it, the event stays; once decided (applied to the session or not),
-    /// the session's version is written again as usual.
+    /// triage has not decided it (pending, or escalated with its task still open), the event
+    /// stays; once decided (applied to the session or not, the escalation task ended), the
+    /// session's version is written again as usual.
     private func keepsEditElsewhere(
         _ session: LectureSession, course: Course, draft: CalendarEvent, calendarID: String, pass: inout PassState
     ) async throws -> Bool {
@@ -369,8 +370,17 @@ public actor CalendarMirror {
         let key = "calendar:\(eventID):\(version)"
         let records = services.records
         let keep = try await services.database.write { db -> Bool in
-            if let state = try AgentEvent.where({ $0.sourceKey.eq(key) }).fetchOne(db)?.state {
-                return state == .pending || state == .escalated
+            if let event = try AgentEvent.where({ $0.sourceKey.eq(key) }).fetchOne(db) {
+                switch event.state {
+                case .pending:
+                    return true
+                case .escalated:
+                    // Decided once its escalation task ended (succeeded, failed or cancelled).
+                    guard let taskID = event.taskID else { return false }
+                    return try AgentTask.find(taskID).fetchOne(db)?.state.isOpen ?? false
+                default:
+                    return false
+                }
             }
             let event = records.stamp(AgentEvent(kind: .calendar, sourceKey: key, courseID: session.courseID, detail: detail))
             try AgentEvent.upsert { event }.execute(db)

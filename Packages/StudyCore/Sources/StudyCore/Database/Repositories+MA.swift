@@ -35,8 +35,9 @@ public struct AgentTaskRepository: Sendable {
 
     /// Starts up to `slots` minus the running ones, oldest queued first (the student's before the
     /// agent's), in one transaction: they are `running` with one more attempt. A paused task whose
-    /// time has come is queued again first.
-    public func claim(slots: Int, now: Date) async throws -> [AgentTask] {
+    /// time has come is queued again first. `kinds`: only tasks of these kinds are started (the
+    /// others stay queued untouched; nil: every kind).
+    public func claim(slots: Int, now: Date, kinds: [AgentTaskKind]? = nil) async throws -> [AgentTask] {
         let stamp = store.currentDate
         return try await store.database.write { db in
             let due = try AgentTask
@@ -55,6 +56,7 @@ public struct AgentTaskRepository: Sendable {
             let free = max(0, slots - running)
             guard free > 0 else { return [] }
             let queued = try AgentTask.where { $0.state.eq(AgentTaskState.queued) }.order { $0.createdAt.asc() }.fetchAll(db)
+                .filter { task in kinds.map { $0.contains(task.kind) } ?? true }
             let picked = Array(queued.sorted { first, second in
                 if first.createdBy != second.createdBy { return first.createdBy == .user }
                 return first.createdAt < second.createdAt

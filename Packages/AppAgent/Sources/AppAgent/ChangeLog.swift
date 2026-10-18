@@ -14,9 +14,13 @@ import StudyCore
 /// Rules, in code:
 /// - **Conflicts**: the newest authoritative source wins (the student's words in chat > mail >
 ///   the lecture's own words > a timetable file > a calendar edit elsewhere; equal rank: the newer
-///   source). A change that loses is not applied (`.conflict`: triage escalates it). A change that
-///   wins marks the older change of the same target and field `superseded_by` (kept, both sources
-///   stay on the item).
+///   source). Haiku's change that loses is not applied (`.conflict`: triage escalates it); a
+///   careful decision (Opus: an escalation, the panel) may overrule a stronger source. A change
+///   that is applied marks the older change of the same target and field `superseded_by` (kept,
+///   both sources stay on the item).
+/// - **Undo** puts back only what the change wrote (a session's field of the change's kind, the
+///   one course rule or the lecturers), and only while the target still holds what it wrote; a
+///   change a newer one replaced only gets its row (and its item source) marked undone.
 /// - **The student's own edits**: a session the student edited by hand, an item or a rule they
 ///   wrote, is never changed by Haiku (`.conflict`, escalated to Opus).
 /// - **Session changes** settle at once: the session row is changed (`edited_at`, replanned and
@@ -150,7 +154,9 @@ public struct ChangeLog: Sendable {
     }
 
     /// Undo from an item's popover (or Mail's found row): the change written with that source
-    /// through the log, else the deadline memory's Undo of the source (M3).
+    /// through the log; for another source of an applied session change (a second mail or the
+    /// lecture saying it again, no change row of its own) the session change's Undo; else the
+    /// deadline memory's Undo of the source (M3).
     public func undo(sourceID: TrackedItemSource.ID) async throws {
         let store = services.records
         let date = now()
@@ -158,9 +164,22 @@ public struct ChangeLog: Sendable {
             if let change = try AgentChange.where({ $0.trackedItemSourceID.eq(TrackedItemSource.ID?.some(sourceID)) })
                 .order(by: { $0.appliedAt.desc() }).fetchOne(db) {
                 if change.undoneAt == nil { _ = try Self.undo(change.id, db: db, store: store, now: date) }
-            } else {
-                try DeadlineMemory.undo(sourceID, in: db, store: store, now: date)
+                return
             }
+            if let source = try TrackedItemSource.find(sourceID).fetchOne(db),
+               let item = try TrackedItem.find(source.trackedItemID).fetchOne(db),
+               item.kind.isSessionChange, let sessionID = item.lectureSessionID {
+                let itemID = item.id
+                let sources = Set(try TrackedItemSource.where { $0.trackedItemID.eq(itemID) }.fetchAll(db).map(\.id))
+                let applied = try AgentChange
+                    .where { $0.targetTable.eq(AgentChangeTarget.session) && $0.targetID.eq(UUID?.some(sessionID)) && $0.undoneAt.is(nil) }
+                    .order(by: { $0.appliedAt.desc() })
+                    .fetchAll(db)
+                    .first { $0.trackedItemSourceID.map(sources.contains) == true }
+                if let applied { _ = try Self.undo(applied.id, db: db, store: store, now: date) }
+            }
+            // This source is marked undone too (the item is dismissed already when the change was).
+            try DeadlineMemory.undo(sourceID, in: db, store: store, now: date)
         }
         await onChange()
     }
@@ -283,7 +302,8 @@ public struct ChangeLog: Sendable {
             .where { $0.targetTable.eq(AgentChangeTarget.session) && $0.targetID.eq(UUID?.some(id)) && $0.undoneAt.is(nil) && $0.supersededBy.is(nil) }
             .fetchAll(db)
             .filter { field != nil && Self.field($0.kind) == field }
-        for old in previous {
+        // Haiku never overrules a stronger or newer source; a careful decision (Opus) may.
+        for old in previous where origin.isHaiku {
             guard try outranks(origin, old, db: db) else {
                 return .conflict("A \(old.sourceKind.rawValue) source changed this session's \(field ?? "state") already (\(old.summary)); a newer or more authoritative source stands.")
             }
@@ -467,7 +487,7 @@ public struct ChangeLog: Sendable {
         let previous = try AgentChange
             .where { $0.targetTable.eq(AgentChangeTarget.item) && $0.targetID.eq(UUID?.some(id)) && $0.undoneAt.is(nil) && $0.supersededBy.is(nil) && $0.kind.eq(kind) }
             .fetchAll(db)
-        for old in previous {
+        for old in previous where origin.isHaiku {
             guard try outranks(origin, old, db: db) else {
                 return .conflict("A \(old.sourceKind.rawValue) source changed this item already (\(old.summary)); a newer or more authoritative source stands.")
             }
@@ -488,6 +508,8 @@ public struct ChangeLog: Sendable {
         change = finalize(change, origin: origin, store: store)
         try AgentChangeRepository.insert(change, db: db)
         for old in previous { try AgentChangeRepository.supersede(old.id, by: change.id, at: now, db: db) }
+        // Reminders planned for the old date never fire (the automatic ones are planned again).
+        if kind == .itemMove { try cancelReminders(itemID: id, db: db, now: now) }
         return .applied(change)
     }
 
@@ -606,7 +628,10 @@ public struct ChangeLog: Sendable {
         if let noteID {
             guard let found = try Note.find(noteID).fetchOne(db) else { return .refused("Unknown note.") }
             note = found
-            existing = (try? NoteBlock.decode(found.blocksJSON)) ?? []
+            // Never written when the note's body cannot be read (it would replace it).
+            if !found.blocksJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                do { existing = try NoteBlock.decode(found.blocksJSON) } catch { return .refused("The note could not be read.") }
+            }
         } else {
             var course = courseID
             if course == nil, let lectureID { course = try Lecture.find(lectureID).fetchOne(db)?.courseID }
@@ -683,11 +708,12 @@ public struct ChangeLog: Sendable {
         case .session:
             if current, let targetID = change.targetID {
                 if let before = change.before, before.exists != false {
-                    _ = try CourseSchedule.edit(targetID, now: now, store: store, db: db) { session in
-                        if let startsAt = before.startsAt { session.startsAt = startsAt }
-                        if let endsAt = before.endsAt { session.endsAt = endsAt }
-                        if let room = before.room { session.room = room }
-                        if let cancelled = before.isCancelled { session.isCancelled = cancelled }
+                    // Only the field(s) of the change's kind, and only while the session still has
+                    // what the change wrote (a later change of another field, or the student's
+                    // own edit, stays).
+                    if let session = try LectureSession.find(targetID).fetchOne(db),
+                       let restore = sessionRestore(change.kind, before: before, after: change.after, session: session) {
+                        _ = try CourseSchedule.edit(targetID, now: now, store: store, db: db, restore)
                     }
                 } else {
                     // The change added this session: it does not take place (nothing is deleted).
@@ -696,14 +722,25 @@ public struct ChangeLog: Sendable {
             }
             if let sourceID = change.trackedItemSourceID { try DeadlineMemory.undo(sourceID, in: db, store: store, now: now) }
         case .item:
-            if let sourceID = change.trackedItemSourceID { try DeadlineMemory.undo(sourceID, in: db, store: store, now: now) }
-            if change.kind == .itemAdd, let itemID = change.targetID { try cancelReminders(itemID: itemID, db: db, now: now) }
+            if let sourceID = change.trackedItemSourceID {
+                if current {
+                    try DeadlineMemory.undo(sourceID, in: db, store: store, now: now)
+                } else {
+                    // A newer change of the same field stands: the item keeps it; only this
+                    // source is marked undone (with what it had made, for Restore).
+                    try DeadlineMemory.retire(sourceID, made: change.after?.item, in: db, store: store, now: now)
+                }
+            }
+            if current, change.kind == .itemAdd || change.kind == .itemMove, let itemID = change.targetID {
+                try cancelReminders(itemID: itemID, db: db, now: now)
+            }
         case .course:
-            if current, let targetID = change.targetID, var course = try Course.find(targetID).fetchOne(db), let before = change.before {
-                if let professors = before.professors { course.professors = professors }
-                if let rules = before.rules { course.rules = rules }
-                let stamped = store.stamp(course)
-                try Course.upsert { stamped }.execute(db)
+            if current, let targetID = change.targetID, var course = try Course.find(targetID).fetchOne(db),
+               let before = change.before, let after = change.after {
+                if restoreFact(before: before, after: after, in: &course) {
+                    let stamped = store.stamp(course)
+                    try Course.upsert { stamped }.execute(db)
+                }
             }
         case .memory:
             if let targetID = change.targetID, var memory = try AgentMemory.find(targetID).fetchOne(db) {
@@ -745,6 +782,56 @@ public struct ChangeLog: Sendable {
             .update { $0.supersededBy = AgentChange.ID?.none; $0.updatedAt = now }
             .execute(db)
         try AgentChangeRepository.markUndone(id, at: now, db: db)
+        return true
+    }
+
+    /// What Undo of a session change of `kind` writes back: the room, the times or the
+    /// cancellation from `before`, only while `session` still holds `after`'s value of that field.
+    /// Nil: nothing to put back.
+    static func sessionRestore(
+        _ kind: AgentChangeKind, before: AgentChangeValues, after: AgentChangeValues?, session: LectureSession
+    ) -> ((inout LectureSession) -> Void)? {
+        func same(_ lhs: Date, _ rhs: Date?) -> Bool { rhs.map { abs(lhs.timeIntervalSince($0)) < 1 } ?? false }
+        switch kind {
+        case .sessionRoom:
+            guard let room = before.room, session.room == after?.room else { return nil }
+            return { $0.room = room }
+        case .sessionTime:
+            guard let startsAt = before.startsAt, let endsAt = before.endsAt,
+                  same(session.startsAt, after?.startsAt), same(session.endsAt, after?.endsAt) else { return nil }
+            return { session in
+                session.startsAt = startsAt
+                session.endsAt = endsAt
+            }
+        case .sessionCancel, .sessionRestore:
+            guard let cancelled = before.isCancelled, session.isCancelled == after?.isCancelled else { return nil }
+            return { $0.isCancelled = cancelled }
+        default:
+            return nil
+        }
+    }
+
+    /// Undo of a course fact: the one rule the change set goes back to its version before (or is
+    /// removed when the change added it), or the lecturers go back; only while the course still
+    /// holds what the change wrote. Every other rule stays. False: nothing to write.
+    static func restoreFact(before: AgentChangeValues, after: AgentChangeValues, in course: inout Course) -> Bool {
+        func same(_ lhs: CourseRule, _ rhs: CourseRule) -> Bool {
+            lhs.id == rhs.id && lhs.kind == rhs.kind && lhs.text == rhs.text && lhs.provenance == rhs.provenance
+        }
+        if let old = before.professors, let new = after.professors, old != new {
+            guard course.professors == new else { return false }
+            course.professors = old
+            return true
+        }
+        let oldRules = before.rules ?? []
+        guard let set = (after.rules ?? []).first(where: { rule in !oldRules.contains { same($0, rule) } }),
+              let index = course.rules.firstIndex(where: { $0.id == set.id }), same(course.rules[index], set)
+        else { return false }
+        if let previous = oldRules.first(where: { $0.id == set.id }) {
+            course.rules[index] = previous
+        } else {
+            course.rules.remove(at: index)
+        }
         return true
     }
 }

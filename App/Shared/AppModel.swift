@@ -676,6 +676,9 @@ final class AppModel {
         let semanticIndex = semanticIndex
         let appAgent = appAgent
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+            // First, synchronously: a task or triage call failing because its process is ended
+            // below writes nothing (the task resumes at the next launch, the events stay pending).
+            appAgent?.prepareForQuit()
             ClaudeCodeEngine.terminateRunningProcesses()
             // Running tasks keep their rows (re-queued at the next launch); triage and reminders stop.
             if let appAgent {

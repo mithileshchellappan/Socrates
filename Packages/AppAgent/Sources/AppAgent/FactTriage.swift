@@ -37,13 +37,15 @@ actor FactTriage {
     let client: ClaudeClient
     let changeLog: ChangeLog
     let applier: FactApplier
+    let quit: QuitSignal
     let now: @Sendable () -> Date
 
-    init(services: StudyServices, client: ClaudeClient, changeLog: ChangeLog, now: @escaping @Sendable () -> Date) {
+    init(services: StudyServices, client: ClaudeClient, changeLog: ChangeLog, quit: QuitSignal, now: @escaping @Sendable () -> Date) {
         self.services = services
         self.client = client
         self.changeLog = changeLog
         applier = FactApplier(services: services)
+        self.quit = quit
         self.now = now
     }
 
@@ -82,7 +84,7 @@ actor FactTriage {
                 forModel.append((event, prepared))
             }
             for batch in Self.batches(forModel) {
-                if Task.isCancelled { return report }
+                if Task.isCancelled || quit.isSet { return report }
                 guard await client.isAvailable(), await client.availability().pausedUntil == nil else {
                     report.waiting = true
                     return report
@@ -210,6 +212,8 @@ actor FactTriage {
         } catch is CancellationError {
             return false
         } catch {
+            // The app quits and ended the call's process: the batch stays pending (no attempt).
+            if quit.isSet { return false }
             AppAgentModule.log.error("Triage call failed: \(String(describing: error), privacy: .public)")
             try await events.setState(ids, .failed, error: String(String(describing: error).prefix(300)))
             return true
@@ -219,6 +223,7 @@ actor FactTriage {
         do {
             answer = try message.decodeJSON(Answer.self)
         } catch {
+            if quit.isSet { return false }
             try await events.setState(ids, .failed, apiCallID: callID, error: "The triage answer was unusable.")
             return true
         }

@@ -94,6 +94,19 @@ public struct DeadlineMemory: Sendable {
         try MemoryWriter(db: db, store: store, now: now, timeZone: DeadlinesModule.timeZone).undo(sourceID)
     }
 
+    /// ma: Undo of a source whose change a newer one of the same field replaced: only the source
+    /// is stamped `undone_at`, the item keeps the newer change. `made` (what the source had made
+    /// of the item) is kept as its `previous`, so Restore puts it back as with `undo`.
+    public static func retire(
+        _ sourceID: TrackedItemSource.ID, made: TrackedItemSnapshot?, in db: Database, store: RecordStore, now: Date
+    ) throws {
+        guard var source = try TrackedItemSource.find(sourceID).fetchOne(db), source.undoneAt == nil else { return }
+        source.undoneAt = now
+        if let made { source.previous = made }
+        let stamped = store.stamp(source)
+        try TrackedItemSource.upsert { stamped }.execute(db)
+    }
+
     /// `restore(_:)` inside the caller's transaction.
     @discardableResult
     public static func restore(_ sourceID: TrackedItemSource.ID, in db: Database, store: RecordStore, now: Date) throws -> TrackedItem? {

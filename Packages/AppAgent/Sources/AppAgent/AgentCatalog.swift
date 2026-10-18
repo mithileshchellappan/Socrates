@@ -12,8 +12,13 @@ import StudyCore
 /// lectures ("L2 · Virtualization Basics · Tue 13 Oct · transcribed · study pass done (3 exam
 /// hints, 5 said in class)"), notes per course (count + 3 newest titles), the next sessions (this
 /// and next week), mail folders with unread counts, open items (next 6 weeks, nearest 12, then
-/// counts), open sub-agent tasks, the calendar range. Never whole lectures, mailboxes or notes:
-/// details only through the tools. The memory has its own block (`<memory>`, the runtime's).
+/// counts), the calendar range. Never whole lectures, mailboxes or notes: details only through the
+/// tools. The memory has its own block (`<memory>`, the runtime's).
+///
+/// Nothing in it moves with the clock within a day (the head names today without a time, the
+/// windows start at the start of today) and sub-agent task states are left out (check_tasks and
+/// `<task_result>` carry them): the revision changes only when the data does, so the block is not
+/// sent again with every message.
 public struct AgentCatalog: Sendable, Hashable {
     /// The block, `<catalog revision="…">…</catalog>`.
     public let text: String
@@ -60,7 +65,9 @@ public struct AgentCatalog: Sendable, Hashable {
         let semesters = try Semester.all.fetchAll(db)
         let semester = Semester.current(among: semesters, on: now)
         let range = try Row.fetchOne(db, sql: "SELECT MIN(starts_at) AS first, MAX(starts_at) AS last FROM lecture_session WHERE is_cancelled = 0")
-        var head = "today: \(AgentToolSupport.spoken(now)) · semester \(semester.name): lectures \(semester.lectureStart.rawValue) to \(semester.lectureEnd.rawValue)"
+        let today = CalendarDay(now, in: zone)
+        let dayStart = today.start(in: zone)
+        var head = "today: \(AgentToolSupport.dayText(today)) · semester \(semester.name): lectures \(semester.lectureStart.rawValue) to \(semester.lectureEnd.rawValue)"
         if let first: Date = range?["first"], let last: Date = range?["last"] {
             head += " · calendar: sessions \(CalendarDay(first, in: zone).rawValue) to \(CalendarDay(last, in: zone).rawValue)"
         }
@@ -138,10 +145,9 @@ public struct AgentCatalog: Sendable, Hashable {
         let loose = notes.filter { $0.courseID == nil && $0.lectureID == nil }
         if !loose.isEmpty { lines.append("notes without a course: \(loose.count)") }
 
-        // Sessions this week and next.
-        let today = CalendarDay(now, in: zone)
+        // Sessions this week and next (from the start of today).
         let monday = today.adding(days: 1 - today.weekday)
-        let from = now
+        let from = dayStart
         let until = monday.adding(days: 14).start(in: zone)
         let sessions = try LectureSession.where { $0.startsAt.gte(from) && $0.startsAt.lt(until) }.order(by: \.startsAt).fetchAll(db)
         if !sessions.isEmpty {
@@ -178,8 +184,8 @@ public struct AgentCatalog: Sendable, Hashable {
         // Open items.
         let open = try TrackedItem.where { $0.status.eq(TrackedItemStatus.open) }.order(by: \.dueAt).fetchAll(db)
             .filter { !$0.kind.isSessionChange && !$0.kind.isSessionProposal }
-        let horizon = now.addingTimeInterval(42 * 86_400)
-        let soon = open.filter { ($0.dueAt ?? .distantFuture) >= now.addingTimeInterval(-86_400) && ($0.dueAt ?? .distantFuture) < horizon }
+        let horizon = dayStart.addingTimeInterval(42 * 86_400)
+        let soon = open.filter { ($0.dueAt ?? .distantFuture) >= dayStart.addingTimeInterval(-86_400) && ($0.dueAt ?? .distantFuture) < horizon }
         if !soon.isEmpty {
             let shown = soon.prefix(12).map { item -> String in
                 let due = item.dueAt.map { ChangeSummary.dayTime($0, allDay: item.isAllDay) } ?? ""
@@ -189,19 +195,13 @@ public struct AgentCatalog: Sendable, Hashable {
         }
         let later = open.filter { ($0.dueAt ?? .distantPast) >= horizon }.count
         let undated = open.filter { $0.dueAt == nil }.count
-        let overdue = open.filter { ($0.dueAt ?? .distantFuture) < now.addingTimeInterval(-86_400) }.count
+        let overdue = open.filter { ($0.dueAt ?? .distantFuture) < dayStart.addingTimeInterval(-86_400) }.count
         var counts: [String] = []
         if soon.count > 12 { counts.append("\(soon.count - 12) more in the next 6 weeks") }
         if later > 0 { counts.append("\(later) later") }
         if undated > 0 { counts.append("\(undated) without a date (tasks, announcements)") }
         if overdue > 0 { counts.append("\(overdue) past their date") }
         if !counts.isEmpty { lines.append("more items: " + counts.joined(separator: ", ") + " (query_items)") }
-
-        // Sub-agent tasks.
-        let tasks = try AgentTask.where { $0.state.in(AgentTaskState.open) }.order { $0.createdAt.asc() }.fetchAll(db)
-        if !tasks.isEmpty {
-            lines.append("tasks: " + tasks.prefix(6).map { "\($0.state.rawValue) \"\(ToolJSON.clip($0.title, 50))\"" }.joined(separator: "; "))
-        }
 
         var text = lines.joined(separator: "\n")
         if text.count > limit - 200 {

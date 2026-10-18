@@ -133,6 +133,11 @@ public struct ToolSet: Sendable {
         if !webTools.isEmpty, let tool = tools.first(where: { $0.readsUntrustedContent || $0.effect == .write }) {
             throw ToolSetError.webToolsBeside(tool.name)
         }
+        // ma: a sub-agent task with the web tools never writes the student's data, not even
+        // verified (a web page is never the source of a change).
+        if kind == .task, !webTools.isEmpty, let tool = tools.first(where: { $0.effect == .verifiedWrite }) {
+            throw ToolSetError.webToolsBeside(tool.name)
+        }
         var names: Set<String> = []
         for name in tools.map(\.name) + webTools.map(\.name) where !names.insert(name).inserted {
             throw ToolSetError.duplicateName(name)

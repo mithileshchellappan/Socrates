@@ -306,7 +306,11 @@ struct QueryTools: Sendable {
             let repository = AgentTaskRepository(store: services.records)
             let open = try await repository.open()
             let own = try await repository.tasks(parent: context.conversationID).filter { !$0.state.isOpen }
-            let rows: [JSONValue] = (open + own.suffix(6)).map { task in
+            let shown = open + own.suffix(6)
+            // A mail task's result is mail-derived text: this run has read untrusted content now
+            // (a web task it spawns gets no input summary).
+            if shown.contains(where: { $0.tools.contains(.mail) && !($0.result ?? "").isEmpty }) { context.trace.noteUntrustedRead() }
+            let rows: [JSONValue] = shown.map { task in
                 var object: JSONObject = [
                     "task": .string(task.id.uuidString.lowercased()), "title": .string(task.title), "state": .string(task.state.rawValue),
                     "kind": .string(task.kind.rawValue),

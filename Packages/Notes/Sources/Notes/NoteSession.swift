@@ -15,6 +15,9 @@ import StudyCore
 /// - The write updates only the body of the row as it is then (a Move To from the list keeps its
 ///   course and lecture) through `NoteRepository.saveOrDeleteIfBlank`, so a note emptied out is
 ///   deleted. Writes run one after another on the database's queue, not on the main actor.
+/// - ma: blocks the agent appended to the stored note while it is open here (append_note: the
+///   stored body is the one this session last loaded or wrote plus a tail) stay after the
+///   editor's body; the editor never writes over them.
 @MainActor
 @Observable
 public final class NoteSession: Identifiable {
@@ -120,6 +123,7 @@ public final class NoteSession: Identifiable {
         hasPendingChanges = false
         let fresh = NoteBlocks.reconcile(content, previous: blocks)
         guard !NoteBlocks.sameContent(fresh, blocks) else { return }
+        let base = blocks
         blocks = fresh
         row.blocks = fresh
         note = row
@@ -133,7 +137,8 @@ public final class NoteSession: Identifiable {
             do {
                 // Only the body changes: the row as it is now keeps its course, lecture and anchor.
                 var current = try await store.fetch(Note.self, id: template.id) ?? template
-                current.blocksJSON = json
+                let merged = Self.keepingAppended(fresh, base: base, stored: current.blocksJSON)
+                current.blocksJSON = merged.count == fresh.count ? json : NoteBlock.json(merged)
                 let saved = try await repository.saveOrDeleteIfBlank(current)
                 if let saved, let self, self.note?.blocksJSON == json {
                     self.note = saved
@@ -142,6 +147,17 @@ public final class NoteSession: Identifiable {
                 NotesLog.logger.error("Saving a note failed: \(String(describing: error), privacy: .public)")
             }
         }
+    }
+}
+
+extension NoteSession {
+    /// `fresh` followed by the blocks appended outside the editor: the stored body is `base` (what
+    /// the editor last loaded or wrote) plus a tail. Else `fresh`.
+    nonisolated static func keepingAppended(_ fresh: [NoteBlock], base: [NoteBlock], stored: String) -> [NoteBlock] {
+        guard let blocks = try? NoteBlock.decode(stored), blocks.count > base.count,
+              NoteBlocks.sameContent(Array(blocks.prefix(base.count)), base)
+        else { return fresh }
+        return fresh + blocks.dropFirst(base.count)
     }
 }
 

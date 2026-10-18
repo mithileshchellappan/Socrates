@@ -23,7 +23,8 @@ import StudyPass
 ///     await agent.start()           // startBackgroundWork, after the pipelines
 ///     await agent.wake()            // new mail, finished transcriptions, study pass units, imports,
 ///                                   // calendar changes, Claude Code turning available
-///     await agent.stop()            // NSApplication.willTerminate
+///     agent.prepareForQuit()        // NSApplication.willTerminate, before the claude processes end
+///     await agent.stop()            // then
 ///     await agent.setBackgroundLimit(memoryLow ? 1 : nil)
 public actor AppAgent {
     let services: StudyServices
@@ -39,11 +40,14 @@ public actor AppAgent {
     let queue: AgentTaskQueue
     let triage: FactTriage
     let reminders: ReminderCenter
+    let quit: QuitSignal
 
     private var triageTask: Task<Void, Never>?
     private var triageAgain = false
     private var observation: AnyDatabaseCancellable?
     private var follower: Task<Void, Never>?
+    private var reminderObservation: AnyDatabaseCancellable?
+    private var reminderFollower: Task<Void, Never>?
     private var pauseWake: Task<Void, Never>?
     private var started = false
 
@@ -65,8 +69,10 @@ public actor AppAgent {
         self.now = now
         let changeLog = ChangeLog(services: services, memory: memory, now: now)
         self.changeLog = changeLog
-        queue = AgentTaskQueue(services: services, client: client, runtime: runtime, studyPass: studyPass, now: now)
-        triage = FactTriage(services: services, client: client, changeLog: changeLog, now: now)
+        let quit = QuitSignal()
+        self.quit = quit
+        queue = AgentTaskQueue(services: services, client: client, runtime: runtime, studyPass: studyPass, quit: quit, now: now)
+        triage = FactTriage(services: services, client: client, changeLog: changeLog, quit: quit, now: now)
         reminders = ReminderCenter(services: services, changeLog: changeLog, now: now)
     }
 
@@ -116,10 +122,17 @@ public actor AppAgent {
         let block = try await AgentContextBlock.build(context, services: services)
         if AgentContextBlock.lastRevision(in: texts) != block.revision { blocks.append(.text(block.text)) }
         var reported: [AgentTask.ID] = []
+        // Whether a mail-group task's result is in this conversation (carried now or by an
+        // earlier turn): mail text reached it, so a web task it spawns gets no input summary.
+        var mailResults = false
         if let conversation {
-            for task in try await AgentTaskRepository(store: services.records).unreported(parent: conversation) {
+            let repository = AgentTaskRepository(store: services.records)
+            for task in try await repository.unreported(parent: conversation) {
                 blocks.append(.text(Self.taskResult(task)))
                 reported.append(task.id)
+            }
+            mailResults = try await repository.tasks(parent: conversation).contains { task in
+                task.finishedAt != nil && task.tools.contains(.mail) && !(task.result ?? "").isEmpty
             }
         }
         // The thread's faint line: only when the screen changed since the last message.
@@ -130,7 +143,7 @@ public actor AppAgent {
         )
         let id: AgentConversation.ID
         if let conversation {
-            try await runtime.send(trimmed, context: blocks, turnContext: turnContext, to: conversation)
+            try await runtime.send(trimmed, context: blocks, turnContext: turnContext, readUntrustedContent: mailResults, to: conversation)
             id = conversation
         } else {
             let title = trimmed.isEmpty ? (attachments.first?.fileName ?? "Files") : trimmed
@@ -195,6 +208,23 @@ public actor AppAgent {
                 await self?.wakeTriage()
             }
         }
+        // A reminder set, moved or cancelled anywhere (set_reminder, Undo, an item done): the
+        // reminders plan, deliver and set their next timer again.
+        let (changes, changed) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        reminderObservation = DatabaseRegionObservation(
+            tracking: SQLRequest<Row>(sql: "SELECT id, fire_at, delivered_at, cancelled_at FROM agent_reminder")
+        )
+        .start(
+            in: services.database,
+            onError: { error in AppAgentModule.log.error("Reminder observation failed: \(String(describing: error), privacy: .public)") },
+            onChange: { _ in changed.yield() }
+        )
+        let reminders = reminders
+        reminderFollower = Task {
+            for await _ in changes {
+                await reminders.check()
+            }
+        }
         Task { await self.wake() }
     }
 
@@ -207,14 +237,27 @@ public actor AppAgent {
         await wakeTriage()
     }
 
+    /// The app is about to quit (synchronous, in `willTerminate` BEFORE the `claude` processes
+    /// are ended): a task or triage call that fails because its process ends writes nothing, so
+    /// the task stays `running` (re-queued and resumed at the next launch) and the events stay
+    /// `pending` (no attempt counted). `stop()` follows.
+    public nonisolated func prepareForQuit() {
+        quit.set()
+    }
+
     /// The app quits: the queue keeps its running rows (re-queued at the next launch), triage
     /// and reminders stop; their processes end with the app.
     public func stop() async {
         started = false
+        quit.set()
         observation?.cancel()
         observation = nil
         follower?.cancel()
         follower = nil
+        reminderObservation?.cancel()
+        reminderObservation = nil
+        reminderFollower?.cancel()
+        reminderFollower = nil
         pauseWake?.cancel()
         pauseWake = nil
         triageTask?.cancel()
