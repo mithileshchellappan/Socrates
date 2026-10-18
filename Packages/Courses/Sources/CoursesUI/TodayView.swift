@@ -1,4 +1,5 @@
 import CalendarSync
+import CoachUI
 import Courses
 import StudyCore
 import StudyUI
@@ -61,6 +62,11 @@ public struct TodayView: View {
                         session: session, course: data.courses[session.courseID], now: now, text: text,
                         record: plan.canRecord(session, courses: data.courses, now: now) ? record : nil
                     )
+                case .plan:
+                    // mc: the plan's first open block (mockups 11–12), the card Study shares.
+                    if let day = data.plan {
+                        PlanHero(plan: day, courses: data.courses, now: now)
+                    }
                 case nil:
                     EmptyView()
                 }
@@ -98,57 +104,18 @@ public struct TodayView: View {
 
     private func subtitle(now: Date, plan: TodayPlan, text: SessionText) -> String {
         let date = text.fullDate(now)
+        // mc: with a plan, its total ("Tuesday, 20 October 2026 · 5 h 15 min planned").
+        if let planned = plan.plannedMinutes {
+            return String(localized: "\(date) · \(DurationText.string(minutes: planned)) planned")
+        }
         return plan.hasClassesToday ? date : String(localized: "\(date) · no classes")
     }
 }
 
 // MARK: - Hero
 
-private struct HeroCard<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            content
-        }
-        .padding(.vertical, 20)
-        .padding(.horizontal, 22)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.separator, lineWidth: 0.5)
-        }
-    }
-}
-
-/// The hero's one filled button (mockup 01 `.btn.primary.lg`): accent, 32 pt tall (the large
-/// control's 28 pt plus 2 pt above and below the title), corner radius 9, a 13 pt medium title
-/// after a small glyph.
-private struct HeroButtonLabel: View {
-    let title: String
-    let systemImage: String
-
-    var body: some View {
-        Label {
-            Text(title)
-                .fontWeight(.medium)
-        } icon: {
-            // The mockup's small play triangle (about 7 pt tall).
-            Image(systemName: systemImage)
-                .font(.system(size: 9, weight: .bold))
-        }
-        .padding(.vertical, 2)
-    }
-}
-
-private extension View {
-    func heroButtonStyle() -> some View {
-        buttonStyle(.borderedProminent)
-            .buttonBorderShape(.roundedRectangle(radius: 9))
-            .controlSize(.large)
-    }
-}
+// The hero card, its button label and style are CoachUI's (`HeroCard`, `HeroButtonLabel`,
+// `heroButtonStyle()`), shared with the coach's screens.
 
 private struct Eyebrow: View {
     let course: Course?
