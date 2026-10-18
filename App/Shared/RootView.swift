@@ -306,9 +306,10 @@ struct RootView: View {
                 .frame(width: ToolbarGlyph.pillWidth)
             }
         }
-        // Show Chat at the trailing end of Today, Mail and a course's screens, only while the chat
-        // is hidden; on Search the "Tutor" toggle after the field, shown on and off (mockup 07).
-        // Only with Claude Code (DESIGN §6.3).
+        // Show Chat at the trailing end of Today and Mail, only while the chat is hidden; on Search
+        // the "Tutor" toggle after the field, shown on and off (mockup 07). Only with Claude Code
+        // (DESIGN §6.3). A course's screens place their own Show Chat after their items
+        // (DetailView).
         if hasChat {
             ChatToolbarItem(
                 isPresented: $showsChat, isAvailable: model.chatActions.isAvailable,
@@ -317,10 +318,11 @@ struct RootView: View {
         }
     }
 
-    /// The screens with the chat inspector: Today and Mail (the mail chat), a course's screens and
-    /// Search (the tutor). Review has its own Tutor tab.
+    /// The screens whose chat button the window's toolbar places: Today and Mail (the mail chat)
+    /// and Search (the tutor). A course's screens add theirs (DetailView); Review has its own Tutor
+    /// tab.
     private var hasChat: Bool {
-        isToday || selection?.isMail == true || selection == .search || selection?.courseScreenID != nil
+        isToday || selection?.isMail == true || selection == .search
     }
 
     #if os(macOS)

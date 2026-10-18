@@ -1,4 +1,5 @@
 import CalendarSync
+import ChatUI
 import Courses
 import StudyCore
 import StudyUI
@@ -15,6 +16,7 @@ public struct CourseSettingsView: View {
     private let importFiles: (() -> Void)?
     private let importDropped: (([URL]) -> Void)?
     private let newCourse: (() -> Void)?
+    private let showsChat: Binding<Bool>?
 
     @FetchOne private var course: Course?
     @FetchAll private var slots: [WeeklySlot]
@@ -34,6 +36,7 @@ public struct CourseSettingsView: View {
     @Environment(\.undoManager) private var undoManager
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
+    @Environment(\.chatActions) private var chatActions
 
     @State private var draft: Course?
     @State private var saved: Course?
@@ -53,14 +56,19 @@ public struct CourseSettingsView: View {
     ///     this course). Nil: the app shows its own Import.
     ///   - importDropped: Files dropped on an empty Slides group, filed into this course.
     ///   - newCourse: New Course… in the toolbar's More menu.
+    ///   - showsChat: M5: the tutor inspector the app attaches (`.chatInspector(…, context:
+    ///     .course(id), showsToolbarItem: false)`); its Show Chat goes after Import and More (a
+    ///     toolbar item added from outside would land before them).
     public init(
         courseID: Course.ID,
         changeDeck: @escaping (Deck.ID) -> Void = { _ in },
         importFiles: (() -> Void)? = nil,
         importDropped: (([URL]) -> Void)? = nil,
-        newCourse: (() -> Void)? = nil
+        newCourse: (() -> Void)? = nil,
+        showsChat: Binding<Bool>? = nil
     ) {
         self.courseID = courseID
+        self.showsChat = showsChat
         self.changeDeck = changeDeck
         self.importFiles = importFiles
         self.importDropped = importDropped
@@ -295,6 +303,9 @@ public struct CourseSettingsView: View {
                 Label("More", systemImage: "ellipsis")
             }
             .menuIndicator(.hidden)
+        }
+        if let showsChat {
+            ChatToolbarItem(isPresented: showsChat, isAvailable: chatActions.isAvailable)
         }
     }
 

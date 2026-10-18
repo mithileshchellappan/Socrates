@@ -51,13 +51,15 @@ struct DetailView: View {
                 changeDeck: changeDeck,
                 importFiles: { model.filingCenter?.importFiles(to: .course(id)) },
                 importDropped: { file($0, into: id) },
-                newCourse: { model.sheet = .newCourse }
+                newCourse: { model.sheet = .newCourse },
+                // Show Chat after the screen's own [Import + | ⋯] (DESIGN §6.3).
+                showsChat: showsChat
             )
             .chatInspector(isPresented: showsChat, context: .course(id), showsToolbarItem: false)
             .id(id)
         case .courseLectures(let id):
             CourseLecturesView(courseID: id)
-                .chatInspector(isPresented: showsChat, context: .course(id), showsToolbarItem: false)
+                .modifier(CourseChat(courseID: id, showsChat: showsChat))
                 .id(id)
         case .courseSlides(let id):
             CourseSlidesView(
@@ -66,11 +68,11 @@ struct DetailView: View {
                 importFiles: { model.filingCenter?.importFiles(to: .course(id)) },
                 importDropped: { file($0, into: id) }
             )
-            .chatInspector(isPresented: showsChat, context: .course(id), showsToolbarItem: false)
+            .modifier(CourseChat(courseID: id, showsChat: showsChat))
             .id(id)
         case .courseNotes(let id):
             CourseNotesView(courseID: id)
-                .chatInspector(isPresented: showsChat, context: .course(id), showsToolbarItem: false)
+                .modifier(CourseChat(courseID: id, showsChat: showsChat))
                 .id(id)
         case .lecture(let id):
             if let services = model.services {
@@ -107,6 +109,22 @@ struct DetailView: View {
                 center.presentChange(filing.id)
             }
         }
+    }
+}
+
+/// The tutor about a course on a course screen without toolbar items of its own (Lectures,
+/// Slides, Notes). Toolbar items of an outer modifier come first, so the flexible spacer goes
+/// outside the inspector's Show Chat to keep it at the trailing end, as on Course Settings.
+private struct CourseChat: ViewModifier {
+    let courseID: Course.ID
+    let showsChat: Binding<Bool>
+
+    func body(content: Content) -> some View {
+        content
+            .chatInspector(isPresented: showsChat, context: .course(courseID))
+            #if os(macOS)
+            .toolbar { ToolbarSpacer(.flexible) }
+            #endif
     }
 }
 

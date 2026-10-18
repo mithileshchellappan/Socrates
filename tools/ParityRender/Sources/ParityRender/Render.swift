@@ -26,7 +26,7 @@ import SwiftUI
 // `--m35-sample` (a library with mockup 05's mail, e.g. .data/parity/m3/library): adds M3.5's
 // sample rows to the clone (an open task, a mail that needs a reply, a mail chat about the newest
 // mail) and draws with Claude Code available, so Today and Mail show Show Chat; it adds the shots
-// `01-today-chat` and `05-mail-chat` (the chat inspector open), and M5's `07-search-chat` and
+// `01-today-chat` and `05-mail-chat` (the chat inspector open), and M5's `08-course-chat`, `07-search-chat` and
 // `03-review-chat` (seed the copy with `tools/parity/seed --library <copy> --m5-sample` first).
 //
 // Builds the app's real views (`RootView` with its sidebar and toolbar, `LiveLectureScreen`) in
@@ -188,6 +188,10 @@ struct ParityRender {
                 showsChat: true
             ))),
             RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id)))),
+            // M5: a course's tutor: Course Settings with the chat shown (with `--m35-sample`), and
+            // Lectures with Show Chat at the trailing end (with `--m35-sample`: Claude Code available).
+            RenderShot(name: "08-course-chat", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id), showsChat: true))),
+            RenderShot(name: "08-course-lectures", window: .main(ParityMode.Launch(selection: .courseLectures(cc.id)))),
             RenderShot(name: "10-import", window: .main(ParityMode.Launch(selection: .today))) { model, size in
                 try await ParityMode.importPreview(model: model, services: services, size: size)
             }

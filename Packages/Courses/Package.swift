@@ -16,7 +16,9 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../StudyCore"),
-        .package(path: "../StudyUI")
+        .package(path: "../StudyUI"),
+        // M5: Course Settings places the tutor's Show Chat after its own toolbar group.
+        .package(path: "../ChatUI")
     ],
     targets: [
         .target(
@@ -32,7 +34,8 @@ let package = Package(
             dependencies: [
                 "Courses", "CalendarSync",
                 .product(name: "StudyCore", package: "StudyCore"),
-                .product(name: "StudyUI", package: "StudyUI")
+                .product(name: "StudyUI", package: "StudyUI"),
+                .product(name: "ChatUI", package: "ChatUI")
             ]
         ),
     ],
