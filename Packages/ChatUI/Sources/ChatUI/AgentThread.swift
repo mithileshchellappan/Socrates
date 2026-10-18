@@ -88,7 +88,12 @@ enum PanelThread {
             }
         }
         for index in shown {
-            items.append(.exchange(exchanges[index], showsContextLine: showsLine(index), isLast: index == exchanges.count - 1))
+            // The compact panel's first exchange has its line only when it was asked elsewhere
+            // (mockup §1: none on the lecture it was asked on).
+            let line = window != nil && index == shown.lowerBound
+                ? (exchanges[index].context?.label?.isEmpty == false && exchanges[index].context?.context.map { !sameScreen($0, current) } == true)
+                : showsLine(index)
+            items.append(.exchange(exchanges[index], showsContextLine: line, isLast: index == exchanges.count - 1))
             for task in tasksAfter[index] ?? [] {
                 items.append(.task(task))
             }
@@ -130,6 +135,7 @@ struct AgentThreadView: View {
     @State private var transcript = ChatTranscript()
     @State private var rows = CitationRows()
     @State private var live: ChatLiveReply?
+    /// The compact thread's natural height (it grows to it, up to `maxHeight`).
     @State private var contentHeight: CGFloat = 0
 
     init(style: AgentPanelView.Style, conversationID: AgentConversation.ID?, model: AgentPanelModel, context: AgentContext, maxHeight: CGFloat) {
@@ -175,9 +181,10 @@ struct AgentThreadView: View {
         let isEmpty = items.isEmpty && pending == nil && !working && state == nil
         Group {
             if isEmpty {
-                if style == .expanded {
-                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                // Always a view: the observers below must run while nothing shows (the compact
+                // panel at rest is only its title row and composer).
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: style == .expanded ? .infinity : 0)
             } else {
                 scroll(items: items, working: working, state: state)
             }
@@ -208,50 +215,68 @@ struct AgentThreadView: View {
         .environment(\.openURL, OpenURLAction { url in open(url) })
     }
 
+    /// Compact: as tall as the thread up to `maxHeight`, then it scrolls under a faded top edge.
+    /// Expanded: the whole column, anchored to the bottom.
+    @ViewBuilder
     private func scroll(items: [PanelThreadItem], working: Bool, state: AnyView?) -> some View {
-        let isCompact = style == .compact
-        let overflows = isCompact && contentHeight > maxHeight
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(items) { item in
-                    switch item {
-                    case .exchange(let exchange, let showsLine, let isLast):
-                        exchangeView(exchange, showsLine: showsLine, isLast: isLast)
-                    case .task(let task):
-                        TaskResultBlock(task: task, rows: rows, now: model.now)
+        if style == .compact {
+            let overflows = contentHeight > maxHeight
+            ScrollView {
+                threadContent(items: items, working: working, state: state)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+            }
+            .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            .scrollIndicators(.automatic)
+            .frame(height: min(max(contentHeight, 1), maxHeight))
+            .mask {
+                VStack(spacing: 0) {
+                    if overflows {
+                        LinearGradient(colors: [.black.opacity(0), .black], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 40)
                     }
-                }
-                if let pending {
-                    PanelStudentMessage(text: pending.text, attachments: pending.attachments, maxWidth: bubbleWidth)
-                }
-                if pending != nil || working {
-                    PanelAnswer(text: pending == nil ? liveText ?? "" : "", isWorking: false, isStreaming: true, check: check, openLecture: context.lectureID, now: model.now)
-                }
-                if let state {
-                    state
+                    Rectangle()
                 }
             }
-            .padding(.horizontal, isCompact ? 14 : 16)
-            .padding(.top, isCompact ? 2 : 14)
-            .padding(.bottom, isCompact ? 12 : 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        } else {
+            ScrollView {
+                threadContent(items: items, working: working, state: state)
+            }
+            .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            .scrollIndicators(.automatic)
+            .frame(maxHeight: .infinity)
         }
-        .defaultScrollAnchor(.bottom)
-        .defaultScrollAnchor(.bottom, for: .sizeChanges)
-        .scrollIndicators(.automatic)
-        .frame(height: isCompact ? min(max(contentHeight, 1), maxHeight) : nil)
-        .frame(maxHeight: isCompact ? nil : .infinity)
-        .mask {
-            // A long answer scrolls inside the compact panel under a faded top edge.
-            VStack(spacing: 0) {
-                if overflows {
-                    LinearGradient(colors: [.black.opacity(0), .black], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 40)
+    }
+
+    private func threadContent(items: [PanelThreadItem], working: Bool, state: AnyView?) -> some View {
+        let isCompact = style == .compact
+        return VStack(alignment: .leading, spacing: 12) {
+            ForEach(items) { item in
+                switch item {
+                case .exchange(let exchange, let showsLine, let isLast):
+                    exchangeView(exchange, showsLine: showsLine, isLast: isLast)
+                case .task(let task):
+                    TaskResultBlock(task: task, rows: rows, now: model.now)
                 }
-                Rectangle()
+            }
+            if let pending {
+                PanelStudentMessage(text: pending.text, attachments: pending.attachments, maxWidth: bubbleWidth)
+            }
+            if pending != nil || working {
+                PanelAnswer(
+                    text: pending == nil ? liveText ?? "" : "", isWorking: false, isStreaming: true, check: check,
+                    openLecture: context.lectureID, now: model.now
+                )
+            }
+            if let state {
+                state
             }
         }
+        .padding(.horizontal, isCompact ? 14 : 16)
+        .padding(.top, isCompact ? 2 : 14)
+        .padding(.bottom, isCompact ? 12 : 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var bubbleWidth: CGFloat { style == .compact ? 250 : 264 }

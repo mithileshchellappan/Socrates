@@ -37,8 +37,9 @@ struct ReviewInspector: View {
     private var notes: [Note] { notesQuery.wrappedValue }
     private let annotationsQuery: FetchAll<Annotation>
 
-    init(model: ReviewModel) {
+    init(model: ReviewModel, isShown: Bool = true) {
         self.model = model
+        self.isShown = isShown
         let lectureID = model.lecture.id
         notesQuery = FetchAll(
             Note.where { $0.lectureID.eq(lectureID) }.order { ($0.pageNumber, $0.createdAt) },
