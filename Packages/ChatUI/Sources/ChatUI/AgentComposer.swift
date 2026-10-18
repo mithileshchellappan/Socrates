@@ -19,7 +19,7 @@ struct AgentComposer: View {
     @State private var showsImporter = false
 
     private var hasText: Bool { !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    private var canSend: Bool { (hasText || model.hasFiles) && model.reading == 0 }
+    private var canSend: Bool { (hasText || model.hasFiles) && model.canSendNow }
 
     var body: some View {
         @Bindable var model = model

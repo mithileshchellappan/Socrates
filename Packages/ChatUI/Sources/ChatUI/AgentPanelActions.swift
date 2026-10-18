@@ -74,8 +74,8 @@ public struct AgentPanelLaunch: Hashable, Sendable {
     /// An empty New Chat instead of a conversation.
     public var newChat: Bool
     /// Compact: the conversation's exchanges shown (0-based, a student message with its answer;
-    /// with the task results that came after them). Nil: none, as a panel just opened (the title
-    /// row and the composer).
+    /// with the task results that came after them). Nil: as a panel just opened (the
+    /// conversation's latest exchange).
     public var exchanges: Range<Int>?
     /// Text in the composer.
     public var draft: String

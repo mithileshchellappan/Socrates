@@ -45,8 +45,8 @@ enum PanelThread {
         return exchanges
     }
 
-    /// The items a panel shows: compact, the window's exchanges (since it opened, the last one, or
-    /// a render's range); expanded, all. A context line goes before an exchange whose context
+    /// The items a panel shows: compact, the window's exchanges (since it opened and at least the
+    /// latest, the last one, or a render's range); expanded, all. A context line goes before an exchange whose context
     /// label differs from the one before it; before the first when the conversation moved between
     /// screens or was asked elsewhere than the screen on display.
     static func items(
@@ -78,8 +78,9 @@ enum PanelThread {
             shown = max(0, exchanges.count - 1)..<exchanges.count
         case .since(let date)?:
             since = date
+            // Those sent since it opened, and at least the latest (its answer stays in sight).
             let first = exchanges.firstIndex { $0.sentAt >= date } ?? exchanges.count
-            shown = first..<exchanges.count
+            shown = min(first, max(0, exchanges.count - 1))..<exchanges.count
         }
         var items: [PanelThreadItem] = []
         if window == nil || shown.lowerBound == 0 {
@@ -135,8 +136,8 @@ struct AgentThreadView: View {
     @State private var transcript = ChatTranscript()
     @State private var rows = CitationRows()
     @State private var live: ChatLiveReply?
-    /// The compact thread's natural height (it grows to it, up to `maxHeight`).
-    @State private var contentHeight: CGFloat = 0
+    /// The compact thread is taller than its room (the faded top edge).
+    @State private var overflows = false
 
     init(style: AgentPanelView.Style, conversationID: AgentConversation.ID?, model: AgentPanelModel, context: AgentContext, maxHeight: CGFloat) {
         self.style = style
@@ -157,11 +158,18 @@ struct AgentThreadView: View {
     private var conversation: AgentConversation? { conversationQuery.wrappedValue }
     private var isRunning: Bool { conversation?.state == .running }
 
-    /// The live text belongs after exactly the stored turns it follows, while the run lasts.
+    /// The live text belongs after exactly the stored turns it follows: while the run lasts, and
+    /// after it finished until its stored turn lands (the answer never blinks out in between); a
+    /// stopped or failed run's text goes.
     private var liveText: String? {
-        guard isRunning, let live, live.afterTurns == transcript.turnCount, !live.text.isEmpty else { return nil }
+        guard let live, live.afterTurns == transcript.turnCount, !live.text.isEmpty else { return nil }
+        guard isRunning || conversation?.state == .finished else { return nil }
         return live.text
     }
+
+    /// The run answers the last stored message. While a sent message is not stored yet, the run
+    /// (if its state came in first) is that message's: its answer goes after the pending bubble.
+    private var answersLast: Bool { isRunning && pending == nil }
 
     private var pending: PendingPanelMessage? {
         guard let pending = model.pending, pending.conversationID == conversationID else { return nil }
@@ -176,13 +184,15 @@ struct AgentThreadView: View {
             exchanges: exchanges, tasks: tasksQuery.wrappedValue.filter { ($0.result ?? "").isEmpty == false },
             window: style == .compact ? model.shown : nil, current: context
         )
-        let working = isRunning && (transcript.awaitsAnswer || exchanges.isEmpty)
+        // ONE answer being written: the last exchange's (in `exchangeView`), or after the pending
+        // bubble, or here alone for a run with no exchange to answer.
+        let working = answersLast && exchanges.isEmpty
         let state = stateLine
         let isEmpty = items.isEmpty && pending == nil && !working && state == nil
         Group {
             if isEmpty {
-                // Always a view: the observers below must run while nothing shows (the compact
-                // panel at rest is only its title row and composer).
+                // Always a view: the observers below must run while nothing shows (a new chat's
+                // compact panel is only its title row and composer).
                 Color.clear
                     .frame(maxWidth: .infinity, maxHeight: style == .expanded ? .infinity : 0)
             } else {
@@ -215,20 +225,23 @@ struct AgentThreadView: View {
         .environment(\.openURL, OpenURLAction { url in open(url) })
     }
 
-    /// Compact: as tall as the thread up to `maxHeight`, then it scrolls under a faded top edge.
-    /// Expanded: the whole column, anchored to the bottom.
+    /// Compact: as tall as the thread up to `maxHeight` (sized in the same layout pass as its
+    /// rows, so it grows and shrinks with them without a frame's lag), then it scrolls under a
+    /// faded top edge. Expanded: the whole column, anchored to the bottom.
     @ViewBuilder
     private func scroll(items: [PanelThreadItem], working: Bool, state: AnyView?) -> some View {
         if style == .compact {
-            let overflows = contentHeight > maxHeight
-            ScrollView {
-                threadContent(items: items, working: working, state: state)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+            UpToHeight(maxHeight: maxHeight) {
+                ScrollView {
+                    threadContent(items: items, working: working, state: state)
+                }
+                .defaultScrollAnchor(.bottom)
+                .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                .scrollIndicators(.automatic)
+                .onScrollGeometryChange(for: Bool.self) { $0.contentSize.height > $0.containerSize.height + 0.5 } action: { _, over in
+                    overflows = over
+                }
             }
-            .defaultScrollAnchor(.bottom)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
-            .scrollIndicators(.automatic)
-            .frame(height: min(max(contentHeight, 1), maxHeight))
             .mask {
                 VStack(spacing: 0) {
                     if overflows {
@@ -283,8 +296,10 @@ struct AgentThreadView: View {
 
     @ViewBuilder
     private func exchangeView(_ exchange: PanelExchange, showsLine: Bool, isLast: Bool) -> some View {
-        let running = isLast && isRunning
-        let answer = running ? Self.joined(exchange.answer, liveText) : exchange.answer
+        let running = isLast && answersLast
+        // The live text follows exactly the stored turns, so it is the last exchange's.
+        let streamed = isLast && pending == nil ? liveText : nil
+        let answer = Self.joined(exchange.answer, streamed)
         VStack(alignment: .leading, spacing: 12) {
             if showsLine, let label = exchange.context?.label {
                 FaintLine(glyph: exchange.context?.glyph ?? "bubble.left", label: label)
@@ -292,7 +307,7 @@ struct AgentThreadView: View {
             PanelStudentMessage(text: exchange.text, attachments: exchange.context?.attachments ?? [], maxWidth: bubbleWidth)
             if let answer, !answer.isEmpty {
                 PanelAnswer(
-                    text: answer, isWorking: running && liveText == nil, isStreaming: running, check: check,
+                    text: answer, isWorking: running && streamed == nil, isStreaming: running || streamed != nil, check: check,
                     openLecture: exchange.context?.context?.lectureID ?? context.lectureID, now: model.now
                 )
             } else if running {
@@ -604,5 +619,23 @@ struct TileFlow: Layout {
         }
         if !row.indices.isEmpty { rows.append(row) }
         return rows
+    }
+}
+
+// MARK: - Compact height
+
+/// Its content's ideal height up to `maxHeight` (a scroll view: as tall as its rows, then it
+/// scrolls), worked out in the same layout pass as the rows.
+struct UpToHeight: Layout {
+    var maxHeight: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let ideal = content.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? ideal.width, height: min(max(ideal.height, 1), maxHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
     }
 }
