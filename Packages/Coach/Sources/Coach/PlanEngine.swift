@@ -26,7 +26,10 @@ import StudyCore
 /// - **Expired one-day rules** are returned for the engine to forget (`Output.expiredRules`).
 /// - **Block done** (derived, `Planner.doneSeconds`): review → `reviewed_at` or the review
 ///   position past its last slide; round / practice exam → its session ended or submitted;
-///   exercise / seminar step → its item done; read → its recall questions answered or `done_at`.
+///   exercise / seminar step → its item done; read → its recall questions answered, `done_at` or
+///   its recall round ended; a started block without a session (a sheet, a seminar step, a
+///   reading opened by its link) also once its minutes are up or its day is over
+///   (`Planner.ranOut`; the opened reading's recall questions then join the rounds).
 ///   A planned block of a past day is `skipped`.
 /// - **Phases** (never labelled): the runway (`StudyBudget.isRunway`) adds practice exams, reviews
 ///   only weak topics; breaks (`CoachRows.isBreak`) catch up the backlog; no new Read in the last
@@ -70,6 +73,25 @@ public enum PlanEngine {
         var planner = Planner(rows: rows)
         return planner.run()
     }
+
+    /// When a started block without a session counts as done: its start + its minutes (nil for
+    /// the other blocks).
+    static func runsOut(_ block: StudyBlock) -> Date? {
+        guard block.state == .started, block.sessionID == nil, let start = block.startedAt else { return nil }
+        guard block.kind == .exercise || block.kind == .seminarStep || block.kind == .read else { return nil }
+        return start.addingTimeInterval(Double(block.minutes * 60))
+    }
+
+    /// Readings whose recall questions join the rounds: read (`done_at`), or opened from a Read
+    /// block this week.
+    static func readReadings(_ rows: CoachRows) -> Set<StudyReading.ID> {
+        var read = Set(rows.readings.filter { $0.doneAt != nil }.map(\.id))
+        // A started block with a session asks them in its own recall round.
+        for block in rows.blocks where block.kind == .read && (block.state == .done || (block.state == .started && block.sessionID == nil)) {
+            if let id = block.readingID { read.insert(id) }
+        }
+        return read
+    }
 }
 
 /// One replan's state (what is covered so far, minutes per course and day).
@@ -80,6 +102,8 @@ struct Planner {
     let days: ClosedRange<CalendarDay>
     let statuses: [Course.ID: CoachRows.CourseStatus]
     let rules: PlanRules
+    /// Readings whose recall questions join the rounds (`PlanEngine.readReadings`).
+    let readReadings: Set<StudyReading.ID>
 
     var settled: [PlanEngine.Settled] = []
     /// The blocks as they stand after the derived states.
@@ -104,6 +128,7 @@ struct Planner {
         days = rows.today...rows.today.adding(days: CoachRules.planDays)
         statuses = Dictionary(rows.statuses.map { ($0.course.id, $0) }, uniquingKeysWith: { first, _ in first })
         rules = rows.rules
+        readReadings = PlanEngine.readReadings(rows)
     }
 
     // MARK: - Run
@@ -134,10 +159,12 @@ struct Planner {
         for offset in 0...days.lowerBound.days(to: days.upperBound) { planDay(days.lowerBound.adding(days: offset)) }
 
         let expired = rows.planMemories.filter { $0.planRule?.hasExpired(before: today) == true }.map(\.id)
+        // Read: its recall questions answered, or (none drafted) its Read block done.
+        let readBlocks = Set(rows.blocks.filter { $0.kind == .read && (states[$0.id] ?? $0.state) == .done }.compactMap(\.readingID))
         let readingsDone = rows.readings.filter { reading in
             guard reading.doneAt == nil else { return false }
             let recall = rows.questions.filter { $0.readingID == reading.id }
-            return !recall.isEmpty && recall.allSatisfy { $0.reps > 0 }
+            return recall.isEmpty ? readBlocks.contains(reading.id) : recall.allSatisfy { $0.reps > 0 }
         }.map(\.id)
         return PlanEngine.Output(days: days, blocks: output, settled: settled, expiredRules: expired, readingsDone: readingsDone)
     }
@@ -163,16 +190,29 @@ struct Planner {
             guard let id = block.sessionID, let session = rows.sessionsByID[id], !session.state.isOpen else { return nil }
             return session.activeSeconds
         case .exercise, .seminarStep:
-            guard let id = block.trackedItemID, let item = rows.items.first(where: { $0.id == id }), item.status == .done else { return nil }
-            return planned
+            if let id = block.trackedItemID, let item = rows.items.first(where: { $0.id == id }), item.status == .done { return planned }
+            return ranOut(block) ? planned : nil
         case .read:
-            guard let id = block.readingID, let reading = rows.readings.first(where: { $0.id == id }) else { return nil }
-            if reading.doneAt != nil { return planned }
-            let recall = rows.questions.filter { $0.readingID == id }
-            return !recall.isEmpty && recall.allSatisfy({ $0.reps > 0 }) ? planned : nil
+            if let id = block.readingID, let reading = rows.readings.first(where: { $0.id == id }) {
+                if reading.doneAt != nil { return planned }
+                let recall = rows.questions.filter { $0.readingID == id }
+                if !recall.isEmpty && recall.allSatisfy({ $0.reps > 0 }) { return planned }
+            }
+            // A link-less reading's recall round ended.
+            if let id = block.sessionID, let session = rows.sessionsByID[id], !session.state.isOpen { return session.activeSeconds }
+            return ranOut(block) ? planned : nil
         default:
             return nil
         }
+    }
+
+    /// A started block without a session (an exercise, a seminar step, a reading opened by its
+    /// link) whose time is up or whose day is over: done, so the hero moves on (a sheet split over
+    /// two days or a seminar item weeks ahead is never done on the day).
+    func ranOut(_ block: StudyBlock) -> Bool {
+        guard block.state == .started, block.sessionID == nil else { return false }
+        if block.day < today { return true }
+        return PlanEngine.runsOut(block).map { $0 <= rows.now } ?? false
     }
 
     // MARK: - Coverage
@@ -516,17 +556,23 @@ struct Planner {
         let limit = min(PlanEngine.reviewMinutes.upperBound, max(PlanEngine.reviewMinutes.lowerBound, room))
         func cost(_ range: ClosedRange<Int>) -> Int { range.count * PlanEngine.minutesPerSlide }
         var range = max(pages(weakest).lowerBound, reviewed + 1)...pages(weakest).upperBound
-        // Grow over adjacent open topics (by slide) while it stays within the limit.
+        // Grow over adjacent open topics (by slide) while it stays within the limit. Each topic is
+        // clamped to the slides not reviewed yet first, so a topic the review stopped inside can
+        // never count as growth again; at most one pass per topic.
         let bySlide = open.sorted { pages($0).lowerBound < pages($1).lowerBound }
         var grew = true
-        while grew {
+        var passes = 0
+        while grew, passes <= bySlide.count {
             grew = false
+            passes += 1
             for topic in bySlide {
-                let other = pages(topic)
+                let lower = max(pages(topic).lowerBound, reviewed + 1)
+                guard lower <= pages(topic).upperBound else { continue }
+                let other = lower...pages(topic).upperBound
                 let touches = other.lowerBound <= range.upperBound + 1 && other.upperBound >= range.lowerBound - 1
                 guard touches, !range.contains(other.lowerBound) || !range.contains(other.upperBound) else { continue }
-                let merged = min(range.lowerBound, max(other.lowerBound, reviewed + 1))...max(range.upperBound, other.upperBound)
-                if cost(merged) <= limit {
+                let merged = min(range.lowerBound, other.lowerBound)...max(range.upperBound, other.upperBound)
+                if merged != range, cost(merged) <= limit {
                     range = merged
                     grew = true
                 }
@@ -551,7 +597,9 @@ struct Planner {
         guard !courses.isEmpty else { return nil }
         let allowed = Set(courses)
         let end = day.adding(days: 1).start(in: zone)
-        let eligible = rows.questions.filter { $0.pool == .round && $0.readingID == nil && allowed.contains($0.courseID) }
+        let eligible = rows.questions.filter {
+            $0.pool == .round && ($0.readingID.map(readReadings.contains) ?? true) && allowed.contains($0.courseID)
+        }
         let due = eligible.filter { $0.reps > 0 && ($0.dueAt ?? .distantFuture) < end && !countedDue.contains($0.id) }
         let held = Set(rows.lectures.filter { ($0.heldAt ?? .distantFuture) < end }.map(\.id))
         let fresh = eligible.filter { $0.reps == 0 && ($0.lectureID.map(held.contains) ?? true) }

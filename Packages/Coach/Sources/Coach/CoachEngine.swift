@@ -43,6 +43,9 @@ public actor CoachEngine: StudyCoaching {
     private var gradeTask: Task<Void, Never>?
     private var gradeAgain = false
     private var gradeWake: Task<Void, Never>?
+    /// A replan when a started block without a session runs out (`PlanEngine.runsOut`).
+    private var runOutWake: Task<Void, Never>?
+    private var runOutAt: Date?
 
     /// A question comes back at most this often in one round (successive relearning).
     static let maximumRepeats = 3
@@ -122,6 +125,9 @@ public actor CoachEngine: StudyCoaching {
         dayTimer = nil
         gradeWake?.cancel()
         gradeWake = nil
+        runOutWake?.cancel()
+        runOutWake = nil
+        runOutAt = nil
         gradeTask?.cancel()
         planTask?.cancel()
     }
@@ -173,6 +179,27 @@ public actor CoachEngine: StudyCoaching {
         scheduleNewDay()
     }
 
+    /// Replans when the first started block without a session runs out (it is done then, and the
+    /// hero moves on); an earlier time replaces a later one.
+    private func scheduleRunOut(at date: Date) {
+        guard started else { return }
+        if runOutWake != nil, let at = runOutAt, at <= date { return }
+        runOutWake?.cancel()
+        runOutAt = date
+        let delay = max(5, date.timeIntervalSince(now()) + 5)
+        runOutWake = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            await self?.runOutEnded()
+        }
+    }
+
+    private func runOutEnded() async {
+        runOutWake = nil
+        runOutAt = nil
+        guard started else { return }
+        await replan()
+    }
+
     // MARK: - The plan
 
     func performReplan() async throws {
@@ -192,6 +219,7 @@ public actor CoachEngine: StudyCoaching {
             try await plans.replacePlanned(days: output.days, with: output.blocks)
         }
         try await queueDrafting(rows)
+        if let next = rows.blocks.compactMap(PlanEngine.runsOut).filter({ $0 > date }).min() { scheduleRunOut(at: next) }
     }
 
     /// The same blocks (`updated_at` aside): nothing to write.
@@ -371,11 +399,15 @@ public actor CoachEngine: StudyCoaching {
             return .lecture(lectureID, page: page, time: time)
         case .exercise, .seminarStep:
             try await plans.setState(block.id, .started)
+            scheduleRunOut(at: (block.startedAt ?? now()).addingTimeInterval(Double(block.minutes * 60)))
             if let url = block.url { return .url(url) }
             if let item = block.trackedItemID { return .item(item) }
             return .none
         case .read:
             try await plans.setState(block.id, .started)
+            // Opened by its link (no recall round): done once its minutes are up, and its recall
+            // questions join the next rounds.
+            scheduleRunOut(at: (block.startedAt ?? now()).addingTimeInterval(Double(block.minutes * 60)))
             guard let readingID = block.readingID, let reading = try await store.fetch(StudyReading.self, id: readingID) else { return .none }
             if let url = reading.url ?? block.url { return .url(url) }
             // No link: the reading's recall questions.
@@ -436,7 +468,8 @@ public actor CoachEngine: StudyCoaching {
         let questions = rows.questions.filter { wanted.contains($0.courseID) }
         let runway = rows.statuses.contains { wanted.contains($0.course.id) && $0.budget.isRunway(rows.today) }
         let picked = RoundBuilder.build(
-            scope: scope, size: size, questions: questions, lectures: rows.lectures, misses: misses, runway: runway, now: date
+            scope: scope, size: size, questions: questions, lectures: rows.lectures, misses: misses, runway: runway, now: date,
+            readings: PlanEngine.readReadings(rows)
         )
         return (picked, rows.courses.filter { wanted.contains($0.id) })
     }

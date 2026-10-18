@@ -5,8 +5,8 @@ import SwiftUI
 /// A course's Progress (mockup 14; the course row `chart.bar` between Notes and Course Settings).
 /// Two zones in a 760 pt column: the hero (the exam, its room and the second date in the eyebrow;
 /// two figures, Ready and the hours of the self-study budget, with meters; Practice, filled, with
-/// what the round would ask; in the runway a plain "Practice exam" that opens the sheet with the
-/// last settings beside it), then Topics and reading by lecture, newest first: its topics weakest
+/// what the round would ask; in the runway the filled button (↩) becomes "Practice exam", a plain
+/// button rather than a menu, that opens the sheet with the last settings beside it), then Topics and reading by lecture, newest first: its topics weakest
 /// first with their dots and slides, then its readings with their length. A lecture that needs
 /// nothing now is a closed group with its count.
 public struct CourseProgressView: View {
@@ -256,7 +256,8 @@ private struct ProgressHero: View {
                     } label: {
                         HeroButtonLabel(title: String(localized: "Practice exam"), systemImage: "play.fill")
                     }
-                    .heroSecondaryButtonStyle()
+                    .heroButtonStyle()
+                    .keyboardShortcut(.defaultAction)
                     if let aside = examAside {
                         aside
                     }

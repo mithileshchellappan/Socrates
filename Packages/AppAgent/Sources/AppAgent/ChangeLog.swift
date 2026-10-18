@@ -95,6 +95,9 @@ public struct ChangeLog: Sendable {
         /// plan memory of the same scope (another cap for the same days, another sitting of the
         /// course…) is forgotten and its change superseded (Undo brings it back).
         case planRule(PlanRule, text: String, courseID: Course.ID?)
+        /// mc: a planned block moved to another day (`plan_adjust` move): the row itself,
+        /// `created_by = user` (a replan never moves or drops it), at the end of that day.
+        case planMove(StudyBlock.ID, to: CalendarDay)
     }
 
     /// What `apply` did.
@@ -264,6 +267,8 @@ public struct ChangeLog: Sendable {
             return try setCredits(courseID, credits: credits, selfStudyHours: selfStudyHours, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now)
         case .planRule(let rule, let text, let courseID):
             return try rememberRule(rule, text: text, courseID: courseID, quote: quote, origin: origin, db: db, store: store, now: now)
+        case .planMove(let blockID, let day):
+            return try moveBlock(blockID, to: day, quote: quote, origin: origin, db: db, store: store, now: now)
         }
     }
 
@@ -807,6 +812,44 @@ public struct ChangeLog: Sendable {
         return .applied(change)
     }
 
+    // MARK: Plan blocks (mc)
+
+    private static func moveBlock(
+        _ id: StudyBlock.ID, to day: CalendarDay, quote: String, origin: Origin, db: Database, store: RecordStore, now: Date
+    ) throws -> Outcome {
+        guard let block = try StudyBlock.find(id).fetchOne(db) else { return .refused("Unknown block.") }
+        guard block.state == .planned else { return .refused("Only a block not started yet can move.") }
+        guard block.day != day else { return .unchanged("The block is on that day already.") }
+        let memories = try AgentMemory.where { $0.forgottenAt.is(nil) && $0.kind.eq(AgentMemoryKind.plan) }.fetchAll(db)
+        let away = PlanRules(memories: memories).isAway(day)
+        let last = try StudyBlock.where { $0.day.eq(day) }.fetchAll(db).map(\.sortOrder).max() ?? -1
+        var moved = block
+        moved.day = day
+        moved.sortOrder = last + 1
+        moved.createdBy = .user
+        moved.isAway = away
+        let stamped = store.stamp(moved)
+        try StudyBlock.upsert { stamped }.execute(db)
+        let zone = AppAgentModule.timeZone
+        let title = block.detail.isEmpty ? block.title : "\(block.title) · \(block.detail)"
+        let previous = try AgentChange
+            .where { $0.targetTable.eq(AgentChangeTarget.block) && $0.targetID.eq(UUID?.some(id)) && $0.undoneAt.is(nil) && $0.supersededBy.is(nil) }
+            .fetchAll(db)
+        var change = AgentChange(
+            kind: .planMove, targetTable: .block, targetID: id, title: String(title.prefix(AgentChange.titleLimit)),
+            summary: "Moved from \(ChangeSummary.day(block.day.start(in: zone), timeZone: zone)) to \(ChangeSummary.day(day.start(in: zone), timeZone: zone))",
+            before: AgentChangeValues(exists: true, day: block.day, sortOrder: block.sortOrder, createdBy: block.createdBy, isAway: block.isAway),
+            after: AgentChangeValues(exists: true, day: day, sortOrder: moved.sortOrder, createdBy: .user, isAway: away),
+            sourceKind: origin.sourceKind, taskID: origin.taskID, eventID: origin.eventID, quote: quote, confidence: 1, model: origin.model,
+            apiCallID: origin.apiCallID, appliedAt: now, createdAt: now, updatedAt: now
+        )
+        ItemChangeRows.apply(origin.source, to: &change)
+        change = finalize(change, origin: origin, store: store)
+        try AgentChangeRepository.insert(change, db: db)
+        for old in previous { try AgentChangeRepository.supersede(old.id, by: change.id, at: now, db: db) }
+        return .applied(change)
+    }
+
     // MARK: - Undo
 
     /// Undo inside the caller's transaction.
@@ -849,6 +892,20 @@ public struct ChangeLog: Sendable {
             }
             if current, change.kind == .itemAdd || change.kind == .itemMove, let itemID = change.targetID {
                 try cancelReminders(itemID: itemID, db: db, now: now)
+            }
+        case .block:
+            // mc: a moved block goes back to its day and place, only while it is still planned on
+            // the day the move put it and its old day has not passed.
+            let today = CalendarDay(now, in: AppAgentModule.timeZone)
+            if current, let targetID = change.targetID, var block = try StudyBlock.find(targetID).fetchOne(db),
+               let before = change.before, let day = before.day, day >= today,
+               block.state == .planned, block.day == change.after?.day {
+                block.day = day
+                block.sortOrder = before.sortOrder ?? block.sortOrder
+                block.createdBy = before.createdBy ?? block.createdBy
+                block.isAway = before.isAway ?? block.isAway
+                let stamped = store.stamp(block)
+                try StudyBlock.upsert { stamped }.execute(db)
             }
         case .course where change.kind == .courseCredits:
             // mc: the credits and self-study hours from `before`, only while the course still has

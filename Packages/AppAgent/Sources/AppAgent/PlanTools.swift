@@ -11,7 +11,7 @@ import StudyCore
 /// | Tool | Effect | Does |
 /// |---|---|---|
 /// | plan_query | read | the blocks of a day or range (state, minutes), each day's total, per course the budget, this week against its share, Ready, the exam sat, the rules in effect with memory ids (`CoachCatalog.report`) |
-/// | plan_adjust | verified write (chat ≥ 3 words) | skip / cap / sitting / seminar_hours / attend → a `plan` memory with its `PlanRule` + `agent_change` (`ChangeLog.Request.planRule`), then a replan; move → the block row itself, `created_by = user` |
+/// | plan_adjust | verified write (chat ≥ 3 words) | skip / cap / sitting / seminar_hours / attend → a `plan` memory with its `PlanRule` + `agent_change` (`ChangeLog.Request.planRule`), then a replan; move → the block row itself, `created_by = user`, + `agent_change` `plan_move` (`ChangeLog.Request.planMove`, Undo) |
 /// | set_course_credits | verified write (chat, mail, lecture) | credits and/or self-study hours (`ChangeLog.Request.courseCredits`, before / after, Undo) |
 /// | mark_away_days | verified write (chat ≥ 3 words) | weekdays and/or a date range, cap minutes → a `plan` memory with `PlanRule.away` |
 ///
@@ -84,7 +84,8 @@ struct PlanTools: Sendable {
                     blocks (of one kind) on a day or days; cap the minutes of study a day; which exam date of a course they \
                     sit (1 first, 2 second); weekly study hours for a seminar on or off; a class they do not attend (once, or \
                     every week) or attend after all; move one block to another day. All but move are kept as a plan memory \
-                    (forget undoes it). The plan follows at once; classes and deadlines never move.
+                    (forget undoes it); a move is a change of the log (undo_change undoes it). The plan follows at once; \
+                    classes and deadlines never move.
                     """,
                 inputSchema: Schema.object([
                     "action": Schema.stringEnum(["skip", "cap", "sitting", "seminar_hours", "attend", "move"]),
@@ -109,7 +110,7 @@ struct PlanTools: Sendable {
                   let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.now))
             else { return .error("quote must be the student's words asking for it (at least 3 words), copied exactly.") }
             let action = call.text("action") ?? ""
-            if action == "move" { return try await move(call, context: context) }
+            if action == "move" { return try await move(call, checked: checked, context: context) }
             let built: Result<(rule: PlanRule, text: String, courseID: Course.ID?, block: StudyBlock?), Refusal>
             switch action {
             case "skip": built = try await skipRule(call, context: context)
@@ -261,9 +262,9 @@ struct PlanTools: Sendable {
         return .success((rule, text, session.courseID, nil))
     }
 
-    /// Moves a block to another day: the row itself, `created_by = user` (a replan never moves or
-    /// drops it), at the end of that day.
-    func move(_ call: ToolUseBlock, context: ToolContext) async throws -> ToolOutput {
+    /// Moves a block to another day through the change log (`ChangeLog.Request.planMove`: the row
+    /// itself, `created_by = user`, at the end of that day; listed and undoable).
+    func move(_ call: ToolUseBlock, checked: VerifiedQuote, context: ToolContext) async throws -> ToolOutput {
         guard let id = call.id("block"), let block = try await services.records.fetch(StudyBlock.self, id: id) else {
             return .error("block must be a block's id (plan_query).")
         }
@@ -272,24 +273,22 @@ struct PlanTools: Sendable {
         guard let target = day(call.text("to_day")), target >= today, today.days(to: target) <= CoachRules.planDays else {
             return .error("to_day must be a day from today to \(CoachRules.planDays) days ahead, YYYY-MM-DD.")
         }
-        let store = services.records
-        let now = context.now
-        let from = block.day
-        try await services.database.write { db in
-            let last = try StudyBlock.where { $0.day.eq(target) }.fetchAll(db).map(\.sortOrder).max() ?? -1
-            var moved = block
-            moved.day = target
-            moved.sortOrder = last + 1
-            moved.createdBy = .user
-            moved.isAway = false
-            moved.updatedAt = now
-            let stamped = store.stamp(moved)
-            try StudyBlock.upsert { stamped }.execute(db)
+        let origin = ChangeLog.Origin(
+            source: checked.source, sourceDate: context.now, model: ClaudeModel.opus55.rawValue, conversationID: context.conversationID
+        )
+        let outcome = try await changeLog.apply(.planMove(block.id, to: target), quote: checked.quote, origin: origin)
+        switch outcome {
+        case .applied(let change):
+            await coach?.replan()
+            return .json([
+                "moved": true, "cite": .string(change.citation.marker), "block": ToolJSON.id(block.id), "title": .string(block.title),
+                "from": .string(block.day.rawValue), "to": .string(target.rawValue),
+            ])
+        case .unchanged(let text):
+            return .json(["moved": false, "note": .string(text)])
+        case .conflict(let text), .refused(let text):
+            return .error(text)
         }
-        await coach?.replan()
-        return .json([
-            "moved": true, "block": ToolJSON.id(block.id), "title": .string(block.title), "from": .string(from.rawValue), "to": .string(target.rawValue),
-        ])
     }
 
     // MARK: - mark_away_days

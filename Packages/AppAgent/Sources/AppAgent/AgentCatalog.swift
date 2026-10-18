@@ -5,6 +5,7 @@ import Deadlines
 import Foundation
 import GRDB
 import StudyCore
+import StudyPass
 
 /// What the app agent knows exists without loading it (docs/plan-agent.md §4 "Catalog"): one short
 /// block (≤ 8,000 characters) of what can be queried, rebuilt per turn from indexed reads and sent
@@ -90,8 +91,14 @@ public struct AgentCatalog: Sendable, Hashable {
         for row in try Row.fetchAll(db, sql: "SELECT DISTINCT lecture_id FROM job WHERE lecture_id IS NOT NULL AND state IN ('queued', 'running')") {
             if let id: UUID = row["lecture_id"] { processing.insert(id) }
         }
+        // The study pass's own stages only (the coach's `quiz` units wait on usage pauses of their own).
         var units: [UUID: [String: Int]] = [:]
-        for row in try Row.fetchAll(db, sql: "SELECT lecture_id, state, COUNT(*) AS n FROM study_unit GROUP BY lecture_id, state") {
+        let stages = LectureText.passStages.map(\.rawValue)
+        let marks = Array(repeating: "?", count: stages.count).joined(separator: ", ")
+        for row in try Row.fetchAll(
+            db, sql: "SELECT lecture_id, state, COUNT(*) AS n FROM study_unit WHERE stage IN (\(marks)) GROUP BY lecture_id, state",
+            arguments: StatementArguments(stages)
+        ) {
             if let id: UUID = row["lecture_id"], let state: String = row["state"], let count: Int = row["n"] { units[id, default: [:]][state] = count }
         }
         var studyItems: [UUID: [String: Int]] = [:]

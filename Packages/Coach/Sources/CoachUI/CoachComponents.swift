@@ -76,7 +76,7 @@ extension View {
             .controlSize(.large)
     }
 
-    /// A plain large button beside it (`.btn.lg`: Retake, Cancel, Count as wrong, Practice exam).
+    /// A plain large button beside it (`.btn.lg`: Retake, Cancel, Count as wrong).
     func heroSecondaryButtonStyle() -> some View {
         buttonStyle(.bordered)
             .buttonBorderShape(.roundedRectangle(radius: 9))

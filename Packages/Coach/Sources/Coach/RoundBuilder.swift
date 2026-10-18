@@ -33,7 +33,8 @@ public enum CodeGrading {
 /// cards of the weakest and newest topics, then (when that is short of the round's size) seen cards
 /// not due yet, weakest topic first; about 1.2 questions a minute, a written one counting 3,
 /// at most 2 written; in the runway confusable topics (one lecture's neighbours) interleaved; a
-/// Read block's round is its reading's 2–3 recall questions. Pure: rows in, questions out.
+/// Read block's round is its reading's 2–3 recall questions (a reading opened by its link: they
+/// join the next rounds, first among the new). Pure: rows in, questions out.
 public enum RoundBuilder {
     /// How big a round is.
     public enum Size: Sendable, Hashable {
@@ -65,9 +66,11 @@ public enum RoundBuilder {
     ///   - lectures: the courses' lectures (held dates: nothing new from a lecture not yet held).
     ///   - misses: for `.misses`, the exam's questions answered wrong or partly.
     ///   - runway: interleave confusable topics.
+    ///   - readings: readings read or opened (`PlanEngine.readReadings`): their recall questions
+    ///     join the round, the ones not answered yet first among the new.
     public static func build(
         scope: StudyScope, size: Size, questions: [StudyQuestion], lectures: [Lecture], misses: [StudyQuestion.ID] = [],
-        runway: Bool, now: Date
+        runway: Bool, now: Date, readings: Set<StudyReading.ID> = []
     ) -> [StudyQuestion] {
         let held = Dictionary(lectures.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let mastery = TopicMastery.byTopic(questions, at: now)
@@ -84,10 +87,12 @@ public enum RoundBuilder {
             pool = questions.filter { wanted.contains($0.id) }
             limit = .questions(max(1, pool.count))
         case .topic:
-            pool = questions.filter { $0.topicKey == scope.topic && $0.readingID == nil && $0.pool == .round }
+            pool = questions.filter { $0.topicKey == scope.topic && ($0.readingID.map(readings.contains) ?? true) && $0.pool == .round }
         default:
             let courses = Set(scope.courseIDs)
-            pool = questions.filter { (courses.isEmpty || courses.contains($0.courseID)) && $0.readingID == nil && $0.pool == .round }
+            pool = questions.filter {
+                (courses.isEmpty || courses.contains($0.courseID)) && ($0.readingID.map(readings.contains) ?? true) && $0.pool == .round
+            }
         }
         // Nothing new from a lecture not held yet.
         pool = pool.filter { question in
@@ -105,6 +110,8 @@ public enum RoundBuilder {
         let fresh = pool
             .filter { $0.reps == 0 }
             .sorted { lhs, rhs in
+                // A reading's recall questions right after it was read.
+                if (lhs.readingID != nil) != (rhs.readingID != nil) { return lhs.readingID != nil }
                 let left = lhs.topicKey.flatMap { mastery[$0] } ?? .unseen
                 let right = rhs.topicKey.flatMap { mastery[$0] } ?? .unseen
                 // Weakest first (unseen topics count as weakest of all for new cards), then newest lecture.

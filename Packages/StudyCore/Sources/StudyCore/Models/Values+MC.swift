@@ -446,6 +446,13 @@ extension AgentToolGroup {
 extension AgentChangeKind {
     /// A course's credits or self-study hours set (`set_course_credits`).
     public static let courseCredits: Self = "course_credits"
+    /// A plan block moved to another day (`plan_adjust` move).
+    public static let planMove: Self = "plan_move"
+}
+
+extension AgentChangeTarget {
+    /// A plan block (`plan_adjust` move).
+    public static let block: Self = "study_block"
 }
 
 extension AgentMemoryKind {
