@@ -341,8 +341,16 @@ struct AgentPanelModifier: ViewModifier {
                 get: { available && model.mode == .expanded },
                 set: { isShown in if !isShown, model.mode == .expanded { model.close() } }
             )) {
-                ExpandedAgentPanel(model: model, context: shown, sendContext: sendContext, width: $width)
-                    .inspectorColumnWidth(min: AgentPanelMetrics.minWidth, ideal: width, max: AgentPanelMetrics.maxWidth)
+                Group {
+                    // SwiftUI keeps a hidden inspector's content alive: only while expanded, so its
+                    // composer never takes the caret from the compact one.
+                    if model.mode == .expanded {
+                        ExpandedAgentPanel(model: model, context: shown, sendContext: sendContext, width: $width)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .inspectorColumnWidth(min: AgentPanelMetrics.minWidth, ideal: width, max: AgentPanelMetrics.maxWidth)
             }
             .focusedSceneValue(\.agentPanel, available ? AgentPanelFocus(
                 isOpen: model.isOpen, isExpanded: model.mode == .expanded,
