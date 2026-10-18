@@ -187,6 +187,16 @@ private struct ReviewHero: View {
             meta
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            if let studyLine {
+                // M4: the study pass's one line, with the screen's only sparkle.
+                Text("\(Text(Image(systemName: "sparkle")).font(.system(size: 10.5)).foregroundStyle(Color.ai)) \(studyLine)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    // The mockup's rhythm: meta and this line about 20 pt apart.
+                    .padding(.top, 3)
+                    .accessibilityLabel(Text(studyLine))
+            }
             HStack(spacing: 14) {
                 Button(action: start) {
                     HeroButtonLabel(title: String(localized: "Start review"), systemImage: "play.fill")
@@ -237,6 +247,22 @@ private struct ReviewHero: View {
             line = Text("\(line) · \(part)")
         }
         return line
+    }
+
+    /// "5 highlights, 3 not on the slides" (M4): the professor's items and what was only said in
+    /// class, hidden ones left out; a part that is zero is left out, and nothing shows before the
+    /// study pass wrote rows.
+    private var studyLine: String? {
+        var parts: [String] = []
+        switch review.highlights {
+        case 0: break
+        case 1: parts.append(String(localized: "1 highlight"))
+        default: parts.append(String(localized: "\(review.highlights) highlights"))
+        }
+        if review.notOnSlides > 0 {
+            parts.append(String(localized: "\(review.notOnSlides) not on the slides"))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
     private var aside: Text? {

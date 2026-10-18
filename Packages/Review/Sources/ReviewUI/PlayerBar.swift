@@ -9,7 +9,8 @@ import UIKit
 #endif
 
 /// The floating glass player: back 15, play/pause, forward 15, "37:27 / 1:08:13", the scrubber
-/// with slide ticks and flag / off-slide marks, the speed menu and Follow.
+/// with slide ticks and flag, exam hint and said-in-class (else off-slide) marks, the speed menu
+/// and Follow.
 ///
 /// The bar itself reads nothing that changes while playing; the time label and the scrubber
 /// read the clock in their own views.
@@ -22,6 +23,8 @@ struct PlayerBar: View {
 
     private let flagsQuery: FetchAll<SlideEvent>
     private var flags: [SlideEvent] { flagsQuery.wrappedValue }
+    /// Exam hints and said-in-class items (M4).
+    private let annotationsQuery: FetchAll<Annotation>
 
     init(model: ReviewModel, player: LecturePlayer, timeline: SlideTimeline) {
         self.model = model
@@ -32,11 +35,16 @@ struct PlayerBar: View {
             SlideEvent.where { $0.recordingID.eq(recordingID) && $0.kind.eq(SlideEventKind.flag) },
             database: model.services.database
         )
+        annotationsQuery = .studyItems(of: model)
     }
 
     var body: some View {
         let session = model.session
         let rate = model.recording?.sampleRate ?? 48_000
+        let items = StudyItems(annotationsQuery.wrappedValue)
+        let recordingID = model.recording?.id
+        let examHints = items.onRecording(items.examHints, recordingID).compactMap(\.startTime)
+        let saidInClass = items.onRecording(items.saidInClass, recordingID).compactMap(\.startTime)
         HStack(spacing: 8) {
             PlayerButton("Back 15 Seconds", systemImage: "gobackward.15") {
                 session.skip(by: -LecturePlayer.skipInterval)
@@ -51,7 +59,9 @@ struct PlayerBar: View {
                 player: player,
                 ticks: timeline.boundaries,
                 flags: flags.compactMap { AnchorEditor.time(of: $0, sampleRate: rate) },
-                offStretches: timeline.offStretches.map(\.start)
+                offStretches: timeline.offStretches.map(\.start),
+                examHints: examHints,
+                saidInClass: saidInClass
             )
             .padding(.horizontal, 6)
             SpeedMenu(player: player)
@@ -134,6 +144,8 @@ private struct Scrubber: View {
     let ticks: [Double]
     let flags: [Double]
     let offStretches: [Double]
+    let examHints: [Double]
+    let saidInClass: [Double]
 
     @State private var width: CGFloat = 0
 
@@ -144,7 +156,10 @@ private struct Scrubber: View {
                 .fill(.quaternary)
                 .frame(height: 3)
                 .offset(y: 8)
-            ScrubberMarks(width: width, duration: duration, ticks: ticks, flags: flags, offStretches: offStretches)
+            ScrubberMarks(
+                width: width, duration: duration, ticks: ticks, flags: flags, offStretches: offStretches,
+                examHints: examHints, saidInClass: saidInClass
+            )
             ScrubberProgress(player: player, width: width, duration: duration)
         }
         .frame(height: 18)
@@ -172,14 +187,17 @@ private struct Scrubber: View {
     }
 }
 
-/// Slide ticks, grey off-slide and red flag marks. Does not read the clock, so it is not redrawn
-/// ten times a second.
+/// Slide ticks; purple said-in-class marks (M4), or grey off-slide marks for a lecture without
+/// them; amber exam hints; red flags. Marks of a kind closer than 0.5 % of the track merge. Does
+/// not read the clock, so it is not redrawn ten times a second.
 private struct ScrubberMarks: View {
     let width: CGFloat
     let duration: Double
     let ticks: [Double]
     let flags: [Double]
     let offStretches: [Double]
+    let examHints: [Double]
+    let saidInClass: [Double]
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -189,12 +207,21 @@ private struct ScrubberMarks: View {
                     .frame(width: 1, height: 7)
                     .offset(x: x(time), y: 6)
             }
-            // An off-slide stretch at the very start (the room settling before the first slide)
-            // is no moment worth a mark, and would sit on the track's end.
-            ForEach(Array(offStretches.filter { $0 > duration * 0.01 }.enumerated()), id: \.offset) { _, time in
-                mark(.gray, at: time)
+            if saidInClass.isEmpty {
+                // An off-slide stretch at the very start (the room settling before the first
+                // slide) is no moment worth a mark, and would sit on the track's end.
+                ForEach(Array(merged(offStretches.filter { $0 > duration * 0.01 }).enumerated()), id: \.offset) { _, time in
+                    mark(.gray, at: time)
+                }
+            } else {
+                ForEach(Array(merged(saidInClass).enumerated()), id: \.offset) { _, time in
+                    mark(Color.ai, at: time)
+                }
             }
-            ForEach(Array(flags.enumerated()), id: \.offset) { _, time in
+            ForEach(Array(merged(examHints).enumerated()), id: \.offset) { _, time in
+                mark(Color.professor, at: time)
+            }
+            ForEach(Array(merged(flags).enumerated()), id: \.offset) { _, time in
                 mark(.red, at: time)
             }
         }
@@ -203,6 +230,10 @@ private struct ScrubberMarks: View {
 
     private func x(_ time: Double) -> CGFloat {
         width * min(1, max(0, time / duration))
+    }
+
+    private func merged(_ times: [Double]) -> [Double] {
+        ScrubberMoments.merged(times, duration: duration)
     }
 
     private func mark(_ color: Color, at time: Double) -> some View {
