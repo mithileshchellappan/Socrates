@@ -17,7 +17,10 @@ let package = Package(
         .package(path: "../StudyCore"),
         .package(path: "../StudyUI"),
         .package(path: "../Capture"),
-        .package(path: "../Processing")
+        .package(path: "../Processing"),
+        // Already in the graph through SQLiteData (same pin as AppAgent); used directly for the
+        // schema-driven snapshot of what a delete removes (rows, `PRAGMA foreign_key_list`).
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0")
     ],
     targets: [
         .target(
@@ -25,7 +28,8 @@ let package = Package(
             dependencies: [
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "Capture", package: "Capture"),
-                .product(name: "Processing", package: "Processing")
+                .product(name: "Processing", package: "Processing"),
+                .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),
         .target(
