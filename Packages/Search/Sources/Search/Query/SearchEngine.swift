@@ -27,19 +27,19 @@ public struct SearchEngine: Sendable {
         self.semantic = semantic
     }
 
+    /// Searches `query.text` and `query.alternatives` at once. Never waits for the planner (M5:
+    /// the first results show at once): callers fetch alternatives with
+    /// `plannedAlternatives(for:)` and search again with them.
     public func search(_ query: SearchQuery) async throws -> SearchResults {
         let started = ContinuousClock.now
         guard !query.isEmpty else { return SearchResults(query: query) }
         var texts = [query.text]
-        var alternatives = query.alternatives
-        if alternatives.isEmpty, let planner {
-            do {
-                alternatives = try await planner.alternatives(for: query)
-            } catch {
-                Log.search.error("Query planning failed: \(String(describing: error), privacy: .public)")
-            }
+        var keys: Set<String> = [QueryPlans.key(for: query.text)]
+        var alternatives: [String] = []
+        for alternative in query.alternatives where keys.insert(QueryPlans.key(for: alternative)).inserted {
+            texts.append(alternative)
+            alternatives.append(alternative)
         }
-        for alternative in alternatives where !texts.contains(alternative) { texts.append(alternative) }
 
         let lemmatizer = Lemmatizer()
         let plans = texts.map { QueryPlan.make($0, lemmatizer: lemmatizer) }.filter { !$0.terms.isEmpty }
@@ -65,8 +65,24 @@ public struct SearchEngine: Sendable {
             }
         }
         var results = outcome.results
+        results.alternatives = alternatives
         results.duration = ContinuousClock.now - started
         return results
+    }
+
+    /// The "Also searched" phrasings of `query`: the cached plan (`search_plan`, read with or
+    /// without a planner), else the planner's answer (one Haiku call, cached), else none.
+    /// Throws only `CancellationError`.
+    public func plannedAlternatives(for query: SearchQuery) async throws -> [String] {
+        if let cached = await QueryPlans.cached(query.text, in: database) { return cached }
+        guard let planner else { return [] }
+        do {
+            return try await planner.alternatives(for: query)
+        } catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            Log.search.error("Query planning failed: \(String(describing: error), privacy: .public)")
+            return []
+        }
     }
 }
 

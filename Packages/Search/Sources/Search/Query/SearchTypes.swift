@@ -135,6 +135,9 @@ public struct SearchResults: Hashable, Sendable {
     public var lectures: [Lecture.ID: Lecture]
     /// Decks of the slide hits (thumbnails).
     public var decks: [Deck.ID: Deck]
+    /// M5: what was also searched ("Also searched"): the query's alternatives that went into this
+    /// search, in order, without the query itself; empty without a plan.
+    public var alternatives: [String] = []
     /// Wall time of the search.
     public var duration: Duration
 
@@ -165,8 +168,9 @@ public struct SearchResults: Hashable, Sendable {
     }
 }
 
-/// Supplies "Also searched" phrasings for a query: the hook for M5's DE↔EN Haiku query planner
-/// and course-glossary expansion. M1 ships none.
+/// Supplies "Also searched" phrasings for a query: M5's `HaikuQueryPlanner` (DE↔EN and the
+/// slides' terms). `SearchEngine.search` never calls it; `SearchEngine.plannedAlternatives(for:)`
+/// does (after the cache), and the caller searches again with the answer.
 public protocol QueryPlanning: Sendable {
     func alternatives(for query: SearchQuery) async throws -> [String]
 }
