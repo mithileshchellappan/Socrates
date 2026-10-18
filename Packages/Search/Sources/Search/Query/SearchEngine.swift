@@ -510,7 +510,7 @@ struct Retrieval {
                     id: meta.id, kind: .mail, courseID: meta.courseID ?? message.courseID,
                     snippet: Snippet.make(text: meta.text, lemmaText: meta.lemmaText, matchers: matchers),
                     matchesAllTerms: entry.all, target: .mail(messageID), title: message.subject, mailMessageID: messageID,
-                    sender: message.fromName.isEmpty ? message.fromAddress : message.fromName
+                    sender: message.fromName.isEmpty ? message.fromAddress : message.fromName, text: meta.text
                 ))
                 continue
             }
@@ -520,6 +520,7 @@ struct Retrieval {
                 snippet: Snippet.make(text: meta.text, lemmaText: meta.lemmaText, matchers: matchers),
                 matchesAllTerms: entry.all, target: nil
             )
+            hit.text = meta.text
             switch meta.kind {
             case .transcript:
                 if let lectureID = meta.lectureID {

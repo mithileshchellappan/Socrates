@@ -110,6 +110,9 @@ public struct SearchHit: Identifiable, Hashable, Sendable {
     public var byline: String? = nil
     public var url: URL? = nil
     public var annotationID: Annotation.ID? = nil
+    /// M5: the chunk's whole text (the line, the slide's text, the note, "title · byline"), for
+    /// the tutor's sources (`snippet` may be a window of it).
+    public var text: String = ""
 }
 
 /// Hits of one lecture (or of one deck no lecture uses, or the student's notes), best first.
