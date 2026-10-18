@@ -14,12 +14,14 @@ import SwiftUI
 /// AI's, Delete Pin on the student's, Add Pin on the slide (at the click point; the new pin's card
 /// opens for typing). No pins when the slide is drawn narrower than 320 pt (and never on the
 /// rail's thumbnails).
-struct SlidePins: View {
+///
+/// M6: `ink` (the student's ink canvas) lies between the slide and the pins. With a tool on it
+/// takes the clicks and drags on the slide; the pins stay above it with their cards and menus, and
+/// Add Pin (on the whole overlay) still works.
+struct SlidePins<Ink: View>: View {
     let model: ReviewModel
     let page: Int
-
-    static let minimumWidth: CGFloat = 320
-    static let professorLimit = 3
+    private let ink: Ink
 
     private let annotationsQuery: FetchAll<Annotation>
     @State private var size: CGSize = .zero
@@ -28,33 +30,27 @@ struct SlidePins: View {
     /// The pointer's last spot on the slide: where Add Pin puts the pin.
     @State private var pointer: CGPoint?
 
-    init(model: ReviewModel, page: Int) {
+    init(model: ReviewModel, page: Int, @ViewBuilder ink: () -> Ink) {
         self.model = model
         self.page = page
+        self.ink = ink()
         annotationsQuery = .studyItems(of: model)
     }
 
     var body: some View {
         let items = StudyItems(annotationsQuery.wrappedValue)
-        let professor = Array(items.professorItems(page: page).prefix(Self.professorLimit))
+        let professor = Array(items.professorItems(page: page).prefix(SlidePinLimits.professor))
         let readings = Array(items.furtherReading(page: page).prefix(2))
         let pins = items.pins(page: page)
-        let shows = size.width >= Self.minimumWidth
+        let shows = size.width >= SlidePinLimits.minimumWidth
         ZStack(alignment: .topLeading) {
             Color.clear
                 .contentShape(Rectangle())
-                #if os(macOS)
-                .onContinuousHover { phase in
-                    if case .active(let location) = phase { pointer = location }
-                }
-                #else
+                #if !os(macOS)
                 .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { pointer = $0.startLocation })
                 #endif
-                .contextMenu {
-                    if shows {
-                        Button("Add Pin") { addPin() }
-                    }
-                }
+            ink
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             if shows {
                 let corner = cornerPins(readings: readings, professor: professor)
                 ForEach(Array(corner.enumerated()), id: \.element) { index, pin in
@@ -74,6 +70,18 @@ struct SlidePins: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // On the whole overlay (not only its empty base), so the pointer is tracked and Add Pin
+        // works over the ink canvas too; a pin's own menu wins over it.
+        #if os(macOS)
+        .onContinuousHover { phase in
+            if case .active(let location) = phase { pointer = location }
+        }
+        #endif
+        .contextMenu {
+            if shows {
+                Button("Add Pin") { addPin() }
+            }
+        }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
         .task(id: AnchorRequest(page: page, items: professor.map { AnchorRequest.Item(id: $0.id, text: $0.anchorText) })) {
             await locateAnchors(professor)
@@ -162,6 +170,13 @@ struct SlidePins: View {
         var page: Int
         var items: [Item]
     }
+}
+
+enum SlidePinLimits {
+    /// No pins on a slide drawn narrower than this.
+    static let minimumWidth: CGFloat = 320
+    /// The professor's pins at rest per slide.
+    static let professor = 3
 }
 
 /// The professor's pin on a slide: the quote over the who line; Hide in its menu.

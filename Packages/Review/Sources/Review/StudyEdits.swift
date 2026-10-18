@@ -3,7 +3,8 @@ import StudyCore
 
 /// What the student does to the study pass's rows and their own pins (docs/plan-m4.md §5):
 /// Hide an AI or professor item (gone from every surface), Revert Correction on a transcript line,
-/// and Add / edit / Delete Pin. Each is one small write over the query DSL.
+/// Add / edit / Delete Pin, and (M6) the student's flags on the recording. Each is one small
+/// write over the query DSL.
 public struct StudyEdits: Sendable {
     public let store: RecordStore
 
@@ -68,6 +69,26 @@ public struct StudyEdits: Sendable {
         try await store.database.write { db in
             try Annotation
                 .where { $0.id.eq(id) && $0.layer.eq(AnnotationLayer.user) && $0.kind.eq(AnnotationKind.comment) }
+                .delete()
+                .execute(db)
+        }
+    }
+
+    /// Flag (M6): the student's flag on a moment of the recording (`slide_event` kind `flag`), the
+    /// red scrubber mark. Written again as it was on Redo.
+    public func addFlag(_ event: SlideEvent) async throws {
+        guard event.kind == .flag else { return }
+        let stamped = store.stamp(event)
+        try await store.database.write { db in
+            try SlideEvent.upsert { stamped }.execute(db)
+        }
+    }
+
+    /// Undo of a flag: only a flag row.
+    public func deleteFlag(_ id: SlideEvent.ID) async throws {
+        try await store.database.write { db in
+            try SlideEvent
+                .where { $0.id.eq(id) && $0.kind.eq(SlideEventKind.flag) }
                 .delete()
                 .execute(db)
         }

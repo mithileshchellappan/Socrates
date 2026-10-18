@@ -11,7 +11,8 @@ import SwiftUI
 /// "Slide N Starts Here" sets a manual anchor and re-aligns at once through `realign` (#9).
 ///
 /// The app passes `Realigner(services:).realign` and installs `\.studyServices`, SQLiteData's
-/// default database and `ReviewCommands` (Space, ⌥←/⌥→, ←/→, ⇧⌘F, ⌘\, ⇧⌘R; View ⌥⌘1, ⌥⌘2).
+/// default database and `ReviewCommands` (Space, ⌥←/⌥→, ←/→, ⇧⌘F, ⌘\, ⇧⌘R; M6 on the Mac: P, H, E,
+/// F, Esc; View ⌥⌘1, ⌥⌘2).
 ///
 /// - Without a deck there is no rail and no slide; without a recording no player and no
 ///   transcript; before the transcript exists the transcript zone shows the job's progress.
@@ -139,6 +140,7 @@ struct ReviewScreen: View {
     private let spansQuery: FetchAll<LectureDeckSpan>
     private var spans: [LectureDeckSpan] { spansQuery.wrappedValue }
     @Environment(\.reviewChrome) private var chrome
+    @Environment(\.undoManager) private var undoManager
 
     init(model: ReviewModel) {
         self.model = model
@@ -188,10 +190,15 @@ struct ReviewScreen: View {
         }
         .background(ReviewActionsPublisher(model: model))
         .background(ReviewChatCommand(model: model))
+        .background(DrawingFollowGuard(model: model))
         .onChange(of: timeline, initial: true) { _, timeline in
             model.session.update(timeline: timeline)
         }
-        .onDisappear { model.close() }
+        .onDisappear { [undoManager] in
+            model.close()
+            // A flag's undo step never outlives its screen (ink's go with each page's canvas).
+            undoManager?.removeAllActions(withTarget: model.flagUndo)
+        }
     }
 
     private var title: String {
@@ -258,7 +265,8 @@ struct ReviewTitle: View {
     }
 }
 
-/// The toolbar: previous / "16 / 88" / next as one glass group. The inspector's own header hides
+/// The toolbar: previous / "16 / 88" / next as one glass group, then (M6, Mac, with a deck) the ink
+/// group [Pen, Highlighter, (Eraser), Flag] in its own glass. The inspector's own header hides
 /// it; while it is hidden, a button of its own brings it back (the header's item is gone then, see
 /// `ReviewInspector`), so exactly one of the two is in the toolbar.
 struct ReviewToolbar: ToolbarContent {
@@ -275,6 +283,15 @@ struct ReviewToolbar: ToolbarContent {
             ToolbarItemGroup(placement: .primaryAction) {
                 SlideStepper(session: model.session)
             }
+            #if os(macOS)
+            // M6: [Pen, Highlighter, (Eraser), Flag] in its own glass after the stepper.
+            if model.canDraw {
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+                ToolbarItemGroup(placement: .primaryAction) {
+                    InkToolButtons(model: model)
+                }
+            }
+            #endif
         }
         if !model.showsInspector {
             ToolbarSpacer(.fixed, placement: .primaryAction)
@@ -363,6 +380,11 @@ private struct SnapshotChrome<Content: View>: View {
                         .padding(.horizontal, 14)
                         .frame(height: 34)
                         .reviewGlass(in: Capsule())
+                        #if os(macOS)
+                        if model.canDraw {
+                            SnapshotInkTools(model: model)
+                        }
+                        #endif
                     }
                 }
                 .padding(.leading, 18)

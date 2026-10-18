@@ -4,8 +4,9 @@ import Review
 import StudyCore
 import SwiftUI
 
-/// The rail of 320 px thumbnails: page number, a pencil when the slide has notes, the slide on
-/// screen outlined. A click shows that slide paused at its first visit (Follow off).
+/// The rail of 320 px thumbnails: page number, a pencil when the slide has notes or ink (M6; the
+/// ink itself is never drawn on a thumbnail), the slide on screen outlined. A click shows that
+/// slide paused at its first visit (Follow off).
 struct SlideRail: View {
     static let width: CGFloat = 96
 
@@ -24,7 +25,7 @@ struct SlideRail: View {
 
     var body: some View {
         let shown = model.session.shownPage
-        let noted = Set(notes.filter { !$0.isBlank }.compactMap(\.pageNumber))
+        let noted = Set(notes.filter { !$0.isBlank }.compactMap(\.pageNumber)).union(model.inkPages)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 2) {
@@ -113,8 +114,9 @@ private struct RailThumbnail: View {
     }
 }
 
-/// The slide on screen at 2048 px, aspect fit, with its pins in an overlay (M4). Prefetches two
-/// slides either side so paging never waits for a render.
+/// The slide on screen at 2048 px, aspect fit, with the student's ink (M6) and the pins (M4) in an
+/// overlay: the ink over the bitmap, the pins over the ink. Prefetches two slides either side so
+/// paging never waits for a render.
 struct SlideStage: View {
     let model: ReviewModel
     let deck: SlideDeck
@@ -130,7 +132,13 @@ struct SlideStage: View {
             }
             // Over the bitmap, in the slide's own frame: the bitmap is never redrawn for them.
             .overlay {
-                SlidePins(model: model, page: page)
+                SlidePins(model: model, page: page) {
+                    if let deckID = model.deckID {
+                        // One canvas per page: its undo steps go with it when the page changes.
+                        SlideInkLayer(model: model, deckID: deckID, page: page, aspectRatio: deck.aspectRatio(page: page))
+                            .id(SlideInkLayer.Key(deckID: deckID, page: page))
+                    }
+                }
             }
             .frame(maxWidth: .infinity)
             .task(id: page) {
