@@ -329,9 +329,13 @@ public struct NotesView: View {
 
     // MARK: Actions
 
-    /// Like Apple Notes: with nothing selected, the newest note is open.
+    /// Like Apple Notes: with nothing selected (or a note of another course), the newest note is open.
     private func selectFirstIfNeeded() {
-        guard selection == nil, trimmedQuery.isEmpty, let first = sections.first?.items.first else { return }
+        guard trimmedQuery.isEmpty, let first = sections.first?.items.first else { return }
+        if let selection {
+            // The open note stays open even while it has no row (emptied out, deleted on save).
+            guard !notes.contains(where: { $0.id == selection }), pending?.id != selection, session?.id != selection else { return }
+        }
         selection = first.id
     }
 
