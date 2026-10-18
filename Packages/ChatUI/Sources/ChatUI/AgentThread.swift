@@ -136,8 +136,10 @@ struct AgentThreadView: View {
     @State private var transcript = ChatTranscript()
     @State private var rows = CitationRows()
     @State private var live: ChatLiveReply?
-    /// The compact thread is taller than its room (the faded top edge).
-    @State private var overflows = false
+    /// The compact thread's rows' height, for its faded top edge only (its own height is laid out
+    /// with the rows, `UpToHeight`). Reported from the first layout on, so a thread that is too
+    /// tall when it appears has the edge too.
+    @State private var contentHeight: CGFloat = 0
 
     init(style: AgentPanelView.Style, conversationID: AgentConversation.ID?, model: AgentPanelModel, context: AgentContext, maxHeight: CGFloat) {
         self.style = style
@@ -169,7 +171,11 @@ struct AgentThreadView: View {
 
     /// The run answers the last stored message. While a sent message is not stored yet, the run
     /// (if its state came in first) is that message's: its answer goes after the pending bubble.
-    private var answersLast: Bool { isRunning && pending == nil }
+    /// Between the message's stored turn and its run's state (two observations, either first), the
+    /// hand-over still going on (`isSending`) keeps the skeleton in place.
+    private var answersLast: Bool {
+        pending == nil && (isRunning || (model.isSending && transcript.awaitsAnswer))
+    }
 
     private var pending: PendingPanelMessage? {
         guard let pending = model.pending, pending.conversationID == conversationID else { return nil }
@@ -185,8 +191,9 @@ struct AgentThreadView: View {
             window: style == .compact ? model.shown : nil, current: context
         )
         // ONE answer being written: the last exchange's (in `exchangeView`), or after the pending
-        // bubble, or here alone for a run with no exchange to answer.
-        let working = answersLast && exchanges.isEmpty
+        // bubble, or here alone for a run with no exchange to answer. (Before, the last exchange
+        // and the thread's end both drew it: two skeletons for one message, the answer twice.)
+        let working = isRunning && pending == nil && exchanges.isEmpty
         let state = stateLine
         let isEmpty = items.isEmpty && pending == nil && !working && state == nil
         Group {
@@ -231,16 +238,15 @@ struct AgentThreadView: View {
     @ViewBuilder
     private func scroll(items: [PanelThreadItem], working: Bool, state: AnyView?) -> some View {
         if style == .compact {
+            let overflows = contentHeight > maxHeight + 0.5
             UpToHeight(maxHeight: maxHeight) {
                 ScrollView {
                     threadContent(items: items, working: working, state: state)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded() } action: { contentHeight = $0 }
                 }
                 .defaultScrollAnchor(.bottom)
                 .defaultScrollAnchor(.bottom, for: .sizeChanges)
                 .scrollIndicators(.automatic)
-                .onScrollGeometryChange(for: Bool.self) { $0.contentSize.height > $0.containerSize.height + 0.5 } action: { _, over in
-                    overflows = over
-                }
             }
             .mask {
                 VStack(spacing: 0) {
@@ -345,7 +351,8 @@ struct AgentThreadView: View {
     /// Why the last message has no answer: a usage pause ("Paused until 17:20"), or "Not answered"
     /// with the reason on hover. A run the student stopped needs no line.
     private var stateLine: AnyView? {
-        guard let conversation, conversation.state == .failed, pending == nil else { return nil }
+        // Not while a new message is handed over (the last run's state until the new one's lands).
+        guard let conversation, conversation.state == .failed, pending == nil, !model.isSending else { return nil }
         let error = conversation.error ?? ""
         guard error != "Stopped." else { return nil }
         if let until = actions.pausedUntil, until > Date() {
