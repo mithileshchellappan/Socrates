@@ -1,5 +1,6 @@
 import Agent
 import ClaudeKit
+import Coach
 import Foundation
 import GRDB
 import StudyCore
@@ -24,6 +25,10 @@ final class QuitSignal: Sendable {
 /// work), so the tools only write rows.
 ///
 /// - A `study_pass` task runs in code: `StudyPassPipeline.rerun(lectureID:)`, no model.
+/// - mc: a `question_draft` task runs in code: `QuestionDrafter.run(lectureID:)` (Haiku batches,
+///   resumable by its `study_unit` rows); a `practice_exam` task holding an old exam
+///   (`OldExamReader.Input`) runs in code: `OldExamReader.read(task:)`. Both need Claude Code (not
+///   claimed without it); a usage pause or no Claude Code → `paused` (queued again later).
 /// - Result ≤ 4,000 characters into `result` (the task's last answer); the panel shows it at once;
 ///   the parent's next user turn carries it as `<task_result>` (`AppAgent.send`).
 /// - A usage limit → `paused` until the reset (it queues again then); cancel → its process is
@@ -34,12 +39,13 @@ actor AgentTaskQueue {
     let client: ClaudeClient
     let runtime: AgentRuntime
     let studyPass: StudyPassPipeline?
+    let coach: CoachEngine?
     let quit: QuitSignal
     let now: @Sendable () -> Date
 
     /// Tasks running at once (`AgentTask.defaultParallel`; the app lowers it under memory pressure).
     private(set) var limit = AgentTask.defaultParallel
-    /// Running tasks and their conversations (nil: a study pass task, run in code).
+    /// Running tasks and their conversations (nil: a task run in code).
     private var running: [AgentTask.ID: (conversation: AgentConversation.ID?, work: Task<Void, Never>)] = [:]
     private var observation: AnyDatabaseCancellable?
     private var follower: Task<Void, Never>?
@@ -47,13 +53,14 @@ actor AgentTaskQueue {
     private var stopping = false
 
     init(
-        services: StudyServices, client: ClaudeClient, runtime: AgentRuntime, studyPass: StudyPassPipeline?, quit: QuitSignal,
-        now: @escaping @Sendable () -> Date
+        services: StudyServices, client: ClaudeClient, runtime: AgentRuntime, studyPass: StudyPassPipeline?, coach: CoachEngine?,
+        quit: QuitSignal, now: @escaping @Sendable () -> Date
     ) {
         self.services = services
         self.client = client
         self.runtime = runtime
         self.studyPass = studyPass
+        self.coach = coach
         self.quit = quit
         self.now = now
     }
@@ -123,6 +130,8 @@ actor AgentTaskQueue {
             await runtime.stop(conversation)
         } else {
             try? await tasks.cancel(id)
+            // A task run in code stops between its calls.
+            running[id]?.work.cancel()
         }
     }
 
@@ -137,23 +146,39 @@ actor AgentTaskQueue {
         pauseWake?.cancel()
         pauseWake = nil
         for (_, entry) in running {
-            if let conversation = entry.conversation { await runtime.stop(conversation) }
+            if let conversation = entry.conversation {
+                await runtime.stop(conversation)
+            } else {
+                // Drafting and old exams stop between calls; their rows stay `running` (re-queued).
+                entry.work.cancel()
+            }
         }
     }
 
     // MARK: - Running
 
+    /// Tasks that run in code, not as a conversation: a study pass, (mc) question drafting, an
+    /// old exam to read.
+    static func runsInCode(_ task: AgentTask) -> Bool {
+        task.kind == .studyPass || task.kind == .questionDraft || (task.kind == .practiceExam && OldExamReader.input(of: task) != nil)
+    }
+
     private func run(_ task: AgentTask) {
+        let inCode = Self.runsInCode(task)
         let work = Task(priority: .background) { [weak self] in
             guard let self else { return }
             if task.kind == .studyPass {
                 await self.runStudyPass(task)
+            } else if task.kind == .questionDraft {
+                await self.runDrafting(task)
+            } else if inCode {
+                await self.runOldExam(task)
             } else {
                 await self.runConversation(task)
             }
             await self.finished(task.id)
         }
-        running[task.id] = (task.kind == .studyPass ? nil : task.conversationID ?? UUID(), work)
+        running[task.id] = (inCode ? nil : task.conversationID ?? UUID(), work)
     }
 
     private func finished(_ id: AgentTask.ID) async {
@@ -172,6 +197,60 @@ actor AgentTaskQueue {
         } catch {
             try? await tasks.finish(task.id, .failed, error: "The study pass could not be started.")
         }
+    }
+
+    // MARK: The study coach's tasks (mc)
+
+    private func runDrafting(_ task: AgentTask) async {
+        guard let lectureID = task.lectureID, let coach else {
+            try? await tasks.finish(task.id, .failed, error: "The study coach does not run on this device.")
+            return
+        }
+        switch await coach.drafter.run(lectureID: lectureID) {
+        case .done(let questions, let readings):
+            guard await stillOpen(task) else { return }
+            let text = readings > 0 ? "\(questions) questions and \(readings) readings drafted." : "\(questions) questions drafted."
+            try? await tasks.finish(task.id, .succeeded, result: text)
+        case .waiting(let until):
+            await wait(task, until: until)
+        case .failed(let message):
+            guard await stillOpen(task) else { return }
+            try? await tasks.finish(task.id, .failed, error: message)
+        }
+    }
+
+    private func runOldExam(_ task: AgentTask) async {
+        guard let coach else {
+            try? await tasks.finish(task.id, .failed, error: "The study coach does not run on this device.")
+            return
+        }
+        switch await coach.oldExams.read(task: task) {
+        case .done(let questions, let title):
+            guard await stillOpen(task) else { return }
+            try? await tasks.finish(task.id, .succeeded, result: "\(questions) questions of \(title) are ready for practice exams.")
+        case .waiting(let until):
+            await wait(task, until: until)
+        case .failed(let message):
+            guard await stillOpen(task) else { return }
+            try? await tasks.finish(task.id, .failed, error: message)
+        }
+    }
+
+    /// False when the app quits (the row stays `running`, re-queued at the next launch) or the
+    /// task was cancelled meanwhile: nothing more to write.
+    private func stillOpen(_ task: AgentTask) async -> Bool {
+        if stopping || quit.isSet { return false }
+        if let row = try? await services.records.fetch(AgentTask.self, id: task.id), row.state == .cancelled { return false }
+        return true
+    }
+
+    /// A code-run task that waits for Claude Code (a usage pause, or not available): paused until
+    /// the reset (or a quarter of an hour), then queued again.
+    private func wait(_ task: AgentTask, until: Date?) async {
+        guard await stillOpen(task) else { return }
+        let date = until ?? now().addingTimeInterval(15 * 60)
+        try? await tasks.pause(task.id, until: date)
+        schedulePauseWake(at: date)
     }
 
     private func runConversation(_ task: AgentTask) async {

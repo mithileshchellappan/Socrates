@@ -25,6 +25,9 @@ let package = Package(
         // `Courses` only (`CourseSchedule`'s in-transaction session edits and replanning).
         .package(path: "../Courses"),
         .package(path: "../StudyPass"),
+        // mc: the study coach (`Coach` only): the plan tools, the catalog's coach lines, the queue's
+        // `question_draft` / old-exam `practice_exam` runners, the university profile's items.
+        .package(path: "../Coach"),
         // Already in the graph through SQLiteData (same pin as Agent); used directly for raw
         // aggregate reads (the catalog) and `DatabaseRegionObservation` (the task queue).
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0")
@@ -42,6 +45,7 @@ let package = Package(
                 .product(name: "Search", package: "Search"),
                 .product(name: "Courses", package: "Courses"),
                 .product(name: "StudyPass", package: "StudyPass"),
+                .product(name: "Coach", package: "Coach"),
                 .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),

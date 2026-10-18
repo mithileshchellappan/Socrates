@@ -177,16 +177,21 @@ public actor StudyPassPipeline {
     }
 
     /// ma: runs the lecture's study pass again (the app agent's `rerun_study_pass`, a `study_pass`
-    /// task): its done and failed units go back to `pending` (attempts 0; their rows stay until
+    /// task): its done and failed units (the pass's own stages; the coach's `quiz` units stay as
+    /// they are) go back to `pending` (attempts 0; their rows stay until
     /// the new answers replace them), it is no longer settled and goes first, and a pass runs.
     /// The number of units reset.
     @discardableResult
     public func rerun(lectureID: Lecture.ID) async throws -> Int {
         let store = services.records
         let stamp = now()
+        let stages = StudyPlanner.stages
         let reset = try await services.database.write { db -> Int in
             let units = try StudyUnit
-                .where { $0.lectureID.eq(lectureID) && ($0.state.eq(ExtractionState.done) || $0.state.eq(ExtractionState.failed)) }
+                .where {
+                    $0.lectureID.eq(lectureID) && $0.stage.in(stages)
+                        && ($0.state.eq(ExtractionState.done) || $0.state.eq(ExtractionState.failed))
+                }
                 .fetchAll(db)
             for var unit in units {
                 unit.state = .pending
@@ -725,7 +730,9 @@ public actor StudyPassPipeline {
                 .fetchAll(db)
             let spanDecks = try LectureDeckSpan.select { ($0.lectureID, $0.deckID) }.fetchAll(db)
             let pageStats = try DeckPage.group(by: \.deckID).select { ($0.deckID, $0.updatedAt.max()) }.fetchAll(db)
+            let stages = StudyPlanner.stages
             let unitStats = try StudyUnit
+                .where { $0.stage.in(stages) }
                 .group(by: \.lectureID)
                 .select { ($0.lectureID, $0.id.count(), $0.updatedAt.max()) }
                 .fetchAll(db)

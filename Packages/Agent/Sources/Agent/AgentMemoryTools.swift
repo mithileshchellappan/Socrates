@@ -155,7 +155,8 @@ struct MemoryTools: Sendable {
             revised.quote = quote
             revised.conversationID = context.conversationID
             _ = try await logged(
-                revised, before: AgentChangeValues(exists: true, memoryText: memory.text), summary: "Remembered", quote: quote, context: context
+                revised, before: AgentChangeValues(exists: true, memoryText: memory.text, planRule: memory.planRule), summary: "Remembered", quote: quote,
+                context: context
             )
         } else {
             try await repository.revise(memory.id, text: text, quote: quote, conversationID: context.conversationID)
@@ -172,7 +173,7 @@ struct MemoryTools: Sendable {
             var forgotten = memory
             forgotten.forgottenAt = context.now
             _ = try await logged(
-                forgotten, before: AgentChangeValues(exists: true, memoryText: memory.text, forgotten: false), summary: "Forgotten",
+                forgotten, before: AgentChangeValues(exists: true, memoryText: memory.text, forgotten: false, planRule: memory.planRule), summary: "Forgotten",
                 quote: quote, context: context
             )
         } else {
@@ -193,7 +194,8 @@ struct MemoryTools: Sendable {
         let change = AgentChange(
             kind: .memory, targetTable: .memory, targetID: stamped.id, title: String(stamped.text.prefix(AgentChange.titleLimit)),
             summary: summary, before: before,
-            after: AgentChangeValues(exists: true, memoryText: stamped.text, forgotten: stamped.forgottenAt != nil),
+            // mc: a `plan` memory's rule is kept before and after (forgetting it drops the rule).
+            after: AgentChangeValues(exists: true, memoryText: stamped.text, forgotten: stamped.forgottenAt != nil, planRule: stamped.planRule),
             sourceKind: .chat, conversationID: context.conversationID, quote: quote, confidence: 1, model: AgentModule.appModel,
             appliedAt: context.now, createdAt: context.now, updatedAt: context.now
         )

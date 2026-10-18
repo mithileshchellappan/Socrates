@@ -1,4 +1,5 @@
 import Agent
+import Coach
 import Courses
 import Deadlines
 import Foundation
@@ -12,8 +13,10 @@ import StudyCore
 /// lectures ("L2 · Virtualization Basics · Tue 13 Oct · transcribed · study pass done (3 exam
 /// hints, 5 said in class)"), notes per course (count + 3 newest titles), the next sessions (this
 /// and next week), mail folders with unread counts, open items (next 6 weeks, nearest 12, then
-/// counts), the calendar range. Never whole lectures, mailboxes or notes: details only through the
-/// tools. The memory has its own block (`<memory>`, the runtime's).
+/// counts), the calendar range; (mc) the study coach: one line per course (credits · budget · Ready
+/// · this week · exam) and today's plan in one line (`CoachCatalog.lines`). Never whole lectures,
+/// mailboxes or notes: details only through the tools. The memory has its own block (`<memory>`,
+/// the runtime's).
 ///
 /// Nothing in it moves with the clock within a day (the head names today without a time, the
 /// windows start at the start of today) and sub-agent task states are left out (check_tasks and
@@ -144,6 +147,9 @@ public struct AgentCatalog: Sendable, Hashable {
         }
         let loose = notes.filter { $0.courseID == nil && $0.lectureID == nil }
         if !loose.isEmpty { lines.append("notes without a course: \(loose.count)") }
+
+        // mc: the study coach (measured at the start of today, so it changes only with the data).
+        lines += try CoachCatalog.lines(db: db, now: now) { tokens.token($0) }
 
         // Sessions this week and next (from the start of today).
         let monday = today.adding(days: 1 - today.weekday)

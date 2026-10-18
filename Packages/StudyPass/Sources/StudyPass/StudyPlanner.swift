@@ -19,7 +19,8 @@ struct PassRows: Sendable {
     var annotations: [Annotation]
 
     static func load(_ lectureID: Lecture.ID, in db: Database) throws -> PassRows {
-        let units = try StudyUnit.where { $0.lectureID.eq(lectureID) }.fetchAll(db)
+        let stages = StudyPlanner.stages
+        let units = try StudyUnit.where { $0.lectureID.eq(lectureID) && $0.stage.in(stages) }.fetchAll(db)
         let annotations = try Annotation
             .where { $0.lectureID.eq(lectureID) && $0.studyUnitID.isNot(nil) }
             .fetchAll(db)
@@ -105,6 +106,9 @@ enum StudyPlanner {
     static let minimumLectureWords = 100
     static let synthesisKey = "lecture"
     static let researchPrefix = "research:"
+    /// The pass's own stages. mc: other stages (the coach's `quiz` units) share `study_unit` and
+    /// are never planned, reset, failed or deleted by the pass.
+    static let stages: [StudyStage] = [.read, .synthesize, .research]
 
     /// Reads first (in page or time order), then the synthesis, then the research picks.
     static func plan(_ material: LectureMaterial, rows: PassRows) -> [UnitSpec] {
@@ -226,10 +230,12 @@ enum StudyPlanner {
     /// (`pending`, or `skipped` when too short); a unit whose hash changed goes back to `pending`
     /// with its attempts reset (or `skipped`, its rows deleted); an unchanged unit is left alone
     /// (done stays done, failed stays failed); a unit no longer planned is deleted (its rows
-    /// cascade). Returns the units in plan order.
+    /// cascade). Only the pass's own `stages` (a `quiz` unit survives). Returns the units in plan
+    /// order.
     static func reconcile(_ specs: [UnitSpec], lectureID: Lecture.ID, in db: Database, store: RecordStore, now: Date) throws -> [StudyUnit] {
         var existing: [String: StudyUnit] = [:]
-        for unit in try StudyUnit.where({ $0.lectureID.eq(lectureID) }).order(by: \.createdAt).fetchAll(db) {
+        let stages = stages
+        for unit in try StudyUnit.where({ $0.lectureID.eq(lectureID) && $0.stage.in(stages) }).order(by: \.createdAt).fetchAll(db) {
             let key = unit.stage.rawValue + "/" + unit.key
             if existing[key] == nil {
                 existing[key] = unit
