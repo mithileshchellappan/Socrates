@@ -99,6 +99,10 @@ Patches: a line's patches after a read are the student's own (no call id), the p
 
 ## Requests for the integrator
 
+M5 (the review leftovers, plan-m5 §5.1.1): nothing to wire. The decisions rows (public hosts only, `research.turn_limit`, `settled.json`) are in the Search README's "M5 design notes". `settled.json` lives in the caches folder: deleting it costs one planning pass over every lecture, never a model call.
+
+M4:
+
 - **docs/schema.md "The study pass (v8)"**: add the two internal kinds `study_figure` and `study_candidate` (read notes for synthesis, never shown; readers draw only the kinds they know), and that a topic picked for research carries the query in `detail` and the slide in a `slide` citation.
 - **docs/schema.md "Deadlines and the agent (v6)"**: transcript extraction now re-reads a recording when its *oldest* line's `updated_at` is after `source_updated_at` (lines replaced), so corrections never trigger a deadline re-read (`TranscriptItemPipeline.pendingRecordings`).
 - **docs/decisions.md**: Claude Code web runs (`ClaudeKit` README, "Web tools in one-shot calls"): `--safe-mode` first, then `--setting-sources ""`; the init must list exactly WebSearch/WebFetch (+ `StructuredOutput` with a schema) and no MCP server. The live check should confirm the variant, the init tool list, that `--strict-mcp-config` without `--mcp-config` is accepted, and whether WebSearch's own calls appear as the extra ledger row.
