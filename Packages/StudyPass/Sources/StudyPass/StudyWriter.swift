@@ -117,12 +117,14 @@ struct StudyWriter: Sendable {
         }
     }
 
-    /// The lecture went over its budget: every unit still pending is `failed` "Over budget".
+    /// The lecture went over its budget: every unit of the pass still pending is `failed` "Over
+    /// budget" (the coach's `quiz` units are not the pass's).
     func failPending(lectureID: Lecture.ID, error: String) async throws -> Int {
         let store = store
+        let stages = StudyPlanner.stages
         return try await database.write { db in
             let pending = try StudyUnit
-                .where { $0.lectureID.eq(lectureID) && $0.state.eq(ExtractionState.pending) }
+                .where { $0.lectureID.eq(lectureID) && $0.stage.in(stages) && $0.state.eq(ExtractionState.pending) }
                 .fetchAll(db)
             for var unit in pending {
                 unit.state = .failed
