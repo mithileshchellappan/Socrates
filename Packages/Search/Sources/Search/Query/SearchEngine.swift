@@ -622,7 +622,10 @@ struct Retrieval {
                 }
             default:
                 hit.title = meta.noteID.flatMap { noteTitles[$0] }
-                if let lectureID = meta.lectureID {
+                if meta.kind == .note, meta.page == nil, let noteID = meta.noteID {
+                    // M6: a lecture's or a course's note opens on the Notes screen.
+                    hit.target = .note(noteID, course: meta.courseID)
+                } else if let lectureID = meta.lectureID {
                     hit.target = .lecture(lectureID, page: meta.page, time: meta.start, plays: false, recording: meta.recordingID)
                 } else if let courseID = meta.courseID {
                     hit.target = .course(courseID)

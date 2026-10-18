@@ -45,6 +45,11 @@ final class NoteTextAttachment: NSTextAttachment {
 
     required init?(coder: NSCoder) { nil }
 
+    /// Nothing under the view (TextKit otherwise draws a generic file icon there).
+    override func image(for bounds: CGRect, attributes: [NSAttributedString.Key: Any], location: any NSTextLocation, textContainer: NSTextContainer?) -> NSImage? {
+        NSImage(size: NSSize(width: 1, height: 1))
+    }
+
     override func viewProvider(for parentView: NSView?, location: any NSTextLocation, textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
         let provider = NoteAttachmentViewProvider(
             textAttachment: self, parentView: parentView, textLayoutManager: textContainer?.textLayoutManager, location: location

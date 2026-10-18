@@ -5,7 +5,8 @@ import StudyUI
 
 extension SearchHit {
     /// Where ↩ (or a click) opens the hit: a transcript line plays from its second, a slide opens
-    /// at its first visit, a note at its slide and moment; a slide no lecture showed opens its course.
+    /// at its first visit, a slide's note at its slide and moment, any other note on the Notes
+    /// screen (M6); a slide no lecture showed opens its course.
     public var destination: StudyDestination? {
         switch target {
         case .lecture(let id, let page, let time, let plays, let recording):
@@ -14,6 +15,8 @@ extension SearchHit {
             .course(id)
         case .mail(let id):
             .mail(id)
+        case .note(let id, let course):
+            .notes(course.map { .course($0) } ?? .all, note: id)
         case nil:
             nil
         }

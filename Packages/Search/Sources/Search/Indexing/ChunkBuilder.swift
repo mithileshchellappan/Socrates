@@ -177,8 +177,34 @@ final class ChunkBuilder {
 
     /// A note's chunk text: its blocks on one line, " · " between them (a snippet reads as one
     /// paragraph, not a ragged first line).
+    ///
+    /// M6: chips read as their labels ("S13", "37:59"), inline media add nothing.
     static func noteText(_ note: Note) -> String {
-        SlideText.joinLines(note.plainText)
+        SlideText.joinLines(note.blocks.map(blockText).joined(separator: "\n"))
+    }
+
+    static func blockText(_ block: NoteBlock) -> String {
+        guard let inlines = block.inlines else { return block.text }
+        return inlines.map { inline in
+            switch inline.type {
+            case .attachment:
+                ""
+            case .slideRef where inline.text.isEmpty:
+                inline.source?.pageNumber.map { "S\($0)" } ?? ""
+            case .timeRef where inline.text.isEmpty:
+                inline.source?.time.map(clock) ?? ""
+            default:
+                inline.text
+            }
+        }.joined()
+    }
+
+    /// "9:50", "1:08:13", as the chips write it.
+    static func clock(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.down)))
+        return total >= 3600
+            ? String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
+            : String(format: "%d:%02d", total / 60, total % 60)
     }
 
     /// M5: a verified further-reading row (ai · `further_reading`, not hidden) as one chunk:

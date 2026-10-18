@@ -254,10 +254,9 @@ public actor SearchIndexer {
             return (note, courseID, lecture?.language ?? course?.language)
         }
         guard let (note, courseID, language) = source else { return (0, false) }
-        // A note opens its lecture or course; one with neither has nowhere to go.
-        let draft = (note.lectureID != nil || courseID != nil)
-            ? builder.noteChunk(note: note, courseID: courseID, fallbackLanguage: Self.language(language), now: now())
-            : nil
+        // A slide's note opens its lecture; any other note the Notes screen (M6: All Notes for a
+        // note without a course).
+        let draft = builder.noteChunk(note: note, courseID: courseID, fallbackLanguage: Self.language(language), now: now())
         let removed = try await replace(draft.map { [$0] } ?? [], kind: .note) { $0.noteID.eq(noteID) }
         return (draft == nil ? 0 : 1, draft != nil || removed > 0)
     }

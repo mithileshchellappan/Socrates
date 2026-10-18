@@ -385,7 +385,8 @@ extension SearchResults {
             if let number = hit.lectureID.flatMap({ lectures[$0] })?.number {
                 place += place.isEmpty ? "L\(number)" : " L\(number)"
             }
-            if !place.isEmpty { parts.append(place) }
+            // M6: a title that already says where the note sits ("DC L2 · …") is shown alone.
+            if !place.isEmpty, !(hit.title?.hasPrefix(place) ?? false) { parts.append(place) }
             if let title = hit.title {
                 parts.append(title)
             } else if let page = hit.page {

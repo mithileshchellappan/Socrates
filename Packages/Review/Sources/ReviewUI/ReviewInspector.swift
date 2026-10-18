@@ -1,4 +1,6 @@
 import ChatUI
+import Notes
+import NotesUI
 import Review
 import StudyCore
 import StudyUI
@@ -259,6 +261,9 @@ private struct SlideNotesPane: View {
     }
 }
 
+/// The notes of one slide (or, `page` nil, of the lecture itself), each a rich `NoteEditor` in the
+/// inspector style; a slide without notes has one empty editor that becomes a note on its first
+/// keystroke. Leaving the slide saves.
 private struct SlideNoteEditorView: View {
     let model: ReviewModel
     /// Bumped to put the caret in the empty note.
@@ -282,8 +287,8 @@ private struct SlideNoteEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(editor.drafts) { draft in
-                NoteDraftRow(model: model, editor: editor, draft: draft, focusRequest: focusRequest)
+            ForEach(editor.sessions) { session in
+                NoteSessionRow(model: model, session: session, focusRequest: focusRequest)
             }
         }
         .onDisappear {
@@ -293,135 +298,92 @@ private struct SlideNoteEditorView: View {
     }
 }
 
-/// One note: your pin, the text, and a time chip when it is anchored to the recording. At rest
-/// the note reads as prose (mockup 03's `.mynote`): checklist lines with their box and the chip at
-/// the end of the last line. Clicking it edits the text (`- [ ] ` lines) with the chip below.
-private struct NoteDraftRow: View {
+/// One note: your pin and the note (mockup 03's `.mynote`), its time chip after the last word
+/// when it is anchored to the recording. Typing in it sets `isEditingText` (the review's plain
+/// keys detach and the pane keeps its slide).
+private struct NoteSessionRow: View {
     let model: ReviewModel
-    let editor: SlideNoteEditor
-    let draft: NoteDraft
+    let session: NoteSession
     /// Bumped by a click in the pane's empty room: an empty note takes the caret.
     var focusRequest = 0
 
-    @FocusState private var isFocused: Bool
-
-    /// Lines the editor's text up with the pin (the text view's line fragment padding).
-    #if os(macOS)
-    private static let insetCorrection: CGFloat = -5
-    #else
-    private static let insetCorrection: CGFloat = -4
-    #endif
-
-    /// Shown read-only until it is clicked; an empty note is the editor (one quiet line).
-    private var isAtRest: Bool {
-        draft.isEditable && !isFocused && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private var isBlank: Bool {
+        session.note?.isBlank ?? true
     }
 
     var body: some View {
+        let model = model
         HStack(alignment: .top, spacing: 7) {
             // The pin marks your text: none beside an empty note, but its place is kept so typing
             // does not shift the line.
             ProvenancePin(.user)
                 .padding(.top, 1)
-                .opacity(draft.text.isEmpty ? 0 : 1)
-            VStack(alignment: .leading, spacing: 5) {
-                if draft.isEditable {
-                    // One structure at rest and while editing, so the editor (and its focus)
-                    // survives the swap: the hidden view sizes it (a text view does not size
-                    // itself), the prose covers it at rest.
-                    Group {
-                        if isAtRest {
-                            NoteAtRest(blocks: NoteText.blocks(from: draft.text), time: chipTime, play: play)
-                        } else {
-                            Text(verbatim: draft.text.isEmpty ? " " : draft.text)
-                                .font(.callout)
-                                .lineSpacing(2)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .hidden()
-                    .overlay {
-                        TextEditor(text: Binding(
-                            get: { draft.text },
-                            set: { editor.setText($0, for: draft.id) }
-                        ))
-                        .font(.callout)
-                        .lineSpacing(2)
-                        .scrollContentBackground(.hidden)
-                        .scrollDisabled(true)
-                        .padding(.horizontal, Self.insetCorrection)
-                        .focused($isFocused)
-                        .opacity(isAtRest ? 0 : 1)
-                        .allowsHitTesting(!isAtRest)
-                        .accessibilityLabel(Text("Your notes"))
-                    }
-                    .overlay(alignment: .topLeading) {
-                        if isAtRest {
-                            NoteAtRest(blocks: NoteText.blocks(from: draft.text), time: chipTime, play: play)
-                        }
-                    }
-                    if !isAtRest, let time = chipTime {
-                        TimeChip(time, action: { play(time) })
-                    }
-                } else {
-                    NoteAtRest(blocks: draft.note?.blocks ?? [], time: chipTime, play: play)
-                }
-            }
+                .opacity(isBlank ? 0 : 1)
+            NoteEditor(
+                session: session,
+                style: .inspector,
+                startsWith: .body,
+                professor: model.professorSurname.isEmpty ? nil : String(localized: "Prof. \(model.professorSurname)"),
+                lectureID: model.lecture.id,
+                trailingTime: model.player == nil ? nil : session.note?.audioTime,
+                focusRequest: isBlank ? focusRequest : 0,
+                onFocusChange: { model.isEditingText = $0 },
+                onLink: { ReviewNoteLinks.open($0, model: model) }
+            )
         }
-        // The whole row takes a click into the note (an empty one is a single quiet line).
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if draft.isEditable { isFocused = true }
-        }
-        .onChange(of: isFocused) { _, focused in
-            model.isEditingText = focused
-        }
-        .onChange(of: focusRequest) {
-            if draft.isEditable, draft.text.isEmpty { isFocused = true }
-        }
-        .onDisappear {
-            // Paging away while typing removes the editor without a focus change.
-            if isFocused { model.isEditingText = false }
-        }
-    }
-
-    private var chipTime: Double? {
-        model.player == nil ? nil : draft.audioTime
-    }
-
-    private func play(_ time: Double) {
-        Task { await model.session.play(from: time) }
     }
 }
 
-/// A note as prose: its lines (checklist items with their box), and the time chip after the last
-/// word, on the last line when it fits, else on the next.
-private struct NoteAtRest: View {
-    let blocks: [NoteBlock]
-    let time: Double?
-    let play: (Double) -> Void
+/// A chip in a note of this lecture moves the review (the slide, or playback from the moment);
+/// one of another lecture opens that lecture.
+@MainActor
+enum ReviewNoteLinks {
+    static func open(_ link: NoteLink, model: ReviewModel) -> Bool {
+        switch link {
+        case .slide(let source):
+            guard (source.lectureID ?? model.lecture.id) == model.lecture.id, let page = source.pageNumber,
+                  source.deckID == nil || source.deckID == model.deckID, model.deck != nil
+            else { return false }
+            Task { await model.session.selectThumbnail(page: page) }
+            return true
+        case .time(let source):
+            guard (source.lectureID ?? model.lecture.id) == model.lecture.id, let time = source.time, model.player != nil,
+                  source.recordingID == nil || source.recordingID == model.recording?.id
+            else { return false }
+            Task { await model.session.play(from: time) }
+            return true
+        }
+    }
+}
+
+/// "Your notes" on Whole lecture (and without a deck): the lecture's own notes (editable), then the
+/// notes of its slides, read-only, each after its `SlideChip`.
+private struct LectureYourNotes: View {
+    let model: ReviewModel
+    let notes: [Note]
 
     var body: some View {
-        if let time {
-            NoteFlowLayout {
-                ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                    if index > 0 {
-                        Color.clear.frame(width: 0, height: 0).layoutValue(key: NoteFlowLayout.LineBreak.self, value: true)
+        let model = model
+        VStack(alignment: .leading, spacing: 10) {
+            SectionLabel("Your notes")
+            SlideNoteEditorView(model: model, page: nil, notes: notes.filter { $0.pageNumber == nil })
+            ForEach(notes.filter { $0.pageNumber != nil && !$0.isBlank }) { note in
+                HStack(alignment: .top, spacing: 7) {
+                    if let page = note.pageNumber {
+                        SlideChip(page: page) {
+                            Task { await model.session.selectThumbnail(page: page) }
+                        }
+                        .padding(.top, 1)
                     }
-                    if block.type == .checklist {
-                        Text(Image(systemName: block.checked == true ? "checkmark.square" : "square"))
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(Array(block.text.split(separator: " ").enumerated()), id: \.offset) { _, word in
-                        Text(verbatim: String(word))
-                    }
+                    NoteEditor(
+                        note: note, style: .inspector,
+                        professor: model.professorSurname.isEmpty ? nil : String(localized: "Prof. \(model.professorSurname)"),
+                        onLink: { ReviewNoteLinks.open($0, model: model) }
+                    )
+                    // Drawn again when the note changes (it is edited on This slide).
+                    .id("\(note.id)-\(note.updatedAt.timeIntervalSinceReferenceDate)")
                 }
-                TimeChip(time) { play(time) }
             }
-            .font(.callout)
-            .accessibilityElement(children: .combine)
-        } else {
-            NoteBody(blocks: blocks)
         }
     }
 }
@@ -437,14 +399,7 @@ private struct LectureOnlyNotesPane: View {
             if let summary = items.lectureSummary {
                 SummaryBlock(model: model, summary: summary)
             }
-            VStack(alignment: .leading, spacing: 10) {
-                SectionLabel("Your notes")
-                SlideNoteEditorView(model: model, page: nil, notes: notes.filter { $0.pageNumber == nil })
-                ForEach(notes.filter { $0.pageNumber != nil && !$0.isBlank }) { note in
-                    NoteBody(blocks: note.blocks)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
+            LectureYourNotes(model: model, notes: notes)
             if items.hasLectureWideItems {
                 Hairline()
                 if !items.examHints.isEmpty {
@@ -461,7 +416,7 @@ private struct LectureOnlyNotesPane: View {
     }
 }
 
-/// Every note of the lecture, by slide.
+/// The whole lecture: summary, exam hints, things said in class, further reading, then your notes.
 private struct LectureNotesPane: View {
     let model: ReviewModel
     let notes: [Note]
@@ -470,7 +425,6 @@ private struct LectureNotesPane: View {
     let items: StudyItems
 
     var body: some View {
-        let visible = notes.filter { !$0.isBlank }
         VStack(alignment: .leading, spacing: 14) {
             if let summary = items.lectureSummary {
                 SummaryBlock(model: model, summary: summary)
@@ -484,41 +438,10 @@ private struct LectureNotesPane: View {
             if !items.furtherReading.isEmpty {
                 FurtherReadingBlock(model: model, readings: items.furtherReading, showsSlides: true)
             }
-            VStack(alignment: .leading, spacing: 10) {
-                SectionLabel("Your notes")
-                ForEach(visible) { note in
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        if let page = note.pageNumber {
-                            SlideChip(page: page) {
-                                Task { await model.session.selectThumbnail(page: page) }
-                            }
-                        }
-                        NoteBody(blocks: note.blocks)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
+            LectureYourNotes(model: model, notes: notes)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// A note shown read-only: one line per block, checklist items with their box.
-private struct NoteBody: View {
-    let blocks: [NoteBlock]
-
-    var body: some View {
-        blocks.enumerated().reduce(Text(verbatim: "")) { text, item in
-            let (index, block) = item
-            let separator = index == 0 ? "" : "\n"
-            guard block.type == .checklist else { return Text("\(text)\(separator)\(block.text)") }
-            let box = Text(Image(systemName: block.checked == true ? "checkmark.square" : "square")).foregroundStyle(.secondary)
-            return Text("\(text)\(separator)\(box) \(block.text)")
-        }
-        .font(.callout)
-        .lineSpacing(2)
-        .textSelection(.enabled)
     }
 }

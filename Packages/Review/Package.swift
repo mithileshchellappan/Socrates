@@ -19,6 +19,8 @@ let package = Package(
         .package(path: "../Capture"),
         // M5: the inspector's Tutor tab (`ChatPanel`, the chat's ⌘J and memory menu).
         .package(path: "../ChatUI"),
+        // M6: "Your notes" are rich notes (`NoteSession`, `NotesUI.NoteEditor`).
+        .package(path: "../Notes"),
         // Test-only: real alignment runs for fixture-backed snapshots and anchor tests.
         .package(path: "../Alignment")
     ],
@@ -27,7 +29,8 @@ let package = Package(
             name: "Review",
             dependencies: [
                 .product(name: "StudyCore", package: "StudyCore"),
-                .product(name: "Capture", package: "Capture")
+                .product(name: "Capture", package: "Capture"),
+                .product(name: "Notes", package: "Notes")
             ]
         ),
         .target(
@@ -38,7 +41,9 @@ let package = Package(
                 .product(name: "StudyUI", package: "StudyUI"),
                 .product(name: "Capture", package: "Capture"),
                 .product(name: "CaptureUI", package: "Capture"),
-                .product(name: "ChatUI", package: "ChatUI")
+                .product(name: "ChatUI", package: "ChatUI"),
+                .product(name: "Notes", package: "Notes"),
+                .product(name: "NotesUI", package: "Notes")
             ]
         ),
     ],

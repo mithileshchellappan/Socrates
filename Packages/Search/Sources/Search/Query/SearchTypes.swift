@@ -72,6 +72,9 @@ public enum SearchTarget: Hashable, Sendable {
     case course(Course.ID)
     /// A mail message (the Mail screen, Inbox, with it selected).
     case mail(MailMessage.ID)
+    /// M6: a note that is not on a slide (a lecture's or a course's): the Notes screen with it
+    /// selected, scoped to its course (all notes when it has none).
+    case note(Note.ID, course: Course.ID?)
 }
 
 /// Marks the matched words in a `SearchHit.snippet`; SearchUI highlights these runs.
