@@ -1,6 +1,7 @@
 import CalendarUI
 import CaptureUI
 import ChatUI
+import CoachUI
 import CoursesUI
 import FilingUI
 import MailUI
@@ -64,6 +65,9 @@ struct StudyPortalApp: App {
                 AgentPanelCommands()
                 // Format (M6): the note editor's paragraph styles, lists and marks.
                 NoteFormatCommands()
+                // mc: Practice (a round's choices, Play Sentence, Next; an exam's Flag, Previous /
+                // Next Question, Pause, Submit), published by the round and exam screens.
+                PracticeCommands()
             }
         }
 

@@ -69,6 +69,8 @@ packages:
     path: Packages/Notes
   AppAgent:
     path: Packages/AppAgent
+  Coach:
+    path: Packages/Coach
 
 targets:
   StudyPortal:
@@ -204,3 +206,8 @@ targets:
       # ma (docs/plan-agent.md): one agent across the app (catalog, triage, tasks, change log).
       - package: AppAgent
         product: AppAgent
+      # mc (docs/plan-coach.md): the study coach (plan, practice rounds, practice exams).
+      - package: Coach
+        product: Coach
+      - package: Coach
+        product: CoachUI

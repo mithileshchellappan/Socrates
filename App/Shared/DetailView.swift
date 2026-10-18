@@ -1,4 +1,5 @@
 import CalendarUI
+import CoachUI
 import CoursesUI
 import FilingUI
 import MailUI
@@ -21,6 +22,8 @@ struct DetailView: View {
     var noteSelection: Binding<Note.ID?> = .constant(nil)
     /// Search's query and selected hits (`SearchResultsView` writes it; the agent panel's context).
     var searchContext: Binding<ChatContext> = .constant(.none)
+    /// mc renders (`ParityMode`): Progress opens with the practice exam sheet presented.
+    var examSheet: Course.ID?
     let record: () -> Void
 
     @Environment(AppModel.self) private var model
@@ -40,6 +43,10 @@ struct DetailView: View {
             notes(.all)
         case .notes(let scope):
             notes(scope)
+        case .study:
+            // mc (mockup 13): no search field; the title stays leading.
+            StudyView(now: model.fixedNow)
+                .modifier(CourseToolbarSpacer())
         case .search:
             SearchResultsView(query: query, submits: searchSubmits, context: searchContext)
         case .course(let id), .courseSettings(let id):
@@ -68,6 +75,22 @@ struct DetailView: View {
             // The Notes screen scoped to the course (DESIGN 8.4), as under the Notes row; a course's
             // screens have no search field.
             NotesView(scope: .course(id), selection: noteSelection)
+                .modifier(CourseToolbarSpacer())
+                .id(id)
+        case .courseProgress(let id):
+            // mc (mockup 14): presents the practice exam sheet itself (17).
+            CourseProgressView(courseID: id, now: model.fixedNow)
+                .modifier(CourseToolbarSpacer())
+                .modifier(ExamSheetPreview(courseID: id, now: model.fixedNow, preview: examSheet))
+                .id(id)
+        case .practice(let id):
+            // mc: full window (mockups 15, 18); RootView hides the sidebar, and for an exam the
+            // agent panel and the search field.
+            PracticeScreen(sessionID: id, now: model.fixedNow)
+                .id(id)
+        case .practiceResults(let id, _):
+            // mc (mockup 19): pushed on the course's Progress, with Back.
+            PracticeExamResultsView(sessionID: id)
                 .modifier(CourseToolbarSpacer())
                 .id(id)
         case .lecture(let id):
@@ -118,6 +141,27 @@ private struct CourseToolbarSpacer: ViewModifier {
             #if os(macOS)
             .toolbar { ToolbarSpacer(.flexible) }
             #endif
+    }
+}
+
+/// Debug renders and parity shots (mockup 17): Progress with its practice exam sheet presented, as
+/// Progress's own "Practice exam" presents it.
+private struct ExamSheetPreview: ViewModifier {
+    let courseID: Course.ID
+    let now: Date?
+    let preview: Course.ID?
+    @State private var isPresented = false
+
+    func body(content: Content) -> some View {
+        if preview == courseID {
+            content
+                .sheet(isPresented: $isPresented) {
+                    PracticeExamSheet(courseID: courseID, now: now)
+                }
+                .task { isPresented = true }
+        } else {
+            content
+        }
     }
 }
 

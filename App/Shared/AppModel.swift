@@ -5,6 +5,7 @@ import CalendarUI
 import Capture
 import ChatUI
 import ClaudeKit
+import Coach
 import Courses
 import Deadlines
 import Filing
@@ -87,6 +88,25 @@ final class AppModel {
     /// The AI study pass (M4): corrections, summaries, said in class, exam hints, further reading,
     /// one unit at a time in the background through Claude Code. Mac only.
     let studyPass: StudyPassPipeline?
+    /// The study coach (mc): the plan (`study_block` rows from today to 14 days ahead), rounds and
+    /// practice exams with the FSRS scheduler, Opus grading of written answers; its Haiku question
+    /// drafting and old exams run in the app agent's task queue. `\.studyCoach` on the window. Mac
+    /// only, and only where background work runs (renders draw the coach's rows, nothing is sent).
+    let coach: CoachEngine?
+    #if DEBUG
+    /// Renders and parity shots (mc): a coach that is never started, so the coach's screens offer
+    /// their actions as the mockups draw them (Start, Practice, the sheet's "8 questions · 90
+    /// points" read at the render's fixed now). Nothing follows rows, grades or is sent.
+    var previewCoach: CoachEngine?
+    #endif
+
+    /// What the window's `\.studyCoach` gets: the coach (nil on iOS and in renders without one).
+    var screenCoach: (any StudyCoaching)? {
+        #if DEBUG
+        if let previewCoach { return previewCoach }
+        #endif
+        return coach
+    }
     /// What Today and Calendar ask the app to do (`\.deadlineActions`).
     @ObservationIgnored private(set) var deadlineActions = DeadlineActions()
 
@@ -191,9 +211,17 @@ final class AppModel {
             // The agent's lecture search: the same index, no planner (the model writes German and
             // English terms itself).
             let engine = SearchEngine(database: services.database, planner: nil, semantic: semanticIndex)
+            // mc: the coach exists before the agent: the plan tools replan through it and the task
+            // queue runs its drafting and old exams.
+            #if os(macOS)
+            let coach = startsProcessing ? CoachEngine(services: services, client: claude) : nil
+            #else
+            let coach: CoachEngine? = nil
+            #endif
+            self.coach = coach
             // ma: the `app` conversation (every domain's tools) and the sub-agents' `task`
             // conversations (their tool groups fixed at spawn).
-            let specs = AppAgent.specs(services: services, search: engine, drafter: drafter, memory: memory)
+            let specs = AppAgent.specs(services: services, search: engine, drafter: drafter, memory: memory, coach: coach)
             let agent = AgentRuntime(
                 services: services, client: claude, memory: memory,
                 additionalSpecs: specs.additional, conversationSpecs: specs.perConversation
@@ -206,7 +234,7 @@ final class AppModel {
             self.studyPass = studyPass
             let appAgent = startsProcessing ? AppAgent(
                 services: services, client: claude, runtime: agent, memory: memory,
-                schedule: CourseSchedule(services: services), studyPass: studyPass
+                schedule: CourseSchedule(services: services), studyPass: studyPass, coach: coach
             ) : nil
             self.appAgent = appAgent
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
@@ -236,6 +264,7 @@ final class AppModel {
             appAgent = nil
             transcriptItems = nil
             studyPass = nil
+            coach = nil
             owner = ModelReference()
             #if os(macOS)
             mailEngine = nil
@@ -354,11 +383,15 @@ final class AppModel {
             await studyPass.start()
             let processed = processed
             let appAgent = appAgent
+            let coach = coach
             Task {
                 for await _ in processed {
                     Task { await studyPass.wake() }
                     // A study pass unit or a transcript may have written an event for triage.
                     Task { await appAgent?.wake() }
+                    // mc: new lectures and topics to plan and draft (the coach also follows the
+                    // study pass's unit rows on its own).
+                    Task { await coach?.wake() }
                 }
             }
         }
@@ -370,6 +403,9 @@ final class AppModel {
             await appAgent.start()
             observeMemoryPressure(appAgent)
         }
+        // mc: after the agent (the coach queues `question_draft` tasks its queue runs): follows the
+        // rows it plans from, replans now and grades the written answers that wait.
+        await coach?.start()
     }
 
     /// The agent's background claude processes (sub-agents, triage): 1 while the system has less
@@ -675,10 +711,15 @@ final class AppModel {
         let studyPass = studyPass
         let semanticIndex = semanticIndex
         let appAgent = appAgent
+        let coach = coach
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
             // First, synchronously: a task or triage call failing because its process is ended
             // below writes nothing (the task resumes at the next launch, the events stay pending).
             appAgent?.prepareForQuit()
+            // mc: the coach stops following rows and grading; answers in flight stay pending.
+            if let coach {
+                Task { await coach.stop() }
+            }
             ClaudeCodeEngine.terminateRunningProcesses()
             // Running tasks keep their rows (re-queued at the next launch); triage and reminders stop.
             if let appAgent {
@@ -708,10 +749,13 @@ final class AppModel {
         let transcriptItems = transcriptItems
         let studyPass = studyPass
         let appAgent = appAgent
+        let coach = coach
         Task { await pipeline?.wake() }
         Task { await transcriptItems?.wake() }
         Task { await studyPass?.wake() }
         Task { await appAgent?.wake() }
+        // mc: written answers that waited for Claude Code are graded.
+        Task { await coach?.wake() }
     }
 
     /// The agent panel's effects (`\.agentPanelActions`), rebuilt when the availability changes:

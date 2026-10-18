@@ -3,6 +3,8 @@ import CalendarUI
 import CaptureUI
 import ChatUI
 import ClaudeKit
+import Coach
+import CoachUI
 import FilingUI
 import ReviewUI
 import SearchUI
@@ -14,7 +16,15 @@ import SwiftUI
 //
 //   tools/parity/render [--library DIR] [--out DIR] [--only 01-today,03-review]
 //                       [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
-//                       [--week 2026-10-19] [--m35-sample]
+//                       [--week 2026-10-19] [--m35-sample] [--mc]
+//
+// `--mc` (mc, the study coach; a copy seeded with `tools/parity/seed --mc-sample` / `--mc-runway`,
+// e.g. .data/parity/mc/<state>/library): only the coach's shots the library has, with a coach that
+// is never started (its previews read at `--now`; nothing is sent): `11-today-plan`,
+// `12-today-travel` (Today), `13-study`, `14-course-progress`, `15-quiz-4` / `15-quiz-7` (the open
+// rounds at question 4 and 7), `17-practice-exam-start` (Progress with the sheet drawn on top),
+// `18-practice-exam-2` / `18-practice-exam-8` (the open exams at question 2 and 8),
+// `19-practice-exam-results` (DC's latest handed-in exam). Pick per state with `--only`.
 //
 // `06-calendar` opens on the week of `--week` (default: mockup 06's, Mon 19 Oct 2026); `--now`
 // also fixes Today's clock (the DemoLibrary's is 2026-10-16T09:41, its mail's 15:02).
@@ -64,6 +74,8 @@ struct RenderOptions {
     var m35Sample = false
     /// Calendar's detail popovers with sample exam rows (`--calendar-sample`).
     var calendarSample = false
+    /// Only the study coach's shots (`--mc`).
+    var mc = false
 
     init(arguments: [String]) throws {
         var index = 0
@@ -89,6 +101,7 @@ struct RenderOptions {
                 week = day
             case "--m35-sample": m35Sample = true
             case "--calendar-sample": calendarSample = true
+            case "--mc": mc = true
             case "--appearance":
                 switch try value() {
                 case "light": schemes = [.light]
@@ -118,6 +131,8 @@ struct RenderShot {
     var window: Window
     /// Calendar draws this item's detail popover inline (`--calendar-sample`).
     var calendarDetail: CalendarDetailPreview?
+    /// mc: the practice exam sheet of this course drawn on top (off-screen windows draw no sheet).
+    var examSheet: Course.ID?
     var prepare: ((AppModel, CGSize) async throws -> Void)?
 }
 
@@ -153,6 +168,11 @@ struct ParityRender {
         prepareDependencies { $0.defaultDatabase = services.database }
         let model = AppModel(services: services, startsProcessing: false)
         model.fixedNow = options.now
+        // mc: the coach's screens with their actions, previews at the fixed now; never started.
+        if let claude = model.claude {
+            let fixed = options.now ?? Date()
+            model.previewCoach = CoachEngine(services: services, client: claude, now: { fixed })
+        }
         model.fixedCalendarWeek = options.week
         if let indexer = model.searchIndexer { _ = try await indexer.catchUp(verifyingText: true) }
         await model.filing?.repairDeckTitles()
@@ -227,6 +247,7 @@ struct ParityRender {
                 try await ParityMode.importPreview(model: model, services: services, size: size)
             }
         ]
+        if options.mc { shots = try mcShots(cc: cc, services: services) }
         if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
         if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
         if let only = options.only { shots = shots.filter { only.contains($0.name) } }
@@ -248,6 +269,27 @@ struct ParityRender {
             model.filingCenter?.endPreviewDrag()
             model.filingCenter?.toasts.map(\.id).forEach { model.filingCenter?.dismiss($0) }
         }
+    }
+
+    /// mc: the study coach's screens (mockups 11–19, 16 is M7's iPhone) the library has.
+    static func mcShots(cc: Course, services: StudyServices) throws -> [RenderShot] {
+        func screen(_ selection: SidebarItem) -> RenderShot.Window { .main(ParityMode.Launch(selection: selection)) }
+        var shots = [
+            RenderShot(name: "11-today-plan", window: screen(.today)),
+            RenderShot(name: "12-today-travel", window: screen(.today)),
+            RenderShot(name: "13-study", window: screen(.study)),
+            RenderShot(name: "14-course-progress", window: screen(.courseProgress(cc.id))),
+            RenderShot(name: "17-practice-exam-start", window: screen(.courseProgress(cc.id)), examSheet: cc.id)
+        ]
+        for (kind, question, name) in [(StudySessionKind.round, 4, "15-quiz-4"), (.round, 7, "15-quiz-7"), (.exam, 2, "18-practice-exam-2"), (.exam, 8, "18-practice-exam-8")] {
+            if let session = try? ParityMode.practiceSession(kind, question: question, services: services) {
+                shots.append(RenderShot(name: name, window: screen(.practice(session.id))))
+            }
+        }
+        if let results = try? ParityMode.practiceResults(cc, services: services) {
+            shots.append(RenderShot(name: "19-practice-exam-results", window: screen(.practiceResults(results.id, course: cc.id))))
+        }
+        return shots
     }
 
     /// M3.5's sample rows in the clone: the second-newest inbox mail asks the student something
@@ -374,6 +416,9 @@ struct ParityRender {
         if case .main(let launch) = shot.window, launch.panel.mode == .compact {
             png = try await overlayCompactPanel(on: png, launch: launch, scheme: scheme, model: model, windowSize: frame.bounds.size, settle: settle)
         }
+        if let course = shot.examSheet {
+            png = try await overlaySheet(on: png, course: course, scheme: scheme, model: model, windowSize: frame.bounds.size, settle: settle)
+        }
         try png.write(to: url)
     }
 
@@ -430,6 +475,60 @@ struct ParityRender {
         base.draw(in: CGRect(origin: .zero, size: windowSize))
         // Bottom-left origin: the panel's trailing edge at width - 12, its bottom 12 pt up.
         let rect = CGRect(x: windowSize.width - margin - size.width + pad, y: margin - pad, width: size.width, height: size.height)
+        piece.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+        NSGraphicsContext.restoreGraphicsState()
+        return canvas.representation(using: .png, properties: [:]) ?? png
+    }
+
+    /// mc (mockup 17): the practice exam sheet as macOS presents it, 404 pt wide, centred, 60 pt
+    /// below the window's top, on the window's background with its 20 pt corners and shadow.
+    static func overlaySheet(
+        on png: Data, course: Course.ID, scheme: ColorScheme, model: AppModel, windowSize: CGSize, settle: Duration
+    ) async throws -> Data {
+        let pad: CGFloat = 40
+        let sheet = PracticeExamSheet(courseID: course, now: model.fixedNow)
+            .environment(\.studyCoach, model.screenCoach)
+            .environment(\.studyServices, model.services)
+            .background(.background, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.separator, lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.22), radius: 24, y: 12)
+            .padding(pad)
+        let host = NSHostingView(rootView: sheet)
+        let window = NSWindow(
+            contentRect: CGRect(x: -20_000, y: -20_000, width: 404 + 2 * pad, height: 300),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+        window.contentView = host
+        defer { window.close() }
+        try await Task.sleep(for: settle)
+        for _ in 0..<2 {
+            window.setContentSize(host.fittingSize)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(300))
+        }
+        host.display()
+        guard let piece = host.bitmapImageRepForCachingDisplay(in: host.bounds),
+              let base = NSBitmapImageRep(data: png),
+              let canvas = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: base.pixelsWide, pixelsHigh: base.pixelsHigh, bitsPerSample: 8,
+                samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+              )
+        else { return png }
+        canvas.size = windowSize
+        guard let context = NSGraphicsContext(bitmapImageRep: canvas) else { return png }
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            host.cacheDisplay(in: host.bounds, to: piece)
+        }
+        let size = host.bounds.size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        base.draw(in: CGRect(origin: .zero, size: windowSize))
+        // Bottom-left origin: the sheet's top 60 pt below the window's top, centred.
+        let rect = CGRect(x: ((windowSize.width - size.width) / 2).rounded(), y: windowSize.height - 60 - size.height + pad, width: size.width, height: size.height)
         piece.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
         NSGraphicsContext.restoreGraphicsState()
         return canvas.representation(using: .png, properties: [:]) ?? png

@@ -3,6 +3,7 @@ import AppKit
 import Capture
 import ChatUI
 import CaptureUI
+import Coach
 import Filing
 import FilingUI
 import ReviewUI
@@ -26,7 +27,11 @@ import SwiftUI
 /// recording state: running timer, a fixed input level, the lecture's own captions and slide
 /// stamps up to that slide; nothing is recorded); `import-preview` (Today with a dragged deck
 /// under the cursor, its drop HUD for the next lecture, and the toast of the latest recording
-/// filed). Path parts may be percent-encoded.
+/// filed). mc (the study coach, on a copy seeded with `tools/parity/seed --mc-sample` /
+/// `--mc-runway`): `study`; `progress/<course>` (its Progress); `exam-sheet/<course>` (Progress with
+/// the practice exam sheet presented); `practice/round?question=N` and `practice/exam?question=N`
+/// (the open round or exam at question N, full window); `practice-results/<course>` (the course's
+/// latest handed-in practice exam). Path parts may be percent-encoded.
 ///
 /// The library comes from `-StudyPortalDataRoot` (or `STUDYPORTAL_DATA_ROOT`); without either,
 /// or pointed at the real library, the app opens nothing. Nothing runs in the background (no
@@ -54,6 +59,12 @@ enum ParityMode {
         case search(String)
         case livePreview(course: String, number: Int, slide: Int?)
         case importPreview
+        // mc: the study coach's screens.
+        case study
+        case progress(course: String)
+        case examSheet(course: String)
+        case practice(StudySessionKind, question: Int)
+        case practiceResults(course: String)
     }
 
     enum WindowRole: Hashable {
@@ -77,6 +88,8 @@ enum ParityMode {
         /// The agent panel (ma): closed, compact or expanded, on a conversation and its exchanges
         /// (needs Claude Code available).
         var panel = AgentPanelLaunch()
+        /// mc: Progress with its practice exam sheet presented (mockup 17).
+        var examSheet: Course.ID?
     }
 
     static let windowSize = CGSize(width: 1440, height: 900)
@@ -204,6 +217,8 @@ enum ParityMode {
             if !quiet { NSApp.activate() }
             // What a launch does to a library before the window shows it.
             if let indexer = model.searchIndexer { _ = try await indexer.catchUp(verifyingText: true) }
+            // mc: the coach's screens with their actions (never started: nothing is sent).
+            if let claude = model.claude { model.previewCoach = CoachEngine(services: services, client: claude) }
             await model.filing?.repairDeckTitles()
 
             var shown = main
@@ -240,6 +255,18 @@ enum ParityMode {
                 // The drop area measures itself first (the HUD keeps clear of its edges).
                 try await Task.sleep(for: .seconds(1))
                 try await importPreview(model: model, services: services, size: main.contentView?.bounds.size ?? windowSize)
+            case .study:
+                show(Launch(selection: .study))
+            case .progress(let name):
+                show(Launch(selection: .courseProgress(try course(name, services: services).id)))
+            case .examSheet(let name):
+                let id = try course(name, services: services).id
+                show(Launch(selection: .courseProgress(id), examSheet: id))
+            case .practice(let kind, let question):
+                show(Launch(selection: .practice(try practiceSession(kind, question: question, services: services).id)))
+            case .practiceResults(let name):
+                let course = try course(name, services: services)
+                show(Launch(selection: .practiceResults(try practiceResults(course, services: services).id, course: course.id)))
             }
             try await Task.sleep(for: options.settle)
             let active = quiet ? false : await activate(shown)
@@ -313,6 +340,30 @@ enum ParityMode {
             throw Failure("No lecture \(number) in \(course.name)")
         }
         return (course, lecture)
+    }
+
+    /// mc: the open round or exam whose current question is `question` (1-based).
+    static func practiceSession(_ kind: StudySessionKind, question: Int, services: StudyServices) throws -> StudySession {
+        let sessions = try services.database.read { db in
+            try StudySession.where { $0.kind.eq(kind) }.order { $0.createdAt.desc() }.fetchAll(db)
+        }
+        guard let session = sessions.first(where: { $0.state.isOpen && $0.position == question - 1 }) else {
+            throw Failure("No open \(kind.rawValue) at question \(question)")
+        }
+        return session
+    }
+
+    /// mc: the course's latest handed-in practice exam.
+    static func practiceResults(_ course: Course, services: StudyServices) throws -> StudySession {
+        let courseID = course.id
+        let session = try services.database.read { db in
+            try StudySession
+                .where { $0.kind.eq(StudySessionKind.exam) && $0.courseID.eq(Course.ID?.some(courseID)) && $0.state.eq(StudySessionState.submitted) }
+                .order { $0.endedAt.desc() }
+                .fetchOne(db)
+        }
+        guard let session else { throw Failure("No practice exam handed in for \(course.name)") }
+        return session
     }
 
     // MARK: - Live preview
@@ -506,6 +557,17 @@ extension ParityMode.Route {
             self = .livePreview(course: path[1], number: number, slide: query["slide"].flatMap(Int.init))
         case ("import-preview", 1):
             self = .importPreview
+        case ("study", 1):
+            self = .study
+        case ("progress", 2):
+            self = .progress(course: path[1])
+        case ("exam-sheet", 2):
+            self = .examSheet(course: path[1])
+        case ("practice", 2):
+            guard ["round", "exam"].contains(path[1]), let question = query["question"].flatMap(Int.init) else { return nil }
+            self = .practice(StudySessionKind(rawValue: path[1]), question: question)
+        case ("practice-results", 2):
+            self = .practiceResults(course: path[1])
         default:
             return nil
         }
@@ -524,7 +586,7 @@ struct ParityRootView: View {
                 RootView(
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
-                    panel: launch.panel
+                    panel: launch.panel, examSheet: launch.examSheet
                 )
                 .environment(model)
             } else {

@@ -19,6 +19,9 @@ enum SidebarItem: Hashable {
     /// The Notes screen (mockup 04): All Notes or one course's notes, listed under the Notes row
     /// while one shows.
     case notes(NotesScope)
+    /// mc: Study (mockup 13), after Notes and before Search: the plan's current block, the courses'
+    /// readiness and this week, the weakest topics.
+    case study
     case search
     /// The course's row. Choosing it shows the course's screen, `courseSettings` (mockup 08: the
     /// course's own "Course Settings" row is the one selected).
@@ -26,14 +29,23 @@ enum SidebarItem: Hashable {
     case courseLectures(Course.ID)
     case courseSlides(Course.ID)
     case courseNotes(Course.ID)
+    /// mc: a course's Progress (mockup 14), between its Notes and Course Settings.
+    case courseProgress(Course.ID)
     case courseSettings(Course.ID)
     case lecture(Lecture.ID)
+    /// mc: a practice round or a practice exam, full window (mockups 15, 18): the sidebar hides; an
+    /// exam not yet submitted also hides the agent panel, its launcher and the search field.
+    case practice(StudySession.ID)
+    /// mc: a submitted practice exam's results (mockup 19), pushed on its course's Progress: the
+    /// sidebar shows that course's Progress row selected, the toolbar Back.
+    case practiceResults(StudySession.ID, course: Course.ID)
 
-    static let destinations: [SidebarItem] = [.today, .calendar, .mail, .notesRow, .search]
+    /// The top-level rows, in sidebar order: Go ⌘1…⌘6.
+    static let destinations: [SidebarItem] = [.today, .calendar, .mail, .notesRow, .study, .search]
 
-    /// A course's own screens, in sidebar order (mockup 08).
+    /// A course's own screens, in sidebar order (mockups 08, 14).
     static func courseScreens(_ id: Course.ID) -> [SidebarItem] {
-        [.courseLectures(id), .courseSlides(id), .courseNotes(id), .courseSettings(id)]
+        [.courseLectures(id), .courseSlides(id), .courseNotes(id), .courseProgress(id), .courseSettings(id)]
     }
 
     var title: String {
@@ -42,14 +54,31 @@ enum SidebarItem: Hashable {
         case .calendar: String(localized: "Calendar")
         case .mail, .mailScope: String(localized: "Mail")
         case .notesRow, .notes: String(localized: "Notes")
+        case .study: String(localized: "Study")
         case .search: String(localized: "Search")
         case .course: String(localized: "Course")
         case .courseLectures: String(localized: "Lectures")
         case .courseSlides: String(localized: "Slides")
         case .courseNotes: String(localized: "Notes")
+        case .courseProgress: String(localized: "Progress")
         case .courseSettings: String(localized: "Course Settings")
         case .lecture: String(localized: "Lecture")
+        case .practice: String(localized: "Practice")
+        case .practiceResults: String(localized: "Practice exam")
         }
+    }
+
+    /// The sidebar row that shows as selected: a practice exam's results are pushed on its course's
+    /// Progress (mockup 19).
+    var sidebarRow: SidebarItem {
+        if case .practiceResults(_, let course) = self { return .courseProgress(course) }
+        return self
+    }
+
+    /// A practice round or exam: the window shows nothing but it (the sidebar hides).
+    var isPractice: Bool {
+        if case .practice = self { return true }
+        return false
     }
 
     /// What choosing this item shows: a course's row stands for its settings, the Mail row for
@@ -94,17 +123,19 @@ enum SidebarItem: Hashable {
     /// The course whose screen this is (its lectures, slides, notes or settings).
     var courseScreenID: Course.ID? {
         switch self {
-        case .course(let id), .courseLectures(let id), .courseSlides(let id), .courseNotes(let id), .courseSettings(let id): id
-        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .search, .lecture: nil
+        case .course(let id), .courseLectures(let id), .courseSlides(let id), .courseNotes(let id),
+             .courseProgress(let id), .courseSettings(let id), .practiceResults(_, let id): id
+        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .study, .search, .lecture, .practice: nil
         }
     }
 
-    /// Today, Calendar, Mail, Notes and Search: the screens with the toolbar search field (not
-    /// Calendar's) and one shared detail stack.
+    /// Today, Calendar, Mail, Notes, Study and Search: one shared detail stack, and the toolbar
+    /// search field on all but Calendar and Study (mockups 06, 13).
     var isTopLevel: Bool {
         switch self {
-        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .search: true
-        case .course, .courseLectures, .courseSlides, .courseNotes, .courseSettings, .lecture: false
+        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .study, .search: true
+        case .course, .courseLectures, .courseSlides, .courseNotes, .courseProgress, .courseSettings, .lecture,
+             .practice, .practiceResults: false
         }
     }
 
@@ -116,13 +147,17 @@ enum SidebarItem: Hashable {
         case .notesRow: "note.text"
         // All Notes (mockup 04's `i-doc`); a course's child draws its dot instead.
         case .notes: "doc.text"
+        case .study: "brain"
         case .search: "magnifyingglass"
         case .course: "books.vertical"
         case .courseLectures: "waveform"
         case .courseSlides: "display"
         case .courseNotes: "doc.text"
+        case .courseProgress: "chart.bar"
         case .courseSettings: "gearshape"
         case .lecture: "display"
+        case .practice: "brain"
+        case .practiceResults: "chart.bar"
         }
     }
 }
@@ -163,6 +198,11 @@ struct ScreenHistory: Equatable {
         }
         moving = nil
         guard let old, let new, old != new else { return }
+        // A round or an exam is not gone back to (it ended, or its results stand for it).
+        if old.isPractice {
+            forward.removeAll()
+            return
+        }
         back.append(old)
         if back.count > Self.limit { back.removeFirst(back.count - Self.limit) }
         forward.removeAll()
@@ -179,8 +219,8 @@ struct ScreenHistory: Equatable {
     }
 }
 
-/// Go: the five top-level screens (⌘1…⌘5: Today, Calendar, Mail, Notes, Search) and Search Library
-/// (⌘F, focuses the toolbar field).
+/// Go: the six top-level screens (⌘1…⌘6: Today, Calendar, Mail, Notes, Study, Search) and Search
+/// Library (⌘F, focuses the toolbar field).
 struct GoCommands: Commands {
     @FocusedValue(\.sidebarSelection) private var selection
     @FocusedValue(\.focusSearch) private var focusSearch
@@ -188,7 +228,7 @@ struct GoCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Go") {
-            // ⌘1 … ⌘5
+            // ⌘1 … ⌘6
             ForEach(Array(SidebarItem.destinations.enumerated()), id: \.element) { index, item in
                 Button(item.title) { selection?.wrappedValue = item.screen }
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)

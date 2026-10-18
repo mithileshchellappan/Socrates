@@ -42,6 +42,12 @@ struct RootView: View {
     @State private var searchContext = ChatContext.none
     /// How the agent panel starts (renders); closed otherwise.
     private let panel: AgentPanelLaunch
+    /// mc renders: Progress opens with its practice exam sheet presented (mockup 17).
+    private let examSheet: Course.ID?
+    /// mc: what the practice session on screen asks of the window (`PracticeStateWatcher`).
+    @State private var practiceState: PracticeWindowState?
+    /// The sidebar as it was before a round or an exam hid it (restored after).
+    @State private var columnsBeforePractice: NavigationSplitViewVisibility?
 
     init(
         selection: SidebarItem? = .today,
@@ -49,14 +55,21 @@ struct RootView: View {
         reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil,
         mailSelection: MailMessage.ID? = nil,
         noteSelection: Note.ID? = nil,
-        panel: AgentPanelLaunch = AgentPanelLaunch()
+        panel: AgentPanelLaunch = AgentPanelLaunch(),
+        examSheet: Course.ID? = nil
     ) {
         _selection = State(initialValue: selection?.screen)
         _query = State(initialValue: query)
         _reviewTarget = State(initialValue: reviewTarget)
         _mailSelection = State(initialValue: mailSelection)
         _noteSelection = State(initialValue: noteSelection)
+        // A round or an exam opens full window (renders start on one).
+        if selection?.isPractice == true {
+            _columns = State(initialValue: .detailOnly)
+            _columnsBeforePractice = State(initialValue: .all)
+        }
         self.panel = panel
+        self.examSheet = examSheet
     }
 
     var body: some View {
@@ -75,18 +88,8 @@ struct RootView: View {
                 .agentPanel(context: agentContext, launch: panel, floatingLauncher: columns == .detailOnly)
                 .environment(\.isSearchFieldFocused, searchFocused)
                 .focusedSceneValue(\.sidebarSelection, $selection)
-                .focusedSceneValue(\.focusSearch) {
-                    let hadField = showsSearchField
-                    selection = .search
-                    searchFocused = true
-                    if !hadField {
-                        // The field comes back with the Search screen: focus it once it is there.
-                        Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(80))
-                            searchFocused = true
-                        }
-                    }
-                }
+                // ⌘F would leave a practice exam being written: not while one is.
+                .focusedSceneValue(\.focusSearch, focusSearchAction)
                 .focusedSceneValue(\.screenHistory, ScreenHistoryActions(
                     canGoBack: history.canGoBack,
                     canGoForward: history.canGoForward,
@@ -100,8 +103,12 @@ struct RootView: View {
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
                 .environment(\.deadlineActions, model.deadlineActions)
-                // The agent panel: absent until Claude Code is available.
-                .environment(\.agentPanelActions, model.agentPanelActions)
+                // The agent panel: absent until Claude Code is available, and while a practice exam
+                // is being written (mc: the panel, its launcher and ⌘J go until it is handed in).
+                .environment(\.agentPanelActions, panelActions)
+                // mc: the study coach (Start, Practice, practice exams, grading); nil on iOS and in
+                // renders, where the coach's screens draw their rows and offer no actions.
+                .environment(\.studyCoach, model.screenCoach)
                 // Search's planner ("Also searched") and on-device meaning search (Mac only).
                 .environment(\.searchProviders, SearchProviders(planner: model.queryPlanner, semantic: model.semanticIndex))
                 // Calendar: the student's other calendars, read-only (Mac only, like the mirror).
@@ -142,6 +149,7 @@ struct RootView: View {
                 .background { CalendarSessionsWatcher() }
                 .background { CalendarItemsWatcher() }
                 .background { ChatFailureWatcher() }
+                .background { practiceWatcher }
                 #if os(macOS)
                 .background { MainWindowReader() }
                 #endif
@@ -153,7 +161,8 @@ struct RootView: View {
         NavigationSplitView(columnVisibility: $columns) {
             // A course's row shows its settings, selected as the course's "Course Settings"
             // row (mockup 08).
-            SidebarView(selection: Binding(get: { selection }, set: { selection = $0?.screen }), center: center)
+            // A practice exam's results show as their course's Progress row (mockup 19).
+            SidebarView(selection: Binding(get: { selection?.sidebarRow }, set: { selection = $0?.screen }), center: center)
                 #if os(macOS)
                 // The toggle is the content toolbar's (`sidebarToggle`), as in mockups 01 and
                 // 10. Removing the system one drops the sidebar's column width: set it again.
@@ -170,6 +179,7 @@ struct RootView: View {
                     mailSelection: $mailSelection,
                     noteSelection: $noteSelection,
                     searchContext: $searchContext,
+                    examSheet: examSheet,
                     record: record
                 )
                 #if os(iOS)
@@ -211,6 +221,7 @@ struct RootView: View {
             } else if item?.isMail == true, old != item {
                 mailSelection = nil
             }
+            fullWindow(from: old, to: item)
             // The target was for the lecture `open` showed; anywhere else drops it.
             if case .lecture(let id) = item, id == reviewTarget?.lectureID { return }
             reviewTarget = nil
@@ -218,6 +229,60 @@ struct RootView: View {
     }
 
     private var isToday: Bool { (selection ?? .today) == .today }
+
+    /// ⌘F: not while a practice exam is written (it would leave the exam).
+    private var focusSearchAction: (() -> Void)? {
+        isWritingExam ? nil : { focusSearch() }
+    }
+
+    /// The agent panel's effects: none while a practice exam is written (panel, launcher and ⌘J go).
+    private var panelActions: AgentPanelActions {
+        isWritingExam ? AgentPanelActions() : model.agentPanelActions
+    }
+
+    /// Follows the practice session on screen (its kind, whether it was handed in).
+    @ViewBuilder
+    private var practiceWatcher: some View {
+        if case .practice(let id) = selection {
+            PracticeStateWatcher(sessionID: id, state: $practiceState)
+                .id(id)
+        }
+    }
+
+    /// ⌘F: Search with the caret in its field.
+    private func focusSearch() {
+        let hadField = showsSearchField
+        selection = .search
+        searchFocused = true
+        if !hadField {
+            // The field comes back with the Search screen: focus it once it is there.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                searchFocused = true
+            }
+        }
+    }
+
+    /// mc: a practice exam is being written: nothing but the exam (no sidebar, agent panel,
+    /// launcher, search field or sidebar toggle) until it is handed in.
+    private var isWritingExam: Bool {
+        selection?.isPractice == true && practiceState?.isExam == true
+    }
+
+    /// mc: a round or an exam hides the sidebar; leaving brings it back as it was.
+    private func fullWindow(from old: SidebarItem?, to new: SidebarItem?) {
+        let entering = new?.isPractice == true
+        if entering, old?.isPractice != true {
+            columnsBeforePractice = columns
+            columns = .detailOnly
+        } else if !entering {
+            practiceState = nil
+            if let restored = columnsBeforePractice {
+                columnsBeforePractice = nil
+                withAnimation { columns = restored }
+            }
+        }
+    }
 
     /// Whose question the search field holds on this screen (Mail and Notes: their own list's).
     private var searchOwner: SidebarItem.SearchOwner {
@@ -249,10 +314,10 @@ struct RootView: View {
     }
 
     /// The toolbar search field shows on the top-level screens, not on a lecture or a course, and
-    /// not on Calendar (mockup 06: its own toolbar; ⌘F still opens Search).
+    /// not on Calendar or Study (mockups 06, 13; ⌘F still opens Search).
     private var showsSearchField: Bool {
         let item = selection ?? .today
-        return item.isTopLevel && item != .calendar
+        return item.isTopLevel && item != .calendar && item != .study
     }
 
     /// ↩ in the search field: the Search screen opens its selected (or first) hit. (On Mail and
@@ -369,6 +434,11 @@ struct RootView: View {
             return AgentContext(screen: .course, courseID: id, courseScreen: "notes", noteID: noteSelection)
         case .lecture(let id):
             return AgentContext(screen: .lecture, lectureID: id)
+        // mc: Study and a round, the course's Progress and an exam's results (the views refine it).
+        case .study, .practice:
+            return AgentContext(screen: .study)
+        case .courseProgress(let id), .practiceResults(_, let id):
+            return AgentContext(screen: .course, courseID: id, courseScreen: "progress")
         }
     }
 
@@ -391,7 +461,7 @@ struct RootView: View {
     /// it can come back. View ▸ Show/Hide Sidebar (⌃⌘S) works everywhere.
     @ToolbarContentBuilder
     private var sidebarToggle: some ToolbarContent {
-        if isToday || columns == .detailOnly {
+        if (isToday || columns == .detailOnly) && !isWritingExam {
             ToolbarItem(placement: .navigation) {
                 Button {
                     withAnimation {
@@ -454,9 +524,17 @@ struct RootView: View {
             target.request = UUID()
             reviewTarget = (id, target)
             selection = .lecture(id)
-        case .study, .courseProgress, .practice, .practiceResults:
-            // mc: the integrator routes the coach's screens (docs/plan-coach.md §8.2).
-            break
+        // mc (docs/plan-coach.md §8.2): Study, a course's Progress, a round or an exam full window
+        // (by the session's kind), an exam's results pushed on its course's Progress.
+        case .study: selection = .study
+        case .courseProgress(let id): selection = .courseProgress(id)
+        case .practice(let id): selection = .practice(id)
+        case .practiceResults(let id):
+            guard let services = model.services else { return }
+            Task {
+                let course = try? await services.database.read { db in try StudySession.find(id).fetchOne(db)?.courseID }
+                if let course { selection = .practiceResults(id, course: course) }
+            }
         }
     }
 
