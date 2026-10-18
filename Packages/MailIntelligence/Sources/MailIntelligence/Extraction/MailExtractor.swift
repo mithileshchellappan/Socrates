@@ -345,7 +345,8 @@ public struct MailExtractor: Sendable {
         var rejected = 0
         for item in items {
             let kind = TrackedItemKind(rawValue: item.kind.trimmingCharacters(in: .whitespaces).lowercased())
-            let known: Set<TrackedItemKind> = [.deadline, .exercise, .exam, .event, .roomChange, .cancellation, .announcement, .task]
+            // ma: room changes and cancellations come as `sessions` (applied with Undo), never items.
+            let known: Set<TrackedItemKind> = [.deadline, .exercise, .exam, .event, .announcement, .task]
             let confidence = min(max(item.confidence.isFinite ? item.confidence : 0, 0), 1)
             let title = String(item.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
             guard known.contains(kind), confidence >= ExtractionPrompt.minimumConfidence, !title.isEmpty else {
@@ -433,6 +434,9 @@ public struct MailExtractor: Sendable {
         }
         let (candidates, rejected) = candidates(from: items, message: message, courses: courses)
         let needsReply = Self.needsReply(answer.needsReply, message: message)
+        // ma: session changes, course facts and escalation go to the app agent's triage as a
+        // decided `mail` event (no second call per mail); its change log applies them with Undo.
+        let decision = factDecision(answer, message: message, courses: courses, apiCallID: apiCallID)
         let store = services.records
         let timeZone = timeZone
         let date = now()
@@ -443,6 +447,17 @@ public struct MailExtractor: Sendable {
                 let result = try writer.write(candidate)
                 applied.itemsCreated += result.created ? 1 : 0
                 applied.sourcesAdded += result.sourceAdded ? 1 : 0
+            }
+            if let decision, let detail = decision.detail() {
+                let key = "mail:" + (message.rfcMessageID.isEmpty ? message.id.uuidString.lowercased() : message.rfcMessageID)
+                    + ":\(message.parseVersion)"
+                if try AgentEvent.where({ $0.sourceKey.eq(key) }).fetchCount(db) == 0 {
+                    let event = store.stamp(AgentEvent(
+                        kind: .mail, sourceKey: key, courseID: message.courseID, mailMessageID: message.id, detail: detail,
+                        apiCallID: apiCallID, createdAt: date
+                    ))
+                    try AgentEvent.upsert { event }.execute(db)
+                }
             }
             let stamp = store.currentDate
             try MailMessage.find(message.id).update {
@@ -458,6 +473,58 @@ public struct MailExtractor: Sendable {
         applied.rejected = rejected
         applied.needsReply = needsReply
         return applied
+    }
+
+    /// ma: the answer's session changes and course facts as the app agent's triage applies them
+    /// (each quote an exact span of the mail outside text that talks to the model, confidence ≥
+    /// 0.5), and its escalation; nil when there is nothing. Dates are checked when applied
+    /// (`DateMentions` against the quote, relative to when the mail was written).
+    func factDecision(
+        _ answer: ExtractionPrompt.MailAnswer, message: MailMessage, courses: CourseDirectory, apiCallID: APICall.ID?
+    ) -> FactDecision? {
+        let hostile = InjectionGuard.hostileParagraphs(subject: message.subject, body: message.bodyText)
+        func verified(_ quote: String, _ confidence: Double) -> (String, Double)? {
+            let confidence = min(max(confidence.isFinite ? confidence : 0, 0), 1)
+            guard confidence >= ExtractionPrompt.minimumConfidence,
+                  let span = QuoteVerifier.verify(quote, subject: message.subject, body: message.bodyText),
+                  !InjectionGuard.isHostile(span, paragraphs: hostile)
+            else { return nil }
+            return (span, confidence)
+        }
+        func course(_ token: String?) -> String? {
+            (courses.course(token: token)?.id ?? message.courseID)?.uuidString.lowercased()
+        }
+        var actions: [FactAction] = []
+        for change in answer.sessions {
+            let kind: AgentChangeKind
+            switch change.change.trimmingCharacters(in: .whitespaces).lowercased() {
+            case "room": kind = .sessionRoom
+            case "time": kind = .sessionTime
+            case "cancel": kind = .sessionCancel
+            case "restore": kind = .sessionRestore
+            case "extra": kind = .sessionExtra
+            default: continue
+            }
+            guard let (quote, confidence) = verified(change.quote, change.confidence) else { continue }
+            actions.append(FactAction(
+                kind: kind.rawValue, course: course(change.course), sessionDay: change.sessionDay, sessionKind: change.sessionKind,
+                startsAt: change.startsAt, endsAt: change.endsAt, room: change.room?.trimmingCharacters(in: .whitespacesAndNewlines),
+                quote: quote, confidence: confidence
+            ))
+        }
+        for fact in answer.facts where ExtractionPrompt.facts.contains(fact.fact) {
+            guard let (quote, confidence) = verified(fact.quote, fact.confidence) else { continue }
+            actions.append(FactAction(
+                kind: AgentChangeKind.courseFact.rawValue, course: course(fact.course), fact: fact.fact,
+                text: String(fact.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)), quote: quote, confidence: confidence
+            ))
+        }
+        guard !actions.isEmpty || answer.escalate else { return nil }
+        return FactDecision(
+            actions: actions, escalate: answer.escalate || !hostile.isEmpty && !actions.isEmpty,
+            reason: String(answer.reason.prefix(200)) + (hostile.isEmpty ? "" : " The mail has text that talks to a model."),
+            model: ExtractionPrompt.model.rawValue, apiCallID: apiCallID
+        )
     }
 
     /// A message triaged without a call: `needs_reply`, and the extraction state when it was
@@ -520,6 +587,10 @@ struct ItemWriter {
             mentions: candidate.mentions
         )
         let result = try DeadlineMemory.record(finding, in: db, store: store, now: date)
+        // ma: every automatic change is in the activity log.
+        if let change = ItemChangeRows.change(for: result, finding: finding, model: ExtractionPrompt.model.rawValue, now: date) {
+            try AgentChangeRepository.insert(store.stamp(change), db: db)
+        }
         return Result(created: result.created, sourceAdded: result.source != nil)
     }
 }
