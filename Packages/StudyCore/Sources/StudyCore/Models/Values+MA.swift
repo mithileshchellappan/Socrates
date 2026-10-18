@@ -184,6 +184,11 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     // agent_reminder
     public var fireAt: Date?
     public var cancelled: Bool?
+    // course (mc: `course_credits`)
+    public var credits: Double?
+    public var selfStudyHours: Double?
+    // agent_memory (mc: a `plan` memory's rule)
+    public var planRule: PlanRule?
 
     public init(
         exists: Bool? = nil,
@@ -199,7 +204,10 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         noteBlocks: [NoteBlock]? = nil,
         noteCreated: Bool? = nil,
         fireAt: Date? = nil,
-        cancelled: Bool? = nil
+        cancelled: Bool? = nil,
+        credits: Double? = nil,
+        selfStudyHours: Double? = nil,
+        planRule: PlanRule? = nil
     ) {
         self.exists = exists
         self.startsAt = startsAt
@@ -215,6 +223,9 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         self.noteCreated = noteCreated
         self.fireAt = fireAt
         self.cancelled = cancelled
+        self.credits = credits
+        self.selfStudyHours = selfStudyHours
+        self.planRule = planRule
     }
 
     /// The values of a session's changeable columns.

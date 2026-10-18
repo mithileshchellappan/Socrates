@@ -55,6 +55,12 @@ public struct Course: StudyRecord {
     @Column("slides_folder_bookmark") public var slidesFolderBookmark: Data?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
+    /// v12 (mc): credit points (ECTS / LP), a course fact the agent sets (`set_course_credits`);
+    /// nil = not known yet (the coach assumes the profile's default and the agent asks).
+    public var credits: Double?
+    /// v12 (mc): the module's own self-study hours when its files state them (DC: 120 h); wins
+    /// over credits × hours per credit − class hours.
+    @Column("self_study_hours") public var selfStudyHours: Double?
 
     public init(
         id: UUID = UUID(),
@@ -77,7 +83,9 @@ public struct Course: StudyRecord {
         slidesFolder: String? = nil,
         slidesFolderBookmark: Data? = nil,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        credits: Double? = nil,
+        selfStudyHours: Double? = nil
     ) {
         self.id = id
         self.name = name
@@ -100,6 +108,8 @@ public struct Course: StudyRecord {
         self.slidesFolderBookmark = slidesFolderBookmark
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.credits = credits
+        self.selfStudyHours = selfStudyHours
     }
 
     /// Glossary entries (lines, or comma/semicolon separated, as Transcription and Alignment read

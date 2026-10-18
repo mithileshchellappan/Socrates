@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -53,6 +53,10 @@ public enum Schema {
         migrator.registerMigration("v11") { db in
             try db.execute(sql: v11)
         }
+        // mc, additive only (new tables and nullable columns).
+        migrator.registerMigration("v12") { db in
+            try db.execute(sql: v12)
+        }
         return migrator
     }
 
@@ -69,6 +73,7 @@ public enum Schema {
         "agent_memory",
         "slide_ink",
         "agent_task", "agent_change", "agent_event", "agent_reminder",
+        "study_reading", "study_question", "study_session", "study_answer", "study_block",
     ]
 
     /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
@@ -985,6 +990,181 @@ public enum Schema {
         CREATE INDEX "agent_reminder_item" ON "agent_reminder"("tracked_item_id");
 
         ALTER TABLE "agent_turn" ADD COLUMN "context" TEXT;
+        """
+
+    /// v12 (mc: the study coach). docs/plan-coach.md §3. `study_session` and `study_block`
+    /// reference each other (SQLite checks foreign keys on writes, not on CREATE). Every new column
+    /// of an existing table is nullable.
+    static let v12 = """
+        CREATE TABLE "study_reading" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "course_id" TEXT NOT NULL REFERENCES "course"("id") ON DELETE CASCADE,
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE SET NULL,
+          "topic_id" TEXT REFERENCES "annotation"("id") ON DELETE SET NULL,
+          "topic" TEXT NOT NULL DEFAULT '',
+          "title" TEXT NOT NULL DEFAULT '',
+          "section" TEXT NOT NULL DEFAULT '',
+          "byline" TEXT NOT NULL DEFAULT '',
+          "first_page" INTEGER,
+          "last_page" INTEGER,
+          "minutes" INTEGER NOT NULL DEFAULT 30,
+          "url" TEXT,
+          "blob_sha256" TEXT,
+          "blob_path" TEXT,
+          "reason" TEXT NOT NULL DEFAULT 'depth',
+          "sources" TEXT NOT NULL DEFAULT '[]',
+          "source_annotation_id" TEXT REFERENCES "annotation"("id") ON DELETE SET NULL,
+          "sort_order" INTEGER NOT NULL DEFAULT 0,
+          "study_unit_id" TEXT REFERENCES "study_unit"("id") ON DELETE SET NULL,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "done_at" TEXT,
+          "hidden_at" TEXT,
+          "created_by" TEXT NOT NULL DEFAULT 'agent',
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "study_reading_course" ON "study_reading"("course_id", "lecture_id");
+        CREATE INDEX "study_reading_topic" ON "study_reading"("topic_id");
+
+        CREATE TABLE "study_question" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "course_id" TEXT NOT NULL REFERENCES "course"("id") ON DELETE CASCADE,
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE CASCADE,
+          "topic_id" TEXT REFERENCES "annotation"("id") ON DELETE SET NULL,
+          "topic" TEXT NOT NULL DEFAULT '',
+          "reading_id" TEXT REFERENCES "study_reading"("id") ON DELETE SET NULL,
+          "format" TEXT NOT NULL DEFAULT 'choice',
+          "pool" TEXT NOT NULL DEFAULT 'round',
+          "title" TEXT NOT NULL DEFAULT '',
+          "prompt" TEXT NOT NULL DEFAULT '',
+          "choices" TEXT NOT NULL DEFAULT '[]',
+          "correct_choice" INTEGER,
+          "diagram" TEXT,
+          "model_answer" TEXT NOT NULL DEFAULT '',
+          "explanation" TEXT NOT NULL DEFAULT '',
+          "points" INTEGER NOT NULL DEFAULT 1,
+          "deck_id" TEXT REFERENCES "deck"("id") ON DELETE SET NULL,
+          "page_number" INTEGER,
+          "quote" TEXT NOT NULL DEFAULT '',
+          "transcript_segment_id" TEXT REFERENCES "transcript_segment"("id") ON DELETE SET NULL,
+          "recording_id" TEXT REFERENCES "recording"("id") ON DELETE SET NULL,
+          "quote_time" REAL,
+          "quote_end" REAL,
+          "origin" TEXT NOT NULL DEFAULT 'generated',
+          "source_title" TEXT NOT NULL DEFAULT '',
+          "source_number" INTEGER,
+          "source_blob_sha256" TEXT,
+          "source_blob_path" TEXT,
+          "study_unit_id" TEXT REFERENCES "study_unit"("id") ON DELETE SET NULL,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "card_state" TEXT NOT NULL DEFAULT 'new',
+          "due_at" TEXT,
+          "stability" REAL,
+          "difficulty" REAL,
+          "reps" INTEGER NOT NULL DEFAULT 0,
+          "lapses" INTEGER NOT NULL DEFAULT 0,
+          "last_reviewed_at" TEXT,
+          "retired_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "study_question_due" ON "study_question"("course_id", "due_at");
+        CREATE INDEX "study_question_lecture" ON "study_question"("lecture_id");
+        CREATE INDEX "study_question_topic" ON "study_question"("topic_id");
+        CREATE INDEX "study_question_reading" ON "study_question"("reading_id");
+        CREATE INDEX "study_question_unit" ON "study_question"("study_unit_id");
+
+        CREATE TABLE "study_session" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT 'round',
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE CASCADE,
+          "block_id" TEXT REFERENCES "study_block"("id") ON DELETE SET NULL,
+          "title" TEXT NOT NULL DEFAULT '',
+          "scope" TEXT NOT NULL DEFAULT '{}',
+          "question_ids" TEXT NOT NULL DEFAULT '[]',
+          "position" INTEGER NOT NULL DEFAULT 0,
+          "minutes" INTEGER,
+          "points" INTEGER NOT NULL DEFAULT 0,
+          "drafts" TEXT NOT NULL DEFAULT '[]',
+          "flags" TEXT NOT NULL DEFAULT '[]',
+          "state" TEXT NOT NULL DEFAULT 'active',
+          "started_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "resumed_at" TEXT,
+          "active_seconds" REAL NOT NULL DEFAULT 0,
+          "ended_at" TEXT,
+          "score_points" REAL,
+          "retake_of" TEXT REFERENCES "study_session"("id") ON DELETE SET NULL,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "study_session_course" ON "study_session"("course_id", "kind", "created_at");
+        CREATE INDEX "study_session_state" ON "study_session"("state");
+        CREATE INDEX "study_session_block" ON "study_session"("block_id");
+
+        CREATE TABLE "study_answer" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "question_id" TEXT NOT NULL REFERENCES "study_question"("id") ON DELETE CASCADE,
+          "session_id" TEXT REFERENCES "study_session"("id") ON DELETE SET NULL,
+          "course_id" TEXT NOT NULL REFERENCES "course"("id") ON DELETE CASCADE,
+          "response" TEXT NOT NULL DEFAULT '{}',
+          "result" TEXT NOT NULL DEFAULT 'pending',
+          "score" REAL,
+          "points" REAL,
+          "note" TEXT NOT NULL DEFAULT '',
+          "graded_by" TEXT NOT NULL DEFAULT 'code',
+          "grading" TEXT NOT NULL DEFAULT 'none',
+          "grading_attempts" INTEGER NOT NULL DEFAULT 0,
+          "grading_error" TEXT,
+          "model_score" REAL,
+          "overridden_at" TEXT,
+          "rating" INTEGER,
+          "seconds" REAL NOT NULL DEFAULT 0,
+          "answered_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "study_answer_question" ON "study_answer"("question_id", "answered_at");
+        CREATE INDEX "study_answer_session" ON "study_answer"("session_id");
+        CREATE INDEX "study_answer_grading" ON "study_answer"("grading", "answered_at");
+        CREATE INDEX "study_answer_course" ON "study_answer"("course_id", "answered_at");
+
+        CREATE TABLE "study_block" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "day" TEXT NOT NULL DEFAULT '',
+          "sort_order" INTEGER NOT NULL DEFAULT 0,
+          "kind" TEXT NOT NULL DEFAULT 'round',
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE CASCADE,
+          "course_ids" TEXT NOT NULL DEFAULT '[]',
+          "title" TEXT NOT NULL DEFAULT '',
+          "detail" TEXT NOT NULL DEFAULT '',
+          "why" TEXT NOT NULL DEFAULT '',
+          "minutes" INTEGER NOT NULL DEFAULT 0,
+          "question_count" INTEGER,
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE SET NULL,
+          "first_page" INTEGER,
+          "last_page" INTEGER,
+          "tracked_item_id" TEXT REFERENCES "tracked_item"("id") ON DELETE SET NULL,
+          "reading_id" TEXT REFERENCES "study_reading"("id") ON DELETE SET NULL,
+          "session_id" TEXT REFERENCES "study_session"("id") ON DELETE SET NULL,
+          "url" TEXT,
+          "is_away" INTEGER NOT NULL DEFAULT 0,
+          "state" TEXT NOT NULL DEFAULT 'planned',
+          "spent_seconds" REAL NOT NULL DEFAULT 0,
+          "started_at" TEXT,
+          "done_at" TEXT,
+          "created_by" TEXT NOT NULL DEFAULT 'agent',
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "study_block_day" ON "study_block"("day", "sort_order");
+        CREATE INDEX "study_block_course" ON "study_block"("course_id");
+        CREATE INDEX "study_block_item" ON "study_block"("tracked_item_id");
+        CREATE INDEX "study_block_session" ON "study_block"("session_id");
+
+        ALTER TABLE "course" ADD COLUMN "credits" REAL;
+        ALTER TABLE "course" ADD COLUMN "self_study_hours" REAL;
+        ALTER TABLE "agent_memory" ADD COLUMN "plan_rule" TEXT;
         """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row

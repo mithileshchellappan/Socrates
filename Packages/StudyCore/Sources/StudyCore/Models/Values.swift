@@ -295,6 +295,10 @@ public struct CourseRule: Hashable, Sendable, Codable, Identifiable {
     public var source: SourceRef?
     /// When the user confirmed an agent-proposed rule; nil while it waits.
     public var confirmedAt: Date?
+    /// mc: an `exam_form` rule's form once announced (the practice exam copies it).
+    public var examForm: ExamForm?
+    /// mc: an `exam_form` rule's length in minutes once announced (the practice exam's default).
+    public var minutes: Int?
 
     public init(
         id: UUID = UUID(),
@@ -303,7 +307,9 @@ public struct CourseRule: Hashable, Sendable, Codable, Identifiable {
         text: String = "",
         provenance: AnnotationLayer = .user,
         source: SourceRef? = nil,
-        confirmedAt: Date? = nil
+        confirmedAt: Date? = nil,
+        examForm: ExamForm? = nil,
+        minutes: Int? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -312,6 +318,8 @@ public struct CourseRule: Hashable, Sendable, Codable, Identifiable {
         self.provenance = provenance
         self.source = source
         self.confirmedAt = confirmedAt
+        self.examForm = examForm
+        self.minutes = minutes
     }
 
     /// User and professor rules stand; agent rules count once confirmed.

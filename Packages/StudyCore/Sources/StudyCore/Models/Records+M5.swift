@@ -32,6 +32,10 @@ public struct AgentMemory: StudyRecord {
     @Column("forgotten_at") public var forgottenAt: Date?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
+    /// v12 (mc): a `plan` memory's choice in a form the planner reads (away days, skips, caps,
+    /// which date to sit, seminar hours, classes not attended); written with the memory by
+    /// `mark_away_days` / `plan_adjust`. Forgetting the memory drops the rule.
+    @Column("plan_rule", as: PlanRule?.JSONRepresentation.self) public var planRule: PlanRule?
 
     public init(
         id: UUID = UUID(),
@@ -44,7 +48,8 @@ public struct AgentMemory: StudyRecord {
         editedAt: Date? = nil,
         forgottenAt: Date? = nil,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        planRule: PlanRule? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -57,6 +62,7 @@ public struct AgentMemory: StudyRecord {
         self.forgottenAt = forgottenAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.planRule = planRule
     }
 
     /// A memory's text is at most this long.

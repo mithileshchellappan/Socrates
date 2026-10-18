@@ -454,6 +454,9 @@ struct RootView: View {
             target.request = UUID()
             reviewTarget = (id, target)
             selection = .lecture(id)
+        case .study, .courseProgress, .practice, .practiceResults:
+            // mc: the integrator routes the coach's screens (docs/plan-coach.md §8.2).
+            break
         }
     }
 

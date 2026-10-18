@@ -21,6 +21,15 @@ public enum StudyDestination: Hashable, Sendable {
     case mail(MailScope, message: MailMessage.ID?)
     /// The Notes screen showing `scope`, with `note` selected (M6).
     case notes(NotesScope, note: Note.ID?)
+    /// mc: the Study screen (the coach across courses; the sidebar row after Notes).
+    case study
+    /// mc: a course's Progress screen (readiness, budget, topics and reading).
+    case courseProgress(Course.ID)
+    /// mc: a round or a practice exam in progress, full window (the sidebar hides; an exam also
+    /// hides the agent panel and the search field until it is submitted).
+    case practice(StudySession.ID)
+    /// mc: a submitted practice exam's results, pushed on its course's Progress with the sidebar back.
+    case practiceResults(StudySession.ID)
 
     public static func lecture(_ id: Lecture.ID) -> StudyDestination { .lecture(id, ReviewTarget()) }
 
