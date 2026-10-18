@@ -21,10 +21,11 @@ struct ChatTranscript: Equatable {
     var entries: [Entry] = []
     /// The stored turns it was read from (live text follows exactly this many).
     var turnCount = 0
-    /// M5: every web page a tool result of the conversation names (WebSearch, WebFetch, the
-    /// verified further reading of list_study_items), as `CitationCheck.normalized` keys: a
-    /// `[[web …]]` marker shows only for one of these.
-    var webPages: Set<String> = []
+    /// M5: the web pages the conversation's web tools returned (WebSearch, WebFetch, the `url`
+    /// of list_study_items' verified further reading; no other tool's result, so a link in a
+    /// mail or a slide is never a source), by `CitationCheck.normalized` key → the https URL as
+    /// the result wrote it: a `[[web …]]` marker shows only for one of these and opens that URL.
+    var webPages: [String: URL] = [:]
 
     init() {}
 
@@ -37,11 +38,32 @@ struct ChatTranscript: Equatable {
             answerID = nil
             answer = []
         }
+        /// tool_use id → the tool's bare name (the CLI's `mcp__studyportal__` prefix removed).
+        var toolNames: [String: String] = [:]
         for turn in turns {
             guard let message = try? MessageParam(json: JSONValue.parse(turn.message)) else { continue }
             let blocks = message.content.blocks
-            for block in blocks where block.type == "tool_result" || block.type.hasSuffix("_tool_result") {
-                webPages.formUnion(CitationCheck.webPages(in: block.json))
+            for block in blocks {
+                switch block {
+                case .toolUse(let use):
+                    toolNames[use.id] = Self.bareName(use.name)
+                case .serverToolUse(let use):
+                    toolNames[use.id] = use.name
+                case .toolResult(let result):
+                    switch toolNames[result.toolUseID] {
+                    case Self.webSearch?, Self.webFetch?:
+                        webPages.merge(CitationCheck.webPages(in: block.json), uniquingKeysWith: { first, _ in first })
+                    case Self.studyItems?:
+                        webPages.merge(CitationCheck.webPages(in: block.json, urlFieldsOnly: true), uniquingKeysWith: { first, _ in first })
+                    default:
+                        break
+                    }
+                case .other where block.type == "web_search_tool_result" || block.type == "web_fetch_tool_result":
+                    // The API's server web tools.
+                    webPages.merge(CitationCheck.webPages(in: block.json), uniquingKeysWith: { first, _ in first })
+                default:
+                    break
+                }
             }
             switch turn.role {
             case .user:
@@ -62,6 +84,15 @@ struct ChatTranscript: Equatable {
             }
         }
         flush()
+    }
+
+    /// The tools whose results name citable web pages.
+    static let webSearch = "WebSearch"
+    static let webFetch = "WebFetch"
+    static let studyItems = "list_study_items"
+
+    static func bareName(_ name: String) -> String {
+        name.hasPrefix(ClaudeCodeConfiguration.toolNamePrefix) ? String(name.dropFirst(ClaudeCodeConfiguration.toolNamePrefix.count)) : name
     }
 
     /// The student's last message has no answer yet.

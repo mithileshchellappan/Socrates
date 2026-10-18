@@ -62,6 +62,8 @@ public struct SearchResultsView: View {
 
     /// At most this many hits are selected by default (the first group's).
     static let defaultSelectionLimit = 4
+    /// How long keyword hits wait for the semantic list on a keystroke.
+    static let semanticWait: Duration = .milliseconds(100)
 
     public init(query: String, submits: Int = 0, context: Binding<ChatContext> = .constant(.none)) {
         self.query = query
@@ -499,19 +501,26 @@ public struct SearchResultsView: View {
             return
         }
         do {
-            let found = try await engine.search(query)
-            guard !Task.isCancelled else { return }
-            if found.query.text != results?.query.text {
-                expanded = []
-                selectionIsDefault = true
+            // Keyword hits show at once; a semantic list the index was too busy to give in time
+            // is fused by a second search when it lands.
+            var semanticWait: Duration? = Self.semanticWait
+            while true {
+                let found = try await engine.search(query, semanticWait: semanticWait)
+                guard !Task.isCancelled else { return }
+                if found.query.text != results?.query.text {
+                    expanded = []
+                    selectionIsDefault = true
+                }
+                results = found
+                settleSelection(found)
+                if opensFirstHit {
+                    opensFirstHit = false
+                    if let hit = visibleHits(found).first { open(hit) }
+                }
+                await openDecks(for: found)
+                guard found.semanticPending, semanticWait != nil else { break }
+                semanticWait = nil
             }
-            results = found
-            settleSelection(found)
-            if opensFirstHit {
-                opensFirstHit = false
-                if let hit = visibleHits(found).first { open(hit) }
-            }
-            await openDecks(for: found)
         } catch {
             Log.search.error("Search failed: \(String(describing: error), privacy: .public)")
         }

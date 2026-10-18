@@ -72,8 +72,10 @@ struct ChatPane: View {
         return live.text
     }
 
+    /// The mail chat never cites the web: every `[[web …]]` marker is dropped there.
     private var check: CitationCheck {
-        CitationCheck(rows: rows, webPages: transcript.webPages)
+        let isMailChat = (conversation?.kind ?? context.kind) == .mailChat
+        return CitationCheck(rows: rows, webPages: isMailChat ? [:] : transcript.webPages)
     }
 
     var body: some View {
@@ -170,7 +172,7 @@ struct ChatPane: View {
             openDestination(destination)
             return .handled
         }
-        guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else { return .discarded }
+        guard url.scheme?.lowercased() == "https" else { return .discarded }
         return .systemAction(url)
     }
 

@@ -170,10 +170,14 @@ public actor SemanticIndex: SemanticSearching {
                     scheduleRetry()
                     break
                 }
-                guard let count = try await reconcile(unit, model: model) else { break }
-                embedded += count
-                units += 1
-                changed = true
+                guard let result = try await reconcile(unit, model: model) else { break }
+                embedded += result.embedded
+                // A unit with no window long enough stays without vectors (and stale): nothing to
+                // log, and the matrix stays.
+                if result.changed {
+                    units += 1
+                    changed = true
+                }
                 await Task.yield()
             }
             if changed { matrix = nil }
@@ -191,16 +195,23 @@ public actor SemanticIndex: SemanticSearching {
 
     /// One unit: reuse vectors by text hash, embed the rest, delete what is left. Written only if
     /// the unit's windows are still the ones embedded (else the next change event tries again).
-    /// Returns how many windows were embedded; nil when the model did not load (the batch ends).
-    private func reconcile(_ unit: SemanticWindows.Unit, model: String) async throws -> Int? {
-        let (windows, existing) = try await database.read { db in
+    /// Returns how many windows were embedded and whether a row the matrix holds changed (added,
+    /// deleted, or re-pointed to another chunk, course or lecture); nil when the model did not
+    /// load (the batch ends).
+    private func reconcile(_ unit: SemanticWindows.Unit, model: String) async throws -> (embedded: Int, changed: Bool)? {
+        let (windows, existing, pointers) = try await database.read { db in
             let windows = try SemanticWindows.windows(of: unit, in: db)
             var existing: [String: [Int64]] = [:]
+            var pointers: [Int64: String] = [:]
             let rows = try Row.fetchCursor(db, sql: """
-                SELECT id, text_sha256 FROM search_vector WHERE kind = ? AND unit_id = ? AND model = ?
+                SELECT id, text_sha256, chunk_id, course_id, lecture_id FROM search_vector WHERE kind = ? AND unit_id = ? AND model = ?
                 """, arguments: [unit.kind.rawValue, unit.id, model])
-            while let row = try rows.next() { existing[row["text_sha256"], default: []].append(row["id"]) }
-            return (windows, existing)
+            while let row = try rows.next() {
+                let id: Int64 = row["id"]
+                existing[row["text_sha256"], default: []].append(id)
+                pointers[id] = Self.pointer(chunk: row["chunk_id"], course: row["course_id"], lecture: row["lecture_id"])
+            }
+            return (windows, existing, pointers)
         }
         // The model loads only when there is new text to embed.
         if windows.contains(where: { existing[$0.sha256] == nil }), !loadModel() { return nil }
@@ -215,8 +226,9 @@ public actor SemanticIndex: SemanticSearching {
             }
             guard let vector = embed(window.text, language: window.language) else { continue }
             fresh.append((window, Self.half(vector)))
-            if fresh.count % 8 == 0 { await Task.yield() }
-            if stopped || Task.isCancelled { return 0 }
+            // A query waiting for the actor runs between two windows.
+            await Task.yield()
+            if stopped || Task.isCancelled { return (0, false) }
         }
         let dimensions = embedding?.dimension ?? 0
         let signature = windows.map { "\($0.chunkID):\($0.sha256)" }
@@ -224,6 +236,9 @@ public actor SemanticIndex: SemanticSearching {
         let leftover = available.values.flatMap { $0 }
         let keep = reused
         let add = fresh
+        let repointed = reused.contains { id, window in
+            pointers[id] != Self.pointer(chunk: window.chunkID, course: window.courseID, lecture: window.lectureID)
+        }
         let written = try await database.write { db -> Bool in
             // The indexer may have re-cut the unit while it was embedded.
             guard try SemanticWindows.windows(of: unit, in: db).map({ "\($0.chunkID):\($0.sha256)" }) == signature else { return false }
@@ -253,7 +268,13 @@ public actor SemanticIndex: SemanticSearching {
                 arguments: [unit.kind.rawValue, unit.id, model])
             return true
         }
-        return written ? fresh.count : 0
+        guard written else { return (0, false) }
+        return (fresh.count, !fresh.isEmpty || !leftover.isEmpty || repointed)
+    }
+
+    /// What the matrix holds of a vector besides its values.
+    private static func pointer(chunk: Int64?, course: String?, lecture: String?) -> String {
+        "\(chunk.map(String.init) ?? "-")|\(course ?? "-")|\(lecture ?? "-")"
     }
 
     private func processingBusy() async throws -> Bool {
@@ -278,6 +299,8 @@ public actor SemanticIndex: SemanticSearching {
     // MARK: - Queries
 
     public func nearest(to texts: [String], query: SearchQuery, limit: Int) async throws -> [SemanticMatch] {
+        // A search superseded while it waited for the actor.
+        try Task.checkCancellation()
         guard limit > 0, !stopped, hasAssets(), loadModel() else { return [] }
         lastQuery = .now
         scheduleUnload()

@@ -79,11 +79,13 @@ enum CheckedCitation: Hashable, Sendable {
 
 /// The checks of docs/plan-m5.md §4, from rows: a lecture marker's key names exactly one lecture,
 /// its slide is a page of the lecture's deck, its moment lies in the recording; a web marker's URL
-/// (host without `www.`, path without a trailing `/`) occurs in a tool result of the same
-/// conversation.
+/// (host without `www.`, path without a trailing `/`) is a page a web tool of the same
+/// conversation returned (`ChatTranscript.webPages`), and its chip opens the URL as the tool
+/// result wrote it, not the marker's.
 struct CitationCheck: Sendable {
     let rows: CitationRows
-    let webPages: Set<String>
+    /// Normalized key → the https URL found in the tool result. Empty in the mail chat.
+    let webPages: [String: URL]
 
     /// Why a marker is not shown (logged once per marker and rule).
     enum Drop: String, Sendable {
@@ -100,8 +102,8 @@ struct CitationCheck: Sendable {
     func check(_ citation: ChatCitation) -> Result<CheckedCitation, DropError> {
         switch citation {
         case .web(let url):
-            guard let key = Self.normalized(url), webPages.contains(key) else { return .failure(DropError(.pageNotInResults)) }
-            return .success(.web(url))
+            guard let key = Self.normalized(url), let found = webPages[key] else { return .failure(DropError(.pageNotInResults)) }
+            return .success(.web(found))
         case .slide(let key, let page):
             switch lecture(key) {
             case .failure(let drop): return .failure(drop)
@@ -154,25 +156,42 @@ struct CitationCheck: Sendable {
         return host + path
     }
 
-    /// The web pages a tool result names: every http(s) URL in its strings, normalized.
-    static func webPages(in json: JSONValue) -> Set<String> {
-        var pages: Set<String> = []
-        func visit(_ value: JSONValue) {
+    /// The web pages a tool result names, by normalized key → the URL as written (the first with
+    /// that key): every https URL in its strings, or with `urlFieldsOnly` only the string values
+    /// of `url` keys (also inside a text that is JSON, as a custom tool's result is). Plain http
+    /// is never a source.
+    static func webPages(in json: JSONValue, urlFieldsOnly: Bool = false) -> [String: URL] {
+        var pages: [String: URL] = [:]
+        func add(_ candidate: String) {
+            guard let url = URL(string: candidate), url.scheme?.lowercased() == "https", let key = normalized(url), pages[key] == nil else { return }
+            pages[key] = url
+        }
+        func visit(_ value: JSONValue, depth: Int) {
             switch value {
             case .string(let text):
                 guard text.contains("http") else { return }
-                for candidate in urls(in: text) {
-                    if let url = URL(string: candidate), let key = normalized(url) { pages.insert(key) }
+                if urlFieldsOnly {
+                    // A text block holding the tool's JSON.
+                    guard depth < 4, let parsed = try? JSONValue.parse(text), parsed.objectValue != nil || parsed.arrayValue != nil else { return }
+                    visit(parsed, depth: depth + 1)
+                } else {
+                    urls(in: text).forEach(add)
                 }
             case .array(let values):
-                values.forEach(visit)
+                values.forEach { visit($0, depth: depth) }
             case .object(let object):
-                object.values.forEach(visit)
+                for (key, value) in object {
+                    if urlFieldsOnly, key == "url", case .string(let text) = value {
+                        add(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    } else {
+                        visit(value, depth: depth)
+                    }
+                }
             default:
                 break
             }
         }
-        visit(json)
+        visit(json, depth: 0)
         return pages
     }
 

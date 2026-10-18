@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import StudyCore
+import Synchronization
 
 /// Keyword search over `search_chunk` (FTS5 word index + trigram index).
 ///
@@ -36,7 +37,12 @@ public struct SearchEngine: Sendable {
     /// Searches `query.text` and `query.alternatives` at once. Never waits for the planner (M5:
     /// the first results show at once): callers fetch alternatives with
     /// `plannedAlternatives(for:)` and search again with them.
-    public func search(_ query: SearchQuery) async throws -> SearchResults {
+    ///
+    /// `semanticWait`: how long the scored keyword lists wait for the semantic list (nil: as long
+    /// as it takes). The index may be busy embedding or loading its matrix; a list not ready by
+    /// then is left out and `semanticPending` set, and the caller searches again without a limit
+    /// to fuse it (the index's work is not cancelled, so that search finds it warm).
+    public func search(_ query: SearchQuery, semanticWait: Duration? = nil) async throws -> SearchResults {
         let started = ContinuousClock.now
         guard !query.isEmpty else { return SearchResults(query: query) }
         if query.scope == .web {
@@ -44,7 +50,7 @@ public struct SearchEngine: Sendable {
             // what the material search finds, as in All's Web group.
             var material = query
             material.scope = .material
-            var results = try await search(material)
+            var results = try await search(material, semanticWait: semanticWait)
             results.query = query
             results.groups = results.groups.filter { $0.kind == .web }
             results.duration = ContinuousClock.now - started
@@ -64,8 +70,25 @@ public struct SearchEngine: Sendable {
 
         // The semantic index works on its own actor while the keyword lists are read.
         let searchTexts = texts
-        async let neighbours = semanticNeighbours(of: searchTexts, query: query)
+        let neighbours: Task<[SemanticMatch], Never>? = semantic == nil ? nil : Task(priority: Task.currentPriority) {
+            await semanticNeighbours(of: searchTexts, query: query)
+        }
+        do {
+            return try await withTaskCancellationHandler {
+                try await keywordSearch(plans: plans, query: query, alternatives: alternatives, started: started, neighbours: neighbours, semanticWait: semanticWait)
+            } onCancel: {
+                neighbours?.cancel()
+            }
+        } catch {
+            neighbours?.cancel()
+            throw error
+        }
+    }
 
+    private func keywordSearch(
+        plans: [QueryPlan], query: SearchQuery, alternatives: [String], started: ContinuousClock.Instant,
+        neighbours: Task<[SemanticMatch], Never>?, semanticWait: Duration?
+    ) async throws -> SearchResults {
         var retrieval = Retrieval(plans: plans, query: query, nearWords: [:])
         var scoring = try await database.read { [retrieval] db in try retrieval.score(db) }
         if !scoring.wantsNearWords.isEmpty {
@@ -83,13 +106,37 @@ public struct SearchEngine: Sendable {
                 scoring = try await database.read { [retrieval] db in try retrieval.score(db) }
             }
         }
-        let semanticList = await neighbours
+        // Keyword hits never wait long for the semantic list.
+        let semanticList: [SemanticMatch]?
+        switch (neighbours, semanticWait) {
+        case (nil, _): semanticList = []
+        case (let task?, nil): semanticList = await task.value
+        case (let task?, let wait?): semanticList = await Self.value(of: task, within: wait)
+        }
         var results = try await database.read { [retrieval, scoring] db in
-            try retrieval.finish(db, scoring, semantic: semanticList)
+            try retrieval.finish(db, scoring, semantic: semanticList ?? [])
         }
         results.alternatives = alternatives
+        results.semanticPending = semanticList == nil
         results.duration = ContinuousClock.now - started
         return results
+    }
+
+    /// `task`'s value if it lands within `limit`, else nil; the task runs on either way.
+    static func value<T: Sendable>(of task: Task<T, Never>, within limit: Duration) async -> T? {
+        let first = FirstValue<T?>()
+        return await withCheckedContinuation { continuation in
+            first.arm(continuation)
+            let timer = Task {
+                try? await Task.sleep(for: limit)
+                first.resume(nil)
+            }
+            Task {
+                let value = await task.value
+                timer.cancel()
+                first.resume(value)
+            }
+        }
     }
 
     /// The semantic index's neighbours of the query and its alternatives, nearest first; empty
@@ -119,6 +166,19 @@ public struct SearchEngine: Sendable {
             Log.search.error("Query planning failed: \(String(describing: error), privacy: .public)")
             return []
         }
+    }
+}
+
+/// Resumes a continuation once, with whichever value comes first.
+private final class FirstValue<T: Sendable>: Sendable {
+    private let continuation = Mutex<CheckedContinuation<T, Never>?>(nil)
+
+    func arm(_ continuation: CheckedContinuation<T, Never>) {
+        self.continuation.withLock { $0 = continuation }
+    }
+
+    func resume(_ value: T) {
+        continuation.withLock { $0.take() }?.resume(returning: value)
     }
 }
 

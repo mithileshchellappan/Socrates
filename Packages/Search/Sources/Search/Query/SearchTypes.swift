@@ -151,6 +151,9 @@ public struct SearchResults: Hashable, Sendable {
     /// M5: what was also searched ("Also searched"): the query's alternatives that went into this
     /// search, in order, without the query itself; empty without a plan.
     public var alternatives: [String] = []
+    /// M5: the semantic list was not ready within the search's `semanticWait` and is left out:
+    /// search again without a limit to fuse it.
+    public var semanticPending = false
     /// Wall time of the search.
     public var duration: Duration
 
