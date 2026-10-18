@@ -12,7 +12,9 @@ enum MailLanguage {
 
     /// The student's language: the first of their preferred languages.
     static var preferred: Locale.Language {
-        Locale.Language(identifier: Locale.preferredLanguages.first ?? "en")
+        // The language only ("en" from "en-US"): the region is not part of the target.
+        let first = Locale.Language(identifier: Locale.preferredLanguages.first ?? "en")
+        return Locale.Language(languageCode: first.languageCode ?? .english)
     }
 
     /// The dominant language of the mail's own text (the subject and the blocks that are not quoted

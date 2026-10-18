@@ -44,8 +44,8 @@ struct SystemMailTranslator: MailTranslating {
 
     /// Whether the system translates `source` into the student's language (a pair still to
     /// download counts).
-    static func supports(_ source: Locale.Language) async -> Bool {
-        await LanguageAvailability().status(from: source, to: nil) != .unsupported
+    static func supports(_ source: Locale.Language, to target: Locale.Language) async -> Bool {
+        await LanguageAvailability().status(from: source, to: target) != .unsupported
     }
 
     private static func inOrder(
@@ -151,7 +151,7 @@ final class MailTranslations {
         if translator.custom != nil { return true }
         let key = source.minimalIdentifier
         if let known = supported[key] { return known }
-        let answer = await SystemMailTranslator.supports(source)
+        let answer = await SystemMailTranslator.supports(source, to: translator.target)
         supported[key] = answer
         return answer
     }
@@ -215,8 +215,9 @@ struct MailTranslationRunner: ViewModifier {
                     if configuration?.source == job.source {
                         configuration?.invalidate()
                     } else {
-                        // No target: the system translates into the student's preferred language.
-                        configuration = TranslationSession.Configuration(source: job.source, target: nil)
+                        // Always an explicit target: with none, the system picks one from the Mac's
+                        // region, not the student's language.
+                        configuration = TranslationSession.Configuration(source: job.source, target: job.target)
                     }
                 }
         }
