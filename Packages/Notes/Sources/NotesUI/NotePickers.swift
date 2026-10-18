@@ -47,8 +47,9 @@ struct NoteSlidePicker: View {
     struct SlideGroup: Identifiable {
         let lecture: Lecture
         let deckRow: Deck
-        let deck: SlideDeck
-        let pages: [Int]
+        let blob: BlobRef
+        /// The pages the lecture covered; nil: every page.
+        let range: ClosedRange<Int>?
         var id: Lecture.ID { lecture.id }
     }
 
@@ -62,26 +63,7 @@ struct NoteSlidePicker: View {
                             .foregroundStyle(.secondary)
                             .padding(.top, 4)
                     }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)], spacing: 8) {
-                        ForEach(group.pages, id: \.self) { page in
-                            Button {
-                                pick(NoteMedia.slideClip(
-                                    deck: group.deckRow, page: page, lectureID: group.lecture.id,
-                                    aspectRatio: Double(group.deck.aspectRatio(page: page))
-                                ))
-                            } label: {
-                                VStack(spacing: 3) {
-                                    SlideImageView(deck: group.deck, page: page, pixelWidth: SlideWidth.thumbnail, cornerRadius: 3)
-                                    Text(verbatim: "\(page)")
-                                        .font(.chip)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(Text("Slide \(page)"))
-                        }
-                    }
+                    NoteSlideGroupGrid(group: group, pick: pick)
                 }
             }
             .padding(12)
@@ -102,12 +84,8 @@ struct NoteSlidePicker: View {
         let lectures = await NotePickerLectures.lectures(courseID: courseID, lectureID: lectureID, services: services)
         var loaded: [SlideGroup] = []
         for lecture in lectures {
-            guard let found = await deck(of: lecture, services: services), let blob = found.0.blob,
-                  let deck = await NoteDeckCache.deck(blob: blob, services: services)
-            else { continue }
-            let (deckRow, range) = found
-            let pages = range.map { Array($0) } ?? Array(1...max(1, deck.pageCount))
-            loaded.append(SlideGroup(lecture: lecture, deckRow: deckRow, deck: deck, pages: pages.filter { $0 >= 1 && $0 <= deck.pageCount }))
+            guard let found = await deck(of: lecture, services: services), let blob = found.0.blob else { continue }
+            loaded.append(SlideGroup(lecture: lecture, deckRow: found.0, blob: blob, range: found.1))
         }
         groups = loaded
         isLoaded = true
@@ -132,6 +110,68 @@ struct NoteSlidePicker: View {
             NotesLog.logger.error("Loading a deck failed: \(String(describing: error), privacy: .public)")
             return nil
         }
+    }
+}
+
+/// One lecture's slides in the Slide picker. Its PDF opens when the group scrolls into view
+/// (placeholders until then), so a course note's picker opens only the decks it shows.
+private struct NoteSlideGroupGrid: View {
+    let group: NoteSlidePicker.SlideGroup
+    let pick: (NoteInline) -> Void
+
+    @Environment(\.studyServices) private var services
+    @State private var deck: SlideDeck?
+    @State private var failed = false
+
+    private var pages: [Int] {
+        let count = deck?.pageCount ?? group.deckRow.pageCount
+        guard count >= 1 else { return [] }
+        let all = group.range.map { Array($0) } ?? Array(1...count)
+        return all.filter { $0 >= 1 && $0 <= count }
+    }
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)], spacing: 8) {
+            if !failed {
+                ForEach(pages, id: \.self) { page in
+                    if let deck {
+                        Button {
+                            pick(NoteMedia.slideClip(
+                                deck: group.deckRow, page: page, lectureID: group.lecture.id,
+                                aspectRatio: Double(deck.aspectRatio(page: page))
+                            ))
+                        } label: {
+                            thumbnail(page) {
+                                SlideImageView(deck: deck, page: page, pixelWidth: SlideWidth.thumbnail, cornerRadius: 3)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(Text("Slide \(page)"))
+                    } else {
+                        thumbnail(page) {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(.quaternary)
+                                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: group.blob.sha256) {
+            guard let services, deck == nil else { return }
+            deck = await NoteDeckCache.deck(blob: group.blob, services: services)
+            failed = deck == nil
+        }
+    }
+
+    private func thumbnail(_ page: Int, @ViewBuilder image: () -> some View) -> some View {
+        VStack(spacing: 3) {
+            image()
+            Text(verbatim: "\(page)")
+                .font(.chip)
+                .foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
     }
 }
 

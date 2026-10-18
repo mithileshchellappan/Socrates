@@ -207,10 +207,11 @@ struct LectureMaterial: Sendable {
         }
         guard !lines.isEmpty else { return nil }
 
-        // The student's flags (F in class) mark the line said at that moment.
+        // The student's flags (F in class) mark the line said at that moment. Only flags captured
+        // in class carry a host time; flags added later in Review stay out of the pass and its hash.
         if let recording = try Recording.find(recordingID).fetchOne(db), recording.sampleRate > 0 {
             let flags = try SlideEvent
-                .where { $0.recordingID.eq(recordingID) && $0.kind.eq(SlideEventKind.flag) }
+                .where { $0.recordingID.eq(recordingID) && $0.kind.eq(SlideEventKind.flag) && $0.hostTime.isNot(nil) }
                 .fetchAll(db)
                 .compactMap { $0.sampleTime.map { Double($0) / recording.sampleRate } }
             for time in flags {

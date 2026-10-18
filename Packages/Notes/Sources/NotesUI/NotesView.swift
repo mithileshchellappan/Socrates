@@ -136,6 +136,8 @@ public struct NotesView: View {
         }
         .onDisappear {
             if let session { Task { await session.flush() } }
+            NoteImageCache.removeAll()
+            NoteDeckCache.removeAll()
         }
     }
 
@@ -403,9 +405,28 @@ public struct NotesView: View {
             do {
                 try await services.database.write { db in
                     for id in ids {
+                        guard let note = try Note.find(id).fetchOne(db) else { continue }
+                        // Review finds a slide's notes by lecture + page, so a slide note keeps its
+                        // anchor only in a lecture that shows its deck; elsewhere it becomes a
+                        // lecture (or course) note. The recording belongs to the old lecture.
+                        let lectureChanged = lectureID != note.lectureID
+                        var dropsSlide = note.pageNumber != nil && lectureChanged
+                        if dropsSlide, let lectureID, let deckID = note.deckID {
+                            dropsSlide = try LectureDeckSpan
+                                .where { $0.lectureID.eq(lectureID) && $0.deckID.eq(deckID) }
+                                .fetchCount(db) == 0
+                        }
                         try Note.find(id).update {
                             $0.courseID = Course.ID?.some(courseID)
                             $0.lectureID = lectureID
+                            if dropsSlide {
+                                $0.pageNumber = Int?.none
+                                $0.deckID = Deck.ID?.none
+                            }
+                            if lectureChanged {
+                                $0.recordingID = Recording.ID?.none
+                                $0.audioTime = Double?.none
+                            }
                         }
                         .execute(db)
                     }

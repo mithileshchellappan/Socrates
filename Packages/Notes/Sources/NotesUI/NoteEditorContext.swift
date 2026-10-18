@@ -56,24 +56,45 @@ final class NoteEditorContext {
 }
 
 /// Images drawn at their display size, decoded with ImageIO (never at full resolution), kept for
-/// the notes on screen.
+/// the notes on screen: a byte-bounded LRU, emptied when the Notes screen closes.
 @MainActor
 enum NoteImageCache {
     private static var images: [String: CGImage] = [:]
+    /// Least recently used first.
     private static var order: [String] = []
-    private static let limit = 48
-
-    static func cached(_ key: String) -> CGImage? { images[key] }
+    private static var bytes = 0
+    private static let budget = 32 << 20
 
     static func image(at url: URL, sha: String, maxPixelSize: Int) async -> CGImage? {
         let key = "\(sha)@\(maxPixelSize)"
-        if let image = images[key] { return image }
+        if let image = images[key] {
+            touch(key)
+            return image
+        }
         guard let image = await downsample(url, maxPixelSize: maxPixelSize) else { return nil }
-        images[key] = image
-        order.append(key)
-        if order.count > limit { images[order.removeFirst()] = nil }
+        if images[key] == nil {
+            images[key] = image
+            bytes += cost(image)
+        }
+        touch(key)
+        while bytes > budget, order.count > 1 {
+            if let evicted = images.removeValue(forKey: order.removeFirst()) { bytes -= cost(evicted) }
+        }
         return image
     }
+
+    static func removeAll() {
+        images = [:]
+        order = []
+        bytes = 0
+    }
+
+    private static func touch(_ key: String) {
+        order.removeAll { $0 == key }
+        order.append(key)
+    }
+
+    private static func cost(_ image: CGImage) -> Int { image.bytesPerRow * image.height }
 
     @concurrent
     nonisolated private static func downsample(_ url: URL, maxPixelSize: Int) async -> CGImage? {
@@ -88,24 +109,47 @@ enum NoteImageCache {
     }
 }
 
-/// Slide decks opened for slide clips and the Slide picker, one per PDF.
+/// Slide decks opened for slide clips and the Slide picker, one per PDF: the few used last (each
+/// with a small bitmap budget, enough for clips and thumbnails), emptied when the Notes screen
+/// closes. A view that shows a deck keeps it open while it is on screen.
 @MainActor
 enum NoteDeckCache {
     private static var decks: [String: SlideDeck] = [:]
+    /// Least recently used first.
+    private static var order: [String] = []
+    private static let limit = 3
 
-    static func cached(sha: String) -> SlideDeck? { decks[sha] }
+    static func cached(sha: String) -> SlideDeck? {
+        guard let deck = decks[sha] else { return nil }
+        touch(sha)
+        return deck
+    }
 
     static func deck(blob: BlobRef, services: StudyServices) async -> SlideDeck? {
-        if let deck = decks[blob.sha256] { return deck }
+        if let deck = cached(sha: blob.sha256) { return deck }
         let url = services.blobs.url(for: blob)
         let caches = services.paths.caches.appending(path: "Slides", directoryHint: .isDirectory)
-        guard let deck = await open(url: url, sha: blob.sha256, caches: caches) else { return nil }
+        guard let opened = await open(url: url, sha: blob.sha256, caches: caches) else { return nil }
+        // Another view may have opened the same PDF meanwhile: share that one.
+        let deck = decks[blob.sha256] ?? opened
         decks[blob.sha256] = deck
+        touch(blob.sha256)
+        while order.count > limit { decks[order.removeFirst()] = nil }
         return deck
+    }
+
+    static func removeAll() {
+        decks = [:]
+        order = []
+    }
+
+    private static func touch(_ sha: String) {
+        order.removeAll { $0 == sha }
+        order.append(sha)
     }
 
     @concurrent
     nonisolated private static func open(url: URL, sha: String, caches: URL) async -> SlideDeck? {
-        try? SlideDeck(url: url, sha256: sha, cacheDirectory: caches, memoryBudgetBytes: 24 << 20)
+        try? SlideDeck(url: url, sha256: sha, cacheDirectory: caches, memoryBudgetBytes: 8 << 20)
     }
 }
