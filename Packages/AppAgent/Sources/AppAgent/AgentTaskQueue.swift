@@ -178,10 +178,12 @@ actor AgentTaskQueue {
         guard let conversation = running[task.id]?.conversation else { return }
         do {
             if task.conversationID == nil {
-                try await tasks.setConversation(task.id, conversation)
+                // The conversation row must exist before the task points at it (agent_task's
+                // conversation_id is a foreign key): start writes the row, then the link follows.
                 _ = try await runtime.start(
                     .task, text: Self.prompt(task), courseID: task.courseID, lectureID: task.lectureID, id: conversation, title: task.title
                 )
+                try await tasks.setConversation(task.id, conversation)
             } else {
                 // Interrupted by a quit: the conversation goes on where it stopped.
                 try await runtime.send("Continue the task where you stopped, then give its result.", to: conversation)
