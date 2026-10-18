@@ -145,9 +145,6 @@ public struct SourceTrailPopover: View {
     private let header: String?
     private let inCalendar: Bool
     private let undo: (@MainActor () -> Void)?
-    @Environment(\.openDestination) private var openDestination
-    @Environment(\.locale) private var locale
-    @Environment(\.timeZone) private var timeZone
 
     /// - Parameters:
     ///   - entries: the item's sources (undone ones are left out).
@@ -172,12 +169,7 @@ public struct SourceTrailPopover: View {
                     .padding(.horizontal, 4)
                     .padding(.bottom, 3)
             }
-            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                if index > 0 { Hairline() }
-                row(entry)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 4)
-            }
+            SourceTrailRows(entries: entries, now: now)
             if inCalendar || undo != nil {
                 Hairline()
                     .padding(.top, 3)
@@ -204,6 +196,35 @@ public struct SourceTrailPopover: View {
         .padding(.vertical, 9)
         .padding(.horizontal, 10)
         .frame(width: Self.width, alignment: .leading)
+    }
+}
+
+/// The rows of a source trail without the popover's header, footer and frame, hairlines between
+/// them: a recording with the professor's pin and a jump-to-time chip, a mail with its sender, a
+/// short quote and its time (opens the mail), a timetable file with its quote, what the student
+/// typed. The source popover and Calendar's detail popover draw them.
+public struct SourceTrailRows: View {
+    private let entries: [SourceTrailEntry]
+    private let now: Date
+    @Environment(\.openDestination) private var openDestination
+    @Environment(\.locale) private var locale
+    @Environment(\.timeZone) private var timeZone
+
+    /// - Parameter entries: the item's sources (undone ones are left out).
+    public init(entries: [SourceTrailEntry], now: Date) {
+        self.entries = entries.filter(\.isActive)
+        self.now = now
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                if index > 0 { Hairline() }
+                row(entry)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 4)
+            }
+        }
     }
 
     @ViewBuilder

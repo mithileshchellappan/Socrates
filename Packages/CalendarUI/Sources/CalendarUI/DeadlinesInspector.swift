@@ -200,7 +200,6 @@ struct DeadlineRow: View {
 
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -212,7 +211,7 @@ struct DeadlineRow: View {
                         .font(.system(size: 13, weight: .medium))
                         .lineLimit(1)
                     if item.relevance == .examAdmission {
-                        examChip
+                        ExamAdmissionChip()
                     }
                 }
                 when
@@ -263,9 +262,14 @@ struct DeadlineRow: View {
         }
         return text.monospacedDigit()
     }
+}
 
-    /// The one chip a row may have: amber star + "Exam admission" on professor soft.
-    private var examChip: some View {
+/// The one chip a row may have: amber star + "Exam admission" on professor soft (inspector rows
+/// and the detail popover).
+struct ExamAdmissionChip: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "star")
                 .font(.system(size: 9.5, weight: .semibold))

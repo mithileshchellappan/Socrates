@@ -60,7 +60,8 @@ enum CalendarSelection: Hashable, Sendable {
 
 /// What the grid draws where, for one week: pure, so it is tested without a view.
 struct WeekPlan: Equatable {
-    /// A timed block: a session, or an event of another calendar (read-only).
+    /// A timed block: a session, a timed event item that is no session (an exam review from the
+    /// timetable), or an event of another calendar (read-only).
     struct Event: Identifiable, Hashable {
         var id: String
         var day: Int
@@ -80,11 +81,23 @@ struct WeekPlan: Equatable {
         var colorHex: String?
         var isCancelled = false
         var sessionID: LectureSession.ID?
+        /// An event item drawn as a block.
+        var itemID: TrackedItem.ID?
         var courseID: Course.ID?
         var lectureID: Lecture.ID?
 
-        var isForeign: Bool { sessionID == nil }
+        var isForeign: Bool { sessionID == nil && itemID == nil }
+
+        /// What a click selects; nil for another calendar's event.
+        var target: CalendarSelection? {
+            if let sessionID { return .session(sessionID) }
+            return itemID.map(CalendarSelection.item)
+        }
     }
+
+    /// An event item's block length: the hour the calendar mirror gives it (decisions: "Deadline
+    /// events"), since `tracked_item` keeps no end.
+    static let eventMinutes = 60
 
     /// A timed due item: a line at its time with a dot and a tag.
     struct Due: Identifiable, Hashable {
@@ -179,6 +192,24 @@ struct WeekPlan: Equatable {
                 if item.kind == .event, item.lectureSessionID != nil { continue }
                 guard let due = item.dueAt, let at = slot(due) else { continue }
                 let color = item.courseID.flatMap { data.courses[$0]?.colorHex }
+                if item.kind == .event, !item.isAllDay, at.minute != Self.endOfDay {
+                    // A timed event that is no session (an exam review): a block like a session,
+                    // labelled with its start alone (its end is not stored).
+                    let rooms = CalendarText.rooms(item)
+                    plan.events.append(Event(
+                        id: item.id.uuidString,
+                        day: at.day,
+                        startMinute: at.minute,
+                        endMinute: min(24 * 60, at.minute + Self.eventMinutes),
+                        time: DayText.time(due, timeZone: timeZone),
+                        title: CalendarText.blockTitle(item, course: item.courseID.flatMap { data.courses[$0] }),
+                        subtitle: rooms.isEmpty ? nil : rooms,
+                        colorHex: color,
+                        itemID: item.id,
+                        courseID: item.courseID
+                    ))
+                    continue
+                }
                 if item.isAllDay || at.minute == Self.endOfDay {
                     plan.pills.append(Pill(id: item.id.uuidString, day: at.day, title: item.title, colorHex: color, itemID: item.id))
                 } else {

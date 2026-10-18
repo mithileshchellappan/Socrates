@@ -111,6 +111,120 @@ enum CalendarText {
         guard let due = proposal.dueAt else { return "" }
         return String(localized: "\(DayText.day(due, locale: locale, timeZone: timeZone)) only")
     }
+
+    // MARK: Detail popover
+
+    /// The detail popover's title of a session: "Data Centers · Lecture 3", "Data Centers ·
+    /// Exercise 2" (the kind with its number when known).
+    static func sessionTitle(_ session: LectureSession, course: Course?) -> String {
+        let kind = session.number.map { "\(session.kind.displayName) \($0)" } ?? session.kind.displayName
+        let name = course?.name.trimmingCharacters(in: .whitespaces) ?? ""
+        return name.isEmpty ? kind : "\(name) · \(kind)"
+    }
+
+    /// "weekly", "every 2 weeks" (as the timetable sheet writes a slot).
+    static func recurrence(_ slot: WeeklySlot) -> String {
+        switch slot.weekInterval {
+        case ...1: String(localized: "weekly")
+        case 2: String(localized: "every 2 weeks")
+        default: String(localized: "every \(slot.weekInterval) weeks")
+        }
+    }
+
+    /// A room as it is stored, split into the short room and the full location when it holds one:
+    /// "B1-0101 (Room 104) Sample Street 1, …" → ("Room 104", "Sample Street 1, …");
+    /// "Room 5" → ("Room 5", nil). Several rooms (" / ") give one location per line.
+    static func place(_ stored: String) -> (room: String, location: String?) {
+        let parts = stored.components(separatedBy: " / ")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !parts.isEmpty else { return ("", nil) }
+        let rooms = parts.map { part in
+            let room = TimetableText.room(fromLocation: part)
+            return room.isEmpty ? part : room
+        }
+        let room = rooms.joined(separator: " / ")
+        return (room, rooms == parts ? nil : parts.map(locationLine).joined(separator: "\n"))
+    }
+
+    /// An event block's title in the grid: the course's short name for its name, as sessions
+    /// ("Computational Linguistics exam review" → "CL exam review").
+    static func blockTitle(_ item: TrackedItem, course: Course?) -> String {
+        guard let course else { return item.title }
+        let short = course.shortName.trimmingCharacters(in: .whitespaces)
+        let name = course.name.trimmingCharacters(in: .whitespaces)
+        guard !short.isEmpty, !name.isEmpty,
+              let range = item.title.range(of: name, options: [.anchored, .caseInsensitive, .diacriticInsensitive])
+        else { return item.title }
+        return short + item.title[range.upperBound...]
+    }
+
+    /// "B1-0101 (Room 101) Sample Street 1, Lecture Building (L | 01)" → "Sample Street 1,
+    /// Lecture Building": the address without the room number, the room and the building code.
+    static func locationLine(_ location: String) -> String {
+        var text = location
+        if let match = text.firstMatch(of: /\(([^()]+)\)/) {
+            // Everything before the room's parenthesis is the room number ("B1-0101").
+            text = String(text[match.range.upperBound...])
+        }
+        text = text.replacing(/\s*\([^()]*\|[^()]*\)\s*$/, with: "")
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ",")))
+        return trimmed.isEmpty ? location : trimmed
+    }
+
+    /// An item's short rooms ("Room 102 / Hall A"), from its stored location.
+    static func rooms(_ item: TrackedItem) -> String {
+        place(item.room ?? "").room
+    }
+
+    /// "Exam", "Exercise", "Deadline", "Event", "Task".
+    static func kindName(_ kind: TrackedItemKind) -> String {
+        switch kind {
+        case .deadline: String(localized: "Deadline")
+        case .exercise: String(localized: "Exercise")
+        case .exam: String(localized: "Exam")
+        case .event: String(localized: "Event")
+        case .task: String(localized: "Task")
+        case .announcement: String(localized: "Announcement")
+        default: kind.rawValue.replacing("_", with: " ").capitalized
+        }
+    }
+
+    /// "L2 · Virtualization & IaaS"; the title alone, or "Lecture 2", when a part is missing.
+    static func lectureTitle(_ lecture: Lecture) -> String {
+        let title = lecture.title.trimmingCharacters(in: .whitespaces)
+        switch (lecture.number, title.isEmpty) {
+        case (let number?, false): return "L\(number) · \(title)"
+        case (let number?, true): return String(localized: "Lecture \(number)")
+        case (nil, false): return title
+        case (nil, true): return String(localized: "Lecture")
+        }
+    }
+
+    /// "5 highlights, 3 not on the slides" (Today's hero line); nil before the study pass.
+    static func studyLine(_ info: LectureInfo) -> String? {
+        var parts: [String] = []
+        switch info.highlights {
+        case 0: break
+        case 1: parts.append(String(localized: "1 highlight"))
+        default: parts.append(String(localized: "\(info.highlights) highlights"))
+        }
+        if info.notOnSlides > 0 { parts.append(String(localized: "\(info.notOnSlides) not on the slides")) }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
+    /// A settled or waiting change of a session as its popover names it: "Move to Room 5?",
+    /// "Cancelled?" while it waits; "Moved to Room 5", "Cancelled" once confirmed; another tied
+    /// item by its title.
+    static func change(_ item: TrackedItem) -> String {
+        guard item.kind.isSessionProposal, item.status != .open else {
+            return item.kind.isSessionProposal ? question(item) : item.title
+        }
+        if item.kind == .roomChange, let room = item.room?.trimmingCharacters(in: .whitespaces), !room.isEmpty {
+            return String(localized: "Moved to \(room)")
+        }
+        return item.kind == .cancellation ? String(localized: "Cancelled") : item.title
+    }
 }
 
 /// Wall-clock minutes after midnight, in a time zone.

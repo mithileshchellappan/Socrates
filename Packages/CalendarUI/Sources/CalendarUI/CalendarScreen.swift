@@ -17,6 +17,8 @@ public struct CalendarScreen: View {
 
     @State private var week: CalendarWeek
     @State private var selection: CalendarSelection?
+    /// The grid item whose detail popover is open (a click opens it, Esc closes it).
+    @State private var detailTarget: CalendarSelection?
     @State private var composer: ComposerModel
     @State private var showsInspector = true
     @State private var gridWidth: CGFloat = 0
@@ -40,6 +42,7 @@ public struct CalendarScreen: View {
     @Environment(\.foreignCalendars) private var foreignSource
     @Environment(\.calendarVisibility) private var visibility
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
+    @Environment(\.calendarDetailPreview) private var detailPreview
 
     /// - Parameters:
     ///   - week: a day of the week to open on; nil: this week.
@@ -136,16 +139,27 @@ public struct CalendarScreen: View {
         let columns = WeekColumns(width: gridWidth)
         let handlers = gridHandlers(now: now)
         let nowSlot = week.index(of: today).map { (day: $0, minute: WallClock.minute(of: now, in: timeZone)) }
+        // Off-screen renders: the previewed item drawn selected, its detail inline.
+        let previewTarget = detailPreview?.target(plan: plan, data: data)
+        let shown = previewTarget ?? selection
+        let allDayHeight = GridMetrics.allDayHeight(pills: plan.maxPills)
         return VStack(spacing: 0) {
             WeekHeader(week: week, columns: columns, today: today)
             Hairline()
             AllDayRow(
-                plan: plan, columns: columns, height: GridMetrics.allDayHeight(pills: plan.maxPills), selection: selection,
+                plan: plan, columns: columns, height: allDayHeight, selection: shown,
                 handlers: handlers
             )
             Hairline()
             ScrollView(.vertical) {
-                WeekBody(plan: plan, columns: columns, now: nowSlot, selection: selection, handlers: handlers)
+                WeekBody(plan: plan, columns: columns, now: nowSlot, selection: shown, handlers: handlers)
+                    .overlay(alignment: .topLeading) {
+                        if let previewTarget {
+                            handlers.detail(previewTarget)
+                                .modifier(DetailCard())
+                                .offset(previewOffset(previewTarget, plan: plan, columns: columns))
+                        }
+                    }
             }
             .scrollPosition($scroll)
             // Never a legacy scroller: it would narrow the body under the day headers.
@@ -166,10 +180,13 @@ public struct CalendarScreen: View {
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.return) {
-            guard case .session(let id)? = selection, let event = plan.events.first(where: { $0.sessionID == id }) else {
-                return .ignored
-            }
+            guard let shown, let event = plan.events.first(where: { $0.target == shown }) else { return .ignored }
             open(event)
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            guard detailTarget != nil else { return .ignored }
+            detailTarget = nil
             return .handled
         }
     }
@@ -289,14 +306,66 @@ public struct CalendarScreen: View {
 
     private func gridHandlers(now: Date) -> GridHandlers {
         let actions = actions
+        let data = data
+        let details = detailHandlers()
         return GridHandlers(
-            select: { selection = $0 },
+            select: { target in
+                selection = target
+                detailTarget = target
+            },
             open: open,
             cancelSession: { id in perform("Cancelling a session") { try await actions.cancelSession(id) } },
             restoreSession: { id in perform("Restoring a session") { try await actions.restoreSession(id) } },
+            remove: { id in perform("Delete") { try await actions.remove(id) } },
+            addToCalendar: { id in perform("Add to Calendar") { try await actions.addToCalendar(id) } },
             trail: trail,
+            detailTarget: detailTarget,
+            closeDetail: { target in
+                if detailTarget == target { detailTarget = nil }
+            },
+            detail: { target in CalendarDetail(target: target, data: data, now: now, handlers: details) },
             now: now
         )
+    }
+
+    private func detailHandlers() -> DetailHandlers {
+        let actions = actions
+        return DetailHandlers(
+            openLecture: { id in openDestination(.lecture(id)) },
+            openCourse: { id in openDestination(.course(id)) },
+            cancelSession: { id in perform("Cancelling a session") { try await actions.cancelSession(id) } },
+            restoreSession: { id in perform("Restoring a session") { try await actions.restoreSession(id) } },
+            confirm: confirm,
+            discard: discard,
+            complete: { id in perform("Mark as Done") { try await actions.complete(id) } },
+            remove: { id in perform("Delete") { try await actions.remove(id) } },
+            addToCalendar: { id in perform("Add to Calendar") { try await actions.addToCalendar(id) } },
+            trail: trail,
+            selectItem: { item in
+                detailTarget = nil
+                selection = .item(item.id)
+                if let due = item.dueAt { week = CalendarWeek(containing: CalendarDay(due, in: timeZone)) }
+            }
+        )
+    }
+
+    /// Where a render's inline detail sits in the scrolling body: beside its item, where the
+    /// popover opens (to its left from Wednesday on), kept in view of the body opened at 08:00.
+    private func previewOffset(_ target: CalendarSelection, plan: WeekPlan, columns: WeekColumns) -> CGSize {
+        var day = 0
+        var top = GridMetrics.openingOffset
+        if let event = plan.events.first(where: { $0.target == target }) {
+            day = event.day
+            top = GridMetrics.y(minute: event.startMinute)
+        } else if case .item(let id) = target, let due = plan.dues.first(where: { $0.id == id }) {
+            day = due.day
+            top = GridMetrics.y(minute: due.minute)
+        } else if case .item(let id) = target, let pill = plan.pills.first(where: { $0.itemID == id }) {
+            day = pill.day
+        }
+        let x = day >= 2 ? columns.x(day) - CalendarDetail.width - 12 : columns.x(day) + columns.width(day) + 12
+        let y = min(max(GridMetrics.openingOffset + 8, top - 30), GridMetrics.openingOffset + 220)
+        return CGSize(width: max(GridMetrics.gutter, x), height: y)
     }
 
     private func inspectorHandlers(now: Date) -> InspectorHandlers {
