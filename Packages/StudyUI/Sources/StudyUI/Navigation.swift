@@ -19,6 +19,8 @@ public enum StudyDestination: Hashable, Sendable {
     case lecture(Lecture.ID, ReviewTarget)
     /// The Mail screen showing `scope`, with `message` selected (M2).
     case mail(MailScope, message: MailMessage.ID?)
+    /// The Notes screen showing `scope`, with `note` selected (M6).
+    case notes(NotesScope, note: Note.ID?)
 
     public static func lecture(_ id: Lecture.ID) -> StudyDestination { .lecture(id, ReviewTarget()) }
 
@@ -38,6 +40,13 @@ public enum MailScope: Hashable, Sendable {
     case drafts
     /// The Sent mailbox.
     case sent
+}
+
+/// Which notes the Notes screen lists (M6, mockup 04): every note (All Notes, grouped by course)
+/// or one course's (the sidebar's course rows under Notes, and the course's own Notes screen).
+public enum NotesScope: Hashable, Sendable {
+    case all
+    case course(Course.ID)
 }
 
 /// Where the review screen should open: a slide, a moment on the recording clock, or both (the

@@ -3,6 +3,7 @@ import ChatUI
 import CoursesUI
 import FilingUI
 import MailUI
+import NotesUI
 import ReviewUI
 import SearchUI
 import StudyCore
@@ -17,6 +18,8 @@ struct DetailView: View {
     let target: (lectureID: Lecture.ID, target: ReviewTarget)?
     /// The message selected on Mail (in Drafts, the draft).
     var mailSelection: Binding<MailMessage.ID?> = .constant(nil)
+    /// The note selected on the Notes screen (M6).
+    var noteSelection: Binding<Note.ID?> = .constant(nil)
     /// The chat inspector is shown (Today, Mail, a course's screens, Search; one per window; only
     /// with Claude Code).
     var showsChat: Binding<Bool> = .constant(false)
@@ -71,7 +74,9 @@ struct DetailView: View {
             .modifier(CourseChat(courseID: id, showsChat: showsChat))
             .id(id)
         case .courseNotes(let id):
-            CourseNotesView(courseID: id)
+            // M6: the Notes screen scoped to the course (DESIGN 8.4); the Notes row after Mail and
+            // All Notes come with the M6 integration.
+            NotesView(scope: .course(id), selection: noteSelection)
                 .modifier(CourseChat(courseID: id, showsChat: showsChat))
                 .id(id)
         case .lecture(let id):

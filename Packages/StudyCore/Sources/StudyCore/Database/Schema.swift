@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -45,6 +45,10 @@ public enum Schema {
         migrator.registerMigration("v9") { db in
             try db.execute(sql: v9)
         }
+        // M6, additive only (a new table).
+        migrator.registerMigration("v10") { db in
+            try db.execute(sql: v10)
+        }
         return migrator
     }
 
@@ -59,6 +63,7 @@ public enum Schema {
         "agent_conversation", "agent_turn", "transcript_extraction",
         "study_unit",
         "agent_memory",
+        "slide_ink",
     ]
 
     /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
@@ -852,6 +857,19 @@ public enum Schema {
           "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
           "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
         ) STRICT;
+        """
+
+    /// v10 (M6: notes & ink). docs/plan-m6.md §3. One row per deck page by code (no unique index).
+    static let v10 = """
+        CREATE TABLE "slide_ink" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "deck_id" TEXT NOT NULL REFERENCES "deck"("id") ON DELETE CASCADE,
+          "page_number" INTEGER NOT NULL,
+          "drawing" TEXT NOT NULL DEFAULT '{}',
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "slide_ink_page" ON "slide_ink"("deck_id", "page_number");
         """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row

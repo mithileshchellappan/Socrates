@@ -65,6 +65,8 @@ packages:
     path: Packages/StudyPass
   Tutor:
     path: Packages/Tutor
+  Notes:
+    path: Packages/Notes
 
 targets:
   StudyPortal:
@@ -189,3 +191,8 @@ targets:
       # M5 (docs/plan-m5.md): the tutor (lecture tools, context blocks); search lives in Search.
       - package: Tutor
         product: Tutor
+      # M6 (docs/plan-m6.md): Apple Notes-style notes (the Notes screen, the rich editor).
+      - package: Notes
+        product: Notes
+      - package: Notes
+        product: NotesUI

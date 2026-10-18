@@ -192,6 +192,10 @@ struct ParityRender {
             // Lectures with Show Chat at the trailing end (with `--m35-sample`: Claude Code available).
             RenderShot(name: "08-course-chat", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id), showsChat: true))),
             RenderShot(name: "08-course-lectures", window: .main(ParityMode.Launch(selection: .courseLectures(cc.id)))),
+            // M6 (on a copy seeded by `tools/parity/seed --m6-sample`): mockup 04, the course's
+            // Notes screen until the integration adds the Notes row (then All Notes with the DC L2
+            // note selected). Review's ink on slide 16 shows in `03-review`.
+            RenderShot(name: "04-notes", window: .main(ParityMode.Launch(selection: .courseNotes(cc.id)))),
             RenderShot(name: "10-import", window: .main(ParityMode.Launch(selection: .today))) { model, size in
                 try await ParityMode.importPreview(model: model, services: services, size: size)
             }

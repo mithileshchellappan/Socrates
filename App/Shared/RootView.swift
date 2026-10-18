@@ -24,6 +24,8 @@ struct RootView: View {
     @State private var mailSelection: MailMessage.ID?
     /// `open(.mail(scope, message:))` chose the message along with the list: keep it.
     @State private var keepsMailSelection = false
+    /// The note selected on the Notes screen (M6).
+    @State private var noteSelection: Note.ID?
     @State private var columns: NavigationSplitViewVisibility = .all
     @State private var query = ""
     /// Back and Forward (Go menu; the course screen's toolbar chevrons, mockup 08).
@@ -158,6 +160,7 @@ struct RootView: View {
                     searchSubmits: searchSubmits,
                     target: reviewTarget,
                     mailSelection: $mailSelection,
+                    noteSelection: $noteSelection,
                     showsChat: $showsChat,
                     record: record
                 )
@@ -384,6 +387,13 @@ struct RootView: View {
             mailSelection = message
             keepsMailSelection = selection != .mailScope(scope)
             selection = .mailScope(scope)
+        case .notes(let scope, let note):
+            // M6 contract: a course's Notes screen; the Notes row (All Notes) comes with the M6
+            // integration (docs/plan-m6.md §7).
+            if case .course(let id) = scope {
+                noteSelection = note
+                selection = .courseNotes(id)
+            }
         case .lecture(let id, var target):
             // A fresh request: opening the same hit again moves there again.
             target.request = UUID()
