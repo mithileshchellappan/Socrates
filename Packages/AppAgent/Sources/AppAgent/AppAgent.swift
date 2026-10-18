@@ -1,5 +1,6 @@
 import Agent
 import ClaudeKit
+import Coach
 import Courses
 import Deadlines
 import Foundation
@@ -19,7 +20,8 @@ import StudyPass
 ///                                additionalSpecs: [/* mail chat, tutor */].merging(specs.additional) { $1 },
 ///                                conversationSpecs: specs.perConversation)
 ///     let agent = AppAgent(services: s, client: client, runtime: runtime, memory: memory,
-///                          schedule: CourseSchedule(services: s), studyPass: studyPassPipeline)
+///                          schedule: CourseSchedule(services: s), studyPass: studyPassPipeline,
+///                          coach: coach)   // mc: the CoachEngine (queue runners); also AppAgent.specs(…, coach:)
 ///     await agent.start()           // startBackgroundWork, after the pipelines
 ///     await agent.wake()            // new mail, finished transcriptions, study pass units, imports,
 ///                                   // calendar changes, Claude Code turning available
@@ -33,6 +35,8 @@ public actor AppAgent {
     let memory: DeadlineMemory
     let schedule: CourseSchedule
     let studyPass: StudyPassPipeline?
+    /// mc: the study coach (question drafting and old exams run in the task queue; nil on iOS).
+    let coach: CoachEngine?
     let now: @Sendable () -> Date
 
     /// The activity log and write path of every automatic change.
@@ -58,6 +62,7 @@ public actor AppAgent {
         memory: DeadlineMemory,
         schedule: CourseSchedule,
         studyPass: StudyPassPipeline?,
+        coach: CoachEngine? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
@@ -66,12 +71,13 @@ public actor AppAgent {
         self.memory = memory
         self.schedule = schedule
         self.studyPass = studyPass
+        self.coach = coach
         self.now = now
         let changeLog = ChangeLog(services: services, memory: memory, now: now)
         self.changeLog = changeLog
         let quit = QuitSignal()
         self.quit = quit
-        queue = AgentTaskQueue(services: services, client: client, runtime: runtime, studyPass: studyPass, quit: quit, now: now)
+        queue = AgentTaskQueue(services: services, client: client, runtime: runtime, studyPass: studyPass, coach: coach, quit: quit, now: now)
         triage = FactTriage(services: services, client: client, changeLog: changeLog, quit: quit, now: now)
         reminders = ReminderCenter(services: services, changeLog: changeLog, now: now)
     }
@@ -87,12 +93,13 @@ public actor AppAgent {
 
     /// `search`: the app's engine (with its semantic index; its planner is not used). `drafter`:
     /// the mail pipeline's `ReplyDrafter` (draft_reply; nil: no drafts). `memory`: the app's
-    /// deadline memory (its `onChange` syncs the calendar after the agent's writes).
+    /// deadline memory (its `onChange` syncs the calendar after the agent's writes). `coach` (mc):
+    /// the study coach the plan tools replan through.
     public static func specs(
-        services: StudyServices, search: SearchEngine, drafter: ReplyDrafter?, memory: DeadlineMemory,
+        services: StudyServices, search: SearchEngine, drafter: ReplyDrafter?, memory: DeadlineMemory, coach: CoachEngine? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) -> Specs {
-        let deps = AppAgentChat.Services(services: services, search: search, drafter: drafter, memory: memory, now: now)
+        let deps = AppAgentChat.Services(services: services, search: search, drafter: drafter, memory: memory, coach: coach, now: now)
         return Specs(
             additional: [.app: { try AppAgentChat.spec(deps) }],
             perConversation: [.task: { conversationID in try await AppAgentChat.taskSpec(deps, conversationID: conversationID) }]
@@ -106,7 +113,9 @@ public actor AppAgent {
     /// answers in the background. The user turn carries, before the words: the attachments as
     /// image / document blocks, the `<catalog>` and `<context>` blocks when they changed since
     /// the conversation last carried them, and the results of its finished tasks no turn has
-    /// carried yet (`<task_result>`, then `reported_at`). `agent_turn.context` keeps the context,
+    /// carried yet (`<task_result>`, then `reported_at`), and (mc) the reminders shown since the
+    /// student last wrote to the newest `app` conversation (`<reminder>`, when this message goes
+    /// there or starts a new one). `agent_turn.context` keeps the context,
     /// the thread's context line (when the screen changed) and the attachments.
     public func send(
         _ text: String, context: AgentContext, attachments: [AgentAttachment], to conversation: AgentConversation.ID?
@@ -121,6 +130,7 @@ public actor AppAgent {
         if AgentCatalog.lastRevision(in: texts) != catalog.revision { blocks.append(.text(catalog.text)) }
         let block = try await AgentContextBlock.build(context, services: services)
         if AgentContextBlock.lastRevision(in: texts) != block.revision { blocks.append(.text(block.text)) }
+        blocks += try await reminderBlocks(for: conversation, history: history).map { .text($0) }
         var reported: [AgentTask.ID] = []
         // Whether a mail-group task's result is in this conversation (carried now or by an
         // earlier turn): mail text reached it, so a web task it spawns gets no input summary.
@@ -233,8 +243,19 @@ public actor AppAgent {
     public func wake() async {
         guard started else { return }
         await queue.wake()
+        await profileItems()
         await reminders.check()
         await wakeTriage()
+    }
+
+    /// mc: the university profile's "Register for exams" items (through the change log, once per
+    /// window); their reminders follow from ReminderCenter.
+    private func profileItems() async {
+        do {
+            try await ProfileItemWriter.apply(services: services, changeLog: changeLog, now: now())
+        } catch {
+            AppAgentModule.log.error("Profile items failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     /// The app is about to quit (synchronous, in `willTerminate` BEFORE the `claude` processes
@@ -333,6 +354,30 @@ public actor AppAgent {
         turns.filter { $0.role == .user }.flatMap { turn -> [String] in
             guard let message = try? MessageParam(json: JSONValue.parse(turn.message)) else { return [] }
             return message.content.blocks.compactMap(\.textValue)
+        }
+    }
+
+    /// mc: `<reminder fired="Tue 20 Oct, 22:00" item="…">title · body</reminder>` for each
+    /// reminder delivered since the student's last message to the newest `app` conversation, when
+    /// `conversation` is that one or a new one (nil); at most 5, oldest first.
+    func reminderBlocks(for conversation: AgentConversation.ID?, history: [AgentTurn]) async throws -> [String] {
+        let date = now()
+        let kind = ConversationKind.app
+        let newest = try await services.database.read { db in
+            try AgentConversation.where { $0.kind.eq(kind) }.order { $0.createdAt.desc() }.fetchOne(db)
+        }
+        if let conversation, newest?.id != conversation { return [] }
+        var turns = history
+        if conversation == nil, let newest { turns = try await ConversationRepository(store: services.records).turns(newest.id) }
+        // The student's own messages carry a turn context; tool results do not.
+        let since = turns.last { $0.role == .user && $0.context != nil }?.createdAt ?? date.addingTimeInterval(-86_400)
+        let shown = try await services.database.read { db in
+            try AgentReminder.where { $0.deliveredAt.gt(Date?.some(since)) }.order(by: \.fireAt).fetchAll(db)
+        }
+        return shown.suffix(5).map { reminder in
+            var head = "<reminder fired=\"\(AgentText.dayTime(reminder.deliveredAt ?? reminder.fireAt))\""
+            if let item = reminder.trackedItemID { head += " item=\"\(item.uuidString.lowercased())\"" }
+            return head + ">" + AgentXML.escape(reminder.title + (reminder.body.isEmpty ? "" : " · " + reminder.body)) + "</reminder>"
         }
     }
 

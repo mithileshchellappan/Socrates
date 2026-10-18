@@ -89,6 +89,12 @@ public struct ChangeLog: Sendable {
         /// Blocks appended to a note (nil: a new note of the course or lecture).
         case noteAppend(noteID: Note.ID?, courseID: Course.ID?, lectureID: Lecture.ID?, blocks: [NoteBlock])
         case reminder(itemID: TrackedItem.ID?, courseID: Course.ID?, title: String, body: String, fireAt: Date)
+        /// mc: a course's credits and/or self-study hours (`set_course_credits`; nil leaves a value).
+        case courseCredits(Course.ID, credits: Double?, selfStudyHours: Double?)
+        /// mc: a planner rule kept as a `plan` memory (`mark_away_days`, `plan_adjust`). An older
+        /// plan memory of the same scope (another cap for the same days, another sitting of the
+        /// course…) is forgotten and its change superseded (Undo brings it back).
+        case planRule(PlanRule, text: String, courseID: Course.ID?)
     }
 
     /// What `apply` did.
@@ -254,6 +260,10 @@ public struct ChangeLog: Sendable {
             return try appendNote(noteID, courseID: courseID, lectureID: lectureID, blocks: blocks, quote: quote, origin: origin, db: db, store: store, now: now)
         case .reminder(let itemID, let courseID, let title, let body, let fireAt):
             return try schedule(itemID: itemID, courseID: courseID, title: title, body: body, fireAt: fireAt, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now)
+        case .courseCredits(let courseID, let credits, let selfStudyHours):
+            return try setCredits(courseID, credits: credits, selfStudyHours: selfStudyHours, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now)
+        case .planRule(let rule, let text, let courseID):
+            return try rememberRule(rule, text: text, courseID: courseID, quote: quote, origin: origin, db: db, store: store, now: now)
         }
     }
 
@@ -691,6 +701,112 @@ public struct ChangeLog: Sendable {
             .execute(db)
     }
 
+    // MARK: Course credits (mc)
+
+    /// "6 credits · 120 h self-study".
+    static func creditsSummary(credits: Double?, selfStudyHours: Double?) -> String {
+        func number(_ value: Double) -> String { value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value) }
+        var parts: [String] = []
+        if let credits { parts.append("\(number(credits)) credits") }
+        if let selfStudyHours { parts.append("\(number(selfStudyHours)) h self-study") }
+        return parts.isEmpty ? "Credits cleared" : parts.joined(separator: " · ")
+    }
+
+    private static func setCredits(
+        _ courseID: Course.ID, credits: Double?, selfStudyHours: Double?, quote: String, confidence: Double, origin: Origin, db: Database,
+        store: RecordStore, now: Date
+    ) throws -> Outcome {
+        guard let course = try Course.find(courseID).fetchOne(db) else { return .refused("Unknown course.") }
+        guard credits != nil || selfStudyHours != nil else { return .refused("Give the credits or the self-study hours.") }
+        if let credits, !(credits > 0 && credits <= 60) { return .refused("Credits must be between 0 and 60.") }
+        if let selfStudyHours, !(selfStudyHours > 0 && selfStudyHours <= 1_800) { return .refused("Self-study hours must be between 0 and 1,800.") }
+        let newCredits = credits ?? course.credits
+        let newHours = selfStudyHours ?? course.selfStudyHours
+        guard newCredits != course.credits || newHours != course.selfStudyHours else {
+            return .unchanged("The course has these credits already.")
+        }
+        try Course.find(courseID).update {
+            $0.credits = newCredits
+            $0.selfStudyHours = newHours
+            $0.updatedAt = now
+        }
+        .execute(db)
+        let previous = try AgentChange
+            .where { $0.targetTable.eq(AgentChangeTarget.course) && $0.targetID.eq(UUID?.some(courseID)) && $0.undoneAt.is(nil) && $0.supersededBy.is(nil) && $0.kind.eq(AgentChangeKind.courseCredits) }
+            .fetchAll(db)
+        var change = AgentChange(
+            kind: .courseCredits, targetTable: .course, targetID: courseID, title: course.name,
+            summary: creditsSummary(credits: newCredits, selfStudyHours: newHours),
+            before: AgentChangeValues(exists: true, credits: course.credits, selfStudyHours: course.selfStudyHours),
+            after: AgentChangeValues(exists: true, credits: newCredits, selfStudyHours: newHours), sourceKind: origin.sourceKind,
+            taskID: origin.taskID, eventID: origin.eventID, quote: quote, confidence: confidence, model: origin.model,
+            apiCallID: origin.apiCallID, appliedAt: now, createdAt: now, updatedAt: now
+        )
+        ItemChangeRows.apply(origin.source, to: &change)
+        change = finalize(change, origin: origin, store: store)
+        try AgentChangeRepository.insert(change, db: db)
+        for old in previous { try AgentChangeRepository.supersede(old.id, by: change.id, at: now, db: db) }
+        return .applied(change)
+    }
+
+    // MARK: Plan rules (mc)
+
+    /// Two rules the student would not keep side by side: a newer one replaces the older (another
+    /// cap or away rule for the same days, another sitting or seminar-hours choice for the course,
+    /// another attend choice for the class). Skips add up.
+    static func sameScope(_ lhs: PlanRule, _ rhs: PlanRule) -> Bool {
+        guard lhs.kind == rhs.kind else { return false }
+        switch lhs.kind {
+        case .cap, .away: return lhs.weekdays == rhs.weekdays && lhs.first == rhs.first && lhs.last == rhs.last
+        case .sitting, .seminarHours: return lhs.courseID == rhs.courseID
+        case .attend: return lhs.slotID == rhs.slotID && lhs.sessionID == rhs.sessionID
+        default: return false
+        }
+    }
+
+    private static func rememberRule(
+        _ rule: PlanRule, text: String, courseID: Course.ID?, quote: String, origin: Origin, db: Database, store: RecordStore, now: Date
+    ) throws -> Outcome {
+        let text = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(AgentMemory.textLimit))
+        guard !text.isEmpty else { return .refused("The rule needs a text.") }
+        let active = try AgentMemory.where { $0.forgottenAt.is(nil) }.fetchAll(db)
+        if active.contains(where: { $0.planRule == rule }) { return .unchanged("The plan follows that already.") }
+        let replaced = active.filter { memory in memory.kind == .plan && memory.planRule.map { sameScope($0, rule) } == true }
+        guard active.count - replaced.count < AgentMemory.activeLimit else {
+            return .refused("\(AgentMemory.activeLimit) memories are kept at most. Forget one first.")
+        }
+        let memory = store.stamp(AgentMemory(
+            kind: .plan, courseID: courseID, text: text, quote: quote, conversationID: origin.conversationID, createdBy: .agent,
+            createdAt: now, updatedAt: now, planRule: rule
+        ))
+        try AgentMemory.upsert { memory }.execute(db)
+        var change = AgentChange(
+            kind: .memory, targetTable: .memory, targetID: memory.id, title: String(text.prefix(AgentChange.titleLimit)), summary: "Remembered",
+            before: AgentChangeValues(exists: false),
+            after: AgentChangeValues(exists: true, memoryText: text, forgotten: false, planRule: rule), sourceKind: origin.sourceKind,
+            taskID: origin.taskID, eventID: origin.eventID, quote: quote, confidence: 1, model: origin.model, apiCallID: origin.apiCallID,
+            appliedAt: now, createdAt: now, updatedAt: now
+        )
+        ItemChangeRows.apply(origin.source, to: &change)
+        change = finalize(change, origin: origin, store: store)
+        try AgentChangeRepository.insert(change, db: db)
+        // The older rule of the same scope is forgotten; its change row points at this one, so
+        // Undo of this change brings it back.
+        for old in replaced {
+            let oldID = old.id
+            try AgentMemory.find(oldID).update {
+                $0.forgottenAt = Date?.some(now)
+                $0.updatedAt = now
+            }
+            .execute(db)
+            let rows = try AgentChange
+                .where { $0.targetTable.eq(AgentChangeTarget.memory) && $0.targetID.eq(UUID?.some(oldID)) && $0.undoneAt.is(nil) && $0.supersededBy.is(nil) }
+                .fetchAll(db)
+            for row in rows { try AgentChangeRepository.supersede(row.id, by: change.id, at: now, db: db) }
+        }
+        return .applied(change)
+    }
+
     // MARK: - Undo
 
     /// Undo inside the caller's transaction.
@@ -734,6 +850,21 @@ public struct ChangeLog: Sendable {
             if current, change.kind == .itemAdd || change.kind == .itemMove, let itemID = change.targetID {
                 try cancelReminders(itemID: itemID, db: db, now: now)
             }
+        case .course where change.kind == .courseCredits:
+            // mc: the credits and self-study hours from `before`, only while the course still has
+            // what the change wrote.
+            if current, let targetID = change.targetID, let course = try Course.find(targetID).fetchOne(db),
+               let before = change.before, let after = change.after,
+               course.credits == after.credits, course.selfStudyHours == after.selfStudyHours {
+                let credits = before.credits
+                let hours = before.selfStudyHours
+                try Course.find(targetID).update {
+                    $0.credits = credits
+                    $0.selfStudyHours = hours
+                    $0.updatedAt = now
+                }
+                .execute(db)
+            }
         case .course:
             if current, let targetID = change.targetID, var course = try Course.find(targetID).fetchOne(db),
                let before = change.before, let after = change.after {
@@ -752,6 +883,18 @@ public struct ChangeLog: Sendable {
                 }
                 let stamped = store.stamp(memory)
                 try AgentMemory.upsert { stamped }.execute(db)
+            }
+            // mc: the plan rules this one replaced are kept again.
+            let replaced = try AgentChange
+                .where { $0.supersededBy.eq(AgentChange.ID?.some(id)) && $0.targetTable.eq(AgentChangeTarget.memory) && $0.undoneAt.is(nil) }
+                .fetchAll(db)
+            for row in replaced {
+                guard let memoryID = row.targetID else { continue }
+                try AgentMemory.find(memoryID).update {
+                    $0.forgottenAt = Date?.none
+                    $0.updatedAt = now
+                }
+                .execute(db)
             }
         case .note:
             if let targetID = change.targetID, var note = try Note.find(targetID).fetchOne(db), let appended = change.after?.noteBlocks {
