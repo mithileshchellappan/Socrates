@@ -69,14 +69,31 @@ public actor AgentRuntime {
         }
     }
 
-    /// The one spec of `kind`.
+    /// The one spec of `kind`. M5: `mail_chat` and `tutor` get the memory tools (remember,
+    /// update_memory, forget) after their own and the memory rules after their system prompt.
     func spec(for kind: ConversationKind) throws -> ConversationSpec {
+        var spec: ConversationSpec
         switch kind {
-        case .deadlines: return try DeadlineTools.spec(services: services, memory: memory)
+        case .deadlines: spec = try DeadlineTools.spec(services: services, memory: memory)
         default:
             guard let provider = additionalSpecs[kind] else { throw RuntimeError.unknownKind(kind.rawValue) }
-            return try provider()
+            spec = try provider()
         }
+        guard MemoryTools.kinds.contains(kind) else { return spec }
+        spec.tools = try spec.tools.adding(MemoryTools(services: services).all)
+        let system = spec.system
+        spec.system = { startedAt, courses in system(startedAt, courses) + "\n\n" + MemoryTools.rules }
+        return spec
+    }
+
+    /// The `<memory>` block for the next user turn of a conversation of `kind` with `history`:
+    /// on the first turn, and whenever the active memories changed since the block the history
+    /// last carried; nothing for kinds without the memory.
+    func memoryBlock(for kind: ConversationKind, history: [MessageParam]) async throws -> [ContentBlock] {
+        guard MemoryTools.kinds.contains(kind) else { return [] }
+        let block = try await MemoryBlock.current(services: services)
+        guard MemoryBlock.lastRevision(in: history) != block.revision else { return [] }
+        return [.text(TextBlock(text: block.text))]
     }
 
     // MARK: - Entry points
@@ -84,19 +101,23 @@ public actor AgentRuntime {
     /// Starts a conversation of `kind` with the student's `text`; returns at once while the agent
     /// works in the background. `context` blocks go before the student's words in the same user
     /// turn (M3.5: the open mail as a `<mail>` envelope, data never instructions); the tools'
-    /// `ToolContext.studentText` is the student's words only.
+    /// `ToolContext.studentText` is the student's words only. M5: `lectureID` is a tutor
+    /// conversation's lecture (its subject, with the lecture's `courseID`); a `mail_chat` or
+    /// `tutor` conversation's first turn starts with the `<memory>` block.
     public func start(
-        _ kind: ConversationKind, text: String, context: [ContentBlock] = [], courseID: Course.ID? = nil
+        _ kind: ConversationKind, text: String, context: [ContentBlock] = [], courseID: Course.ID? = nil, lectureID: Lecture.ID? = nil
     ) async throws -> AgentConversation.ID {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw RuntimeError.emptyText }
         let spec = try spec(for: kind)
+        let memory = try await memoryBlock(for: kind, history: [])
         let startedAt = now()
         let conversation = try await conversations.start(AgentConversation(
-            kind: kind, courseID: courseID, title: String(trimmed.prefix(60)), model: spec.model.rawValue, state: .running,
-            createdAt: startedAt, updatedAt: startedAt
+            kind: kind, courseID: courseID, lectureID: lectureID, title: String(trimmed.prefix(60)), model: spec.model.rawValue,
+            state: .running, createdAt: startedAt, updatedAt: startedAt
         ))
-        let turn: MessageParam = context.isEmpty ? .user(trimmed) : .user(context + [.text(TextBlock(text: trimmed))])
+        let blocks = memory + context
+        let turn: MessageParam = blocks.isEmpty ? .user(trimmed) : .user(blocks + [.text(TextBlock(text: trimmed))])
         try await conversations.append(to: conversation.id, role: .user, message: try Self.encode(turn))
         launch(conversation, spec: spec, history: [turn], studentText: trimmed)
         return conversation.id
@@ -125,6 +146,8 @@ public actor AgentRuntime {
                 .toolResult(ToolResultBlock(toolUseID: call.id, content: .text("interrupted"), isError: true))
             }
         }
+        // M5: the memory when it changed since the block this conversation last carried.
+        blocks += try await memoryBlock(for: conversation.kind, history: history)
         blocks += context
         let turn: MessageParam = blocks.isEmpty ? .user(trimmed) : .user(blocks + [.text(TextBlock(text: trimmed))])
         try await conversations.append(to: id, role: .user, message: try Self.encode(turn))
@@ -220,7 +243,7 @@ public actor AgentRuntime {
             let request = MessageRequest(
                 model: spec.model, maxTokens: spec.maxTokens, effort: spec.effort, messages: history,
                 system: [SystemBlock(text: spec.system(conversation.createdAt, courses))],
-                tools: spec.tools.definitions, thinking: spec.thinking, cacheControl: .ephemeral
+                tools: spec.requestTools, thinking: spec.thinking, cacheControl: .ephemeral
             )
             let loop = ToolLoop(client: client, maxIterations: spec.maxIterations, streaming: true, parallelToolExecution: false)
             // M3.5: a backend that keeps conversations (Claude Code) continues the conversation's
