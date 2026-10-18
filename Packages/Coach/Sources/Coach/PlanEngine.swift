@@ -131,7 +131,7 @@ struct Planner {
             guard block.state != .planned || fixedPlanned || block.day < today else { continue }
             cover(block, counting: block.day >= today && block.state.isOpen)
         }
-        for day in days { planDay(day) }
+        for offset in 0...days.lowerBound.days(to: days.upperBound) { planDay(days.lowerBound.adding(days: offset)) }
 
         let expired = rows.planMemories.filter { $0.planRule?.hasExpired(before: today) == true }.map(\.id)
         let readingsDone = rows.readings.filter { reading in

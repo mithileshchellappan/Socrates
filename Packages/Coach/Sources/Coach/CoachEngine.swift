@@ -10,8 +10,10 @@ import StudyCore
 /// background and queues the drafting of new lectures' questions.
 ///
 /// - Follows the rows it plans from (`DatabaseRegionObservation`: courses, lectures, sessions,
-///   items, plan memories, questions, answers, rounds and exams, readings, study units) and
-///   replans debounced (2 s), on a new day (local midnight) and after answers.
+///   items, plan memories, questions, answers, readings, study units) and replans debounced (2 s,
+///   then at most once every 15 s while rows keep changing: a review's saved position), on a new
+///   day (local midnight) and after answers, ended rounds and submitted exams (its own writes).
+///   Rounds and exams are not followed: the screens write only drafts, flags, position and pause.
 /// - Nothing here waits for a model: choices and labels are graded in code at once; a written
 ///   answer is `pending` until `AnswerGrader` (Opus, background) grades it; drafting runs as a
 ///   `question_draft` task of AppAgent's queue (`drafter`), an old exam as a `practice_exam` task
@@ -34,6 +36,7 @@ public actor CoachEngine: StudyCoaching {
     private var started = false
     private var observation: AnyDatabaseCancellable?
     private var follower: Task<Void, Never>?
+    private var nudges: AsyncStream<Void>.Continuation?
     private var dayTimer: Task<Void, Never>?
     private var planTask: Task<Void, Never>?
     private var planAgain = false
@@ -44,6 +47,7 @@ public actor CoachEngine: StudyCoaching {
     /// A question comes back at most this often in one round (successive relearning).
     static let maximumRepeats = 3
     static let debounce: Duration = .seconds(2)
+    static let throttle: Duration = .seconds(15)
 
     public init(services: StudyServices, client: ClaudeClient, now: @escaping @Sendable () -> Date = { Date() }) {
         self.services = services
@@ -75,7 +79,6 @@ public actor CoachEngine: StudyCoaching {
             SQLRequest<Row>(sql: "SELECT id, plan_rule, forgotten_at FROM agent_memory"),
             SQLRequest<Row>(sql: "SELECT id, due_at, retired_at FROM study_question"),
             SQLRequest<Row>(sql: "SELECT id, result FROM study_answer"),
-            SQLRequest<Row>(sql: "SELECT id, state FROM study_session"),
             SQLRequest<Row>(sql: "SELECT id, done_at, hidden_at FROM study_reading"),
             SQLRequest<Row>(sql: "SELECT id, state FROM study_unit"),
         ]
@@ -84,10 +87,13 @@ public actor CoachEngine: StudyCoaching {
             onError: { error in CoachModule.log.error("Coach observation failed: \(String(describing: error), privacy: .public)") },
             onChange: { _ in continuation.yield() }
         )
+        nudges = continuation
         follower = Task { [weak self] in
             for await _ in stream {
                 do { try await Task.sleep(for: Self.debounce) } catch { return }
                 await self?.replan()
+                // Changes meanwhile wait (coalesced to one replan after).
+                do { try await Task.sleep(for: Self.throttle) } catch { return }
             }
         }
         scheduleNewDay()
@@ -108,6 +114,8 @@ public actor CoachEngine: StudyCoaching {
         started = false
         observation?.cancel()
         observation = nil
+        nudges?.finish()
+        nudges = nil
         follower?.cancel()
         follower = nil
         dayTimer?.cancel()
@@ -116,6 +124,11 @@ public actor CoachEngine: StudyCoaching {
         gradeWake = nil
         gradeTask?.cancel()
         planTask?.cancel()
+    }
+
+    /// A replan soon (debounced): after the engine's own writes (answers, an ended round, an exam).
+    func replanSoon() {
+        nudges?.yield()
     }
 
     /// Replans now (the agent's plan tools wait for it); a replan running already runs once more.
@@ -208,7 +221,9 @@ public actor CoachEngine: StudyCoaching {
         let unitsByLecture = Dictionary(grouping: units, by: \.lectureID)
         let drafted = Set(rows.questions.filter { $0.origin == .generated && $0.readingID == nil }.compactMap(\.topicKey))
         let repository = AgentTaskRepository(store: store)
-        for lecture in rows.lectures {
+        // Only the semester's courses (never an old course's lectures).
+        let courses = Set(rows.courses.map(\.id))
+        for lecture in rows.lectures where courses.contains(lecture.courseID) {
             let topics = rows.topics(of: lecture.id)
             guard !topics.isEmpty else { continue }
             let own = unitsByLecture[lecture.id] ?? []
@@ -473,6 +488,7 @@ public actor CoachEngine: StudyCoaching {
         } else {
             grade()
         }
+        replanSoon()
         return row
     }
 
@@ -494,6 +510,7 @@ public actor CoachEngine: StudyCoaching {
         let date = now()
         try await sessions.finish(sessionID, .ended, at: date)
         try await finishBlock(of: session, at: date)
+        replanSoon()
     }
 
     /// The plan block a round or exam was started from is done (its session's time counts).
@@ -582,6 +599,7 @@ public actor CoachEngine: StudyCoaching {
         try await rescore(sessionID)
         try await finishBlock(of: session, at: date)
         if waits { grade() }
+        replanSoon()
     }
 
     public func retake(_ sessionID: StudySession.ID) async throws -> StudySession.ID {

@@ -10,6 +10,7 @@ public struct CoachRows: Sendable {
     public var today: CalendarDay
     public var semester: Semester
     public var profile: UniversityProfile
+    /// The semester's courses (a course of another semester is not planned).
     public var courses: [Course]
     /// Every session of the courses (class hours of the budget, free time of a day).
     public var sessions: [LectureSession]
@@ -60,7 +61,7 @@ public struct CoachRows: Sendable {
             today: today,
             semester: semester,
             profile: profile,
-            courses: try Course.order(by: \.sortOrder).fetchAll(db),
+            courses: try Course.order(by: \.sortOrder).fetchAll(db).filter { $0.semesterID == nil || $0.semesterID == semester.id },
             sessions: try LectureSession.order(by: \.startsAt).fetchAll(db),
             lectures: lectures,
             topics: try Annotation
@@ -81,15 +82,14 @@ public struct CoachRows: Sendable {
         )
     }
 
-    /// The semester the coach plans in: the one containing today, else the next, else the latest
-    /// (the same choice as the course schedule's).
+    /// The semester the coach plans in: the latest whose lectures began (its break and exam
+    /// runway after the lecture period stay with it until the next one begins), else the first.
     static func pickSemester(_ semesters: [Semester], on date: Date) -> Semester {
         func day(_ semester: Semester) -> CalendarDay { CalendarDay(date, in: semester.zone) }
-        if let containing = semesters.first(where: { $0.contains(day($0)) }) { return containing }
-        if let next = semesters.filter({ day($0) < $0.lectureStart }).min(by: { $0.lectureStart < $1.lectureStart }) {
-            return next
+        if let latest = semesters.filter({ day($0) >= $0.lectureStart }).max(by: { $0.lectureStart < $1.lectureStart }) {
+            return latest
         }
-        return semesters.max(by: { $0.lectureStart < $1.lectureStart }) ?? .winter2026
+        return semesters.min(by: { $0.lectureStart < $1.lectureStart }) ?? .winter2026
     }
 
     // MARK: - Per course
