@@ -1,9 +1,9 @@
 import AppKit
 import CalendarUI
 import CaptureUI
+import ChatUI
 import ClaudeKit
 import FilingUI
-import MailIntelligence
 import ReviewUI
 import SearchUI
 import StudyCore
@@ -25,10 +25,13 @@ import SwiftUI
 // relative to (the university's time zone).
 //
 // `--m35-sample` (a library with mockup 05's mail, e.g. .data/parity/m3/library): adds M3.5's
-// sample rows to the clone (an open task, a mail that needs a reply, a mail chat about the newest
-// mail) and draws with Claude Code available, so Today and Mail show Show Chat; it adds the shots
-// `01-today-chat` and `05-mail-chat` (the chat inspector open), and M5's `08-course-chat`, `07-search-chat` and
-// `03-review-chat` (seed the copy with `tools/parity/seed --library <copy> --m5-sample` first).
+// sample rows to the clone (an open task, a mail that needs a reply) and draws with Claude Code
+// available, so the agent panel's launcher shows. On a copy seeded with
+// `tools/parity/seed --library <copy> --ma-sample` it adds the agent panel's shots (ma, mockup
+// agent-panel-mockups.html §1–4): `ma-review` (compact, on DC L2 slide 12 at 29:44, the Weekend
+// plan's first exchange), `ma-calendar` (compact on Week 43, as just opened: title row and
+// composer), `ma-calendar-expanded` (the right sidebar: the whole Weekend plan with the 7 change
+// rows) and `ma-today-files` (compact on Today, the QEMU conversation with its file tiles).
 //
 // `--calendar-sample` (a library with mockup 06's rows, e.g. .data/parity/m3/library): adds an
 // exam review from a timetable file (Mon 19 Oct, 11:00), a Data Centers exam (Fri 23 Oct,
@@ -178,6 +181,17 @@ struct ParityRender {
                 .where { $0.lectureID.eq(dcLecture2.id) && $0.pageNumber.is(nil) && $0.blocksJSON.like("%Virtualization generations%") }
                 .fetchOne(db)?.id
         }
+        // ma (`--ma-sample` seed): the agent panel's two sample conversations.
+        func appConversation(_ title: String) async throws -> AgentConversation.ID? {
+            try await services.database.read { db in
+                try AgentConversation.where { $0.kind.eq(ConversationKind.app) && $0.title.eq(title) }.fetchOne(db)?.id
+            }
+        }
+        let weekendPlan = try await appConversation("Weekend plan")
+        let qemu = try await appConversation("QEMU on the M3")
+        func panel(_ mode: AgentPanelLaunch.Mode, _ conversation: AgentConversation.ID?, exchanges: Range<Int>? = nil) -> AgentPanelLaunch {
+            AgentPanelLaunch(mode: mode, conversationID: conversation, exchanges: exchanges, now: options.now)
+        }
         var shots: [RenderShot] = [
             RenderShot(name: "01-today", window: .main(ParityMode.Launch(selection: .today))),
             RenderShot(name: "02-live", window: .live),
@@ -193,26 +207,18 @@ struct ParityRender {
             RenderShot(name: "07-search", window: .main(ParityMode.Launch(selection: .search, query: "paravirtualization"))),
             // Mockup 05: the Inbox, its newest message selected.
             RenderShot(name: "05-mail", window: .main(ParityMode.Launch(selection: .mailScope(.inbox), mailSelection: newestMail))),
-            // M3.5: the chat open (with `--m35-sample` only: it needs Claude Code available).
-            RenderShot(name: "01-today-chat", window: .main(ParityMode.Launch(selection: .today, showsChat: true))),
-            RenderShot(name: "05-mail-chat", window: .main(ParityMode.Launch(
-                selection: .mailScope(.inbox), mailSelection: newestMail, showsChat: true
-            ))),
-            // M5 (with `--m35-sample` on a copy seeded by `tools/parity/seed --m5-sample`): mockup
-            // 07's query with the tutor shown, and DC L2 at 37:27 with the chat shown (Review's
-            // Tutor tab once wired). Each draws what the app has wired so far.
-            RenderShot(name: "07-search-chat", window: .main(ParityMode.Launch(
-                selection: .search, query: "Nachteil Paravirtualisierung", showsChat: true
-            ))),
-            RenderShot(name: "03-review-chat", window: .main(ParityMode.Launch(
+            // ma (with `--m35-sample` on a copy seeded by `tools/parity/seed --ma-sample`): the agent
+            // panel, mockup agent-panel-mockups.html §1 (Review), §2–3 (Calendar), §4 (Today's files).
+            RenderShot(name: "ma-review", window: .main(ParityMode.Launch(
                 selection: .lecture(dcLecture2.id),
-                reviewTarget: (dcLecture2.id, ReviewTarget(page: 16, time: 2247, request: UUID())),
-                showsChat: true
+                reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
+                panel: panel(.compact, weekendPlan, exchanges: 0..<1)
             ))),
+            // §2: the same conversation after Go ▸ Calendar (its context line "DC Lecture 2").
+            RenderShot(name: "ma-calendar", window: .main(ParityMode.Launch(selection: .calendar, panel: panel(.compact, weekendPlan, exchanges: 0..<1)))),
+            RenderShot(name: "ma-calendar-expanded", window: .main(ParityMode.Launch(selection: .calendar, panel: panel(.expanded, weekendPlan)))),
+            RenderShot(name: "ma-today-files", window: .main(ParityMode.Launch(selection: .today, panel: panel(.compact, qemu, exchanges: 0..<1)))),
             RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id)))),
-            // M5: a course's tutor: Course Settings with the chat shown (with `--m35-sample`), and
-            // Lectures with Show Chat at the trailing end (with `--m35-sample`: Claude Code available).
-            RenderShot(name: "08-course-chat", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id), showsChat: true))),
             RenderShot(name: "08-course-lectures", window: .main(ParityMode.Launch(selection: .courseLectures(cc.id)))),
             // M6 (on a copy seeded by `tools/parity/seed --m6-sample`): mockup 04, the Notes row's
             // All Notes with the DC L2 note selected. Review's ink on slide 16 shows in `03-review`.
@@ -221,7 +227,7 @@ struct ParityRender {
                 try await ParityMode.importPreview(model: model, services: services, size: size)
             }
         ]
-        if !options.m35Sample { shots = shots.filter { !$0.name.hasSuffix("-chat") } }
+        if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
         if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
         if let only = options.only { shots = shots.filter { only.contains($0.name) } }
         // The live screen last: its preview session keeps "recording", and a running recording
@@ -245,9 +251,7 @@ struct ParityRender {
     }
 
     /// M3.5's sample rows in the clone: the second-newest inbox mail asks the student something
-    /// (`needs_reply`), an open undated task, and a finished mail chat about the newest mail (the
-    /// student's question with that mail as its `<mail>` context, the agent's answer, a second
-    /// exchange). Synthetic text; no model call.
+    /// (`needs_reply`), and an open undated task. Synthetic text; no model call.
     static func seedM35(services: StudyServices, newestMail: MailMessage.ID?, now: Date) async throws {
         let inbox = try await services.database.read { db in
             try MailMessage
@@ -270,23 +274,6 @@ struct ParityRender {
             courseID: newest.courseID, kind: .task, title: "Choose a tutorial group",
             createdBy: .agent, createdAt: now.addingTimeInterval(-3 * 3600), updatedAt: now.addingTimeInterval(-3 * 3600)
         ))
-
-        let conversations = ConversationRepository(store: services.records)
-        let started = now.addingTimeInterval(-20 * 60)
-        let chat = try await conversations.start(AgentConversation(
-            kind: .mailChat, title: "When is sheet 1 due?", model: ClaudeModel.opus55.rawValue, state: .finished,
-            createdAt: started, updatedAt: started
-        ))
-        let envelope = MailEnvelope.render(newest, id: newest.id.uuidString.lowercased(), budget: MailEnvelope.Budget.drafting)
-        let turns: [(AgentRole, MessageParam)] = [
-            (.user, .user([.text(TextBlock(text: envelope)), .text(TextBlock(text: "When is sheet 1 due, and when do the tutorials start?"))])),
-            (.assistant, .assistant([.text(TextBlock(text: "Sheet 1 is due **Thu 29 Oct, 23:59**, submitted online under Exercises › Sheet 01. Tutorials start **Fri 23 Oct, 12:15**. Both are already on Today."))])),
-            (.user, .user("Draft a short reply thanking Cy.")),
-            (.assistant, .assistant([.text(TextBlock(text: "The draft is under Lena’s mail, for you to edit and send."))]))
-        ]
-        for (role, turn) in turns {
-            _ = try await conversations.append(to: chat.id, role: role, message: try turn.json.serializedString())
-        }
     }
 
     /// `--calendar-sample` rows in the clone: an exam review and an exam as a timetable import
@@ -341,9 +328,8 @@ struct ParityRender {
                 RootView(
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
-                    showsChat: launch.showsChat
+                    panel: launch.panel
                 )
-                .environment(\.reviewInspectorTab, launch.reviewInspectorTab)
                 .environment(\.calendarDetailPreview, shot.calendarDetail)
                 .environment(model)
             )
@@ -384,7 +370,78 @@ struct ParityRender {
         }
         frame.layoutSubtreeIfNeeded()
         frame.display()
-        guard let png = SnapshotRunner.composite(frame) else { throw RenderFailure("\(shot.name): nothing drawn") }
+        guard var png = SnapshotRunner.composite(frame) else { throw RenderFailure("\(shot.name): nothing drawn") }
+        if case .main(let launch) = shot.window, launch.panel.mode == .compact {
+            png = try await overlayCompactPanel(on: png, launch: launch, scheme: scheme, model: model, windowSize: frame.bounds.size, settle: settle)
+        }
         try png.write(to: url)
+    }
+
+    /// The compact agent panel floats over the columns, but the composite draws the columns'
+    /// hosting views after the window's own (where the panel's surface, title row and composer
+    /// are): the panel is drawn again on top from its stand-alone form (`AgentPanelSnapshot`, the
+    /// same rows), unmoved, 12 pt from the window's trailing and bottom edges.
+    static func overlayCompactPanel(
+        on png: Data, launch: ParityMode.Launch, scheme: ColorScheme, model: AppModel, windowSize: CGSize, settle: Duration
+    ) async throws -> Data {
+        // Room for the panel's shadow (radius 20, 12 down).
+        let pad: CGFloat = 40
+        let margin: CGFloat = 12
+        var shown = panelContext(launch)
+        if let id = shown.lectureID { shown.courseID = try await model.services?.records.fetch(Lecture.self, id: id)?.courseID }
+        let panel = AgentPanelSnapshot(style: .compact, context: shown, launch: launch.panel, windowHeight: windowSize.height)
+            .environment(\.agentPanelActions, model.agentPanelActions)
+            .padding(pad)
+        let host = NSHostingView(rootView: panel)
+        let window = NSWindow(
+            contentRect: CGRect(x: -20_000, y: -20_000, width: 336 + 2 * pad, height: 400),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+        window.contentView = host
+        defer { window.close() }
+        try await Task.sleep(for: settle)
+        // The thread measures itself once its rows are read: fit twice.
+        for _ in 0..<2 {
+            window.setContentSize(host.fittingSize)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(300))
+        }
+        host.display()
+        guard let piece = host.bitmapImageRepForCachingDisplay(in: host.bounds),
+              let base = NSBitmapImageRep(data: png),
+              let canvas = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: base.pixelsWide, pixelsHigh: base.pixelsHigh, bitsPerSample: 8,
+                samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+              )
+        else { return png }
+        // In points (the context takes the rep's size when it is made).
+        canvas.size = windowSize
+        guard let context = NSGraphicsContext(bitmapImageRep: canvas) else { return png }
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            host.cacheDisplay(in: host.bounds, to: piece)
+        }
+        let size = host.bounds.size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        base.draw(in: CGRect(origin: .zero, size: windowSize))
+        // Bottom-left origin: the panel's trailing edge at width - 12, its bottom 12 pt up.
+        let rect = CGRect(x: windowSize.width - margin - size.width + pad, y: margin - pad, width: size.width, height: size.height)
+        piece.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+        NSGraphicsContext.restoreGraphicsState()
+        return canvas.representation(using: .png, properties: [:]) ?? png
+    }
+
+    /// The panel's prompt for the shot's screen (as `RootView` builds it, with Review's slide).
+    static func panelContext(_ launch: ParityMode.Launch) -> AgentContext {
+        switch launch.selection {
+        case .today: .today
+        case .calendar: AgentContext(screen: .calendar)
+        case .lecture(let id): AgentContext(screen: .lecture, lectureID: id, page: launch.reviewTarget?.target.page)
+        default: AgentContext(screen: .other)
+        }
     }
 }

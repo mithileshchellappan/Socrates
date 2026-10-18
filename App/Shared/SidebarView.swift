@@ -1,4 +1,5 @@
 import CalendarUI
+import ChatUI
 import Courses
 import Filing
 import FilingUI
@@ -17,8 +18,8 @@ import SwiftUI
 /// Course Settings, with no chevrons (08). While files are dragged in, the predicted course opens
 /// with the predicted row lit (10, `filingDropTarget`). Courses opened that way close again on the
 /// top-level screens; a course opened with its chevron stays open. Small disclosure chevrons show
-/// once any course is open. Recent searches on the Search screen (07). The semester and Settings
-/// at the bottom (New Course on a course's screen, 08). Files dropped on a course, lecture or
+/// once any course is open. Recent searches on the Search screen (07). The semester, the agent
+/// panel's launcher and Settings at the bottom (New Course on a course's screen, 08). Files dropped on a course, lecture or
 /// session row are filed exactly there.
 struct SidebarView: View {
     @Binding var selection: SidebarItem?
@@ -317,9 +318,13 @@ struct SidebarView: View {
                     .buttonStyle(.borderless)
                     Spacer(minLength: 0)
                     semesterName
+                    // ma: the agent panel's one launcher, the same on every screen (absent
+                    // without Claude Code).
+                    AgentPanelLauncher()
                 } else {
                     semesterName
                     Spacer(minLength: 0)
+                    AgentPanelLauncher()
                     #if os(macOS)
                     SettingsLink {
                         // The mockups' small, light gear.

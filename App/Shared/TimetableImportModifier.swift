@@ -1,5 +1,6 @@
 import Courses
 import CoursesUI
+import AppAgent
 import Deadlines
 import Filing
 import FilingUI
@@ -74,11 +75,16 @@ private struct TimetableImportModifier: ViewModifier {
             do {
                 let now = Date()
                 let record: TimetableItemRecorder? = memory == nil ? nil : Self.recorder(store: store, now: now)
-                let result = try await TimetableImporter(services: services).apply(proposal, including: included, now: now, record: record)
+                // ma: sessions the import changes (meetings the series skips) go into the agent's
+                // activity log with Undo; the import's diff event is triaged after.
+                let result = try await TimetableImporter(services: services).apply(
+                    proposal, including: included, now: now, record: record, sessionChange: model.appAgent?.timetableRecorder
+                )
                 for itemID in result.eventItemIDs {
                     _ = try await memory?.addToCalendar(itemID)
                 }
                 await model.syncCalendar()
+                await model.appAgent?.wake()
             } catch {
                 Log.app.error("Importing a timetable failed: \(error.localizedDescription, privacy: .public)")
                 model.failure = error.localizedDescription

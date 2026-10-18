@@ -59,9 +59,9 @@ struct StudyPortalApp: App {
             Group {
                 MailCommands()
                 CalendarCommands()
-                // View ▸ Show Chat / Hide Chat ⌘J on Today, Mail, a course, Search and Review (its Tutor
-                // tab), only with Claude Code.
-                ChatCommands()
+                // ma: View ▸ Show Chat / Hide Chat ⌘J and Expand Chat / Shrink Chat ⌥⌘J (the agent
+                // panel, every screen of the main window), only with Claude Code.
+                AgentPanelCommands()
                 // Format (M6): the note editor's paragraph styles, lists and marks.
                 NoteFormatCommands()
             }

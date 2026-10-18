@@ -2,38 +2,6 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// The chat header's ⋯ (mockup 07): Memory… (and, where the header has no New Chat button of its
-/// own, New Chat). Opens the memory sheet itself.
-public struct ChatMoreMenu: View {
-    private let newChat: (() -> Void)?
-    @State private var showsMemory = false
-
-    /// `newChat`: adds New Chat to the menu (Review's Tutor tab, whose header is the review's).
-    public init(newChat: (() -> Void)? = nil) {
-        self.newChat = newChat
-    }
-
-    public var body: some View {
-        Menu {
-            if let newChat {
-                Button("New Chat", action: newChat)
-            }
-            Button("Memory…") { showsMemory = true }
-        } label: {
-            Label("More", systemImage: "ellipsis")
-                .labelStyle(.iconOnly)
-        }
-        .menuIndicator(.hidden)
-        .menuStyle(.button)
-        .buttonStyle(.borderless)
-        .fixedSize()
-        .help(Text("More"))
-        .sheet(isPresented: $showsMemory) {
-            ChatMemorySheet()
-        }
-    }
-}
-
 /// What the agent keeps about the student (`agent_memory`, M5): You, Preferences, then each
 /// course (dot + name). The text is edited in place (`AgentMemoryRepository.edit`); the student's
 /// own words it was written from show on hover; Forget in the context menu and on ⌫ (forgotten

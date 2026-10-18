@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import Capture
+import ChatUI
 import CaptureUI
 import Filing
 import FilingUI
@@ -73,15 +74,9 @@ enum ParityMode {
         var mailSelection: MailMessage.ID?
         /// The note selected on Notes (M6).
         var noteSelection: Note.ID?
-        /// The chat inspector shown (Today, Mail, a course, Search; on a lecture Review's Tutor tab;
-        /// needs Claude Code available).
-        var showsChat = false
-
-        /// Review opens on its Tutor tab when the chat is shown on a lecture (M5).
-        var reviewInspectorTab: ReviewInspectorTab {
-            if showsChat, case .lecture = selection { return .tutor }
-            return .slide
-        }
+        /// The agent panel (ma): closed, compact or expanded, on a conversation and its exchanges
+        /// (needs Claude Code available).
+        var panel = AgentPanelLaunch()
     }
 
     static let windowSize = CGSize(width: 1440, height: 900)
@@ -529,9 +524,8 @@ struct ParityRootView: View {
                 RootView(
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
-                    showsChat: launch.showsChat
+                    panel: launch.panel
                 )
-                .environment(\.reviewInspectorTab, launch.reviewInspectorTab)
                 .environment(model)
             } else {
                 Color.clear

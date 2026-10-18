@@ -67,6 +67,8 @@ packages:
     path: Packages/Tutor
   Notes:
     path: Packages/Notes
+  AppAgent:
+    path: Packages/AppAgent
 
 targets:
   StudyPortal:
@@ -196,3 +198,6 @@ targets:
         product: Notes
       - package: Notes
         product: NotesUI
+      # ma (docs/plan-agent.md): one agent across the app (catalog, triage, tasks, change log).
+      - package: AppAgent
+        product: AppAgent

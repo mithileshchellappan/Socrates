@@ -1,4 +1,5 @@
 import Agent
+import AppAgent
 import CalendarSync
 import CalendarUI
 import Capture
@@ -19,9 +20,9 @@ import StudyCore
 import StudyPass
 import StudyUI
 import Transcription
-import Tutor
 #if os(macOS)
 import AppKit
+import Darwin
 import EventKit
 #endif
 
@@ -51,8 +52,9 @@ final class AppModel {
     /// Mac only, like the semantic index.
     let queryPlanner: HaikuQueryPlanner?
     /// The app's one Claude client (M3.5): the student's Claude Code CLI on the Mac (their
-    /// subscription, no API key), unavailable on iOS. Its engine is the one-process queue, so
-    /// every caller shares it; every call is logged to `api_call` (notional cost).
+    /// subscription, no API key), unavailable on iOS. Its engine's queue has slots (ma: one
+    /// interactive, two background), shared by every caller; every call is logged to `api_call`
+    /// (notional cost).
     let claude: ClaudeClient?
     /// Whether Claude Code is installed and signed in (and a usage pause), refreshed at launch and
     /// whenever the app becomes active. Nil until the first check: treated as unavailable.
@@ -60,11 +62,6 @@ final class AppModel {
     /// Mail intelligence: routes by rules always, indexes mail for search, and runs the model
     /// steps (routing beyond rules, triage, drafts) only while Claude Code is available.
     let mailPipeline: MailPipeline?
-    /// The chat with the agent (Today and Mail): carries the open mail with the student's words.
-    let mailChat: MailChat?
-    /// The tutor (M5): a lecture (Review's Tutor tab), a course or Search's selected hits as the
-    /// context of the student's words. Never mail.
-    let tutorChat: TutorChat?
     #if os(macOS)
     /// IMAP sync of the uni account (INBOX IDLE, a pass every 5 minutes and on wake). Mac only
     /// until the library syncs between devices, like the calendar mirror.
@@ -77,11 +74,14 @@ final class AppModel {
     /// The deadline & exercise memory (PRD #37): the one write path for tracked items from mail,
     /// lectures, the agent and the student; every change brings the calendar up to date.
     let deadlines: DeadlineMemory?
-    /// Claude conversations with a fixed tool set per kind (M3: Calendar's composer; M3.5: the mail
-    /// chat). Without Claude Code nothing is sent.
+    /// Claude conversations with a fixed tool set per kind (ma: the app agent's `app` and `task`
+    /// conversations). Without Claude Code nothing is sent.
     let agent: AgentRuntime?
-    /// Calendar's "New deadline" composer: the local parse, and the agent with Claude Code.
-    let composer: DeadlineComposer?
+    /// The one app agent (ma): the panel's conversation on every screen, the batched triage of new
+    /// facts from mail, lectures, timetable imports and the calendar (auto-applied with Undo), the
+    /// sub-agent task queue and the reminders. Mac only, and only where background work runs
+    /// (never in snapshot and parity modes: renders draw its rows, nothing is sent).
+    let appAgent: AppAgent?
     /// Deadlines and announcements from lecture transcripts, with Claude Code.
     let transcriptItems: TranscriptItemPipeline?
     /// The AI study pass (M4): corrections, summaries, said in class, exam hints, further reading,
@@ -123,6 +123,11 @@ final class AppModel {
     @ObservationIgnored private var wakeObserver: Task<Void, Never>?
     @ObservationIgnored private var activationObserver: Task<Void, Never>?
     @ObservationIgnored private var calendarStoreObserver: Task<Void, Never>?
+    @ObservationIgnored private var memoryObserver: Task<Void, Never>?
+    /// ma: the full calendar sync after the student's calendars changed (coalesced, at most one a
+    /// minute), and when the last one ran.
+    @ObservationIgnored private var calendarEditSync: Task<Void, Never>?
+    @ObservationIgnored private var lastCalendarEditSync = Date.distantPast
     /// Lets the services made in `init` call back into the model once it exists.
     @ObservationIgnored private let owner: ModelReference
 
@@ -172,8 +177,8 @@ final class AppModel {
             let owner = ModelReference()
             let memory = DeadlineMemory(services: services, onChange: { @MainActor in await owner.model?.syncCalendar() })
             deadlines = memory
-            // The mail chat writes reply drafts through the pipeline's own drafter (the one Mail's
-            // Reply uses), so it sees the drafts that one is writing.
+            // The agent writes reply drafts through the pipeline's own drafter (the one Mail's Reply
+            // uses), so it sees the drafts that one is writing.
             let drafter = pipeline.drafter
             #if os(macOS)
             let semanticIndex = startsProcessing ? SemanticIndex(services: services) : nil
@@ -183,32 +188,39 @@ final class AppModel {
             queryPlanner = nil
             #endif
             self.semanticIndex = semanticIndex
-            // The tutor's and the mail chat's lecture search: the same index, no planner (the model
-            // writes German and English terms itself).
+            // The agent's lecture search: the same index, no planner (the model writes German and
+            // English terms itself).
             let engine = SearchEngine(database: services.database, planner: nil, semantic: semanticIndex)
-            let agent = AgentRuntime(services: services, client: claude, memory: memory, additionalSpecs: [
-                .mailChat: {
-                    try MailChat.spec(
-                        services: services, memory: memory, drafter: drafter,
-                        lectureTools: TutorChat.lectureTools(services: services, search: engine)
-                    )
-                },
-                .tutor: { try TutorChat.spec(services: services, search: engine) }
-            ])
+            // ma: the `app` conversation (every domain's tools) and the sub-agents' `task`
+            // conversations (their tool groups fixed at spawn).
+            let specs = AppAgent.specs(services: services, search: engine, drafter: drafter, memory: memory)
+            let agent = AgentRuntime(
+                services: services, client: claude, memory: memory,
+                additionalSpecs: specs.additional, conversationSpecs: specs.perConversation
+            )
             self.agent = agent
-            mailChat = MailChat(services: services)
-            tutorChat = TutorChat(services: services)
-            composer = DeadlineComposer(services: services, memory: memory, runtime: agent)
             transcriptItems = TranscriptItemPipeline(services: services, client: claude, memory: memory)
             self.owner = owner
             #if os(macOS)
-            studyPass = startsProcessing ? StudyPassPipeline(services: services, client: claude) : nil
+            let studyPass = startsProcessing ? StudyPassPipeline(services: services, client: claude) : nil
+            self.studyPass = studyPass
+            let appAgent = startsProcessing ? AppAgent(
+                services: services, client: claude, runtime: agent, memory: memory,
+                schedule: CourseSchedule(services: services), studyPass: studyPass
+            ) : nil
+            self.appAgent = appAgent
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
-            mailEngine = startsProcessing ? MailSyncEngine(services: services, onNewMail: { _ in await pipeline.wake() }) : nil
+            // New mail: the pipeline routes and extracts it (its extraction writes the agent's
+            // mail events); the agent's triage follows.
+            mailEngine = startsProcessing ? MailSyncEngine(services: services, onNewMail: { _ in
+                await pipeline.wake()
+                await appAgent?.wake()
+            }) : nil
             mailSender = startsProcessing ? MailSender(services: services) : nil
             #else
             calendarMirror = nil
             studyPass = nil
+            appAgent = nil
             #endif
         } else {
             filing = nil
@@ -216,14 +228,12 @@ final class AppModel {
             searchIndexer = nil
             semanticIndex = nil
             queryPlanner = nil
-            tutorChat = nil
             calendarMirror = nil
             claude = nil
             mailPipeline = nil
-            mailChat = nil
             deadlines = nil
             agent = nil
-            composer = nil
+            appAgent = nil
             transcriptItems = nil
             studyPass = nil
             owner = ModelReference()
@@ -286,7 +296,7 @@ final class AppModel {
         guard runsBackgroundWork, !didStartBackgroundWork, let services else { return }
         didStartBackgroundWork = true
         observeClaudeAvailability()
-        // Conversations a quit left running end as failed (the composer's parse then still lands).
+        // Conversations a quit left running end as failed.
         await agent?.recoverInterrupted()
         do {
             let seeded = try await StudentCourses.seedIfEmpty(services: services)
@@ -343,13 +353,46 @@ final class AppModel {
         if let studyPass {
             await studyPass.start()
             let processed = processed
+            let appAgent = appAgent
             Task {
                 for await _ in processed {
                     Task { await studyPass.wake() }
+                    // A study pass unit or a transcript may have written an event for triage.
+                    Task { await appAgent?.wake() }
                 }
             }
         }
         await syncCalendar(full: true)
+        // ma: after the pipelines (their events wait in `agent_event`): the task queue (re-queues
+        // what a quit interrupted), triage and reminders. Fewer background claude processes while
+        // the Mac is short of memory.
+        if let appAgent {
+            await appAgent.start()
+            observeMemoryPressure(appAgent)
+        }
+    }
+
+    /// The agent's background claude processes (sub-agents, triage): 1 while the system has less
+    /// than 25 % of its memory free (`kern.memorystatus_level`, what `memory_pressure` reports),
+    /// else the default 2. Checked every minute; only a change is passed on.
+    private func observeMemoryPressure(_ appAgent: AppAgent) {
+        #if os(macOS)
+        guard memoryObserver == nil else { return }
+        memoryObserver = Task.detached(priority: .background) {
+            var applied: Int?? = .none
+            while !Task.isCancelled {
+                var level: Int32 = 100
+                var size = MemoryLayout<Int32>.size
+                let free = sysctlbyname("kern.memorystatus_level", &level, &size, nil, 0) == 0 ? Int(level) : 100
+                let limit: Int? = free < 25 ? 1 : nil
+                if applied != .some(limit) {
+                    applied = .some(limit)
+                    await appAgent.setBackgroundLimit(limit)
+                }
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
+        #endif
     }
 
     /// Mail on the Mac: the pipeline (rules routing and the search index at once; triage of new
@@ -384,7 +427,11 @@ final class AppModel {
     /// recording may now be filed by what was said.
     private func recordingTranscribed(_ recordingID: Recording.ID) async {
         let transcriptItems = transcriptItems
-        Task { await transcriptItems?.wake() }
+        let appAgent = appAgent
+        Task {
+            await transcriptItems?.wake()
+            await appAgent?.wake()
+        }
         guard let filing else { return }
         do {
             if let changed = try await filing.fileBySpokenContent(recordingID: recordingID) {
@@ -438,9 +485,27 @@ final class AppModel {
         calendarStoreObserver = Task { [weak self] in
             for await _ in NotificationCenter.default.notifications(named: .EKEventStoreChanged) {
                 self?.calendarStoreRevision += 1
+                self?.calendarChangedElsewhere()
             }
         }
         #endif
+    }
+
+    /// ma: a Study Portal event moved or deleted in Calendar.app is found by a full sync only (it
+    /// records a `calendar` event for the agent's triage and leaves the student's edit until triage
+    /// decides). Coalesced, and at most one a minute: the mirror's own writes post the same
+    /// notification, and a full sync after them writes nothing.
+    private func calendarChangedElsewhere() {
+        guard appAgent != nil, calendarEditSync == nil else { return }
+        let wait = max(5, 60 - Date().timeIntervalSince(lastCalendarEditSync))
+        calendarEditSync = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard let self else { return }
+            lastCalendarEditSync = Date()
+            calendarEditSync = nil
+            await syncCalendar(full: true)
+            await appAgent?.wake()
+        }
     }
 
     // MARK: - Live capture
@@ -609,8 +674,13 @@ final class AppModel {
         // Synchronous, while the app still runs: a tool loop's MCP server lives in the app.
         let studyPass = studyPass
         let semanticIndex = semanticIndex
+        let appAgent = appAgent
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
             ClaudeCodeEngine.terminateRunningProcesses()
+            // Running tasks keep their rows (re-queued at the next launch); triage and reminders stop.
+            if let appAgent {
+                Task { await appAgent.stop() }
+            }
             // A unit in flight stays pending (nothing is written before its call ends).
             if let studyPass {
                 Task { await studyPass.stop() }
@@ -634,30 +704,30 @@ final class AppModel {
         let pipeline = mailPipeline
         let transcriptItems = transcriptItems
         let studyPass = studyPass
+        let appAgent = appAgent
         Task { await pipeline?.wake() }
         Task { await transcriptItems?.wake() }
         Task { await studyPass?.wake() }
+        Task { await appAgent?.wake() }
     }
 
-    /// The chat's effects (`\.chatActions`), rebuilt when the availability changes: sending goes
-    /// by the context's kind through `MailChat` (Today, Mail: the open mail as context) or
-    /// `TutorChat` (a lecture, a course, Search) to the agent runtime. Absent without Claude Code.
-    var chatActions: ChatActions {
-        guard let availability = claudeAvailability, availability.isReady, let agent, let mailChat, let tutorChat else { return ChatActions() }
-        return ChatActions(
+    /// The agent panel's effects (`\.agentPanelActions`), rebuilt when the availability changes:
+    /// the panel's messages, Stop, the answer being written, Cancel of a sub-agent task and Undo of
+    /// a change row, all through the app agent. Absent without Claude Code and on iOS; in snapshot
+    /// and parity modes (no agent) the panel draws its rows and sends nothing.
+    var agentPanelActions: AgentPanelActions {
+        #if os(macOS)
+        guard let availability = claudeAvailability, availability.isReady else { return AgentPanelActions() }
+        guard let appAgent else { return AgentPanelActions(isAvailable: true, pausedUntil: availability.status?.pausedUntil) }
+        return AgentPanelActions(
             isAvailable: true,
             pausedUntil: availability.status?.pausedUntil,
-            send: { text, context, conversation in
-                switch context.kind {
-                case .tutor:
-                    try await tutorChat.send(text, context: context, to: conversation, runtime: agent)
-                default:
-                    try await mailChat.send(text, openMessage: context.messageID, to: conversation, runtime: agent)
-                }
+            send: { text, context, files, conversation in
+                try await appAgent.send(text, context: context, attachments: files, to: conversation)
             },
-            stop: { id in await agent.stop(id) },
+            stop: { id in await appAgent.stop(id) },
             liveReply: { id in
-                let source = agent.liveReplies(id)
+                let source = appAgent.liveReplies(id)
                 return AsyncStream { continuation in
                     let task = Task {
                         for await reply in source {
@@ -667,8 +737,13 @@ final class AppModel {
                     }
                     continuation.onTermination = { _ in task.cancel() }
                 }
-            }
+            },
+            cancelTask: { id in await appAgent.cancelTask(id) },
+            undoChange: { id in try await appAgent.undo(id) }
         )
+        #else
+        return AgentPanelActions()
+        #endif
     }
 }
 
@@ -685,13 +760,20 @@ extension AppModel {
         guard let services, let pipeline = mailPipeline else { return MailActions() }
         let schedule = CourseSchedule(services: services)
         let items = pipeline.actions
+        let appAgent = appAgent
         let calendar: @Sendable () async -> Void = { [weak self] in await self?.syncCalendar() }
         var actions = MailActions(
             route: { id, route in _ = try await pipeline.router.correct(id, to: route) },
             draftReply: { id in try await pipeline.drafter.draftReply(to: id) },
             stopDrafting: { id in await pipeline.drafter.stop(id) },
+            // Session changes the agent applied go back through its change log, the rest through the
+            // deadline memory (`AppAgent.undo(sourceID:)` does both).
             undo: { id in
-                _ = try await items.undo(id)
+                if let appAgent {
+                    try await appAgent.undo(sourceID: id)
+                } else {
+                    _ = try await items.undo(id)
+                }
                 await calendar()
             },
             restore: { id in
@@ -783,14 +865,22 @@ extension AppModel {
     /// Today's and Calendar's effects, each wired to exactly one place (docs/plan-m3.md §6.4):
     /// Undo, Restore, Mark as Done, Delete and Add to Calendar to the deadline memory (whose
     /// changes sync the calendar); Confirm through the item actions to the course schedule, then
-    /// settled; Discard settled; Cancel and Restore Session to the course schedule; the composer's
-    /// preview and ↩ to `DeadlineComposer`.
+    /// settled; Discard settled; Cancel and Restore Session to the course schedule. Undo goes through
+    /// the app agent (session changes it applied through its change log). Calendar's "New deadline"
+    /// field is gone (ma): its [+] opens the agent panel.
     fileprivate func makeDeadlineActions() -> DeadlineActions {
-        guard let services, let memory = deadlines, let composer, let items = mailPipeline?.actions else { return DeadlineActions() }
+        guard let services, let memory = deadlines, let items = mailPipeline?.actions else { return DeadlineActions() }
+        let appAgent = appAgent
         let schedule = CourseSchedule(services: services)
         let calendar: @Sendable () async -> Void = { [weak self] in await self?.syncCalendar() }
         return DeadlineActions(
-            undo: { id in _ = try await memory.undo(id) },
+            undo: { id in
+                if let appAgent {
+                    try await appAgent.undo(sourceID: id)
+                } else {
+                    _ = try await memory.undo(id)
+                }
+            },
             restore: { id in _ = try await memory.restore(id) },
             complete: { id in _ = try await memory.complete(id) },
             remove: { id in _ = try await memory.remove(id) },
@@ -812,9 +902,7 @@ extension AppModel {
             restoreSession: { id in
                 _ = try await schedule.restore(id)
                 await calendar()
-            },
-            preview: { text, now in await composer.preview(text, now: now) },
-            submit: { text, now in try await composer.submit(text, now: now) }
+            }
         )
     }
 }

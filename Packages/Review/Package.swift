@@ -17,7 +17,7 @@ let package = Package(
         .package(path: "../StudyCore"),
         .package(path: "../StudyUI"),
         .package(path: "../Capture"),
-        // M5: the inspector's Tutor tab (`ChatPanel`, the chat's ⌘J and memory menu).
+        // ma: the agent panel's composer focus (`\.isAgentComposerFocused`: the plain keys stand down).
         .package(path: "../ChatUI"),
         // M6: "Your notes" are rich notes (`NoteSession`, `NotesUI.NoteEditor`).
         .package(path: "../Notes"),

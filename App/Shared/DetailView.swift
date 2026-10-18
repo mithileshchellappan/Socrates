@@ -1,5 +1,4 @@
 import CalendarUI
-import ChatUI
 import CoursesUI
 import FilingUI
 import MailUI
@@ -20,53 +19,41 @@ struct DetailView: View {
     var mailSelection: Binding<MailMessage.ID?> = .constant(nil)
     /// The note selected on the Notes screen (M6).
     var noteSelection: Binding<Note.ID?> = .constant(nil)
-    /// The chat inspector is shown (Today, Mail, a course's screens, Search; one per window; only
-    /// with Claude Code).
-    var showsChat: Binding<Bool> = .constant(false)
+    /// Search's query and selected hits (`SearchResultsView` writes it; the agent panel's context).
+    var searchContext: Binding<ChatContext> = .constant(.none)
     let record: () -> Void
 
     @Environment(AppModel.self) private var model
-    /// Search's tutor context: the query and the selected hits (`SearchResultsView` writes it).
-    @State private var searchContext = ChatContext.none
 
     var body: some View {
         switch item {
         case .today:
-            // Show Chat is placed by the window's toolbar, after Record and More (RootView).
             TodayView(now: model.fixedNow, record: record)
-                .chatInspector(isPresented: showsChat, showsToolbarItem: false)
         case .calendar:
             CalendarScreen(week: model.fixedCalendarWeek, now: model.fixedNow)
         case .mail:
             MailView(scope: .inbox, selection: mailSelection, query: query, now: model.fixedNow)
-                .chatInspector(isPresented: showsChat, context: chatContext(.inbox), showsToolbarItem: false)
         case .mailScope(let scope):
             // The window's search field ("Search mail") filters the list.
             MailView(scope: scope, selection: mailSelection, query: query, now: model.fixedNow)
-                .chatInspector(isPresented: showsChat, context: chatContext(scope), showsToolbarItem: false)
         case .notesRow:
             notes(.all)
         case .notes(let scope):
             notes(scope)
         case .search:
-            // The Tutor toggle is placed by the window's toolbar, after the search field (RootView).
-            SearchResultsView(query: query, submits: searchSubmits, context: $searchContext)
-                .chatInspector(isPresented: showsChat, context: searchContext, showsToolbarItem: false, toolbarStyle: .tutorToggle)
+            SearchResultsView(query: query, submits: searchSubmits, context: searchContext)
         case .course(let id), .courseSettings(let id):
             CourseSettingsView(
                 courseID: id,
                 changeDeck: changeDeck,
                 importFiles: { model.filingCenter?.importFiles(to: .course(id)) },
                 importDropped: { file($0, into: id) },
-                newCourse: { model.sheet = .newCourse },
-                // Show Chat after the screen's own [Import + | ⋯] (DESIGN §6.3).
-                showsChat: showsChat
+                newCourse: { model.sheet = .newCourse }
             )
-            .chatInspector(isPresented: showsChat, context: .course(id), showsToolbarItem: false)
             .id(id)
         case .courseLectures(let id):
             CourseLecturesView(courseID: id)
-                .modifier(CourseChat(courseID: id, showsChat: showsChat))
+                .modifier(CourseToolbarSpacer())
                 .id(id)
         case .courseSlides(let id):
             CourseSlidesView(
@@ -75,13 +62,13 @@ struct DetailView: View {
                 importFiles: { model.filingCenter?.importFiles(to: .course(id)) },
                 importDropped: { file($0, into: id) }
             )
-            .modifier(CourseChat(courseID: id, showsChat: showsChat))
+            .modifier(CourseToolbarSpacer())
             .id(id)
         case .courseNotes(let id):
             // The Notes screen scoped to the course (DESIGN 8.4), as under the Notes row; a course's
             // screens have no search field.
             NotesView(scope: .course(id), selection: noteSelection)
-                .modifier(CourseChat(courseID: id, showsChat: showsChat))
+                .modifier(CourseToolbarSpacer())
                 .id(id)
         case .lecture(let id):
             if let services = model.services {
@@ -106,12 +93,6 @@ struct DetailView: View {
             .id(scope)
     }
 
-    /// The open message the chat's next message carries (in Drafts the selection is a draft).
-    private func chatContext(_ scope: MailScope) -> ChatContext {
-        guard scope != .drafts, let id = mailSelection.wrappedValue else { return .none }
-        return .mail(id)
-    }
-
     /// Files dropped on a course's empty Slides group: filed into that course.
     private func file(_ urls: [URL], into courseID: Course.ID) {
         guard let center = model.filingCenter else { return }
@@ -129,16 +110,11 @@ struct DetailView: View {
     }
 }
 
-/// The tutor about a course on a course screen without toolbar items of its own (Lectures,
-/// Slides, Notes). Toolbar items of an outer modifier come first, so the flexible spacer goes
-/// outside the inspector's Show Chat to keep it at the trailing end, as on Course Settings.
-private struct CourseChat: ViewModifier {
-    let courseID: Course.ID
-    let showsChat: Binding<Bool>
-
+/// A course screen without toolbar items of its own (Lectures, Slides, Notes): a flexible spacer
+/// keeps the toolbar's title and history chevrons at the leading end, as on Course Settings.
+private struct CourseToolbarSpacer: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .chatInspector(isPresented: showsChat, context: .course(courseID))
             #if os(macOS)
             .toolbar { ToolbarSpacer(.flexible) }
             #endif

@@ -37,9 +37,11 @@ struct RootView: View {
     @FocusState private var searchFocused: Bool
     /// ↩ in the search field: the search screen opens its selected (or first) hit.
     @State private var searchSubmits = 0
-    /// The chat inspector (Today, Mail: the mail chat; a course's screens, Search: the tutor),
-    /// kept per window.
-    @SceneStorage("chat.shown") private var showsChat = false
+    /// Search's query and the hits selected on it (`SearchResultsView` writes it): what the agent
+    /// panel's next message on Search is about.
+    @State private var searchContext = ChatContext.none
+    /// How the agent panel starts (renders); closed otherwise.
+    private let panel: AgentPanelLaunch
 
     init(
         selection: SidebarItem? = .today,
@@ -47,14 +49,14 @@ struct RootView: View {
         reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil,
         mailSelection: MailMessage.ID? = nil,
         noteSelection: Note.ID? = nil,
-        showsChat: Bool = false
+        panel: AgentPanelLaunch = AgentPanelLaunch()
     ) {
         _selection = State(initialValue: selection?.screen)
         _query = State(initialValue: query)
         _reviewTarget = State(initialValue: reviewTarget)
         _mailSelection = State(initialValue: mailSelection)
         _noteSelection = State(initialValue: noteSelection)
-        _showsChat = SceneStorage(wrappedValue: showsChat, "chat.shown")
+        self.panel = panel
     }
 
     var body: some View {
@@ -67,6 +69,10 @@ struct RootView: View {
             )
         } else if let center = model.filingCenter {
             splitView(center: center)
+                // ma: ONE agent panel for the window (compact and movable, or the full-height right
+                // sidebar), inside the search field's focus value (the panel folds its composer's
+                // focus into it, so every screen's plain keys stand down while the student types).
+                .agentPanel(context: agentContext, launch: panel, floatingLauncher: columns == .detailOnly)
                 .environment(\.isSearchFieldFocused, searchFocused)
                 .focusedSceneValue(\.sidebarSelection, $selection)
                 .focusedSceneValue(\.focusSearch) {
@@ -94,8 +100,8 @@ struct RootView: View {
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
                 .environment(\.deadlineActions, model.deadlineActions)
-                // The chat and the tutor: absent until Claude Code is available.
-                .environment(\.chatActions, model.chatActions)
+                // The agent panel: absent until Claude Code is available.
+                .environment(\.agentPanelActions, model.agentPanelActions)
                 // Search's planner ("Also searched") and on-device meaning search (Mac only).
                 .environment(\.searchProviders, SearchProviders(planner: model.queryPlanner, semantic: model.semanticIndex))
                 // Calendar: the student's other calendars, read-only (Mac only, like the mirror).
@@ -163,7 +169,7 @@ struct RootView: View {
                     target: reviewTarget,
                     mailSelection: $mailSelection,
                     noteSelection: $noteSelection,
-                    showsChat: $showsChat,
+                    searchContext: $searchContext,
                     record: record
                 )
                 #if os(iOS)
@@ -184,6 +190,8 @@ struct RootView: View {
             // its focus while typing on Today opens Search) stays.
             .id(selection.map(DetailIdentity.init) ?? .topLevel)
             .toolbar { trailingItems(center: center) }
+            // What Review and Calendar publish (`.agentContext`) may stop at the column: read it here.
+            .agentPanelContextReader()
         }
         .onChange(of: query) { _, text in
             // Typing on Mail or Notes filters its list ("Search mail", "Search notes"); elsewhere
@@ -326,23 +334,55 @@ struct RootView: View {
                 .frame(width: ToolbarGlyph.pillWidth)
             }
         }
-        // Show Chat at the trailing end of Today and Mail, only while the chat is hidden; on Search
-        // the "Tutor" toggle after the field, shown on and off (mockup 07). Only with Claude Code
-        // (DESIGN §6.3). A course's screens place their own Show Chat after their items
-        // (DetailView).
-        if hasChat {
-            ChatToolbarItem(
-                isPresented: $showsChat, isAvailable: model.chatActions.isAvailable,
-                style: selection == .search ? .tutorToggle : .showChat
-            )
+    }
+
+    /// What the agent panel's next message is about, from this window's state (ma): the screen, the
+    /// course, the open mail, the note, Search's query and selected hits. Review and Calendar
+    /// refine it with what they show (the slide and playhead; the week and the selection).
+    private var agentContext: AgentContext {
+        switch selection ?? .today {
+        case .today:
+            return .today
+        case .calendar:
+            return AgentContext(screen: .calendar)
+        case .mail:
+            return mailContext(.inbox)
+        case .mailScope(let scope):
+            return mailContext(scope)
+        case .notesRow:
+            return AgentContext(screen: .notes, noteID: noteSelection)
+        case .notes(let scope):
+            return AgentContext(screen: .notes, courseID: scope.courseID, noteID: noteSelection)
+        case .search:
+            if case .search(let text, let sources) = searchContext {
+                return AgentContext(screen: .search, query: text, selection: sources)
+            }
+            let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            return AgentContext(screen: .search, query: text.isEmpty ? nil : text)
+        case .course(let id), .courseSettings(let id):
+            return AgentContext(screen: .course, courseID: id, courseScreen: "settings")
+        case .courseLectures(let id):
+            return AgentContext(screen: .course, courseID: id, courseScreen: "lectures")
+        case .courseSlides(let id):
+            return AgentContext(screen: .course, courseID: id, courseScreen: "slides")
+        case .courseNotes(let id):
+            return AgentContext(screen: .course, courseID: id, courseScreen: "notes", noteID: noteSelection)
+        case .lecture(let id):
+            return AgentContext(screen: .lecture, lectureID: id)
         }
     }
 
-    /// The screens whose chat button the window's toolbar places: Today and Mail (the mail chat)
-    /// and Search (the tutor). A course's screens add theirs (DetailView); Review has its own Tutor
-    /// tab.
-    private var hasChat: Bool {
-        isToday || selection?.isMail == true || selection == .search
+    /// Mail: the list and the open message (in Drafts the selection is a draft, not a message).
+    private func mailContext(_ scope: MailScope) -> AgentContext {
+        let filter = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        var context = AgentContext(
+            screen: .mail,
+            mailScope: scope.agentName,
+            mailMessageID: scope == .drafts ? nil : mailSelection,
+            query: filter.isEmpty ? nil : filter
+        )
+        if case .course(let id) = scope { context.courseID = id }
+        return context
     }
 
     #if os(macOS)
@@ -571,5 +611,25 @@ private struct CalendarSessionsWatcher: View {
                 guard !sessions.isEmpty else { return }
                 await model.syncCalendar()
             }
+    }
+}
+
+private extension MailScope {
+    /// The list's name in the agent's context (`AgentContext.mailScope`).
+    var agentName: String {
+        switch self {
+        case .inbox: "inbox"
+        case .course: "course"
+        case .category(let category): category == .newsletter ? "newsletters" : category.rawValue
+        case .drafts: "drafts"
+        case .sent: "sent"
+        }
+    }
+}
+
+private extension NotesScope {
+    var courseID: Course.ID? {
+        if case .course(let id) = self { return id }
+        return nil
     }
 }
