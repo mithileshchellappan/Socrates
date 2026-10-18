@@ -1,0 +1,220 @@
+import Capture
+import CaptureUI
+import Notes
+import StudyCore
+import StudyUI
+import SwiftUI
+
+/// The lectures a picker offers: the note's lecture, or (a course note) the course's lectures,
+/// newest first.
+@MainActor
+enum NotePickerLectures {
+    static func lectures(courseID: Course.ID?, lectureID: Lecture.ID?, services: StudyServices) async -> [Lecture] {
+        do {
+            return try await services.database.read { db in
+                if let lectureID {
+                    return try Lecture.find(lectureID).fetchAll(db)
+                }
+                guard let courseID else { return [] }
+                return try Lecture.where { $0.courseID.eq(courseID) }.fetchAll(db)
+                    .sorted { ($0.heldAt ?? $0.createdAt, $0.number ?? 0) > ($1.heldAt ?? $1.createdAt, $1.number ?? 0) }
+            }
+        } catch {
+            NotesLog.logger.error("Loading lectures failed: \(String(describing: error), privacy: .public)")
+            return []
+        }
+    }
+
+    /// "L2 · Virtualization & IaaS".
+    static func label(_ lecture: Lecture) -> String {
+        [lecture.number.map { "L\($0)" }, lecture.title.isEmpty ? nil : lecture.title].compactMap(\.self).joined(separator: " · ")
+    }
+}
+
+// MARK: - Slide
+
+/// Slide (toolbar): the slides of the note's lecture (a course note: its course's lectures, newest
+/// first) as thumbnails; a click inserts the slide as a clip at the caret.
+struct NoteSlidePicker: View {
+    let courseID: Course.ID?
+    let lectureID: Lecture.ID?
+    let pick: (NoteInline) -> Void
+
+    @Environment(\.studyServices) private var services
+    @State private var groups: [SlideGroup] = []
+    @State private var isLoaded = false
+
+    struct SlideGroup: Identifiable {
+        let lecture: Lecture
+        let deckRow: Deck
+        let deck: SlideDeck
+        let pages: [Int]
+        var id: Lecture.ID { lecture.id }
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(groups) { group in
+                    if groups.count > 1 {
+                        Text(verbatim: NotePickerLectures.label(group.lecture))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                    }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)], spacing: 8) {
+                        ForEach(group.pages, id: \.self) { page in
+                            Button {
+                                pick(NoteMedia.slideClip(
+                                    deck: group.deckRow, page: page, lectureID: group.lecture.id,
+                                    aspectRatio: Double(group.deck.aspectRatio(page: page))
+                                ))
+                            } label: {
+                                VStack(spacing: 3) {
+                                    SlideImageView(deck: group.deck, page: page, pixelWidth: SlideWidth.thumbnail, cornerRadius: 3)
+                                    Text(verbatim: "\(page)")
+                                        .font(.chip)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(Text("Slide \(page)"))
+                        }
+                    }
+                }
+            }
+            .padding(12)
+        }
+        .frame(width: 380, height: 420)
+        .overlay {
+            if isLoaded, groups.isEmpty {
+                ContentUnavailableView {
+                    Image(systemName: "rectangle.on.rectangle.slash")
+                }
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard let services else { return }
+        let lectures = await NotePickerLectures.lectures(courseID: courseID, lectureID: lectureID, services: services)
+        var loaded: [SlideGroup] = []
+        for lecture in lectures {
+            guard let found = await deck(of: lecture, services: services), let blob = found.0.blob,
+                  let deck = await NoteDeckCache.deck(blob: blob, services: services)
+            else { continue }
+            let (deckRow, range) = found
+            let pages = range.map { Array($0) } ?? Array(1...max(1, deck.pageCount))
+            loaded.append(SlideGroup(lecture: lecture, deckRow: deckRow, deck: deck, pages: pages.filter { $0 >= 1 && $0 <= deck.pageCount }))
+        }
+        groups = loaded
+        isLoaded = true
+    }
+
+    /// The lecture's deck and the pages it covered (its newest coarse span), as Review reads it.
+    private func deck(of lecture: Lecture, services: StudyServices) async -> (Deck, ClosedRange<Int>?)? {
+        do {
+            return try await services.database.read { db in
+                let spans = try LectureDeckSpan.where { $0.lectureID.eq(lecture.id) }.order(by: \.updatedAt).fetchAll(db)
+                guard let span = spans.last(where: { !$0.isTimed }) ?? spans.last,
+                      let deck = try Deck.find(span.deckID).fetchOne(db)
+                else { return nil }
+                let range: ClosedRange<Int>? = if let first = span.firstPage, let last = span.lastPage, first <= last, !span.isTimed {
+                    first...last
+                } else {
+                    nil
+                }
+                return (deck, range)
+            }
+        } catch {
+            NotesLog.logger.error("Loading a deck failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+}
+
+// MARK: - Quote
+
+/// Quote (toolbar): the note's lecture's transcript lines (a course note: its course's lectures,
+/// newest first) under a filter field; a click inserts the line as a professor quote.
+struct NoteQuotePicker: View {
+    let courseID: Course.ID?
+    let lectureID: Lecture.ID?
+    let pick: (NoteBlock) -> Void
+
+    @Environment(\.studyServices) private var services
+    @State private var lines: [Line] = []
+    @State private var filter = ""
+    @State private var isLoaded = false
+
+    struct Line: Identifiable {
+        let segment: TranscriptSegment
+        let lecture: Lecture
+        let folded: String
+        var id: TranscriptSegment.ID { segment.id }
+    }
+
+    private var shown: [Line] {
+        let terms = filter.split(whereSeparator: \.isWhitespace).map { NoteList.fold(String($0)) }
+        guard !terms.isEmpty else { return lines }
+        return lines.filter { line in terms.allSatisfy { line.folded.contains($0) } }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TextField("Filter", text: $filter)
+                .textFieldStyle(.roundedBorder)
+                .padding(10)
+            Hairline()
+            let shown = shown
+            let multiple = Set(lines.map(\.lecture.id)).count > 1
+            List(shown) { line in
+                Button {
+                    pick(NoteMedia.quote(line.segment, lectureID: line.lecture.id))
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(verbatim: multiple ? "\(line.lecture.number.map { "L\($0) · " } ?? "")\(TimeText.clock(line.segment.startTime))" : TimeText.clock(line.segment.startTime))
+                            .font(.mono(11))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 40, alignment: .leading)
+                        Text(verbatim: line.segment.text)
+                            .font(.system(size: 12.5))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .listStyle(.plain)
+            .overlay {
+                if isLoaded, shown.isEmpty {
+                    if filter.isEmpty {
+                        ContentUnavailableView { Image(systemName: "waveform") }
+                    } else {
+                        ContentUnavailableView.search(text: filter)
+                    }
+                }
+            }
+        }
+        .frame(width: 420, height: 420)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard let services else { return }
+        let lectures = await NotePickerLectures.lectures(courseID: courseID, lectureID: lectureID, services: services)
+        let repository = TranscriptRepository(store: services.records)
+        var loaded: [Line] = []
+        for lecture in lectures {
+            let segments = (try? await repository.segments(lectureID: lecture.id)) ?? []
+            loaded += segments
+                .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .map { Line(segment: $0, lecture: lecture, folded: NoteList.fold($0.text)) }
+        }
+        lines = loaded
+        isLoaded = true
+    }
+}
