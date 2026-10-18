@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -41,6 +41,10 @@ public enum Schema {
         migrator.registerMigration("v8") { db in
             try db.execute(sql: v8)
         }
+        // M5, additive only (new tables and a nullable column).
+        migrator.registerMigration("v9") { db in
+            try db.execute(sql: v9)
+        }
         return migrator
     }
 
@@ -54,11 +58,13 @@ public enum Schema {
         "tracked_item_source",
         "agent_conversation", "agent_turn", "transcript_extraction",
         "study_unit",
+        "agent_memory",
     ]
 
     /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
-    /// `search_chunk` has an INTEGER key (the FTS5 content rowid).
-    public static let localTableNames = ["search_chunk"]
+    /// `search_chunk` has an INTEGER key (the FTS5 content rowid); M5 adds the semantic vectors
+    /// (`search_vector`, INTEGER key) and the query planner's cache (`search_plan`, keyed by query).
+    public static let localTableNames = ["search_chunk", "search_vector", "search_plan"]
 
     /// FTS5 virtual tables over `search_chunk` (their shadow tables are named `<name>_…`).
     public static let virtualTableNames = ["search_fts", "search_trigram"]
@@ -799,6 +805,53 @@ public enum Schema {
         CREATE INDEX "annotation_study_unit" ON "annotation"("study_unit_id");
 
         ALTER TABLE "transcript_segment" ADD COLUMN "patches" TEXT;
+        """
+
+    /// v9 (M5: search & tutor). docs/plan-m5.md §3.
+    static let v9 = """
+        CREATE TABLE "agent_memory" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT 'student',
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE CASCADE,
+          "text" TEXT NOT NULL DEFAULT '',
+          "quote" TEXT NOT NULL DEFAULT '',
+          "conversation_id" TEXT REFERENCES "agent_conversation"("id") ON DELETE SET NULL,
+          "created_by" TEXT NOT NULL DEFAULT 'agent',
+          "edited_at" TEXT,
+          "forgotten_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "agent_memory_course" ON "agent_memory"("course_id");
+        CREATE INDEX "agent_memory_conversation" ON "agent_memory"("conversation_id");
+
+        ALTER TABLE "agent_conversation" ADD COLUMN "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE SET NULL;
+        CREATE INDEX "agent_conversation_lecture" ON "agent_conversation"("lecture_id");
+
+        CREATE TABLE "search_vector" (
+          "id" INTEGER PRIMARY KEY,
+          "chunk_id" INTEGER REFERENCES "search_chunk"("id") ON DELETE SET NULL,
+          "kind" TEXT NOT NULL,
+          "unit_id" TEXT NOT NULL,
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE CASCADE,
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE CASCADE,
+          "text_sha256" TEXT NOT NULL,
+          "model" TEXT NOT NULL,
+          "dimensions" INTEGER NOT NULL,
+          "vector" BLOB NOT NULL,
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "search_vector_unit" ON "search_vector"("kind", "unit_id");
+        CREATE INDEX "search_vector_chunk" ON "search_vector"("chunk_id");
+        CREATE INDEX "search_vector_text" ON "search_vector"("model", "text_sha256");
+
+        CREATE TABLE "search_plan" (
+          "query_key" TEXT PRIMARY KEY NOT NULL,
+          "alternatives" TEXT NOT NULL DEFAULT '[]',
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
         """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row

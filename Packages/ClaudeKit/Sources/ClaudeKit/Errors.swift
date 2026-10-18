@@ -111,6 +111,11 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
     /// crashed or was killed, or it exited without a result line (e.g. a flag a CLI update
     /// dropped); or the app's tool server could not listen. Service trouble: the work waits.
     case claudeCodeProcess(String)
+    /// M5: a Claude Code run used up its `--max-turns` before it answered (result subtype
+    /// `error_max_turns`, e.g. a web research run that kept searching). About the request, not
+    /// the service: asking again the same way ends the same way (not retryable, not service
+    /// trouble). A tool loop reports this as `ToolLoopStop.iterationLimit` instead.
+    case turnLimit(String)
 
     /// The API error details, when this is an API error.
     public var apiError: APIErrorInfo? {
@@ -213,7 +218,7 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
             }
         case .usageLimited(let resetsAt):
             "Usage limit reached" + (resetsAt.map { " until \($0.formatted(.iso8601))" } ?? "")
-        case .claudeCode(let reason), .claudeCodeProcess(let reason): "Claude Code: \(reason)"
+        case .claudeCode(let reason), .claudeCodeProcess(let reason), .turnLimit(let reason): "Claude Code: \(reason)"
         }
     }
 }

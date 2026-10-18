@@ -3,17 +3,8 @@ import os
 import StudyCore
 import SwiftUI
 
-/// What the chat shows beside the student's words: nothing (Today), or the message open on Mail.
-public enum ChatContext: Hashable, Sendable {
-    case none
-    case mail(MailMessage.ID)
-
-    /// The open message, when there is one.
-    public var messageID: MailMessage.ID? {
-        if case .mail(let id) = self { return id }
-        return nil
-    }
-}
+// `ChatContext` (none, mail, and since M5 lecture, course, search) lives in StudyCore
+// (`Values+M5.swift`): Search builds it, the Tutor package reads it, the app routes by it.
 
 /// The answer the agent is writing right now (never stored): its text, to be shown after the
 /// first `afterTurns` stored turns of the conversation. Once the conversation has more turns, the

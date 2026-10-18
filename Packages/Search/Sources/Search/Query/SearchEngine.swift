@@ -17,10 +17,14 @@ import StudyCore
 public struct SearchEngine: Sendable {
     public let database: any DatabaseReader
     public let planner: (any QueryPlanning)?
+    /// M5: on-device semantic neighbours fused with the keyword lists (contract landed with
+    /// docs/plan-m5.md; workstream A fuses it). Nil: keyword search only.
+    public let semantic: (any SemanticSearching)?
 
-    public init(database: any DatabaseReader, planner: (any QueryPlanning)? = nil) {
+    public init(database: any DatabaseReader, planner: (any QueryPlanning)? = nil, semantic: (any SemanticSearching)? = nil) {
         self.database = database
         self.planner = planner
+        self.semantic = semantic
     }
 
     public func search(_ query: SearchQuery) async throws -> SearchResults {
@@ -259,11 +263,15 @@ struct Retrieval {
         let rank = table == "search_fts" ? "bm25(search_fts, 1.0, 0.4)" : "bm25(\(table))"
         var arguments: StatementArguments = [expression]
         var filter = ""
-        if query.scope != .all || query.courseID != nil {
+        if query.scope != .all || query.courseID != nil || query.lectureID != nil {
             filter = "AND rowid IN (SELECT id FROM search_chunk c WHERE c.kind IN (\(kindFilter))"
             if let courseID = query.courseID {
                 filter += " AND c.course_id = ?"
                 arguments += [courseID.storageText]
+            }
+            if let lectureID = query.lectureID {
+                filter += " AND c.lecture_id = ?"
+                arguments += [lectureID.storageText]
             }
             filter += ")"
         }

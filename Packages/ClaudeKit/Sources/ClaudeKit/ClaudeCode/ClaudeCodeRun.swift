@@ -282,6 +282,12 @@ struct CLIOutput {
         if texts.contains(where: { $0.contains("/login") || $0.localizedCaseInsensitiveContains("not logged in") }) {
             return ClaudeError.unavailable(.signedOut)
         }
+        // M5: the run ran out of turns (a one-shot web run that kept searching): the request's
+        // doing, so the caller decides (StudyPass counts it as done without sources).
+        if result?.string("subtype") == "error_max_turns" {
+            let turns = result?.int("num_turns").map { " after \($0) turns" } ?? ""
+            return ClaudeError.turnLimit("the run reached its turn limit\(turns)")
+        }
         let reason = texts.first.map { String($0.prefix(300)) }
             ?? result?.string("subtype").map { "the run ended with \($0)" }
             ?? "the process exited with status \(status) without an answer"

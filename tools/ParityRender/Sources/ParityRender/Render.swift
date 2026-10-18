@@ -25,7 +25,8 @@ import SwiftUI
 // `--m35-sample` (a library with mockup 05's mail, e.g. .data/parity/m3/library): adds M3.5's
 // sample rows to the clone (an open task, a mail that needs a reply, a mail chat about the newest
 // mail) and draws with Claude Code available, so Today and Mail show Show Chat; it adds the shots
-// `01-today-chat` and `05-mail-chat` (the chat inspector open).
+// `01-today-chat` and `05-mail-chat` (the chat inspector open), and M5's `07-search-chat` and
+// `03-review-chat` (seed the copy with `tools/parity/seed --library <copy> --m5-sample` first).
 //
 // Builds the app's real views (`RootView` with its sidebar and toolbar, `LiveLectureScreen`) in
 // windows that are never ordered on screen, at the mockups' 1440×900 points, and writes
@@ -173,6 +174,17 @@ struct ParityRender {
             RenderShot(name: "01-today-chat", window: .main(ParityMode.Launch(selection: .today, showsChat: true))),
             RenderShot(name: "05-mail-chat", window: .main(ParityMode.Launch(
                 selection: .mailScope(.inbox), mailSelection: newestMail, showsChat: true
+            ))),
+            // M5 (with `--m35-sample` on a copy seeded by `tools/parity/seed --m5-sample`): mockup
+            // 07's query with the tutor shown, and DC L2 at 37:27 with the chat shown (Review's
+            // Tutor tab once wired). Each draws what the app has wired so far.
+            RenderShot(name: "07-search-chat", window: .main(ParityMode.Launch(
+                selection: .search, query: "Nachteil Paravirtualisierung", showsChat: true
+            ))),
+            RenderShot(name: "03-review-chat", window: .main(ParityMode.Launch(
+                selection: .lecture(dcLecture2.id),
+                reviewTarget: (dcLecture2.id, ReviewTarget(page: 16, time: 2247, request: UUID())),
+                showsChat: true
             ))),
             RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id)))),
             RenderShot(name: "10-import", window: .main(ParityMode.Launch(selection: .today))) { model, size in

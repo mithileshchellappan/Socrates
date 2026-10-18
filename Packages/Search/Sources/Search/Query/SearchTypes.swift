@@ -11,6 +11,9 @@ public struct SearchQuery: Hashable, Sendable {
         case notes
         /// University mail (the chunks MailIntelligence indexes), one hit per message.
         case mail
+        /// M5: the student's study material for the tutor: transcripts, slides, notes and verified
+        /// further reading. Never mail (the tutor has web tools; PRD: the web agent never sees mail).
+        case material
 
         var kinds: [SearchChunkKind] {
             switch self {
@@ -18,6 +21,7 @@ public struct SearchQuery: Hashable, Sendable {
             case .lectures: [.transcript, .slide]
             case .notes: [.note]
             case .mail: [.mail]
+            case .material: [.transcript, .slide, .note, .furtherReading]
             }
         }
     }
@@ -27,6 +31,9 @@ public struct SearchQuery: Hashable, Sendable {
     public var scope: Scope
     /// Only this course; nil = all courses.
     public var courseID: Course.ID?
+    /// M5: only this lecture's chunks (`search_chunk.lecture_id`); nil = any. The tutor's
+    /// `search_lectures {lecture}`.
+    public var lectureID: Lecture.ID?
     /// Other phrasings searched along with `text` and fused by rank ("Also searched"). The M5
     /// query planner (DE↔EN, Haiku) fills these through `QueryPlanning`.
     public var alternatives: [String]
@@ -37,12 +44,14 @@ public struct SearchQuery: Hashable, Sendable {
         _ text: String,
         scope: Scope = .all,
         courseID: Course.ID? = nil,
+        lectureID: Lecture.ID? = nil,
         alternatives: [String] = [],
         limit: Int = 100
     ) {
         self.text = text
         self.scope = scope
         self.courseID = courseID
+        self.lectureID = lectureID
         self.alternatives = alternatives
         self.limit = limit
     }
@@ -160,6 +169,29 @@ public struct SearchResults: Hashable, Sendable {
 /// and course-glossary expansion. M1 ships none.
 public protocol QueryPlanning: Sendable {
     func alternatives(for query: SearchQuery) async throws -> [String]
+}
+
+/// On-device semantic retrieval (M5, docs/plan-m5.md §5.1): the chunks nearest in meaning to a
+/// query. `SearchEngine` fuses this list with its keyword lists (RRF). The app's one is Search's
+/// `SemanticIndex`; nil in an engine means keyword search only.
+public protocol SemanticSearching: Sendable {
+    /// Up to `limit` `search_chunk` ids in `query`'s scope (its kinds, `courseID`, `lectureID`),
+    /// nearest to any of `texts` (the query and its alternatives) first. Empty while the model or
+    /// the index is not ready; never waits for a download.
+    func nearest(to texts: [String], query: SearchQuery, limit: Int) async throws -> [SemanticMatch]
+}
+
+/// One semantic neighbour of a query.
+public struct SemanticMatch: Hashable, Sendable {
+    /// The `search_chunk` row the vector stands for.
+    public var chunkID: Int64
+    /// Cosine similarity, -1…1 (vectors are L2-normalised).
+    public var score: Double
+
+    public init(chunkID: Int64, score: Double) {
+        self.chunkID = chunkID
+        self.score = score
+    }
 }
 
 extension Note {

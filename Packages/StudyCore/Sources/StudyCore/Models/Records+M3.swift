@@ -14,6 +14,9 @@ public struct AgentConversation: StudyRecord {
     public var kind: ConversationKind
     /// The course it is about, when one is known.
     @Column("course_id") public var courseID: Course.ID?
+    /// v9 (M5): the lecture a `tutor` conversation is about (Review's Tutor tab); nil for a course's
+    /// tutor (`course_id` set) and Search's (both nil). See `ChatSubject`.
+    @Column("lecture_id") public var lectureID: Lecture.ID?
     /// A short label for logs and lists (the student's first words); never shown as copy.
     public var title: String
     /// `claude-haiku-5-5`, `claude-opus-5-5`: the model the conversation runs on.
@@ -28,6 +31,7 @@ public struct AgentConversation: StudyRecord {
         id: UUID = UUID(),
         kind: ConversationKind,
         courseID: Course.ID? = nil,
+        lectureID: Lecture.ID? = nil,
         title: String = "",
         model: String = "",
         state: ConversationState = .running,
@@ -38,6 +42,7 @@ public struct AgentConversation: StudyRecord {
         self.id = id
         self.kind = kind
         self.courseID = courseID
+        self.lectureID = lectureID
         self.title = title
         self.model = model
         self.state = state
