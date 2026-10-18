@@ -13,9 +13,10 @@ import StudyCore
 /// - Ranking: every term > the exact phrase > more terms > Reciprocal Rank Fusion of the bm25
 ///   lists (word index with `text` weighted above `lemma_text`, trigram, near spellings, each
 ///   "Also searched" phrasing, and M5's semantic neighbours).
-/// - When few chunks match every term, chunks matching some of them follow; then (M5) up to 8
-///   chunks only the semantic index found (meaning without the words: a German query over
-///   English slides before its plan lands).
+/// - When few chunks match every term, chunks matching some of them follow; then (M5), while
+///   fewer than 10 hits were found, up to 3 chunks only the semantic index found, from the clear
+///   head of its list (meaning without the words: a paraphrase, a German query over English
+///   slides before its plan lands).
 public struct SearchEngine: Sendable {
     public let database: any DatabaseReader
     public let planner: (any QueryPlanning)?
@@ -91,12 +92,12 @@ public struct SearchEngine: Sendable {
         return results
     }
 
-    /// The semantic index's chunk ids for the query and its alternatives, nearest first; empty
+    /// The semantic index's neighbours of the query and its alternatives, nearest first; empty
     /// without an index or on an error (logged).
-    private func semanticNeighbours(of texts: [String], query: SearchQuery) async -> [Int64] {
+    private func semanticNeighbours(of texts: [String], query: SearchQuery) async -> [SemanticMatch] {
         guard let semantic else { return [] }
         do {
-            return try await semantic.nearest(to: texts, query: query, limit: Self.semanticLimit).map(\.chunkID)
+            return try await semantic.nearest(to: texts, query: query, limit: Self.semanticLimit)
         } catch {
             if !(error is CancellationError) {
                 Log.search.error("Semantic search failed: \(String(describing: error), privacy: .public)")
@@ -139,8 +140,12 @@ struct Retrieval {
     static let fusionConstant = 60.0
     /// Partial matches fill the list up to this many hits when few chunks match every term.
     static let partialFill = 10
-    /// Chunks only the semantic index found follow the keyword hits, at most this many.
-    static let semanticFill = 8
+    /// Chunks only the semantic index found follow the keyword hits, at most this many, at a
+    /// cosine of at least `semanticFillScore` and within `semanticFillMargin` of the best
+    /// (calibrated once on the parity library: unrelated text scores 0.6–0.85 in this model).
+    static let semanticFill = 3
+    static let semanticFillScore = 0.80
+    static let semanticFillMargin = 0.03
     /// Further reading on the hits' slides (the Web group), at most this many.
     static let relatedReadingLimit = 5
     /// A long word is also looked up as a substring (German compounds) while it occurs in fewer
@@ -289,12 +294,15 @@ struct Retrieval {
 
     /// Fuses the semantic list (`semantic`, nearest first) with the keyword scores and assembles
     /// the hits. The semantic list joins the RRF lists, so within a keyword tier (every term,
-    /// phrase, more terms) a chunk it also found ranks higher; the tiers stay as they are. Chunks
-    /// only the semantic list found follow the keyword hits (at most `semanticFill`).
-    func finish(_ db: Database, _ scoring: Scoring, semantic: [Int64]) throws -> SearchResults {
+    /// phrase, more terms) a chunk it also found ranks higher; the tiers stay as they are. While
+    /// the keywords found fewer than `partialFill` hits, chunks only the semantic list found
+    /// follow them: at most `semanticFill`, each at cosine ≥ `semanticFillScore` and within
+    /// `semanticFillMargin` of the best (this model's similarities are high for everything, so
+    /// only the clear head of the list fills in).
+    func finish(_ db: Database, _ scoring: Scoring, semantic: [SemanticMatch]) throws -> SearchResults {
         var scored = scoring.scored
-        for (rank, id) in semantic.enumerated() where scored[id] != nil {
-            scored[id]?.fusion += 1 / (Self.fusionConstant + Double(rank + 1))
+        for (rank, match) in semantic.enumerated() where scored[match.chunkID] != nil {
+            scored[match.chunkID]?.fusion += 1 / (Self.fusionConstant + Double(rank + 1))
         }
         let ordered = scored.values.sorted(by: Self.ranksBefore)
         let complete = ordered.prefix { $0.all }.prefix(query.limit)
@@ -302,9 +310,10 @@ struct Retrieval {
         let partial = ordered.dropFirst(complete.count).prefix(partialCount)
         var chosen = Array(complete) + Array(partial)
         let room = min(Self.semanticFill, query.limit - chosen.count)
-        if room > 0, !semantic.isEmpty {
+        if room > 0, chosen.count < Self.partialFill, let best = semantic.first?.score {
             let taken = Set(chosen.map(\.candidate.id))
-            let extra = Array(semantic.lazy.filter { !taken.contains($0) }.prefix(room))
+            let floor = max(Self.semanticFillScore, best - Self.semanticFillMargin)
+            let extra = Array(semantic.lazy.filter { $0.score >= floor && !taken.contains($0.chunkID) }.map(\.chunkID).prefix(room))
             let candidates = try self.candidates(db, ids: Set(extra).subtracting(scored.keys))
             for id in extra {
                 if let entry = scored[id] {

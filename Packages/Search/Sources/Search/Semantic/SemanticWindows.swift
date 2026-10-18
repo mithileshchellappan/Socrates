@@ -18,6 +18,10 @@ enum SemanticWindows {
     /// window under `minimumWords` takes the line anyway).
     static let windowWords = 60
     static let minimumWords = 20
+    /// Texts shorter than this are not embedded: a title-only slide ("Applications") or a lone
+    /// "OK." sits near every short query in this model's space (measured on the parity library)
+    /// and keyword search finds them anyway.
+    static let minimumIndexedWords = 6
 
     /// A unit: the chunk kind and the id of what the indexer re-cuts (`search_vector.unit_id`).
     struct Unit: Hashable, Sendable {
@@ -57,7 +61,7 @@ enum SemanticWindows {
         guard unit.kind == .transcript else {
             return rows.compactMap { row in
                 let text: String = row["text"]
-                guard !text.isEmpty else { return nil }
+                guard wordCount(text) >= minimumIndexedWords else { return nil }
                 return window(chunkID: row["id"], text: text, language: row["lang"], course: row["course_id"], lecture: row["lecture_id"])
             }
         }
@@ -67,14 +71,14 @@ enum SemanticWindows {
         var words = 0
         var section: String?
         func flush() {
-            guard let first, !lines.isEmpty else { return }
+            guard let first, !lines.isEmpty, words >= minimumIndexedWords else { return }
             windows.append(window(
                 chunkID: first["id"], text: lines.joined(separator: " "), language: first["lang"], course: first["course_id"],
                 lecture: first["lecture_id"]))
         }
         for row in rows {
             let text: String = row["text"]
-            let count = text.split(whereSeparator: \.isWhitespace).count
+            let count = wordCount(text)
             guard count > 0 else { continue }
             let deck: String? = row["deck_id"]
             let page: Int? = row["page_number"]
@@ -97,6 +101,10 @@ enum SemanticWindows {
         Window(
             chunkID: chunkID, text: text, language: language.flatMap { $0.isEmpty ? nil : $0 }, sha256: sha256(text),
             courseID: course, lectureID: lecture)
+    }
+
+    static func wordCount(_ text: String) -> Int {
+        text.split(whereSeparator: \.isWhitespace).count
     }
 
     static func sha256(_ text: String) -> String {
@@ -129,12 +137,12 @@ enum SemanticWindows {
         }
         var vectorUnits: [Unit: Held] = [:]
         let vectors = try Row.fetchCursor(db, sql: """
-            SELECT kind, unit_id, max(updated_at) AS newest, sum(chunk_id IS NULL) AS loose, sum(model <> ?) AS foreign
+            SELECT kind, unit_id, max(updated_at) AS newest, sum(chunk_id IS NULL) AS loose, sum(model <> ?) AS other_model
             FROM search_vector GROUP BY kind, unit_id
             """, arguments: [model])
         while let row = try vectors.next() {
             let unit = Unit(kind: SearchChunkKind(rawValue: row["kind"]), id: row["unit_id"])
-            vectorUnits[unit] = Held(newest: row["newest"] ?? .distantPast, loose: row["loose"] ?? 0, foreign: row["foreign"] ?? 0)
+            vectorUnits[unit] = Held(newest: row["newest"] ?? .distantPast, loose: row["loose"] ?? 0, foreign: row["other_model"] ?? 0)
         }
         var stale: [(Unit, Date)] = []
         for (unit, newest) in chunkUnits {

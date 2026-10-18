@@ -170,8 +170,7 @@ public actor SemanticIndex: SemanticSearching {
                     scheduleRetry()
                     break
                 }
-                guard loadModel() else { break }
-                let count = try await reconcile(unit, model: model)
+                guard let count = try await reconcile(unit, model: model) else { break }
                 embedded += count
                 units += 1
                 changed = true
@@ -192,8 +191,8 @@ public actor SemanticIndex: SemanticSearching {
 
     /// One unit: reuse vectors by text hash, embed the rest, delete what is left. Written only if
     /// the unit's windows are still the ones embedded (else the next change event tries again).
-    /// Returns how many windows were embedded.
-    private func reconcile(_ unit: SemanticWindows.Unit, model: String) async throws -> Int {
+    /// Returns how many windows were embedded; nil when the model did not load (the batch ends).
+    private func reconcile(_ unit: SemanticWindows.Unit, model: String) async throws -> Int? {
         let (windows, existing) = try await database.read { db in
             let windows = try SemanticWindows.windows(of: unit, in: db)
             var existing: [String: [Int64]] = [:]
@@ -203,6 +202,8 @@ public actor SemanticIndex: SemanticSearching {
             while let row = try rows.next() { existing[row["text_sha256"], default: []].append(row["id"]) }
             return (windows, existing)
         }
+        // The model loads only when there is new text to embed.
+        if windows.contains(where: { existing[$0.sha256] == nil }), !loadModel() { return nil }
         var available = existing
         var reused: [(Int64, SemanticWindows.Window)] = []
         var fresh: [(SemanticWindows.Window, Data)] = []
