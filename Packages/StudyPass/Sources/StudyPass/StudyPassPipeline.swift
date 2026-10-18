@@ -1,5 +1,6 @@
 import ClaudeKit
 import Foundation
+import GRDB
 import os
 import StudyCore
 
@@ -12,6 +13,14 @@ public enum StudyPass {
     /// is read again once.
     public static let promptVersion = 1
 
+    /// Notional dollars a lecture's study calls may cost (`api_call.cost_usd`, purpose `study.*`);
+    /// over it, its remaining units are failed "Over budget".
+    public static let lectureBudgetUSD = 1.50
+
+    /// A lecture whose lines, spans or deck pages changed more recently waits (a realign burst
+    /// settles first).
+    public static let settleInterval: TimeInterval = 5 * 60
+
     static let log = Log.logger(category: "study-pass")
 }
 
@@ -21,10 +30,18 @@ public enum StudyPass {
 /// Contract for the app (integrator, Mac only): one instance with `ClaudeClient.studyPortal`;
 /// `start()` in `startBackgroundWork` after the transcript pipeline; `wake()` when processing
 /// finishes a lecture, after `Realigner.realign` and when availability turns ready;
-/// `prefer(_:)` when a lecture opens in Review; `stop()` at quit.
+/// `prefer(_:)` when a lecture opens in Review; `stop()` at quit. A nil client does nothing.
 ///
-/// Skeleton (contracts commit): workstream A fills in the planner, the stages, the verifiers and
-/// the writes behind this surface.
+/// - **Eligible**: `client.isAvailable()` (and no usage pause), the lecture has transcript lines,
+///   none of its jobs is queued or running, and none of its lines (a re-transcription, seen as
+///   the oldest line's `updated_at`), spans or deck pages changed in the last 5 minutes.
+/// - **Order**: the preferred lecture, then newest `held_at`. Per lecture: plan (one
+///   transaction), then read units in page order, synthesis once no read unit is pending,
+///   research once synthesis is not pending.
+/// - **Failures**: service trouble (`ClaudeError.isServiceTrouble`: usage limit, not installed,
+///   signed out) counts no attempt and ends the pass until `wake()` (a usage pause wakes it at
+///   the reset); other failures count (3, then `failed`). A lecture over its budget fails its
+///   remaining units.
 public actor StudyPassPipeline {
     let services: StudyServices
     let client: ClaudeClient?
@@ -32,18 +49,80 @@ public actor StudyPassPipeline {
     /// The lecture open in Review: its units go first.
     private(set) var preferred: Lecture.ID?
 
+    let writer: StudyWriter
+    let webCheck = WebCheck()
+    let debounce: Duration = .seconds(2)
+
+    private var observation: AnyDatabaseCancellable?
+    private var follower: Task<Void, Never>?
+    private var passTask: Task<Void, Never>?
+    private var again = false
+    private var stopped = false
+    private var pauseWake: Task<Void, Never>?
+    private var settleWake: (at: Date, task: Task<Void, Never>)?
+    /// What a lecture's inputs and rows looked like when a pass last found nothing to do for it;
+    /// it is planned again only once that changes.
+    private var settled: [Lecture.ID: Fingerprint] = [:]
+    /// Units (lecture/stage/key) that reached `done` since launch, and how often.
+    private var completedRuns: [String: Int] = [:]
+    static let maximumRunsPerLaunch = 5
+
     public init(services: StudyServices, client: ClaudeClient?, now: @escaping @Sendable () -> Date = { Date() }) {
         self.services = services
         self.client = client
         self.now = now
+        writer = StudyWriter(database: services.database, store: services.records)
     }
 
-    /// Starts following lectures (transcripts, spans, deck pages, jobs); a first pass follows in
-    /// the background. Returns at once.
-    public func start() async {}
+    // MARK: - Entry points
 
-    /// Looks for work again (after processing, a realign, or the end of a usage pause).
-    public func wake() async {}
+    /// Starts following lectures (transcripts, spans, deck pages, jobs, the prompt header's course
+    /// and lecture columns); a first pass follows in the background. Returns at once.
+    public func start() async {
+        guard client != nil, observation == nil, !stopped else { return }
+        let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let regions: [any DatabaseRegionConvertible] = [
+            SQLRequest<Row>(sql: "SELECT lecture_id, updated_at FROM transcript_segment"),
+            SQLRequest<Row>(sql: "SELECT lecture_id, updated_at FROM lecture_deck_span"),
+            SQLRequest<Row>(sql: "SELECT deck_id, updated_at FROM deck_page"),
+            SQLRequest<Row>(sql: "SELECT lecture_id, state FROM job"),
+            SQLRequest<Row>(sql: "SELECT name, short_name, professors, glossary, language FROM course"),
+            SQLRequest<Row>(sql: "SELECT title, number, held_at, language FROM lecture"),
+        ]
+        observation = DatabaseRegionObservation(tracking: regions)
+            .start(
+                in: services.database,
+                onError: { error in
+                    StudyPass.log.error("Study pass observation failed: \(String(describing: error), privacy: .public)")
+                },
+                onChange: { _ in continuation.yield() }
+            )
+        let debounce = debounce
+        follower = Task { [weak self] in
+            for await _ in stream {
+                // A transcription or realign writes many rows: wait for a quiet moment.
+                do { try await Task.sleep(for: debounce) } catch { return }
+                await self?.wake()
+            }
+        }
+        // The first pass runs in the background too: launch never waits for the model.
+        continuation.yield()
+    }
+
+    /// Looks for work again (after processing, a realign, or the end of a usage pause). Runs a
+    /// pass (model calls included) before it returns, or returns at once when one is running (it
+    /// then runs once more); call it from a task.
+    public func wake() async {
+        guard client != nil, !stopped else { return }
+        if passTask != nil {
+            again = true
+            return
+        }
+        // Background work: nobody waits for it (the calls themselves queue behind the chat).
+        let task = Task(priority: .utility) { await self.runPasses() }
+        passTask = task
+        await task.value
+    }
 
     /// Puts this lecture's units first (the lecture open in Review); nil clears it.
     public func prefer(_ lectureID: Lecture.ID?) async {
@@ -52,5 +131,375 @@ public actor StudyPassPipeline {
     }
 
     /// Stops following and ends the loop; a unit in flight stays `pending` (nothing half-written).
-    public func stop() {}
+    public func stop() {
+        stopped = true
+        observation?.cancel()
+        observation = nil
+        follower?.cancel()
+        follower = nil
+        passTask?.cancel()
+        pauseWake?.cancel()
+        pauseWake = nil
+        settleWake?.task.cancel()
+        settleWake = nil
+    }
+
+    // MARK: - Passes
+
+    private func runPasses() async {
+        repeat {
+            again = false
+            do {
+                try await pass()
+            } catch {
+                StudyPass.log.error("Study pass failed: \(String(describing: error), privacy: .public)")
+            }
+        } while again && !stopped && !Task.isCancelled
+        passTask = nil
+    }
+
+    enum WorkOutcome: Sendable {
+        /// Nothing left to run for the lecture (done, skipped, failed, over budget).
+        case finished
+        /// Its inputs moved during the pass: planned again in a later pass (not marked settled).
+        case unsettled
+        case serviceTrouble
+        /// Another lecture became preferred: the next pass starts with it.
+        case preempted
+        case stopped
+    }
+
+    /// One pass over the eligible lectures, one unit at a time.
+    func pass() async throws {
+        guard let client, await runsNow(client) else { return }
+        let states = try await lectureStates()
+        let date = now()
+        var settleAt: Date?
+        var ran: Set<String> = []
+        let order = states.sorted { first, second in
+            let firstPreferred = first.id == preferred
+            let secondPreferred = second.id == preferred
+            if firstPreferred != secondPreferred { return firstPreferred }
+            switch (first.heldAt, second.heldAt) {
+            case let (a?, b?) where a != b: return a > b
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default: return first.id.uuidString < second.id.uuidString
+            }
+        }
+        for state in order {
+            if stopped || Task.isCancelled { return }
+            guard !state.busy else { continue }
+            if let changed = state.lastChange, date.timeIntervalSince(changed) < StudyPass.settleInterval {
+                let ready = changed.addingTimeInterval(StudyPass.settleInterval)
+                settleAt = min(settleAt ?? ready, ready)
+                continue
+            }
+            if settled[state.id] == state.fingerprint { continue }
+            switch await work(on: state.id, client: client, ran: &ran) {
+            case .finished:
+                if let fresh = try await lectureStates(only: state.id).first { settled[state.id] = fresh.fingerprint }
+            case .unsettled:
+                settled[state.id] = nil
+            case .serviceTrouble:
+                _ = await runsNow(client)
+                return
+            case .preempted:
+                again = true
+                return
+            case .stopped:
+                return
+            }
+        }
+        if let settleAt { scheduleSettleWake(at: settleAt) }
+    }
+
+    /// Runs a lecture's units until none is runnable.
+    func work(on lectureID: Lecture.ID, client: ClaudeClient, ran: inout Set<String>) async -> WorkOutcome {
+        let startedPreferred = preferred
+        while true {
+            if stopped || Task.isCancelled { return .stopped }
+            if preferred != startedPreferred, let preferred, preferred != lectureID { return .preempted }
+            let date = now()
+            let planned: (LectureMaterial, PassRows, [(StudyUnit, UnitSpec)])?
+            do {
+                planned = try await plan(lectureID, now: date)
+            } catch {
+                StudyPass.log.error("Study pass planning failed: \(String(describing: error), privacy: .public)")
+                return .finished
+            }
+            guard case let (material, rows, units)? = planned, case let (unit, spec)? = Self.next(units) else { return .finished }
+            let mark = "\(lectureID)/\(unit.stage.rawValue)/\(unit.key)"
+            if ran.contains(mark) {
+                // Its inputs moved again within this pass: leave it for a later one.
+                StudyPass.log.notice("Study unit \(unit.stage.rawValue, privacy: .public) \(unit.key, privacy: .public) pending again in the same pass")
+                return .unsettled
+            }
+            if completedRuns[mark, default: 0] >= Self.maximumRunsPerLaunch {
+                // A unit that keeps coming back would spend the student's usage: never more than
+                // this per launch.
+                StudyPass.log.error("Study unit \(unit.stage.rawValue, privacy: .public) \(unit.key, privacy: .public) ran \(Self.maximumRunsPerLaunch) times since launch; held until the next launch")
+                return .finished
+            }
+            do {
+                let spent = try await writer.spent(lectureID: lectureID)
+                if spent >= StudyPass.lectureBudgetUSD {
+                    let failed = try await writer.failPending(lectureID: lectureID, error: "Over budget")
+                    StudyPass.log.notice("Lecture over its study budget (\(spent, format: .fixed(precision: 2)) USD): \(failed) units failed")
+                    return .finished
+                }
+            } catch {
+                StudyPass.log.error("Study budget unreadable: \(String(describing: error), privacy: .public)")
+                return .finished
+            }
+            switch await run(unit, spec: spec, material: material, rows: rows, client: client) {
+            case .done:
+                ran.insert(mark)
+                completedRuns[mark, default: 0] += 1
+            case .discarded:
+                return .unsettled
+            case .failed:
+                continue
+            case .serviceTrouble:
+                return .serviceTrouble
+            case .stopped:
+                return .stopped
+            }
+        }
+    }
+
+    /// Loads the lecture, plans its units and reconciles `study_unit` (one transaction). Nil when
+    /// the lecture is gone or has no lines.
+    func plan(_ lectureID: Lecture.ID, now date: Date) async throws -> (LectureMaterial, PassRows, [(StudyUnit, UnitSpec)])? {
+        let loaded = try await services.database.read { db -> (LectureMaterial, PassRows)? in
+            guard let material = try LectureMaterial.load(lectureID, in: db) else { return nil }
+            return (material, try PassRows.load(lectureID, in: db))
+        }
+        guard case let (material, rows)? = loaded else { return nil }
+        let specs = StudyPlanner.plan(material, rows: rows)
+        let store = services.records
+        let units = try await services.database.write { db in
+            try StudyPlanner.reconcile(specs, lectureID: lectureID, in: db, store: store, now: date)
+        }
+        return (material, rows, Array(zip(units, specs)))
+    }
+
+    /// The next unit to run: the first pending read; the synthesis once no read is pending;
+    /// research once the synthesis is not pending.
+    static func next(_ units: [(StudyUnit, UnitSpec)]) -> (StudyUnit, UnitSpec)? {
+        let pending = units.filter { $0.0.state == .pending && !$0.1.skip }
+        if let read = pending.first(where: { $0.0.stage == .read }) { return read }
+        if let synthesis = pending.first(where: { $0.0.stage == .synthesize }) { return synthesis }
+        let synthesisPending = units.contains { $0.0.stage == .synthesize && $0.0.state == .pending }
+        guard !synthesisPending else { return nil }
+        return pending.first { $0.0.stage == .research }
+    }
+
+    // MARK: - Running a unit
+
+    enum RunOutcome: Sendable {
+        case done
+        /// The unit's inputs changed during the call: nothing written, it runs again.
+        case discarded
+        case failed
+        case serviceTrouble
+        case stopped
+    }
+
+    func run(_ unit: StudyUnit, spec: UnitSpec, material: LectureMaterial, rows: PassRows, client: ClaudeClient) async -> RunOutcome {
+        guard let prompt = spec.prompt else { return .done }
+        let purpose = unit.stage.callPurpose
+        let context = CallContext(purpose: purpose, lectureID: material.lecture.id, priority: .background)
+        let system = MessageRequest.systemPrompt(prompt.system)
+        var apiCallID: APICall.ID?
+        let started = ContinuousClock.now
+        do {
+            let result: UnitResult
+            switch spec.work {
+            case .read(let block):
+                let images = SlideImages.jpegs(pages: prompt.imagePages, deck: material.deck, blobs: services.blobs)
+                var blocks: [ContentBlock] = []
+                for image in images {
+                    blocks.append(.text("Image of slide \(image.page):"))
+                    blocks.append(.image(image.data, mediaType: "image/jpeg"))
+                }
+                blocks.append(.text(prompt.text))
+                let request = MessageRequest(
+                    model: ReadStage.model, maxTokens: ReadStage.maxTokens, effort: ReadStage.effort, messages: [.user(blocks)],
+                    system: system, outputFormat: .jsonSchema(prompt.schema))
+                let message = try await client.streamMessage(request, context: context)
+                apiCallID = try? await APICallRepository(store: services.records).call(requestID: message.requestID, purpose: purpose)
+                let answer = try message.decodeJSON(ReadStage.Answer.self)
+                result = ReadStage.verify(answer, block: block, material: material, imagePages: images.map(\.page), apiCallID: apiCallID)
+            case .synthesize:
+                let request = MessageRequest(
+                    model: SynthesisStage.model, maxTokens: SynthesisStage.maxTokens, effort: SynthesisStage.effort,
+                    messages: [.user(prompt.text)], system: system, outputFormat: .jsonSchema(prompt.schema))
+                let message = try await client.streamMessage(request, context: context)
+                apiCallID = try? await APICallRepository(store: services.records).call(requestID: message.requestID, purpose: purpose)
+                let answer = try message.decodeJSON(SynthesisStage.Answer.self)
+                result = SynthesisStage.verify(answer, material: material, rows: rows, apiCallID: apiCallID)
+            case .research(let pick):
+                let request = MessageRequest(
+                    model: ResearchStage.model, maxTokens: ResearchStage.maxTokens, effort: ResearchStage.effort,
+                    messages: [.user(prompt.text)], system: system, tools: ResearchStage.tools,
+                    outputFormat: .jsonSchema(prompt.schema))
+                let message = try await client.streamMessage(request, context: context)
+                apiCallID = try? await APICallRepository(store: services.records).call(requestID: message.requestID, purpose: purpose)
+                let answer = try message.decodeJSON(ResearchStage.Answer.self)
+                result = await ResearchStage.verify(answer, pick: pick, material: material, check: webCheck, apiCallID: apiCallID)
+            }
+            if stopped || Task.isCancelled { return .stopped }
+            let written = try await writer.finish(unit.id, expectedHash: unit.inputHash, result: result, apiCallID: apiCallID, now: now())
+            let seconds = (ContinuousClock.now - started).components.seconds
+            guard written else {
+                StudyPass.log.notice("\(purpose, privacy: .public) \(unit.key, privacy: .public): inputs changed during the call; not written")
+                return .discarded
+            }
+            let patchedLines = (result.patches ?? [:]).values.filter { !$0.isEmpty }.count
+            StudyPass.log.info(
+                "\(purpose, privacy: .public) \(unit.key, privacy: .public) done in \(seconds)s: \(result.annotations.count) rows, \(patchedLines) corrected lines; dropped \(result.drops.summary, privacy: .public)"
+            )
+            return .done
+        } catch let error as ClaudeError where error.isServiceTrouble {
+            StudyPass.log.notice("\(purpose, privacy: .public) \(unit.key, privacy: .public) waits: \(error.description, privacy: .public)")
+            return .serviceTrouble
+        } catch is CancellationError {
+            return .stopped
+        } catch {
+            if stopped || Task.isCancelled { return .stopped }
+            StudyPass.log.error("\(purpose, privacy: .public) \(unit.key, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            do {
+                try await writer.countFailure(unit.id, error: String(describing: error), apiCallID: apiCallID)
+            } catch {
+                StudyPass.log.error("Study unit failure not recorded: \(String(describing: error), privacy: .public)")
+                return .stopped
+            }
+            return .failed
+        }
+    }
+
+    // MARK: - Availability and timers
+
+    /// Calls can run now: the client is available and no usage pause holds (a pass follows when
+    /// it ends).
+    func runsNow(_ client: ClaudeClient) async -> Bool {
+        guard await client.isAvailable() else { return false }
+        if let until = await client.availability().pausedUntil {
+            if pauseWake == nil {
+                pauseWake = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(max(1, until.timeIntervalSinceNow + 1))) } catch { return }
+                    await self?.pauseEnded()
+                }
+            }
+            return false
+        }
+        return true
+    }
+
+    private func pauseEnded() async {
+        pauseWake = nil
+        await wake()
+    }
+
+    /// A pass when the next waiting lecture has settled.
+    private func scheduleSettleWake(at date: Date) {
+        if let current = settleWake, current.at <= date { return }
+        settleWake?.task.cancel()
+        let delay = max(1, date.timeIntervalSince(now()) + 1)
+        let task = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            await self?.settleEnded()
+        }
+        settleWake = (date, task)
+    }
+
+    private func settleEnded() async {
+        settleWake = nil
+        await wake()
+    }
+
+    // MARK: - Lecture states
+
+    /// What decides whether a lecture is planned again: its lines, spans, deck pages, units,
+    /// course and its own row.
+    struct Fingerprint: Hashable, Sendable {
+        var lines = 0
+        var oldestLine: Date?
+        var newestLine: Date?
+        var spans = 0
+        var newestSpan: Date?
+        var newestPage: Date?
+        var units = 0
+        var newestUnit: Date?
+        var course: Date?
+        var lecture: Date?
+    }
+
+    struct LectureState: Sendable {
+        var id: Lecture.ID
+        var heldAt: Date?
+        /// A job of it is queued or running.
+        var busy: Bool
+        /// The latest re-transcription (oldest line), span or deck page change.
+        var lastChange: Date?
+        var fingerprint: Fingerprint
+    }
+
+    /// Every lecture with transcript lines (or only `lectureID`).
+    func lectureStates(only lectureID: Lecture.ID? = nil) async throws -> [LectureState] {
+        try await services.database.read { db in
+            let lineStats = try TranscriptSegment
+                .where { $0.lectureID.isNot(nil) }
+                .group(by: \.lectureID)
+                .select { ($0.lectureID, $0.id.count(), $0.updatedAt.min(), $0.updatedAt.max()) }
+                .fetchAll(db)
+            let spanStats = try LectureDeckSpan
+                .group(by: \.lectureID)
+                .select { ($0.lectureID, $0.id.count(), $0.updatedAt.max()) }
+                .fetchAll(db)
+            let spanDecks = try LectureDeckSpan.select { ($0.lectureID, $0.deckID) }.fetchAll(db)
+            let pageStats = try DeckPage.group(by: \.deckID).select { ($0.deckID, $0.updatedAt.max()) }.fetchAll(db)
+            let unitStats = try StudyUnit
+                .group(by: \.lectureID)
+                .select { ($0.lectureID, $0.id.count(), $0.updatedAt.max()) }
+                .fetchAll(db)
+            let busyStates: [JobState] = [.queued, .running]
+            let busy = Set(try Job
+                .where { $0.lectureID.isNot(nil) && $0.state.in(busyStates) }
+                .select(\.lectureID)
+                .fetchAll(db)
+                .compactMap { $0 })
+            let lectures = Dictionary(try Lecture.all.fetchAll(db).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let courses = Dictionary(try Course.all.fetchAll(db).map { ($0.id, $0.updatedAt) }, uniquingKeysWith: { first, _ in first })
+
+            var fingerprints: [Lecture.ID: Fingerprint] = [:]
+            for (id, count, oldest, newest) in lineStats {
+                guard let id, lectureID == nil || id == lectureID else { continue }
+                fingerprints[id] = Fingerprint(lines: count, oldestLine: oldest, newestLine: newest)
+            }
+            for (id, count, newest) in spanStats where fingerprints[id] != nil {
+                fingerprints[id]?.spans = count
+                fingerprints[id]?.newestSpan = newest
+            }
+            let pageNewest = Dictionary(pageStats.map { ($0.0, $0.1) }, uniquingKeysWith: { first, _ in first })
+            for (id, deckID) in spanDecks where fingerprints[id] != nil {
+                guard let page = pageNewest[deckID] ?? nil else { continue }
+                let newest = max(fingerprints[id]?.newestPage ?? page, page)
+                fingerprints[id]?.newestPage = newest
+            }
+            for (id, count, newest) in unitStats where fingerprints[id] != nil {
+                fingerprints[id]?.units = count
+                fingerprints[id]?.newestUnit = newest
+            }
+            return fingerprints.compactMap { id, fingerprint -> LectureState? in
+                guard let lecture = lectures[id] else { return nil }
+                var fingerprint = fingerprint
+                fingerprint.lecture = lecture.updatedAt
+                fingerprint.course = courses[lecture.courseID]
+                let lastChange = [fingerprint.oldestLine, fingerprint.newestSpan, fingerprint.newestPage].compactMap { $0 }.max()
+                return LectureState(id: id, heldAt: lecture.heldAt, busy: busy.contains(id), lastChange: lastChange, fingerprint: fingerprint)
+            }
+        }
+    }
 }
