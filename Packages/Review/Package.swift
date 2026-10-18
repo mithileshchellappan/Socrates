@@ -17,6 +17,8 @@ let package = Package(
         .package(path: "../StudyCore"),
         .package(path: "../StudyUI"),
         .package(path: "../Capture"),
+        // M5: the inspector's Tutor tab (`ChatPanel`, the chat's ⌘J and memory menu).
+        .package(path: "../ChatUI"),
         // Test-only: real alignment runs for fixture-backed snapshots and anchor tests.
         .package(path: "../Alignment")
     ],
@@ -35,7 +37,8 @@ let package = Package(
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "StudyUI", package: "StudyUI"),
                 .product(name: "Capture", package: "Capture"),
-                .product(name: "CaptureUI", package: "Capture")
+                .product(name: "CaptureUI", package: "Capture"),
+                .product(name: "ChatUI", package: "ChatUI")
             ]
         ),
     ],

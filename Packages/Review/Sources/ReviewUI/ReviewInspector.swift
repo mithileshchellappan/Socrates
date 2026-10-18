@@ -1,3 +1,4 @@
+import ChatUI
 import Review
 import StudyCore
 import StudyUI
@@ -24,6 +25,7 @@ struct ReviewInspector: View {
     let model: ReviewModel
 
     @Environment(\.reviewChrome) private var chrome
+    @Environment(\.chatActions) private var chatActions
     @State private var columnWidth = ReviewInspector.width
     /// The notes list's visible height: an empty slide's pane fills it, so a click anywhere under
     /// "Your notes" starts the note.
@@ -50,21 +52,26 @@ struct ReviewInspector: View {
                     .frame(height: Self.headerHeight)
             }
             Divider()
-            ScrollView {
-                let items = StudyItems(annotationsQuery.wrappedValue)
-                if model.deck == nil {
-                    LectureOnlyNotesPane(model: model, notes: notes, items: items)
-                } else {
-                    switch model.inspectorTab {
-                    case .slide:
-                        SlideNotesPane(model: model, notes: notes, items: items, minHeight: listHeight)
-                    case .lecture:
-                        LectureNotesPane(model: model, notes: notes, items: items)
+            if model.inspectorTab == .tutor, chatActions.isAvailable {
+                // M5: the tutor about this lecture; its own scroll view and composer.
+                TutorPane(model: model)
+            } else {
+                ScrollView {
+                    let items = StudyItems(annotationsQuery.wrappedValue)
+                    if model.deck == nil {
+                        LectureOnlyNotesPane(model: model, notes: notes, items: items)
+                    } else {
+                        switch model.inspectorTab {
+                        case .slide, .tutor:
+                            SlideNotesPane(model: model, notes: notes, items: items, minHeight: listHeight)
+                        case .lecture:
+                            LectureNotesPane(model: model, notes: notes, items: items)
+                        }
                     }
                 }
+                .scrollIndicators(.automatic)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
-            .scrollIndicators(.automatic)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { InspectorBackground() }
@@ -102,17 +109,21 @@ private struct InspectorBackground: View {
     }
 }
 
-/// The header row: the tab picker (its own track, mockup 03's one segctl), then the hide button
-/// at the trailing edge.
+/// The header row: the tab picker (its own track, mockup 03's one segctl), then (Tutor tab) the
+/// chat's ⋯ with New Chat and Memory…, then the hide button at the trailing edge.
 private struct InspectorHeader: View {
     let model: ReviewModel
+    @Environment(\.chatActions) private var chatActions
 
     var body: some View {
         HStack(spacing: 8) {
-            if model.deck != nil {
-                InspectorTabPicker(model: model)
+            if model.deck != nil || chatActions.isAvailable {
+                InspectorTabPicker(model: model, showsTutor: chatActions.isAvailable)
             }
             Spacer(minLength: 0)
+            if chatActions.isAvailable, model.inspectorTab == .tutor {
+                ChatMoreMenu(newChat: { model.newChatRequests += 1 })
+            }
             Button {
                 model.showsInspector = false
             } label: {
@@ -127,21 +138,60 @@ private struct InspectorHeader: View {
     }
 }
 
-/// "This slide | Whole lecture": a small segmented control (on a toolbar glass track its
-/// selection is neutral, not accent-filled).
+/// "This slide | Whole lecture | Tutor": a small segmented control (on a toolbar glass track its
+/// selection is neutral, not accent-filled). Without a deck "This slide" is left out; without
+/// Claude Code "Tutor" is.
 private struct InspectorTabPicker: View {
     let model: ReviewModel
+    let showsTutor: Bool
 
     var body: some View {
-        @Bindable var model = model
-        Picker("Notes", selection: $model.inspectorTab) {
-            Text("This slide").tag(ReviewModel.InspectorTab.slide)
+        let hasDeck = model.deck != nil
+        let selection = Binding<ReviewModel.InspectorTab> {
+            switch model.inspectorTab {
+            case .tutor where !showsTutor: hasDeck ? .slide : .lecture
+            case .slide where !hasDeck: .lecture
+            case let tab: tab
+            }
+        } set: { tab in
+            model.inspectorTab = tab
+        }
+        Picker("Notes", selection: selection) {
+            if hasDeck {
+                Text("This slide").tag(ReviewModel.InspectorTab.slide)
+            }
             Text("Whole lecture").tag(ReviewModel.InspectorTab.lecture)
+            if showsTutor {
+                Text("Tutor").tag(ReviewModel.InspectorTab.tutor)
+            }
         }
         .pickerStyle(.segmented)
         .controlSize(.small)
         .labelsHidden()
         .fixedSize()
+    }
+}
+
+/// M5: the Tutor tab: the chat about this lecture (`ChatPanel`), the newest tutor conversation of
+/// the lecture. A message carries the slide on screen and the playhead (on the lecture's first
+/// recording) as it is at ↩, read then, so the panel does not redraw with the playhead. While the
+/// composer has focus the review's plain keys are off.
+private struct TutorPane: View {
+    let model: ReviewModel
+
+    var body: some View {
+        let model = model
+        let lectureID = model.lecture.id
+        ChatPanel(
+            context: .lecture(lectureID, page: nil, time: nil),
+            sendContext: {
+                let onFirst = model.recording == nil || model.recording?.id == model.recordings.first?.id
+                return .lecture(lectureID, page: model.session.shownPage, time: onFirst ? model.player?.time : nil)
+            },
+            newChat: model.newChatRequests,
+            composerFocused: Binding(get: { model.isComposingChat }, set: { model.isComposingChat = $0 })
+        )
+        .onDisappear { model.isComposingChat = false }
     }
 }
 

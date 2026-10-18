@@ -10,10 +10,7 @@ import StudyUI
 @MainActor
 @Observable
 final class ReviewModel {
-    enum InspectorTab: Hashable {
-        case slide
-        case lecture
-    }
+    typealias InspectorTab = ReviewInspectorTab
 
     let lecture: Lecture
     let course: Course?
@@ -36,8 +33,13 @@ final class ReviewModel {
     /// A note editor (or another text field of the screen) has focus: slide and playback keys
     /// are off.
     var isEditingText = false
+    /// M5: the Tutor tab's composer has focus (kept apart from `isEditingText`, which the note
+    /// editors set and clear as focus moves between them).
+    var isComposingChat = false
     var inspectorTab: InspectorTab = .slide
     var showsInspector = true
+    /// M5: bumped by the Tutor tab's ⋯ ▸ New Chat.
+    var newChatRequests = 0
     /// A manual anchor is being written and re-aligned.
     private(set) var isRealigning = false
 
