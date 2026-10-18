@@ -133,24 +133,24 @@ actor FactTriage {
             )
         case .studyPass:
             guard let lectureID = event.lectureID else { return nil }
-            let rows = try await services.database.read { db in
-                (
-                    lecture: try Lecture.find(lectureID).fetchOne(db),
-                    said: try Annotation
-                        .where { $0.lectureID.eq(Lecture.ID?.some(lectureID)) && $0.kind.eq(AnnotationKind.notOnSlides) && $0.hiddenAt.is(nil) }
-                        .fetchAll(db)
-                        .filter { $0.category == .admin || $0.category == .deadline }
-                )
+            let lecture = try await services.records.fetch(Lecture.self, id: lectureID)
+            let annotations: [Annotation] = try await services.database.read { db in
+                try Annotation.where { $0.lectureID.eq(Lecture.ID?.some(lectureID)) }.fetchAll(db)
             }
-            guard let lecture = rows.lecture, !rows.said.isEmpty else { return nil }
+            let said = annotations.filter { row in
+                guard row.kind == AnnotationKind.notOnSlides, row.hiddenAt == nil else { return false }
+                return row.category == SaidInClassCategory.admin || row.category == SaidInClassCategory.deadline
+            }
+            guard let lecture, !said.isEmpty else { return nil }
             var quotes: [FactMaterial.SaidQuote] = []
             var lines: [String] = []
-            for row in rows.said {
-                guard let cite = row.citations.first(where: { $0.kind == .transcript }), let quote = cite.quote else { continue }
-                quotes.append(FactMaterial.SaidQuote(text: quote, recordingID: cite.recordingID, time: cite.time ?? row.startTime))
-                lines.append(
-                    "<said category=\"\(row.category?.rawValue ?? "")\" t=\"\(AgentText.clock(cite.time ?? row.startTime ?? 0))\" summary=\"\(AgentXML.escape(row.body))\">\(AgentXML.escape(quote))</said>"
-                )
+            for row in said {
+                guard let cite = row.citations.first(where: { $0.kind == SourceRef.Kind.transcript }), let quote = cite.quote else { continue }
+                let time: Double? = cite.time ?? row.startTime
+                quotes.append(FactMaterial.SaidQuote(text: quote, recordingID: cite.recordingID, time: time))
+                let category = row.category?.rawValue ?? ""
+                let clock = AgentText.clock(time ?? 0)
+                lines.append("<said category=\"\(category)\" t=\"\(clock)\" summary=\"\(AgentXML.escape(row.body))\">\(AgentXML.escape(quote))</said>")
             }
             guard !quotes.isEmpty else { return nil }
             let heldAt = lecture.heldAt ?? lecture.createdAt

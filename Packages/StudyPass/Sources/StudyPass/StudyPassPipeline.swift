@@ -516,7 +516,7 @@ public actor StudyPassPipeline {
                 // app agent's triage (dates, rooms, rules said in class); one event per version.
                 if case .synthesize = spec.work,
                    result.annotations.contains(where: { $0.kind == .notOnSlides && ($0.category == .admin || $0.category == .deadline) }) {
-                    try? await AgentEventRepository(store: services.records).record(AgentEvent(
+                    _ = try? await AgentEventRepository(store: services.records).record(AgentEvent(
                         kind: .studyPass, sourceKey: "study_pass:\(material.lecture.id.uuidString.lowercased()):\(unit.inputHash)",
                         courseID: material.lecture.courseID, lectureID: material.lecture.id
                     ))

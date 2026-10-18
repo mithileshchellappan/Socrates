@@ -238,7 +238,8 @@ struct DelegateTools: Sendable {
             }
             let model: ClaudeModel = call.text("model") == "haiku" ? .haiku55 : .opus55
             let courses = try await CourseList.load(services.database)
-            let lectureID = try await call.text("lecture").asyncMap { try await WriteToolsLookup.lectureID($0, services: services) } ?? nil
+            var lectureID: Lecture.ID?
+            if let reference = call.text("lecture") { lectureID = try await WriteToolsLookup.lectureID(reference, services: services) }
             let task = try await tasks.enqueue(AgentTask(
                 kind: AgentTaskKind(rawValue: call.text("kind") ?? "other"), title: title, goal: goal, inputSummary: input,
                 model: model.rawValue, effort: Effort.medium.rawValue, tools: groups, parentConversationID: context.conversationID,

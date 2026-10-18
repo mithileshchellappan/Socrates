@@ -107,7 +107,8 @@ public actor AppAgent {
     ) async throws -> AgentConversation.ID {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { throw AgentRuntime.RuntimeError.emptyText }
-        let history = try await conversation.asyncMap { try await ConversationRepository(store: services.records).turns($0) } ?? []
+        var history: [AgentTurn] = []
+        if let conversation { history = try await ConversationRepository(store: services.records).turns(conversation) }
         let texts = Self.userTexts(history)
         var blocks = try AttachmentBlocks.blocks(attachments, blobs: services.blobs)
         let catalog = try await AgentCatalog.build(services: services, now: now())

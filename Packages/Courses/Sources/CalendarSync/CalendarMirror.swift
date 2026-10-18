@@ -367,12 +367,12 @@ public actor CalendarMirror {
             version = "deleted"
         }
         let key = "calendar:\(eventID):\(version)"
-        let store = services.records
+        let records = services.records
         let keep = try await services.database.write { db -> Bool in
             if let state = try AgentEvent.where({ $0.sourceKey.eq(key) }).fetchOne(db)?.state {
                 return state == .pending || state == .escalated
             }
-            let event = store.stamp(AgentEvent(kind: .calendar, sourceKey: key, courseID: session.courseID, detail: detail))
+            let event = records.stamp(AgentEvent(kind: .calendar, sourceKey: key, courseID: session.courseID, detail: detail))
             try AgentEvent.upsert { event }.execute(db)
             return true
         }

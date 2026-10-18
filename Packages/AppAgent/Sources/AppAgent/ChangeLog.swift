@@ -156,7 +156,7 @@ public struct ChangeLog: Sendable {
         let date = now()
         try await services.database.write { db in
             if let change = try AgentChange.where({ $0.trackedItemSourceID.eq(TrackedItemSource.ID?.some(sourceID)) })
-                .order({ $0.appliedAt.desc() }).fetchOne(db) {
+                .order(by: { $0.appliedAt.desc() }).fetchOne(db) {
                 if change.undoneAt == nil { _ = try Self.undo(change.id, db: db, store: store, now: date) }
             } else {
                 try DeadlineMemory.undo(sourceID, in: db, store: store, now: date)
@@ -273,7 +273,7 @@ public struct ChangeLog: Sendable {
             let itemKind = itemKind(kind)
             if let item = try TrackedItem
                 .where({ $0.lectureSessionID.eq(LectureSession.ID?.some(id)) && $0.kind.eq(itemKind) && $0.status.eq(TrackedItemStatus.done) })
-                .order({ $0.createdAt.desc() }).fetchOne(db) {
+                .order(by: { $0.createdAt.desc() }).fetchOne(db) {
                 try DeadlineMemory.addSource(finding(kind: itemKind, session: session, quote: quote, confidence: confidence, origin: origin), to: item.id, in: db, store: store, now: now)
             }
             return .unchanged("The session is like that already.")

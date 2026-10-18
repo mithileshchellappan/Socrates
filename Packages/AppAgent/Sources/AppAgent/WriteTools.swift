@@ -14,6 +14,13 @@ import StudyCore
 /// - `event`: the source of a triage event (an escalation task's).
 /// Dates must be in the quote (`DateMentions`). All are `.verifiedWrite`, so they may sit beside
 /// the mail tools (`ToolSet` refuses plain `.write`). No send, no delete, no other calendars.
+/// Why a write was refused (the model sees the message).
+struct Refusal: Error, ExpressibleByStringLiteral, ExpressibleByStringInterpolation {
+    var message: String
+    init(_ message: String) { self.message = message }
+    init(stringLiteral value: String) { message = value }
+}
+
 struct WriteTools: Sendable {
     let services: StudyServices
     let changeLog: ChangeLog
@@ -43,7 +50,7 @@ struct WriteTools: Sendable {
     }
 
     /// The checked quote of a write, or why not.
-    func verified(_ call: ToolUseBlock, context: ToolContext) async throws -> Result<VerifiedQuote, String> {
+    func verified(_ call: ToolUseBlock, context: ToolContext) async throws -> Result<VerifiedQuote, Refusal> {
         guard let quote = call.text("quote") else { return .failure("quote is empty.") }
         let source = call.text("source") ?? (chatSource ? "chat" : "")
         switch source {
@@ -76,7 +83,7 @@ struct WriteTools: Sendable {
         }
     }
 
-    func verifyEvent(_ quote: String, event: AgentEvent) async throws -> Result<VerifiedQuote, String> {
+    func verifyEvent(_ quote: String, event: AgentEvent) async throws -> Result<VerifiedQuote, Refusal> {
         switch event.kind {
         case .mail:
             guard let id = event.mailMessageID, let checked = try await applier.verify(quote, line: nil, material: .mail(id, writtenAt: event.createdAt)) else {
@@ -134,7 +141,7 @@ struct WriteTools: Sendable {
         let checked: VerifiedQuote
         switch try await verified(call, context: context) {
         case .success(let value): checked = value
-        case .failure(let text): return .error(text)
+        case .failure(let refusal): return .error(refusal.message)
         }
         guard let action = build(call, checked.quote) else { return .error("Missing fields.") }
         let taskID = try await AgentTaskRepository(store: services.records).taskID(conversation: context.conversationID)
@@ -367,7 +374,8 @@ struct WriteTools: Sendable {
                 line.hasPrefix("- ") ? NoteBlock(type: .bullet, text: String(line.dropFirst(2))) : .paragraph(line)
             }
             let courses = try await CourseList.load(services.database)
-            let lectureID = try await call.text("lecture").asyncMap { try await lectureID($0) } ?? nil
+            var lectureID: Lecture.ID?
+            if let reference = call.text("lecture") { lectureID = try await self.lectureID(reference) }
             let request = ChangeLog.Request.noteAppend(
                 noteID: call.id("note"), courseID: courses.course(call.text("course"))?.id, lectureID: lectureID, blocks: blocks
             )
@@ -406,13 +414,6 @@ struct WriteTools: Sendable {
             let undone = try await changeLog.undo(change.id)
             return .json(["undone": .bool(undone), "title": .string(change.title), "summary": .string(change.summary)])
         }
-    }
-}
-
-extension Optional {
-    func asyncMap<T>(_ transform: (Wrapped) async throws -> T) async rethrows -> T? {
-        guard let value = self else { return nil }
-        return try await transform(value)
     }
 }
 
