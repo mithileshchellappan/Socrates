@@ -5,9 +5,11 @@ import StudyUI
 import SwiftUI
 
 /// Calendar & deadlines (PRD #36, #37; mockup 06; docs/DESIGN.md §8.3): the week grid (Mon–Sun:
-/// sessions, due lines and tags, all-day pills, waiting proposals, the composer's dashed parse,
-/// other calendars read-only) and the inspector "Deadlines" (proposal cards, what is due from
-/// today, the "New deadline" composer). Draws its own title, toolbar items and inspector.
+/// sessions, due lines and tags, all-day pills, waiting proposals, other calendars read-only) and
+/// the inspector "Deadlines" (proposal cards, what is due from today). Draws its own title,
+/// toolbar items and inspector. ma: [+] opens the agent panel (`\.openAgentPanel`; the "New
+/// deadline" composer is gone), the screen publishes its week and selection for it
+/// (`.agentContext`), and the inspector yields to the expanded panel (`\.agentPanelExpanded`).
 ///
 /// Reads rows itself (one request per week); every effect goes through `\.deadlineActions`,
 /// navigation through `\.openDestination`, other calendars through `\.foreignCalendars`,
@@ -19,7 +21,6 @@ public struct CalendarScreen: View {
     @State private var selection: CalendarSelection?
     /// The grid item whose detail popover is open (a click opens it, Esc closes it).
     @State private var detailTarget: CalendarSelection?
-    @State private var composer: ComposerModel
     @State private var showsInspector = true
     @State private var gridWidth: CGFloat = 0
     @State private var scroll = ScrollPosition(y: GridMetrics.openingOffset)
@@ -27,7 +28,6 @@ public struct CalendarScreen: View {
     @State private var isOpened = false
     @State private var foreignList = ForeignCalendarList.empty
     @State private var foreignEvents: [ForeignEvent] = []
-    @FocusState private var composerFocused: Bool
 
     @Fetch private var data: CalendarData
     @State private var loaded: CalendarRequest?
@@ -43,23 +43,24 @@ public struct CalendarScreen: View {
     @Environment(\.calendarVisibility) private var visibility
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
     @Environment(\.calendarDetailPreview) private var detailPreview
+    @Environment(\.openAgentPanel) private var openAgentPanel
+    @Environment(\.agentPanelExpanded) private var agentPanelExpanded
 
     /// - Parameters:
     ///   - week: a day of the week to open on; nil: this week.
     ///   - now: a fixed "now" (previews, snapshots); nil follows the clock.
     public init(week: CalendarDay? = nil, now: Date? = nil) {
-        self.init(week: week, now: now, selection: nil, composerText: "")
+        self.init(week: week, now: now, selection: nil)
     }
 
-    /// Opens with an item or session selected and text in the composer (snapshots).
-    init(week: CalendarDay?, now: Date?, selection: CalendarSelection?, composerText: String) {
+    /// Opens with an item or session selected (snapshots).
+    init(week: CalendarDay?, now: Date?, selection: CalendarSelection?) {
         fixedNow = now
         let zone = TimeZone.current
         let today = CalendarDay(now ?? Date(), in: zone)
         let shown = CalendarWeek(containing: week ?? today)
         _week = State(initialValue: shown)
         _selection = State(initialValue: selection)
-        _composer = State(initialValue: ComposerModel(text: composerText))
         initialRequest = CalendarRequest(week: shown, today: today, timeZone: zone)
         _data = Fetch(wrappedValue: CalendarData(), initialRequest)
     }
@@ -85,8 +86,7 @@ public struct CalendarScreen: View {
             data: data, week: shown, timeZone: timeZone,
             showsStudyPortal: visibility?.showsStudyPortal ?? true,
             foreignEvents: foreignEvents,
-            foreignColors: Dictionary(foreignList.calendars.map { ($0.id, $0.colorHex) }, uniquingKeysWith: { first, _ in first }),
-            preview: composer.shownPreview
+            foreignColors: Dictionary(foreignList.calendars.map { ($0.id, $0.colorHex) }, uniquingKeysWith: { first, _ in first })
         )
         let title = CalendarText.title(shown, locale: locale)
         let subtitle = CalendarText.subtitle(shown)
@@ -96,7 +96,7 @@ public struct CalendarScreen: View {
                 grid(plan: plan, week: shown, now: now, today: today)
                     .screenTitle(title, subtitle: subtitle, leadingInset: ScreenTitleInset.firstItem)
                     .toolbar { toolbar }
-                    .inspector(isPresented: $showsInspector) {
+                    .inspector(isPresented: inspectorShown) {
                         inspector(now: now)
                             .inspectorColumnWidth(min: 260, ideal: DeadlinesInspector.width, max: 440)
                     }
@@ -113,6 +113,7 @@ public struct CalendarScreen: View {
             }
         }
         .focusedSceneValue(\.calendarScreen, commandActions)
+        .agentContext(agentContext(week: shown))
         .task(id: request) {
             // Another week, a new day or another time zone: one read per week.
             guard request != (loaded ?? initialRequest) else { return }
@@ -122,16 +123,26 @@ public struct CalendarScreen: View {
         .task(id: ForeignKey(week: week, checked: visibility?.checkedCalendarIDs ?? [], hasSource: foreignSource != nil)) {
             await loadForeign()
         }
-        .onChange(of: composer.text) { composer.textChanged(actions: actions, now: now) }
-        .task {
-            // Text given at open (snapshots) is parsed as typed text is.
-            if composer.hasText { await composer.updatePreview(for: composer.text, actions: actions, now: now) }
+    }
+
+    /// What the agent panel knows of the screen: the week on screen, the selected item or session.
+    private func agentContext(week: CalendarWeek) -> AgentContext {
+        var context = AgentContext(screen: .calendar, week: week.monday)
+        switch selection {
+        case .item(let id)?: context.itemID = id
+        case .session(let id)?: context.sessionID = id
+        case nil: break
         }
-        .background {
-            if let id = composer.conversationID {
-                ConversationObserver(id: id) { composer.conversationChanged($0) }
-            }
-        }
+        return context
+    }
+
+    /// The inspector shows unless hidden, or while the agent panel is expanded in its place.
+    private var inspectorShown: Binding<Bool> {
+        let expanded = agentPanelExpanded
+        return Binding(
+            get: { showsInspector && !expanded },
+            set: { shown in if !expanded { showsInspector = shown } }
+        )
     }
 
     /// Day headers, the all-day row, then the hours, scrolling, opened at 08:00.
@@ -193,8 +204,7 @@ public struct CalendarScreen: View {
 
     private func inspector(now: Date) -> some View {
         DeadlinesInspector(
-            data: data, now: now, selection: selection, composer: composer, composerFocused: $composerFocused,
-            handlers: inspectorHandlers(now: now), isShown: showsInspector
+            data: data, now: now, selection: selection, handlers: inspectorHandlers(now: now), isShown: showsInspector && !agentPanelExpanded
         )
     }
 
@@ -214,7 +224,7 @@ public struct CalendarScreen: View {
             Button("New Deadline", systemImage: "plus", action: newDeadline)
                 .help(Text("New Deadline"))
         }
-        if !showsInspector {
+        if !showsInspector, !agentPanelExpanded {
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 Button("Show Inspector", systemImage: "sidebar.trailing") { showsInspector = true }
@@ -234,18 +244,9 @@ public struct CalendarScreen: View {
         scroll.scrollTo(y: GridMetrics.openingOffset)
     }
 
-    /// [+] and New Deadline: the composer takes focus (the inspector opens first when hidden).
+    /// [+] and New Deadline: the agent panel opens (compact, its composer focused).
     private func newDeadline() {
-        let wasHidden = !showsInspector
-        showsInspector = true
-        if wasHidden {
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(80))
-                composerFocused = true
-            }
-        } else {
-            composerFocused = true
-        }
+        openAgentPanel()
     }
 
     private func open(_ event: WeekPlan.Event) {
@@ -254,12 +255,6 @@ public struct CalendarScreen: View {
         } else if let courseID = event.courseID {
             openDestination(.course(courseID))
         }
-    }
-
-    private func submit() {
-        let composer = composer
-        let actions = actions
-        Task { await composer.submit(actions: actions, now: fixedNow ?? Date()) }
     }
 
     /// The proposal ⌘↩ / ⌘⌫ act on: the selected one (or the selected session's), else the first.
@@ -285,10 +280,12 @@ public struct CalendarScreen: View {
         perform("Discarding a proposal") { try await actions.discardProposal(id) }
     }
 
-    /// The newest active source that put the item in the calendar on its own or changed it:
-    /// what Undo takes back.
+    /// The newest active source that put the item in the calendar on its own or changed it (ma: or
+    /// whose change the agent applied on its own, a session change): what Undo takes back.
     private func undoSource(_ entries: [SourceTrailEntry]) -> TrackedItemSource.ID? {
-        entries.last { $0.isActive && ($0.source.calendarAdded || $0.source.previous != nil) }?.id
+        entries.last {
+            $0.isActive && ($0.source.calendarAdded || $0.source.previous != nil || data.appliedSources.contains($0.id))
+        }?.id
     }
 
     private func trail(_ itemID: TrackedItem.ID) -> TrailInfo {
@@ -381,15 +378,14 @@ public struct CalendarScreen: View {
             complete: { id in perform("Mark as Done") { try await actions.complete(id) } },
             addToCalendar: { id in perform("Add to Calendar") { try await actions.addToCalendar(id) } },
             remove: { id in perform("Delete") { try await actions.remove(id) } },
-            trail: trail,
-            submit: submit
+            trail: trail
         )
     }
 
     private var commandActions: CalendarActions {
         let proposal = targetProposal
         return CalendarActions(
-            isEditingText: composerFocused || isSearchFieldFocused,
+            isEditingText: isSearchFieldFocused,
             hasProposal: proposal != nil,
             goToToday: goToToday,
             previousWeek: { move(by: -1) },
@@ -423,24 +419,6 @@ public struct CalendarScreen: View {
         foreignEvents = await foreignSource.foreignEvents(
             calendarIDs: checked, from: week.start(in: timeZone), to: week.end(in: timeZone)
         )
-    }
-}
-
-/// Follows the conversation the composer handed its text to; reports its state.
-private struct ConversationObserver: View {
-    let report: (ConversationState?) -> Void
-    @FetchOne private var conversation: AgentConversation?
-
-    init(id: AgentConversation.ID, report: @escaping (ConversationState?) -> Void) {
-        self.report = report
-        _conversation = FetchOne(AgentConversation.find(id))
-    }
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .accessibilityHidden(true)
-            .onChange(of: conversation?.state, initial: true) { _, state in report(state) }
     }
 }
 

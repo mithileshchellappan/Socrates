@@ -18,6 +18,7 @@ extension View {
     ///   - isPresented: the inspector is shown (the screen keeps it, e.g. `@SceneStorage`).
     ///   - context: what each message carries when it changed since the last one (the open mail,
     ///     the course, the search and its selected hits).
+    @available(*, deprecated, message: "ma: the agent panel replaces the per-screen chat (.agentPanel, AgentPanelLauncher)")
     public func chatInspector(
         isPresented: Binding<Bool>,
         context: ChatContext = .none,
@@ -28,6 +29,7 @@ extension View {
     }
 }
 
+@available(*, deprecated, message: "ma: the agent panel replaces the per-screen chat (.agentPanel, AgentPanelLauncher)")
 struct ChatInspectorModifier: ViewModifier {
     @Binding var isPresented: Bool
     let context: ChatContext
@@ -58,6 +60,7 @@ struct ChatInspectorModifier: ViewModifier {
 }
 
 /// The chat's toolbar button.
+@available(*, deprecated, message: "ma: the agent panel replaces the per-screen chat (.agentPanel, AgentPanelLauncher)")
 public struct ChatToolbarItem: ToolbarContent {
     public enum Style: Hashable, Sendable {
         /// Today, Mail, a course: Show Chat (`bubble.left`), only while the chat is hidden (one
@@ -237,6 +240,7 @@ struct ChatInspector: View {
 /// The chat without a header, for a screen whose inspector has its own (Review's Tutor tab):
 /// the context line, the conversation and the composer of the newest conversation of the
 /// context's kind and subject. Absent without `ChatActions.isAvailable`.
+@available(*, deprecated, message: "ma: the agent panel replaces the per-screen chat (.agentPanel, AgentPanelLauncher)")
 public struct ChatPanel: View {
     private let context: ChatContext
     private let sendContext: (@MainActor () -> ChatContext)?

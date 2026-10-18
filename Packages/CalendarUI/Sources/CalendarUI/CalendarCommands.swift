@@ -2,7 +2,7 @@ import SwiftUI
 
 /// What the Calendar screen in the key window can do right now, published as a focused scene
 /// value for `CalendarCommands` (docs/DESIGN.md §6.8 command pattern). Everything is off while
-/// text is typed (the composer, the window's search field).
+/// text is typed (the window's search field, the agent panel's composer).
 struct CalendarActions {
     var isEditingText: Bool
     var hasProposal: Bool
@@ -24,7 +24,7 @@ extension FocusedValues {
 }
 
 /// The Calendar menu: Go to Today (⌘T), Previous Week (⌘←), Next Week (⌘→), Confirm (⌘↩) and
-/// Discard (⌘⌫) of the selected or first proposal, New Deadline (no key: focuses the composer).
+/// Discard (⌘⌫) of the selected or first proposal, New Deadline (no key: opens the agent panel).
 /// Keys attach only while Calendar is focused and nothing is being typed, so ⌘← and ⌘⌫ keep
 /// working in text fields.
 ///

@@ -1,5 +1,4 @@
 import Capture
-import ChatUI
 import Review
 import StudyCore
 import StudyUI
@@ -141,6 +140,9 @@ struct ReviewScreen: View {
     private var spans: [LectureDeckSpan] { spansQuery.wrappedValue }
     @Environment(\.reviewChrome) private var chrome
     @Environment(\.undoManager) private var undoManager
+    /// ma: the agent panel is expanded into the window's trailing column: it takes the
+    /// inspector's place until it shrinks (never two inspectors).
+    @Environment(\.agentPanelExpanded) private var agentPanelExpanded
 
     init(model: ReviewModel) {
         self.model = model
@@ -176,10 +178,10 @@ struct ReviewScreen: View {
                         .sharedBackgroundVisibility(.hidden)
                         // Without the system title nothing pushes the items to the trailing edge.
                         ToolbarSpacer(.flexible)
-                        ReviewToolbar(model: model)
+                        ReviewToolbar(model: model, isPanelExpanded: agentPanelExpanded)
                     }
-                    .inspector(isPresented: Bindable(model).showsInspector) {
-                        ReviewInspector(model: model)
+                    .inspector(isPresented: inspectorShown) {
+                        ReviewInspector(model: model, isShown: !agentPanelExpanded)
                             .inspectorColumnWidth(min: 260, ideal: ReviewInspector.width, max: 440)
                     }
             case .snapshot:
@@ -189,7 +191,7 @@ struct ReviewScreen: View {
             }
         }
         .background(ReviewActionsPublisher(model: model))
-        .background(ReviewChatCommand(model: model))
+        .background(ReviewAgentContext(model: model))
         .background(DrawingFollowGuard(model: model))
         .onChange(of: timeline, initial: true) { _, timeline in
             model.session.update(timeline: timeline)
@@ -199,6 +201,16 @@ struct ReviewScreen: View {
             // A flag's undo step never outlives its screen (ink's go with each page's canvas).
             undoManager?.removeAllActions(withTarget: model.flagUndo)
         }
+    }
+
+    /// The inspector shows unless hidden, or while the agent panel is expanded in its place.
+    private var inspectorShown: Binding<Bool> {
+        let model = model
+        let expanded = agentPanelExpanded
+        return Binding(
+            get: { model.showsInspector && !expanded },
+            set: { shown in if !expanded { model.showsInspector = shown } }
+        )
     }
 
     private var title: String {
@@ -219,25 +231,31 @@ struct ReviewScreen: View {
     static let playerClearance: CGFloat = PlayerBar.height + playerBottom + 8
 }
 
-/// M5: View ▸ Show Chat / Hide Chat ⌘J on a review: Show Chat opens the inspector on the Tutor
-/// tab, Hide Chat hides the inspector. Only with Claude Code (`ChatActions.isAvailable`).
-private struct ReviewChatCommand: View {
+/// ma: tells the agent panel what the review shows (the lecture, the recording, the slide on
+/// screen) and, read at ↩, the playhead. Its own view, so the slide changing never re-renders the
+/// screen.
+private struct ReviewAgentContext: View {
     let model: ReviewModel
 
     var body: some View {
         let model = model
-        let isPresented = model.showsInspector && model.inspectorTab == .tutor
+        let onFirst = model.recording == nil || model.recording?.id == model.recordings.first?.id
+        let recordingID = onFirst ? nil : model.recording?.id
         Color.clear
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
-            .chatCommand(isPresented: isPresented) {
-                if model.showsInspector && model.inspectorTab == .tutor {
-                    model.showsInspector = false
-                } else {
-                    model.inspectorTab = .tutor
-                    model.showsInspector = true
+            .agentContext(
+                AgentContext(
+                    screen: .lecture, courseID: model.course?.id, lectureID: model.lecture.id, recordingID: recordingID,
+                    page: model.session.shownPage
+                ),
+                refine: {
+                    AgentContext(
+                        screen: .lecture, lectureID: model.lecture.id, recordingID: recordingID, page: model.session.shownPage,
+                        time: model.player?.time
+                    )
                 }
-            }
+            )
     }
 }
 
@@ -271,6 +289,8 @@ struct ReviewTitle: View {
 /// `ReviewInspector`), so exactly one of the two is in the toolbar.
 struct ReviewToolbar: ToolbarContent {
     let model: ReviewModel
+    /// ma: the agent panel is expanded in the inspector's place: no Show Inspector meanwhile.
+    var isPanelExpanded = false
 
     var body: some ToolbarContent {
         if model.recordings.count > 1 {
@@ -293,7 +313,7 @@ struct ReviewToolbar: ToolbarContent {
             }
             #endif
         }
-        if !model.showsInspector {
+        if !model.showsInspector, !isPanelExpanded {
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 Button {

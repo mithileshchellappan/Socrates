@@ -102,7 +102,7 @@ private struct SessionDetail: View {
 
             ForEach(tied) { item in
                 DetailDivider()
-                ChangeBlock(item: item, trail: handlers.trail(item.id), now: now, handlers: handlers)
+                ChangeBlock(item: item, session: session, trail: handlers.trail(item.id), now: now, handlers: handlers)
             }
 
             if let lectureID, let info = data.lectureInfo[lectureID] {
@@ -160,13 +160,18 @@ private struct SessionDetail: View {
 }
 
 /// An item tied to the session: a waiting room change or cancellation (sparkle + question with
-/// Discard and Confirm), a settled one ("Moved to Room 5", "Cancelled"), or an event that is the
+/// Discard and Confirm), a settled one ("Moved to Room 5", "Cancelled"; ma: "Moved to Thu 22 Oct,
+/// 10:15", "Extra session", applied on their own, Undo in the footer), or an event that is the
 /// session (its title and grey gloss); then its sources.
 private struct ChangeBlock: View {
     let item: TrackedItem
+    let session: LectureSession
     let trail: TrailInfo
     let now: Date
     let handlers: DetailHandlers
+
+    @Environment(\.locale) private var locale
+    @Environment(\.timeZone) private var timeZone
 
     var body: some View {
         let waiting = item.kind.isSessionProposal && item.status == .open
@@ -174,7 +179,7 @@ private struct ChangeBlock: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if waiting { AIMark() }
-                Text(CalendarText.change(item))
+                Text(CalendarText.change(item, session: session, locale: locale, timeZone: timeZone))
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(2)
                 Spacer(minLength: 6)

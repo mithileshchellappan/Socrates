@@ -26,6 +26,11 @@ struct ChatTranscript: Equatable {
     /// mail or a slide is never a source), by `CitationCheck.normalized` key → the https URL as
     /// the result wrote it: a `[[web …]]` marker shows only for one of these and opens that URL.
     var webPages: [String: URL] = [:]
+    /// ma: what each of the student's messages carried besides its words (an `app` conversation's
+    /// context, its label and glyph, the files), by the message's turn.
+    var contexts: [AgentTurn.ID: AgentTurnContext] = [:]
+    /// ma: when each of the student's messages was stored.
+    var times: [AgentTurn.ID: Date] = [:]
 
     init() {}
 
@@ -69,10 +74,14 @@ struct ChatTranscript: Equatable {
             case .user:
                 // The student's words are the last text block; context blocks (and the results of
                 // calls a stopped run left open) come before them. A turn of tool results only
-                // belongs to the answer being written.
-                guard let words = blocks.last(where: { $0.textValue != nil })?.textValue else { continue }
+                // belongs to the answer being written. ma: files may go without words.
+                let words = blocks.last(where: { $0.textValue.map { !Self.isContextBlock($0) } ?? false })?.textValue
+                let files = turn.context?.attachments ?? []
+                guard words != nil || !files.isEmpty else { continue }
                 flush()
-                entries.append(.student(id: turn.id, text: words))
+                entries.append(.student(id: turn.id, text: words ?? ""))
+                if let context = turn.context { contexts[turn.id] = context }
+                times[turn.id] = turn.createdAt
             default:
                 let text = blocks.compactMap(\.textValue)
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -93,6 +102,13 @@ struct ChatTranscript: Equatable {
 
     static func bareName(_ name: String) -> String {
         name.hasPrefix(ClaudeCodeConfiguration.toolNamePrefix) ? String(name.dropFirst(ClaudeCodeConfiguration.toolNamePrefix.count)) : name
+    }
+
+    /// A block the app put before the student's words (`<context …>`, `<catalog …>`,
+    /// `<task_result …>`, `<memory>`, `<mail …>`), never shown as the student's message.
+    static func isContextBlock(_ text: String) -> Bool {
+        let head = text.prefix(16).trimmingCharacters(in: .whitespacesAndNewlines)
+        return ["<context", "<catalog", "<task_result", "<memory", "<mail"].contains { head.hasPrefix($0) }
     }
 
     /// The student's last message has no answer yet.

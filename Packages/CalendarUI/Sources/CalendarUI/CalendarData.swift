@@ -30,6 +30,9 @@ struct CalendarData: Hashable, Sendable {
     /// cancellations, an event that is the session. The session's detail popover lists them with
     /// their sources.
     var sessionItems: [LectureSession.ID: [TrackedItem]] = [:]
+    /// ma: item sources whose change the agent applied on its own and that is not undone (an
+    /// `agent_change` row written with them): Undo takes those back too (session changes).
+    var appliedSources: Set<TrackedItemSource.ID> = []
 
     /// Every item of the screen by id.
     var item: [TrackedItem.ID: TrackedItem] {
@@ -124,6 +127,11 @@ struct CalendarRequest: FetchKeyRequest {
         let tied = data.sessionItems.values.flatMap(\.self)
         let itemIDs = Array(Set((data.weekItems + data.proposals + data.upcoming + tied).map(\.id)))
         data.trails = try TrackedItemRepository.trails(itemIDs: itemIDs, in: db)
+        let sourceIDs = data.trails.values.flatMap { $0.map { TrackedItemSource.ID?.some($0.id) } }
+        if !sourceIDs.isEmpty {
+            let applied = try AgentChange.where { $0.trackedItemSourceID.in(sourceIDs) && $0.undoneAt.is(nil) }.fetchAll(db)
+            data.appliedSources = Set(applied.compactMap(\.trackedItemSourceID))
+        }
         return data
     }
 
