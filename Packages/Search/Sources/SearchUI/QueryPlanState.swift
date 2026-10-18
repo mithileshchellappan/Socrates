@@ -44,10 +44,15 @@ final class QueryPlanState {
         removed.insert(term)
     }
 
+    /// The screen went away: a call in flight is cancelled; the next `follow` starts over (the
+    /// cache answers a planned query at once).
     func stop() {
         task?.cancel()
         task = nil
         settling = false
+        query = ""
+        alternatives = []
+        removed = []
     }
 
     private func start(courseID: Course.ID?, engine: SearchEngine, waits: Bool) {

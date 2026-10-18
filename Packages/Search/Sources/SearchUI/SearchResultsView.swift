@@ -60,7 +60,7 @@ public struct SearchResultsView: View {
     @Environment(\.studyServices) private var services
     @Environment(\.searchProviders) private var providers
 
-    /// At most this many hits are selected by default (the first group's leading full matches).
+    /// At most this many hits are selected by default (the first group's).
     static let defaultSelectionLimit = 4
 
     public init(query: String, submits: Int = 0, context: Binding<ChatContext> = .constant(.none)) {
@@ -429,8 +429,8 @@ public struct SearchResultsView: View {
     }
 
     /// The selection when results land: the student's, as far as it is still shown; else (or
-    /// while it is the default) the first group's leading hits that match every word (at most
-    /// 4), else the first hit.
+    /// while it is the default) the first shown group's hits (at most 4, never mail), else the
+    /// first hit.
     private func settleSelection(_ found: SearchResults) {
         let visible = visibleHits(found)
         let shown = Set(visible.map(\.id))
@@ -443,7 +443,7 @@ public struct SearchResultsView: View {
         }
         selectionIsDefault = true
         let firstGroup = found.groups.first { group in !found.collapses(group, expanded: expanded) }
-        let leading = firstGroup?.hits.prefix { $0.matchesAllTerms && $0.kind != .mail }.prefix(Self.defaultSelectionLimit) ?? []
+        let leading = firstGroup?.hits.filter { $0.kind != .mail }.prefix(Self.defaultSelectionLimit) ?? []
         let chosen = leading.isEmpty ? Array(visible.prefix(1)) : Array(leading)
         selection = Set(chosen.map(\.id))
         cursor = chosen.first?.id
