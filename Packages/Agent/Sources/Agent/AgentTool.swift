@@ -1,6 +1,7 @@
 import ClaudeKit
 import Foundation
 import StudyCore
+import Synchronization
 
 /// What a tool does outside the conversation.
 public enum ToolEffect: String, Sendable, Hashable {
@@ -19,6 +20,28 @@ public enum ToolEffect: String, Sendable, Hashable {
     /// M3.5: writes a reply draft (`mail_draft`) and nothing else; only the student sends it.
     /// Allowed beside tools that read untrusted content.
     case draft
+    /// ma: queues or cancels a sub-agent task (`agent_task`), which runs in its own conversation
+    /// with a tool set fixed at spawn (never web beside mail). Allowed beside tools that read
+    /// untrusted content: what it hands over is checked where it runs (AppAgent's task queue).
+    case delegate
+}
+
+/// ma: what one run of a conversation has read so far (shared by its tool calls): whether
+/// untrusted content (mail) reached it, through the turn's context or a tool. A sub-agent task
+/// with web tools spawned by such a run gets no input summary (the web agent never sees mail).
+public final class RunTrace: Sendable {
+    private let readUntrusted: Mutex<Bool>
+
+    public init(readUntrustedContent: Bool = false) {
+        readUntrusted = Mutex(readUntrustedContent)
+    }
+
+    /// Mail (or another untrusted source) reached this run.
+    public var hasReadUntrustedContent: Bool { readUntrusted.withLock { $0 } }
+
+    public func noteUntrustedRead() {
+        readUntrusted.withLock { $0 = true }
+    }
 }
 
 /// What a tool call runs with: the conversation, the student's words of the current turn (the
@@ -27,11 +50,20 @@ public struct ToolContext: Sendable {
     public var conversationID: AgentConversation.ID
     public var studentText: String
     public var now: Date
+    /// ma: the run's trace (mail read so far).
+    public var trace: RunTrace
+    /// ma: what the student's turn carried besides the words (an `app` conversation's screen).
+    public var turnContext: AgentTurnContext?
 
-    public init(conversationID: AgentConversation.ID, studentText: String, now: Date) {
+    public init(
+        conversationID: AgentConversation.ID, studentText: String, now: Date, trace: RunTrace = RunTrace(),
+        turnContext: AgentTurnContext? = nil
+    ) {
         self.conversationID = conversationID
         self.studentText = studentText
         self.now = now
+        self.trace = trace
+        self.turnContext = turnContext
     }
 }
 
@@ -115,7 +147,7 @@ public struct ToolSet: Sendable {
     public var definitions: [Tool] { tools.map(\.tool) }
 
     /// The same set with `more` custom tools after these (checked again).
-    func adding(_ more: [AgentTool]) throws -> ToolSet {
+    public func adding(_ more: [AgentTool]) throws -> ToolSet {
         try ToolSet(kind: kind, tools: tools + more, webTools: webTools)
     }
 
@@ -126,6 +158,8 @@ public struct ToolSet: Sendable {
         let tools = tools
         return { call in
             guard let tool = tools.first(where: { $0.name == call.name }) else { return .error("unknown tool \(call.name)") }
+            // ma: the run has read mail from now on (a sub-agent it spawns gets no web with it).
+            if tool.readsUntrustedContent { context.trace.noteUntrustedRead() }
             return try await tool.handler(call, context)
         }
     }
@@ -145,6 +179,9 @@ public struct ConversationSpec: Sendable {
     /// The system prompt of a conversation started at `startedAt` with these courses (the same
     /// on every iteration and every later message).
     public var system: @Sendable (_ startedAt: Date, _ courses: CourseList) -> String
+    /// ma: who waits for its calls (a sub-agent task: `.background`, so the panel never waits
+    /// behind it; ClaudeKit's process slots).
+    public var priority: CallPriority = .interactive
 
     /// M3.5: specs of kinds built outside this package (`AgentRuntime.SpecProvider`, the mail chat).
     public init(

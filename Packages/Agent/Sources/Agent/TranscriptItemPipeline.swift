@@ -156,6 +156,9 @@ public actor TranscriptItemPipeline {
                 report.skipped += 1
                 continue
             }
+            // ma: a finished recording that talks about sessions, exam dates or course rules is
+            // a new fact for the app agent's triage (no model call here; one event per version).
+            try await recordEvent(item, source: source)
             let windows = source.lines.windows(reference: source.reference)
             guard !windows.isEmpty else {
                 try await setRow(item, state: .skipped)
@@ -373,6 +376,10 @@ public actor TranscriptItemPipeline {
                 let result = try DeadlineMemory.record(finding, in: db, store: store, now: date)
                 applied.itemsCreated += result.created ? 1 : 0
                 applied.sourcesAdded += result.source == nil ? 0 : 1
+                // ma: every automatic change is in the activity log.
+                if let change = ItemChangeRows.change(for: result, finding: finding, model: TranscriptPrompt.model.rawValue, now: date) {
+                    try AgentChangeRepository.insert(store.stamp(change), db: db)
+                }
             }
             var row = item.row ?? TranscriptExtraction(recordingID: item.recordingID, createdAt: date)
             row.state = .done
@@ -388,6 +395,19 @@ public actor TranscriptItemPipeline {
         applied.rejected = rejected
         if !findings.isEmpty { await memory.didChange() }
         return applied
+    }
+
+    /// ma: the recording's `transcript` event for the app agent's triage, when its lines talk
+    /// about sessions, exam dates or course rules (`TranscriptCues`); one per transcript version
+    /// (`source_key` with the newest line's stamp), so a pass that runs again records nothing.
+    func recordEvent(_ item: Pending, source: Source) async throws {
+        let lines = source.lines.lines.map { TranscriptQuote.Line(id: $0.id, text: $0.text, start: $0.start, words: $0.words) }
+        guard !TranscriptCues.windows(lines).isEmpty else { return }
+        let stamp = Int(item.newest.timeIntervalSince1970 * 1_000)
+        try await AgentEventRepository(store: services.records).record(AgentEvent(
+            kind: .transcript, sourceKey: "transcript:\(item.recordingID.uuidString.lowercased()):\(stamp)",
+            courseID: source.course?.id, lectureID: source.lecture?.id, recordingID: item.recordingID
+        ))
     }
 
     /// Done without a call (nothing to read): `skipped`.

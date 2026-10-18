@@ -315,8 +315,19 @@ enum DeadlineTools {
                     guard let room else { return .error("A room is needed unless the session is cancelled.") }
                     guard TextFolding.fold(room) != TextFolding.fold(session.room) else { return .error("The session is in that room already.") }
                 }
+                let kind: TrackedItemKind = cancel ? .cancellation : .roomChange
+                // ma: no new proposals (session changes are applied by the app agent with Undo);
+                // only an open proposal of the same change gets this conversation as a source.
+                let open = try await database.read { db in
+                    try TrackedItem
+                        .where { $0.lectureSessionID.eq(LectureSession.ID?.some(id)) && $0.kind.eq(kind) && $0.status.eq(TrackedItemStatus.open) }
+                        .fetchAll(db)
+                }
+                guard open.contains(where: { cancel || TextFolding.fold($0.room ?? "") == TextFolding.fold(room ?? "") }) else {
+                    return .error("Session changes are made by the app agent now; tell the student to ask it in the agent panel.")
+                }
                 let draft = DeadlineDraft(
-                    kind: cancel ? .cancellation : .roomChange, title: cancel ? "Cancel session" : "Move to \(room ?? "")?",
+                    kind: kind, title: cancel ? "Cancel session" : "Move to \(room ?? "")?",
                     courseID: session.courseID, dueAt: session.startsAt, room: cancel ? nil : room, lectureSessionID: session.id
                 )
                 let result = try await memory.record(Self.finding(draft, context: context, verified: false))

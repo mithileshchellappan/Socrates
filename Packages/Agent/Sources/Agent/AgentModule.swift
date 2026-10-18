@@ -18,10 +18,65 @@ public enum AgentModule {
     /// `api_call.purpose` of transcript extraction calls.
     public static let transcriptPurpose = "agent.transcript"
 
-    /// The purpose of a conversation kind's calls ("agent.deadlines").
+    /// The purpose of a conversation kind's calls ("agent.deadlines"; ma: "agent.app", "agent.task").
     public static func purpose(of kind: ConversationKind) -> String { purposePrefix + kind.rawValue }
 
+    /// ma: the app agent's model (its memory writes name it in the activity log).
+    static let appModel = ClaudeModel.opus55.rawValue
+
     static let log = Log.logger(category: "agent")
+}
+
+/// ma: what conversation kinds built outside this package (the app agent and its sub-agents in
+/// AppAgent) share with the deadline tools: strict schemas, the student's-words quote check, and
+/// dates as the agent reads and writes them (the university's time zone).
+public enum AgentToolSupport {
+    /// A closed object schema, every property required (optional values nullable).
+    public static func object(_ properties: JSONObject) -> JSONValue { DeadlineTools.Tools.object(properties) }
+
+    public static func nullable(_ schema: JSONValue) -> JSONValue { DeadlineTools.Tools.nullable(schema) }
+
+    /// The original span of the student's `words` that `quote` stands for (whitespace and
+    /// typographic quotes normalized), at least 3 characters; nil when it is not in them.
+    public static func span(of quote: String, in words: String) -> String? {
+        DeadlineTools.Tools.span(of: quote, in: words)
+    }
+
+    /// "2026-10-20T12:00" (local) or "2026-10-20" (all-day), the university's time zone.
+    public static func dateText(_ date: Date?, allDay: Bool) -> String? { AgentDates.text(date, allDay: allDay) }
+
+    /// Parses "YYYY-MM-DDTHH:MM" (local) or "YYYY-MM-DD" (all-day), the university's time zone.
+    public static func parseDate(_ text: String?, allDay: Bool) -> (date: Date, allDay: Bool)? {
+        AgentDates.parse(text, allDay: allDay)
+    }
+
+    /// A date checked against the words it came from (`DateMentions`): verified when the day
+    /// (and a stated time) is in them; a time the words do not state is dropped (all-day).
+    public static func verify(
+        _ due: (date: Date, allDay: Bool), in words: String, reference: Date
+    ) -> (date: Date, allDay: Bool, verified: Bool) {
+        AgentDates.verify(due, in: words, reference: reference)
+    }
+
+    /// "Fri 16 Oct 2026, 15:02" in the university's time zone.
+    public static func spoken(_ date: Date) -> String { AgentDates.spoken(date) }
+
+    /// "Mon 12 Oct 2026".
+    public static func dayText(_ day: CalendarDay) -> String { AgentDates.dayText(day) }
+
+    /// The tracked items whose text a mail or a lecture wrote (any source other than the
+    /// student's words): their titles go to a model as `untrusted_title`, without details.
+    public static func untrustedItems(_ ids: [TrackedItem.ID], services: StudyServices) async throws -> Set<TrackedItem.ID> {
+        try await DeadlineTools.Tools(services: services, memory: DeadlineMemory(services: services)).untrustedItems(ids)
+    }
+}
+
+extension ToolUseBlock {
+    /// ma: a trimmed, non-empty string input (AppAgent's tools).
+    public func trimmedString(_ key: String) -> String? { string(key) }
+
+    /// ma: a boolean input.
+    public func boolean(_ key: String) -> Bool? { bool(key) }
 }
 
 extension Calendar {

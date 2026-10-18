@@ -12,6 +12,9 @@ public struct ItemFinding: Sendable, Hashable {
         case transcript(lectureID: Lecture.ID?, recordingID: Recording.ID, time: Double)
         /// What the student said: in an agent conversation, or (nil) the composer's local parse.
         case chat(AgentConversation.ID?)
+        /// ma: another source kind (`timetable`: the file's name; `calendar`: the event's
+        /// identifier) as `tracked_item_source.kind` with `reference` in `rfc_message_id`.
+        case external(SourceRef.Kind, reference: String)
     }
 
     public var draft: DeadlineDraft

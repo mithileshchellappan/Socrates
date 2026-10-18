@@ -24,9 +24,12 @@ import StudyCore
 /// are active; anything else is refused with a readable error the model can act on.
 struct MemoryTools: Sendable {
     let services: StudyServices
+    /// ma: the app agent's writes are automatic changes: each writes its `agent_change` row
+    /// ("Remembered", with the text before for Undo) in the memory write's transaction.
+    var logsChanges = false
 
-    /// The kinds that carry the memory.
-    static let kinds: Set<ConversationKind> = [.mailChat, .tutor]
+    /// The kinds that carry the memory (ma: the one app agent too).
+    static let kinds: Set<ConversationKind> = [.mailChat, .tutor, .app]
 
     var repository: AgentMemoryRepository { AgentMemoryRepository(store: services.records) }
 
@@ -126,10 +129,16 @@ struct MemoryTools: Sendable {
         guard active.count < AgentMemory.activeLimit else {
             return .error("\(AgentMemory.activeLimit) memories are kept at most. Update or forget one first.")
         }
-        let memory = try await repository.remember(AgentMemory(
+        let draft = AgentMemory(
             kind: kind, courseID: courseID, text: text, quote: quote, conversationID: context.conversationID, createdBy: .agent,
             createdAt: context.now, updatedAt: context.now
-        ))
+        )
+        let memory: AgentMemory
+        if logsChanges {
+            memory = try await logged(draft, before: AgentChangeValues(exists: false), summary: "Remembered", quote: quote, context: context)
+        } else {
+            memory = try await repository.remember(draft)
+        }
         return .json(Self.json(memory, courses: courses))
     }
 
@@ -140,9 +149,17 @@ struct MemoryTools: Sendable {
         let text = call.string("text") ?? ""
         guard let quote = Self.verifiedQuote(call.string("quote"), context: context) else { return .error(Self.quoteError) }
         guard Self.restates(text, quote: quote) else { return .error(Self.textError) }
-        try await repository.revise(memory.id, text: text, quote: quote, conversationID: context.conversationID)
         var revised = memory
         revised.text = text
+        if logsChanges {
+            revised.quote = quote
+            revised.conversationID = context.conversationID
+            _ = try await logged(
+                revised, before: AgentChangeValues(exists: true, memoryText: memory.text), summary: "Remembered", quote: quote, context: context
+            )
+        } else {
+            try await repository.revise(memory.id, text: text, quote: quote, conversationID: context.conversationID)
+        }
         let courses = try await CourseTokens.load(services.database)
         return .json(Self.json(revised, courses: courses))
     }
@@ -150,9 +167,41 @@ struct MemoryTools: Sendable {
     private func forgetCall(_ call: ToolUseBlock, context: ToolContext) async throws -> ToolOutput {
         let active = try await repository.active()
         guard let memory = Self.memory(call.string("id"), in: active) else { return .error(Self.idError) }
-        guard Self.verifiedQuote(call.string("quote"), context: context) != nil else { return .error(Self.quoteError) }
-        try await repository.forget(memory.id)
+        guard let quote = Self.verifiedQuote(call.string("quote"), context: context) else { return .error(Self.quoteError) }
+        if logsChanges {
+            var forgotten = memory
+            forgotten.forgottenAt = context.now
+            _ = try await logged(
+                forgotten, before: AgentChangeValues(exists: true, memoryText: memory.text, forgotten: false), summary: "Forgotten",
+                quote: quote, context: context
+            )
+        } else {
+            try await repository.forget(memory.id)
+        }
         return .json(["forgotten": .string(ChatCitation.key(memory.id))])
+    }
+
+    /// ma: writes `memory` and its `agent_change` row in one transaction (the app agent's
+    /// activity log: "Remembered" / "Forgotten", Undo puts `before` back).
+    private func logged(
+        _ memory: AgentMemory, before: AgentChangeValues, summary: String, quote: String, context: ToolContext
+    ) async throws -> AgentMemory {
+        let store = services.records
+        var row = memory
+        row.text = String(row.text.prefix(AgentMemory.textLimit))
+        let stamped = store.stamp(row)
+        let change = AgentChange(
+            kind: .memory, targetTable: .memory, targetID: stamped.id, title: String(stamped.text.prefix(AgentChange.titleLimit)),
+            summary: summary, before: before,
+            after: AgentChangeValues(exists: true, memoryText: stamped.text, forgotten: stamped.forgottenAt != nil),
+            sourceKind: .chat, conversationID: context.conversationID, quote: quote, confidence: 1, model: AgentModule.appModel,
+            appliedAt: context.now, createdAt: context.now, updatedAt: context.now
+        )
+        try await services.database.write { db in
+            try AgentMemory.upsert { stamped }.execute(db)
+            try AgentChangeRepository.insert(store.stamp(change), db: db)
+        }
+        return stamped
     }
 
     // MARK: Checks

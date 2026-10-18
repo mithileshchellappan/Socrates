@@ -20,12 +20,17 @@ public actor AgentRuntime {
     /// Builds the one spec of a conversation kind defined outside this package (M3.5: the mail
     /// chat, assembled in MailIntelligence from its mail tools and the deadline tools).
     public typealias SpecProvider = @Sendable () throws -> ConversationSpec
+    /// ma: builds the spec of ONE conversation from its rows (a sub-agent task's `task`
+    /// conversation: the tool groups, model and effort of its `agent_task` row, found by
+    /// `agent_task.conversation_id`).
+    public typealias ConversationSpecProvider = @Sendable (AgentConversation.ID) async throws -> ConversationSpec
 
     let services: StudyServices
     let client: ClaudeClient
     let memory: DeadlineMemory
     let now: @Sendable () -> Date
     let additionalSpecs: [ConversationKind: SpecProvider]
+    let conversationSpecs: [ConversationKind: ConversationSpecProvider]
     private var tasks: [AgentConversation.ID: Task<Void, Never>] = [:]
     /// The answer being written, per conversation (M3.5: the chat streams it into place).
     private let live = LiveReplies()
@@ -35,12 +40,14 @@ public actor AgentRuntime {
         client: ClaudeClient,
         memory: DeadlineMemory? = nil,
         additionalSpecs: [ConversationKind: SpecProvider] = [:],
+        conversationSpecs: [ConversationKind: ConversationSpecProvider] = [:],
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
         self.client = client
         self.memory = memory ?? DeadlineMemory(services: services, now: now)
         self.additionalSpecs = additionalSpecs
+        self.conversationSpecs = conversationSpecs
         self.now = now
     }
 
@@ -71,16 +78,23 @@ public actor AgentRuntime {
 
     /// The one spec of `kind`. M5: `mail_chat` and `tutor` get the memory tools (remember,
     /// update_memory, forget) after their own and the memory rules after their system prompt.
-    func spec(for kind: ConversationKind) throws -> ConversationSpec {
+    func spec(for kind: ConversationKind, conversationID: AgentConversation.ID) async throws -> ConversationSpec {
         var spec: ConversationSpec
         switch kind {
         case .deadlines: spec = try DeadlineTools.spec(services: services, memory: memory)
         default:
-            guard let provider = additionalSpecs[kind] else { throw RuntimeError.unknownKind(kind.rawValue) }
-            spec = try provider()
+            if let provider = conversationSpecs[kind] {
+                spec = try await provider(conversationID)
+            } else if let provider = additionalSpecs[kind] {
+                spec = try provider()
+            } else {
+                throw RuntimeError.unknownKind(kind.rawValue)
+            }
         }
         guard MemoryTools.kinds.contains(kind) else { return spec }
-        spec.tools = try spec.tools.adding(MemoryTools(services: services).all)
+        // ma: the app agent's memory writes are automatic changes: each logs an `agent_change`
+        // row in its transaction ("Remembered", Undo).
+        spec.tools = try spec.tools.adding(MemoryTools(services: services, logsChanges: kind == .app).all)
         let system = spec.system
         spec.system = { startedAt, courses in system(startedAt, courses) + "\n\n" + MemoryTools.rules }
         return spec
@@ -104,35 +118,50 @@ public actor AgentRuntime {
     /// `ToolContext.studentText` is the student's words only. M5: `lectureID` is a tutor
     /// conversation's lecture (its subject, with the lecture's `courseID`); a `mail_chat` or
     /// `tutor` conversation's first turn starts with the `<memory>` block.
+    ///
+    /// ma: `turnContext` is stored with the user turn (`agent_turn.context`: an `app` turn's screen,
+    /// context line and attachments); `id` gives the new conversation a chosen id (a sub-agent
+    /// task's, set on its row first so its spec can be found); `title` names it (else the
+    /// student's first words). The text may be empty when `context` carries blocks (files only).
     public func start(
-        _ kind: ConversationKind, text: String, context: [ContentBlock] = [], courseID: Course.ID? = nil, lectureID: Lecture.ID? = nil
+        _ kind: ConversationKind, text: String, context: [ContentBlock] = [], courseID: Course.ID? = nil, lectureID: Lecture.ID? = nil,
+        turnContext: AgentTurnContext? = nil, id: AgentConversation.ID? = nil, title: String? = nil
     ) async throws -> AgentConversation.ID {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw RuntimeError.emptyText }
-        let spec = try spec(for: kind)
+        guard !trimmed.isEmpty || !context.isEmpty else { throw RuntimeError.emptyText }
+        let conversationID = id ?? UUID()
+        let spec = try await spec(for: kind, conversationID: conversationID)
         let memory = try await memoryBlock(for: kind, history: [])
         let startedAt = now()
+        let name = (title ?? trimmed).trimmingCharacters(in: .whitespacesAndNewlines)
         let conversation = try await conversations.start(AgentConversation(
-            kind: kind, courseID: courseID, lectureID: lectureID, title: String(trimmed.prefix(60)), model: spec.model.rawValue,
-            state: .running, createdAt: startedAt, updatedAt: startedAt
+            id: conversationID, kind: kind, courseID: courseID, lectureID: lectureID, title: String(name.prefix(60)),
+            model: spec.model.rawValue, state: .running, createdAt: startedAt, updatedAt: startedAt
         ))
-        let blocks = memory + context
-        let turn: MessageParam = blocks.isEmpty ? .user(trimmed) : .user(blocks + [.text(TextBlock(text: trimmed))])
-        try await conversations.append(to: conversation.id, role: .user, message: try Self.encode(turn))
-        launch(conversation, spec: spec, history: [turn], studentText: trimmed)
+        let turn = Self.userTurn(memory + context, text: trimmed)
+        try await conversations.append(to: conversation.id, role: .user, message: try Self.encode(turn), context: turnContext)
+        launch(conversation, spec: spec, history: [turn], studentText: trimmed, turnContext: turnContext)
         return conversation.id
+    }
+
+    /// A user turn: the blocks, then the student's words (none when empty).
+    static func userTurn(_ blocks: [ContentBlock], text: String) -> MessageParam {
+        if blocks.isEmpty { return .user(text) }
+        return .user(text.isEmpty ? blocks : blocks + [.text(TextBlock(text: text))])
     }
 
     /// Appends the student's next message (after its `context` blocks) to a conversation that is
     /// not running and runs it again.
-    public func send(_ text: String, context: [ContentBlock] = [], to id: AgentConversation.ID) async throws {
+    public func send(
+        _ text: String, context: [ContentBlock] = [], turnContext: AgentTurnContext? = nil, to id: AgentConversation.ID
+    ) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw RuntimeError.emptyText }
+        guard !trimmed.isEmpty || !context.isEmpty else { throw RuntimeError.emptyText }
         guard tasks[id] == nil else { throw RuntimeError.busy }
         guard let conversation = try await services.records.fetch(AgentConversation.self, id: id) else {
             throw RuntimeError.unknownConversation
         }
-        let spec = try spec(for: conversation.kind)
+        let spec = try await spec(for: conversation.kind, conversationID: id)
         var history = try await Self.history(conversations.turns(id))
         // A run that stopped between a tool call and its result: answer the calls still open
         // first (the API needs a result for each), in the same new user turn.
@@ -149,11 +178,11 @@ public actor AgentRuntime {
         // M5: the memory when it changed since the block this conversation last carried.
         blocks += try await memoryBlock(for: conversation.kind, history: history)
         blocks += context
-        let turn: MessageParam = blocks.isEmpty ? .user(trimmed) : .user(blocks + [.text(TextBlock(text: trimmed))])
-        try await conversations.append(to: id, role: .user, message: try Self.encode(turn))
+        let turn = Self.userTurn(blocks, text: trimmed)
+        try await conversations.append(to: id, role: .user, message: try Self.encode(turn), context: turnContext)
         history.append(turn)
         try await conversations.setState(id, .running)
-        launch(conversation, spec: spec, history: history, studentText: trimmed)
+        launch(conversation, spec: spec, history: history, studentText: trimmed, turnContext: turnContext)
     }
 
     /// Stops a running conversation (it ends `failed`).
@@ -219,8 +248,15 @@ public actor AgentRuntime {
 
     // MARK: - Running
 
-    private func launch(_ conversation: AgentConversation, spec: ConversationSpec, history: [MessageParam], studentText: String) {
-        let context = ToolContext(conversationID: conversation.id, studentText: studentText, now: now())
+    private func launch(
+        _ conversation: AgentConversation, spec: ConversationSpec, history: [MessageParam], studentText: String,
+        turnContext: AgentTurnContext? = nil
+    ) {
+        // ma: an open mail in the turn's context is untrusted content this run has read.
+        let trace = RunTrace(readUntrustedContent: turnContext?.context?.mailMessageID != nil)
+        let context = ToolContext(
+            conversationID: conversation.id, studentText: studentText, now: now(), trace: trace, turnContext: turnContext
+        )
         tasks[conversation.id] = Task {
             await self.run(conversation, spec: spec, history: history, context: context)
             self.finished(conversation.id)
@@ -250,7 +286,8 @@ public actor AgentRuntime {
             // own session once an assistant turn exists; the Messages API ignores it.
             let session = ConversationSession(id: id, resumes: history.contains { $0.role == .assistant })
             let result = try await loop.run(
-                request, context: CallContext(purpose: spec.purpose, session: session), handler: spec.tools.handler(context),
+                request, context: CallContext(purpose: spec.purpose, priority: spec.priority, session: session),
+                handler: spec.tools.handler(context),
                 onEvent: { event in await recorder.handle(event) }
             )
             if let failure = await recorder.failure { throw failure }
