@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -37,6 +37,10 @@ public enum Schema {
         migrator.registerMigration("v7") { db in
             try db.execute(sql: v7)
         }
+        // M4, additive only (a new table and nullable columns).
+        migrator.registerMigration("v8") { db in
+            try db.execute(sql: v8)
+        }
         return migrator
     }
 
@@ -49,6 +53,7 @@ public enum Schema {
         "mail_account", "mailbox", "mail_rule", "mail_message", "mail_attachment", "mail_draft",
         "tracked_item_source",
         "agent_conversation", "agent_turn", "transcript_extraction",
+        "study_unit",
     ]
 
     /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
@@ -754,6 +759,46 @@ public enum Schema {
         ALTER TABLE "api_call" ADD COLUMN "billing" TEXT;
         ALTER TABLE "mail_message" ADD COLUMN "needs_reply" INTEGER;
         CREATE INDEX "mail_message_needs_reply" ON "mail_message"("needs_reply");
+        """
+
+    /// v8 (M4, additive only: a new table and nullable columns). docs/plan-m4.md §2:
+    /// - `study_unit`: one unit of the study pass's work (read block, synthesis, research pick);
+    /// - `annotation.study_unit_id` (CASCADE: re-running a unit replaces its rows), `category`
+    ///   (`SaidInClassCategory`), `detail`, `anchor_text`, `anchor_x`, `anchor_y`, `last_page`,
+    ///   `hidden_at`;
+    /// - `transcript_segment.patches` (JSON `[TranscriptPatch]`; `text` = the patches applied to
+    ///   `original_text`).
+    /// The annotation kinds `highlight` and `topic` are new values of an existing TEXT column.
+    static let v8 = """
+        CREATE TABLE "study_unit" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "lecture_id" TEXT NOT NULL REFERENCES "lecture"("id") ON DELETE CASCADE,
+          "stage" TEXT NOT NULL DEFAULT 'read',
+          "key" TEXT NOT NULL DEFAULT '',
+          "input_hash" TEXT NOT NULL DEFAULT '',
+          "state" TEXT NOT NULL DEFAULT 'pending',
+          "attempts" INTEGER NOT NULL DEFAULT 0,
+          "error" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "finished_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "study_unit_lecture" ON "study_unit"("lecture_id", "stage");
+        CREATE INDEX "study_unit_state" ON "study_unit"("state");
+        CREATE INDEX "study_unit_call" ON "study_unit"("api_call_id");
+
+        ALTER TABLE "annotation" ADD COLUMN "study_unit_id" TEXT REFERENCES "study_unit"("id") ON DELETE CASCADE;
+        ALTER TABLE "annotation" ADD COLUMN "category" TEXT;
+        ALTER TABLE "annotation" ADD COLUMN "detail" TEXT;
+        ALTER TABLE "annotation" ADD COLUMN "anchor_text" TEXT;
+        ALTER TABLE "annotation" ADD COLUMN "anchor_x" REAL;
+        ALTER TABLE "annotation" ADD COLUMN "anchor_y" REAL;
+        ALTER TABLE "annotation" ADD COLUMN "last_page" INTEGER;
+        ALTER TABLE "annotation" ADD COLUMN "hidden_at" TEXT;
+        CREATE INDEX "annotation_study_unit" ON "annotation"("study_unit_id");
+
+        ALTER TABLE "transcript_segment" ADD COLUMN "patches" TEXT;
         """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row

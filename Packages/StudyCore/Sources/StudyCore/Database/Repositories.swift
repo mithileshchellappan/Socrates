@@ -206,15 +206,14 @@ public struct TranscriptRepository: Sendable {
         return stamped
     }
 
-    /// Applies a correction: replaces `text`, keeps `originalText`, bumps `revision`.
+    /// Stores a line's corrections (v8, replaces M1's `applyCorrection`): `patches` saved, `text`
+    /// recomputed from `originalText` (`TranscriptSegment.withPatches`). Nil when the line is gone.
     @discardableResult
-    public func applyCorrection(segmentID: TranscriptSegment.ID, text: String) async throws -> TranscriptSegment? {
-        guard var segment = try await store.fetch(TranscriptSegment.self, id: segmentID) else {
+    public func setPatches(segmentID: TranscriptSegment.ID, _ patches: [TranscriptPatch]) async throws -> TranscriptSegment? {
+        guard let segment = try await store.fetch(TranscriptSegment.self, id: segmentID) else {
             return nil
         }
-        segment.text = text
-        segment.revision += 1
-        return try await store.save(segment)
+        return try await store.save(segment.withPatches(patches))
     }
 }
 

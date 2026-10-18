@@ -1,4 +1,5 @@
 import Foundation
+import StudyCore
 // PDFKit re-exports AppKit/UIKit; this file uses only PDFDocument/PDFPage text extraction, and the
 // internal import keeps those modules out of Capture's interface (docs/decisions.md).
 internal import PDFKit
@@ -52,23 +53,9 @@ public struct DeckText: Sendable, Hashable {
     }
 
     /// The first line that reads like a heading: skips blank lines, bare numbers, dates and
-    /// bullets; collapses whitespace; at most `limit` characters.
+    /// bullets; collapses whitespace; at most `limit` characters. (Implemented in StudyCore,
+    /// `DeckPage.title(fromPageText:limit:)`, so `LectureOutline` can use it.)
     public static func title(fromPageText text: String, limit: Int = 80) -> String {
-        let lines = text.split(whereSeparator: \.isNewline)
-        for raw in lines {
-            var line = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-            while let first = line.first, "•§▪◦-–—*·".contains(first) {
-                line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
-            }
-            let letters = line.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
-            guard letters >= 2 else { continue }
-            if line.count > limit {
-                let cut = line.prefix(limit)
-                let trimmed = cut.lastIndex(of: " ").map { cut[..<$0] } ?? cut
-                return trimmed.trimmingCharacters(in: .whitespaces) + "…"
-            }
-            return line
-        }
-        return ""
+        DeckPage.title(fromPageText: text, limit: limit)
     }
 }

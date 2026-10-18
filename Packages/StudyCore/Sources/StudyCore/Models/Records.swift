@@ -556,17 +556,20 @@ public struct TranscriptSegment: StudyRecord {
     /// Seconds on the recording clock.
     @Column("start_time") public var startTime: Double
     @Column("end_time") public var endTime: Double
-    /// Current text (after any accepted correction).
+    /// Current text: `TranscriptPatch.apply(patches, to: originalText)` (v8). Change it only
+    /// through `withPatches`.
     public var text: String
     /// Text as first transcribed; never overwritten.
     @Column("original_text") public var originalText: String
     /// BCP 47, e.g. "de", "en".
     public var lang: String
     public var confidence: Double?
-    /// Incremented by each accepted correction.
+    /// Incremented each time corrections change `text`.
     public var revision: Int
     @Column(as: [TranscriptWord]?.JSONRepresentation.self) public var words: [TranscriptWord]?
     @Column("updated_at") public var updatedAt: Date
+    /// v8: the corrections, as patches on `originalText` (nil = none). docs/plan-m4.md §2.
+    @Column(as: [TranscriptPatch]?.JSONRepresentation.self) public var patches: [TranscriptPatch]?
 
     public init(
         id: UUID = UUID(),
@@ -580,7 +583,8 @@ public struct TranscriptSegment: StudyRecord {
         confidence: Double? = nil,
         revision: Int = 0,
         words: [TranscriptWord]? = nil,
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        patches: [TranscriptPatch]? = nil
     ) {
         self.id = id
         self.recordingID = recordingID
@@ -594,6 +598,7 @@ public struct TranscriptSegment: StudyRecord {
         self.revision = revision
         self.words = words
         self.updatedAt = updatedAt
+        self.patches = patches
     }
 }
 
@@ -644,6 +649,8 @@ public struct Note: StudyRecord {
 ///
 /// Target: set the columns that apply — a slide (`deckID` + `pageNumber`), a time range on a
 /// recording (`recordingID` + `startTime`/`endTime`), and/or a transcript segment.
+/// M4 (v8): what the study pass writes and the student's pins, see `Values+M4.swift` and
+/// docs/plan-m4.md §2. Hidden rows (`hiddenAt`) are gone from every surface.
 @Table("annotation")
 public struct Annotation: StudyRecord {
     public let id: UUID
@@ -662,6 +669,22 @@ public struct Annotation: StudyRecord {
     @Column("api_call_id") public var apiCallID: APICall.ID?
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
+    /// v8: the study pass unit that wrote it (re-running the unit replaces its rows; deleting it
+    /// cascades). Nil for the student's own pins.
+    @Column("study_unit_id") public var studyUnitID: StudyUnit.ID?
+    /// v8: what a `not_on_slides` item is about.
+    public var category: SaidInClassCategory?
+    /// v8: a second line, e.g. a further reading's byline ("Barham et al. · SOSP 2003").
+    public var detail: String?
+    /// v8: an exact span of the page's text the pin sits beside (professor items).
+    @Column("anchor_text") public var anchorText: String?
+    /// v8: a hand-placed pin's position on the page, 0…1 from the top left.
+    @Column("anchor_x") public var anchorX: Double?
+    @Column("anchor_y") public var anchorY: Double?
+    /// v8: the last slide of a range (topics: `pageNumber…lastPage`).
+    @Column("last_page") public var lastPage: Int?
+    /// v8: the student hid it (AI and professor items).
+    @Column("hidden_at") public var hiddenAt: Date?
 
     public init(
         id: UUID = UUID(),
@@ -677,6 +700,14 @@ public struct Annotation: StudyRecord {
         body: String = "",
         citations: [SourceRef] = [],
         apiCallID: APICall.ID? = nil,
+        studyUnitID: StudyUnit.ID? = nil,
+        category: SaidInClassCategory? = nil,
+        detail: String? = nil,
+        anchorText: String? = nil,
+        anchorX: Double? = nil,
+        anchorY: Double? = nil,
+        lastPage: Int? = nil,
+        hiddenAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -693,6 +724,14 @@ public struct Annotation: StudyRecord {
         self.body = body
         self.citations = citations
         self.apiCallID = apiCallID
+        self.studyUnitID = studyUnitID
+        self.category = category
+        self.detail = detail
+        self.anchorText = anchorText
+        self.anchorX = anchorX
+        self.anchorY = anchorY
+        self.lastPage = lastPage
+        self.hiddenAt = hiddenAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
