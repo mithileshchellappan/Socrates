@@ -389,7 +389,7 @@ struct NoteSketchView: View {
     var body: some View {
         NoteMediaFrame(media: attachment.media) { size in
             ZStack(alignment: .bottomTrailing) {
-                NoteColors.canvas(colorScheme)
+                Color.canvasBackground(colorScheme)
                 if isEditing {
                     InkCanvas(drawing: $drawing, tool: tool, surface: .sketch)
                         .id(ObjectIdentifier(attachment))

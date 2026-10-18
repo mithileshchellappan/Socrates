@@ -1,3 +1,4 @@
+import StudyUI
 import SwiftUI
 
 /// The quiet grey of the mockups' `--fill` (120, 120, 128 at 10 % light, 20 % dark): the
@@ -11,12 +12,10 @@ struct QuietFill: ShapeStyle {
     }
 }
 
-/// The highlighter yellow of the mockups (`--ink-hl`: 45 % light, 40 % dark).
+/// The highlighter yellow of the mockups (`--ink-hl`: StudyUI's `Color.highlighter`).
 struct MatchInk: ShapeStyle {
     func resolve(in environment: EnvironmentValues) -> Color.Resolved {
-        Color(red: 1, green: 214 / 255, blue: 10 / 255)
-            .opacity(environment.colorScheme == .dark ? 0.40 : 0.45)
-            .resolve(in: environment)
+        Color.highlighter(environment.colorScheme).resolve(in: environment)
     }
 }
 

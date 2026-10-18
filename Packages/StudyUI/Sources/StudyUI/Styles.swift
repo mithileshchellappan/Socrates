@@ -31,6 +31,20 @@ public struct Hairline: View {
 }
 
 extension Color {
+    /// The canvas surface (`--win2`: #f6f6f8; #252528 in dark mode): behind a note's sketch (M6).
+    /// CaptureUI's live window keeps its own `liveCanvasBackground` (it does not depend on StudyUI).
+    public static func canvasBackground(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(.sRGB, red: 0x25 / 255, green: 0x25 / 255, blue: 0x28 / 255)
+            : Color(.sRGB, red: 0xf6 / 255, green: 0xf6 / 255, blue: 0xf8 / 255)
+    }
+
+    /// The highlighter (`--ink-hl`: yellow at 45 %, 40 % in dark mode): highlights in notes,
+    /// search matches, the highlighter's ink.
+    public static func highlighter(_ scheme: ColorScheme) -> Color {
+        Color(.sRGB, red: 1, green: 214 / 255, blue: 10 / 255, opacity: scheme == .dark ? 0.40 : 0.45)
+    }
+
     /// The window's content surface (`--win`: white; #1e1e20 in dark mode): Calendar's grid and
     /// composer field (course tints are mixed over it so events stay opaque over lines and weekend
     /// fills). CaptureUI keeps its own copy (it does not depend on StudyUI; docs/DESIGN.md §7.4).

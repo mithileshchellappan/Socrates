@@ -10,9 +10,12 @@ struct ToolbarSearchField: View {
     let prompt: LocalizedStringKey
     var focused: FocusState<Bool>.Binding
     let submit: () -> Void
+    var width: CGFloat = Self.width
 
     /// The mockups' capsule.
     static let width: CGFloat = 240
+    /// Notes' field (mockup 04).
+    static let notesWidth: CGFloat = 180
 
     var body: some View {
         HStack(spacing: 7) {
@@ -58,6 +61,6 @@ struct ToolbarSearchField: View {
         }
         .padding(.leading, 5)
         .padding(.trailing, 2)
-        .frame(width: Self.width)
+        .frame(width: width)
     }
 }

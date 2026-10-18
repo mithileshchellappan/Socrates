@@ -2,6 +2,8 @@
 import AppKit
 import Notes
 import StudyCore
+import StudyUI
+import SwiftUI
 
 // The blocks ⇄ text mapping of the Mac editor (docs/plan-m6.md §4): one editor paragraph is one
 // `NoteBlock`. A paragraph's format (Title, Heading, Body, a list item and its indent and box) is
@@ -168,10 +170,10 @@ struct NoteTypesetter {
         return attributes
     }
 
-    /// The highlighter (`--ink-hl`): yellow at 45 % (40 % dark).
+    /// The highlighter (`--ink-hl`, StudyUI's `Color.highlighter`): yellow at 45 % (40 % dark).
     static let highlightColor = NSColor(name: nil) { appearance in
         let dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        return NSColor(srgbRed: 1, green: 214 / 255, blue: 10 / 255, alpha: dark ? 0.40 : 0.45)
+        return NSColor(Color.highlighter(dark ? .dark : .light))
     }
 
     /// Marks of a run from its attributes.

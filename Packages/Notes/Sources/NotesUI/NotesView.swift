@@ -151,6 +151,7 @@ public struct NotesView: View {
                         } header: {
                             NoteGroupHeader(course: course)
                         }
+                        .listSectionSeparator(.hidden)
                     } else {
                         rows(section.items)
                     }
@@ -183,6 +184,8 @@ public struct NotesView: View {
                 .tag(item.id)
                 .id(item.id)
                 .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4))
+                // Mockup 04: rows and groups without separators.
+                .listRowSeparator(.hidden)
         }
     }
 
@@ -250,7 +253,10 @@ public struct NotesView: View {
             }
             .help(Text("New Note"))
         }
-        ToolbarItemGroup(placement: .primaryAction) {
+        // The editing groups in the toolbar's middle (mockup 04): the window's search field takes the
+        // trailing end, and items of the app's outer toolbar come before a screen's own primary
+        // actions, so these could not follow it there.
+        ToolbarItemGroup(placement: .principal) {
             // Aa ⌄: a popover of the paragraph styles, as in Notes (a toolbar Menu would leave the
             // group's glass).
             Button {
@@ -296,8 +302,8 @@ public struct NotesView: View {
             .help(Text("Sketch"))
             .disabled(session == nil)
         }
-        ToolbarSpacer(.fixed, placement: .primaryAction)
-        ToolbarItemGroup(placement: .primaryAction) {
+        ToolbarSpacer(.fixed, placement: .principal)
+        ToolbarItemGroup(placement: .principal) {
             Button {
                 showsSlides = true
             } label: {

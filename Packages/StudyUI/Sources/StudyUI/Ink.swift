@@ -339,7 +339,7 @@ enum InkRenderer {
         let dark = surface == .sketch && scheme == .dark
         let highlighter = stroke.color == .yellow || (stroke.color != .blue && stroke.kind == .highlighter)
         if highlighter {
-            return Color(.sRGB, red: 1, green: 214 / 255, blue: 10 / 255, opacity: dark ? 0.40 : 0.45)
+            return Color.highlighter(dark ? .dark : .light)
         }
         return dark
             ? Color(.sRGB, red: 0x5a / 255, green: 0xa2 / 255, blue: 1, opacity: 1)

@@ -147,22 +147,6 @@ public struct CourseSlidesView: View {
     }
 }
 
-/// A course's notes: empty until the notes editor (M6).
-public struct CourseNotesView: View {
-    @FetchOne private var course: Course?
-
-    public init(courseID: Course.ID) {
-        _course = FetchOne(Course.find(courseID))
-    }
-
-    public var body: some View {
-        ContentUnavailableView {
-            Image(systemName: "doc.text")
-        }
-        .screenTitle(String(localized: "Notes"), subtitle: course?.name ?? "")
-    }
-}
-
 /// One column of settings groups, as Course Settings' left column: 22 pt margins, the text
 /// background.
 private struct CourseScreenColumn<Content: View>: View {

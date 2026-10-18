@@ -13,6 +13,12 @@ enum SidebarItem: Hashable {
     /// One of Mail's lists (mockup 05: Inbox, a course, University, Newsletters, Drafts, Sent),
     /// listed under the Mail row while one shows.
     case mailScope(MailScope)
+    /// The Notes row (M6). Choosing it shows All Notes, `notes(.all)`, selected as the Notes row's
+    /// "All Notes" child (as the Mail row stands for the Inbox).
+    case notesRow
+    /// The Notes screen (mockup 04): All Notes or one course's notes, listed under the Notes row
+    /// while one shows.
+    case notes(NotesScope)
     case search
     /// The course's row. Choosing it shows the course's screen, `courseSettings` (mockup 08: the
     /// course's own "Course Settings" row is the one selected).
@@ -23,7 +29,7 @@ enum SidebarItem: Hashable {
     case courseSettings(Course.ID)
     case lecture(Lecture.ID)
 
-    static let destinations: [SidebarItem] = [.today, .calendar, .mail, .search]
+    static let destinations: [SidebarItem] = [.today, .calendar, .mail, .notesRow, .search]
 
     /// A course's own screens, in sidebar order (mockup 08).
     static func courseScreens(_ id: Course.ID) -> [SidebarItem] {
@@ -35,6 +41,7 @@ enum SidebarItem: Hashable {
         case .today: String(localized: "Today")
         case .calendar: String(localized: "Calendar")
         case .mail, .mailScope: String(localized: "Mail")
+        case .notesRow, .notes: String(localized: "Notes")
         case .search: String(localized: "Search")
         case .course: String(localized: "Course")
         case .courseLectures: String(localized: "Lectures")
@@ -46,10 +53,11 @@ enum SidebarItem: Hashable {
     }
 
     /// What choosing this item shows: a course's row stands for its settings, the Mail row for
-    /// the Inbox.
+    /// the Inbox, the Notes row for All Notes.
     var screen: SidebarItem {
         if case .course(let id) = self { return .courseSettings(id) }
         if self == .mail { return .mailScope(.inbox) }
+        if self == .notesRow { return .notes(.all) }
         return self
     }
 
@@ -61,18 +69,41 @@ enum SidebarItem: Hashable {
         }
     }
 
+    /// The Notes screen under the Notes row (All Notes or a course; M6).
+    var isNotes: Bool {
+        switch self {
+        case .notesRow, .notes: true
+        default: false
+        }
+    }
+
+    /// Whose question the toolbar search field holds: Mail and Notes filter their own list in
+    /// place ("Search mail", "Search notes"); everywhere else it searches the library.
+    var searchOwner: SearchOwner {
+        if isMail { return .mail }
+        if isNotes { return .notes }
+        return .library
+    }
+
+    enum SearchOwner {
+        case library
+        case mail
+        case notes
+    }
+
     /// The course whose screen this is (its lectures, slides, notes or settings).
     var courseScreenID: Course.ID? {
         switch self {
         case .course(let id), .courseLectures(let id), .courseSlides(let id), .courseNotes(let id), .courseSettings(let id): id
-        case .today, .calendar, .mail, .mailScope, .search, .lecture: nil
+        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .search, .lecture: nil
         }
     }
 
-    /// Today, Calendar, Mail and Search: the screens with the toolbar search field.
+    /// Today, Calendar, Mail, Notes and Search: the screens with the toolbar search field (not
+    /// Calendar's) and one shared detail stack.
     var isTopLevel: Bool {
         switch self {
-        case .today, .calendar, .mail, .mailScope, .search: true
+        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .search: true
         case .course, .courseLectures, .courseSlides, .courseNotes, .courseSettings, .lecture: false
         }
     }
@@ -82,6 +113,9 @@ enum SidebarItem: Hashable {
         case .today: "sun.max"
         case .calendar: "calendar"
         case .mail, .mailScope: "envelope"
+        case .notesRow: "note.text"
+        // All Notes (mockup 04's `i-doc`); a course's child draws its dot instead.
+        case .notes: "doc.text"
         case .search: "magnifyingglass"
         case .course: "books.vertical"
         case .courseLectures: "waveform"
@@ -145,7 +179,8 @@ struct ScreenHistory: Equatable {
     }
 }
 
-/// Go: the four top-level screens (⌘1…⌘4) and Search Library (⌘F, focuses the toolbar field).
+/// Go: the five top-level screens (⌘1…⌘5: Today, Calendar, Mail, Notes, Search) and Search Library
+/// (⌘F, focuses the toolbar field).
 struct GoCommands: Commands {
     @FocusedValue(\.sidebarSelection) private var selection
     @FocusedValue(\.focusSearch) private var focusSearch
@@ -153,7 +188,7 @@ struct GoCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Go") {
-            // ⌘1 … ⌘4
+            // ⌘1 … ⌘5
             ForEach(Array(SidebarItem.destinations.enumerated()), id: \.element) { index, item in
                 Button(item.title) { selection?.wrappedValue = item.screen }
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)

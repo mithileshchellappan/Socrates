@@ -98,21 +98,6 @@ public enum NoteLink: Hashable, Sendable {
     case time(SourceRef)
 }
 
-/// The surfaces only the notes use (3.1): the canvas behind a sketch (`--win2`), the highlighter
-/// (`--ink-hl`, as `MatchInk`). CaptureUI's `liveCanvasBackground` is internal; promote both to
-/// StudyUI on the next change there (README, "Requests for the integrator").
-enum NoteColors {
-    static func canvas(_ scheme: ColorScheme) -> Color {
-        scheme == .dark
-            ? Color(.sRGB, red: 0x25 / 255, green: 0x25 / 255, blue: 0x28 / 255)
-            : Color(.sRGB, red: 0xf6 / 255, green: 0xf6 / 255, blue: 0xf8 / 255)
-    }
-
-    static func highlight(_ scheme: ColorScheme) -> Color {
-        Color(.sRGB, red: 1, green: 214 / 255, blue: 10 / 255, opacity: scheme == .dark ? 0.40 : 0.45)
-    }
-}
-
 /// Note sizes (DESIGN 3.2, 3.3, mockups 03 and 04).
 struct NoteMetrics: Hashable, Sendable {
     let style: NoteEditorStyle

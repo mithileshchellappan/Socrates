@@ -159,6 +159,12 @@ struct ParityRender {
         }
         let cc = try ParityMode.course("Data Centers", services: services)
         let (_, dcLecture2) = try ParityMode.lecture("Data Centers", 2, services: services)
+        // M6 (`--m6-sample`): mockup 04's open note, the DC L2 note (titled in its first block).
+        let dcL2Note = try await services.database.read { db in
+            try Note
+                .where { $0.lectureID.eq(dcLecture2.id) && $0.pageNumber.is(nil) && $0.blocksJSON.like("%Virtualization generations%") }
+                .fetchOne(db)?.id
+        }
         var shots: [RenderShot] = [
             RenderShot(name: "01-today", window: .main(ParityMode.Launch(selection: .today))),
             RenderShot(name: "02-live", window: .live),
@@ -192,10 +198,9 @@ struct ParityRender {
             // Lectures with Show Chat at the trailing end (with `--m35-sample`: Claude Code available).
             RenderShot(name: "08-course-chat", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id), showsChat: true))),
             RenderShot(name: "08-course-lectures", window: .main(ParityMode.Launch(selection: .courseLectures(cc.id)))),
-            // M6 (on a copy seeded by `tools/parity/seed --m6-sample`): mockup 04, the course's
-            // Notes screen until the integration adds the Notes row (then All Notes with the DC L2
-            // note selected). Review's ink on slide 16 shows in `03-review`.
-            RenderShot(name: "04-notes", window: .main(ParityMode.Launch(selection: .courseNotes(cc.id)))),
+            // M6 (on a copy seeded by `tools/parity/seed --m6-sample`): mockup 04, the Notes row's
+            // All Notes with the DC L2 note selected. Review's ink on slide 16 shows in `03-review`.
+            RenderShot(name: "04-notes", window: .main(ParityMode.Launch(selection: .notes(.all), noteSelection: dcL2Note))),
             RenderShot(name: "10-import", window: .main(ParityMode.Launch(selection: .today))) { model, size in
                 try await ParityMode.importPreview(model: model, services: services, size: size)
             }
@@ -282,7 +287,8 @@ struct ParityRender {
             content = AnyView(
                 RootView(
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
-                    mailSelection: launch.mailSelection, showsChat: launch.showsChat
+                    mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
+                    showsChat: launch.showsChat
                 )
                 .environment(\.reviewInspectorTab, launch.reviewInspectorTab)
                 .environment(model)

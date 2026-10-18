@@ -4,6 +4,7 @@ import ChatUI
 import CoursesUI
 import FilingUI
 import MailUI
+import NotesUI
 import ReviewUI
 import StudyCore
 import SwiftUI
@@ -61,6 +62,8 @@ struct StudyPortalApp: App {
                 // View ▸ Show Chat / Hide Chat ⌘J on Today, Mail, a course, Search and Review (its Tutor
                 // tab), only with Claude Code.
                 ChatCommands()
+                // Format (M6): the note editor's paragraph styles, lists and marks.
+                NoteFormatCommands()
             }
         }
 

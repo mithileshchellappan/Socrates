@@ -9,8 +9,8 @@ import StudyUI
 import SwiftUI
 
 /// The main window's sidebar (mockups 01, 03, 05, 07, 08, 10): Today, Calendar, Mail (unread count;
-/// on Mail, its lists under it: Inbox, the courses, University, Newsletters, Drafts, Sent),
-/// Search; then the courses as flat rows, on the mockups' 29 pt pitch. Courses start closed (01,
+/// on Mail, its lists under it: Inbox, the courses, University, Newsletters, Drafts, Sent), Notes
+/// (M6; on Notes, All Notes and each course with notes under it, mockup 04), Search; then the courses as flat rows, on the mockups' 29 pt pitch. Courses start closed (01,
 /// 07). On a lecture's screen every course with lectures opens to them ("L2 · Virtualization &
 /// IaaS", Tue 13 Oct) and its next session in secondary text ("L3", "Mon 19 Oct, 12:15") (03); on a
 /// course's screen that course shows its own screens instead: Lectures (count), Slides, Notes,
@@ -40,6 +40,8 @@ struct SidebarView: View {
             }
             .count()
     ) private var unreadMail = 0
+    /// The courses that have notes (M6: the Notes row's children; one id per note, folded below).
+    @FetchAll(Note.where { $0.courseID.isNot(nil) }.select(\.courseID)) private var noteCourseIDs: [Course.ID?]
     /// The courses opened with their chevron, as comma-separated IDs (kept per window).
     @SceneStorage("sidebar.openCourses") private var openCourses = ""
     /// The Courses section, folded with its header's chevron (kept per window).
@@ -120,6 +122,24 @@ struct SidebarView: View {
                         }
                     }
                 }
+                if item == .notesRow, selection?.isNotes == true {
+                    // Mockup 04 (DESIGN 6.2): All Notes, then each course with notes; no counts.
+                    NavigationLink(value: SidebarItem.notes(.all)) {
+                        SidebarRowLabel(String(localized: "All Notes")) {
+                            Image(systemName: SidebarItem.notes(.all).systemImage)
+                                .foregroundStyle(.tint)
+                        }
+                        .padding(.leading, courseScreenIndent)
+                    }
+                    ForEach(notesCourses) { course in
+                        NavigationLink(value: SidebarItem.notes(.course(course.id))) {
+                            SidebarRowLabel(course.name) {
+                                CourseDot(hex: course.colorHex, size: 9)
+                            }
+                            .padding(.leading, courseScreenIndent)
+                        }
+                    }
+                }
             }
 
             // The header's chevron folds the courses; a drag of files opens them for their rows.
@@ -197,6 +217,12 @@ struct SidebarView: View {
         .onChange(of: center.predictedCourseID) { _, courseID in
             followDrag(to: courseID)
         }
+    }
+
+    /// The courses with notes, in course order (the Notes row's children).
+    private var notesCourses: [Course] {
+        let ids = Set(noteCourseIDs.compactMap(\.self))
+        return courses.filter { ids.contains($0.id) }
     }
 
     /// Mail's lists in mockup 05's order: Inbox; the courses; University, Newsletters; Drafts, Sent.

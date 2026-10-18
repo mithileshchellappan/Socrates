@@ -71,6 +71,8 @@ enum ParityMode {
         var query = ""
         var reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)?
         var mailSelection: MailMessage.ID?
+        /// The note selected on Notes (M6).
+        var noteSelection: Note.ID?
         /// The chat inspector shown (Today, Mail, a course, Search; on a lecture Review's Tutor tab;
         /// needs Claude Code available).
         var showsChat = false
@@ -526,7 +528,8 @@ struct ParityRootView: View {
             if let launch {
                 RootView(
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
-                    mailSelection: launch.mailSelection, showsChat: launch.showsChat
+                    mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
+                    showsChat: launch.showsChat
                 )
                 .environment(\.reviewInspectorTab, launch.reviewInspectorTab)
                 .environment(model)

@@ -44,6 +44,10 @@ struct DetailView: View {
             // The window's search field ("Search mail") filters the list.
             MailView(scope: scope, selection: mailSelection, query: query, now: model.fixedNow)
                 .chatInspector(isPresented: showsChat, context: chatContext(scope), showsToolbarItem: false)
+        case .notesRow:
+            notes(.all)
+        case .notes(let scope):
+            notes(scope)
         case .search:
             // The Tutor toggle is placed by the window's toolbar, after the search field (RootView).
             SearchResultsView(query: query, submits: searchSubmits, context: $searchContext)
@@ -74,8 +78,8 @@ struct DetailView: View {
             .modifier(CourseChat(courseID: id, showsChat: showsChat))
             .id(id)
         case .courseNotes(let id):
-            // M6: the Notes screen scoped to the course (DESIGN 8.4); the Notes row after Mail and
-            // All Notes come with the M6 integration.
+            // The Notes screen scoped to the course (DESIGN 8.4), as under the Notes row; a course's
+            // screens have no search field.
             NotesView(scope: .course(id), selection: noteSelection)
                 .modifier(CourseChat(courseID: id, showsChat: showsChat))
                 .id(id)
@@ -92,6 +96,14 @@ struct DetailView: View {
                 .id(id)
             }
         }
+    }
+
+    /// Mockup 04: All Notes or a course's notes under the Notes row; the window's search field
+    /// ("Search notes") filters the list in place. One screen per scope (it fetches its notes for
+    /// the scope).
+    private func notes(_ scope: NotesScope) -> some View {
+        NotesView(scope: scope, selection: noteSelection, query: query)
+            .id(scope)
     }
 
     /// The open message the chat's next message carries (in Drafts the selection is a draft).

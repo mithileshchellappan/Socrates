@@ -46,12 +46,14 @@ struct RootView: View {
         query: String = "",
         reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil,
         mailSelection: MailMessage.ID? = nil,
+        noteSelection: Note.ID? = nil,
         showsChat: Bool = false
     ) {
         _selection = State(initialValue: selection?.screen)
         _query = State(initialValue: query)
         _reviewTarget = State(initialValue: reviewTarget)
         _mailSelection = State(initialValue: mailSelection)
+        _noteSelection = State(initialValue: noteSelection)
         _showsChat = SceneStorage(wrappedValue: showsChat, "chat.shown")
     }
 
@@ -184,15 +186,16 @@ struct RootView: View {
             .toolbar { trailingItems(center: center) }
         }
         .onChange(of: query) { _, text in
-            // Typing on Mail filters the mail list ("Search mail"); elsewhere it opens Search.
-            guard selection?.isMail != true else { return }
+            // Typing on Mail or Notes filters its list ("Search mail", "Search notes"); elsewhere
+            // it opens Search.
+            guard searchOwner == .library else { return }
             if !text.trimmingCharacters(in: .whitespaces).isEmpty, selection != .search { selection = .search }
         }
         .onChange(of: selection) { old, item in
             history.visit(from: old, to: item)
-            // Mail's search and the library's are different questions: entering or leaving Mail
-            // starts with an empty field.
-            if (old?.isMail == true) != (item?.isMail == true), !query.isEmpty { query = "" }
+            // Mail's search, Notes' and the library's are different questions: entering or leaving
+            // Mail or Notes starts with an empty field.
+            if (old ?? .today).searchOwner != (item ?? .today).searchOwner, !query.isEmpty { query = "" }
             // Another list starts with nothing selected (a Drafts selection is a draft's id),
             // unless the message was asked for with the list.
             if keepsMailSelection {
@@ -208,9 +211,19 @@ struct RootView: View {
 
     private var isToday: Bool { (selection ?? .today) == .today }
 
-    /// "Search mail" on Mail (mockup 05), the whole library elsewhere (mockup 01).
+    /// Whose question the search field holds on this screen (Mail and Notes: their own list's).
+    private var searchOwner: SidebarItem.SearchOwner {
+        (selection ?? .today).searchOwner
+    }
+
+    /// "Search mail" on Mail (mockup 05), "Search notes" on Notes (04), the whole library
+    /// elsewhere (01).
     private var searchPrompt: LocalizedStringKey {
-        selection?.isMail == true ? "Search mail" : "Search lectures, notes, mail"
+        switch searchOwner {
+        case .mail: "Search mail"
+        case .notes: "Search notes"
+        case .library: "Search lectures, notes, mail"
+        }
     }
 
     /// The Mail screen's actions with "Set Up Mail…" opening Settings on its Accounts tab.
@@ -234,11 +247,11 @@ struct RootView: View {
         return item.isTopLevel && item != .calendar
     }
 
-    /// ↩ in the search field: the Search screen opens its selected (or first) hit. (On Mail the
-    /// list filters as the student types.)
+    /// ↩ in the search field: the Search screen opens its selected (or first) hit. (On Mail and
+    /// Notes the list filters as the student types.)
     private func submitSearch() {
         let text = query.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, selection?.isMail != true else { return }
+        guard !text.isEmpty, searchOwner == .library else { return }
         selection = .search
         searchSubmits += 1
     }
@@ -264,7 +277,11 @@ struct RootView: View {
         #if os(macOS)
         if showsSearchField {
             ToolbarItem(placement: .primaryAction) {
-                ToolbarSearchField(text: $query, prompt: searchPrompt, focused: $searchFocused, submit: submitSearch)
+                // Notes' field is narrower (mockup 04: 180 pt).
+                ToolbarSearchField(
+                    text: $query, prompt: searchPrompt, focused: $searchFocused, submit: submitSearch,
+                    width: searchOwner == .notes ? ToolbarSearchField.notesWidth : ToolbarSearchField.width
+                )
             }
         }
         #endif
@@ -388,12 +405,10 @@ struct RootView: View {
             keepsMailSelection = selection != .mailScope(scope)
             selection = .mailScope(scope)
         case .notes(let scope, let note):
-            // M6 contract: a course's Notes screen; the Notes row (All Notes) comes with the M6
-            // integration (docs/plan-m6.md §7).
-            if case .course(let id) = scope {
-                noteSelection = note
-                selection = .courseNotes(id)
-            }
+            // The Notes row's All Notes or its course child, with the note selected (Search's hits
+            // of lecture and course notes).
+            if let note { noteSelection = note }
+            selection = .notes(scope)
         case .lecture(let id, var target):
             // A fresh request: opening the same hit again moves there again.
             target.request = UUID()
