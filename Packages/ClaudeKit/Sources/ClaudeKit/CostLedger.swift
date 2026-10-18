@@ -6,8 +6,9 @@ public struct CallContext: Sendable, Hashable {
     /// e.g. "correction", "routing", "tutor".
     public var purpose: String
     public var lectureID: UUID?
-    /// Who waits for the answer (M3.5). A backend with one queue (Claude Code: one process at a
-    /// time) runs interactive calls first. The Messages API ignores it.
+    /// Who waits for the answer (M3.5). Claude Code (ma): an interactive call takes the one
+    /// interactive process slot and never waits behind background calls, which share
+    /// `ClaudeCodeConfiguration.backgroundSlots` slots. The Messages API ignores it.
     public var priority: CallPriority
     /// The conversation a tool loop continues (M3.5). A backend that keeps conversations itself
     /// (Claude Code: one CLI session per conversation) uses it; the Messages API ignores it.
