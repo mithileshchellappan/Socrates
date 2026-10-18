@@ -21,6 +21,10 @@ struct ChatTranscript: Equatable {
     var entries: [Entry] = []
     /// The stored turns it was read from (live text follows exactly this many).
     var turnCount = 0
+    /// M5: every web page a tool result of the conversation names (WebSearch, WebFetch, the
+    /// verified further reading of list_study_items), as `CitationCheck.normalized` keys: a
+    /// `[[web …]]` marker shows only for one of these.
+    var webPages: Set<String> = []
 
     init() {}
 
@@ -36,6 +40,9 @@ struct ChatTranscript: Equatable {
         for turn in turns {
             guard let message = try? MessageParam(json: JSONValue.parse(turn.message)) else { continue }
             let blocks = message.content.blocks
+            for block in blocks where block.type == "tool_result" || block.type.hasSuffix("_tool_result") {
+                webPages.formUnion(CitationCheck.webPages(in: block.json))
+            }
             switch turn.role {
             case .user:
                 // The student's words are the last text block; context blocks (and the results of

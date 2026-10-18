@@ -5,11 +5,33 @@ import SwiftUI
 @MainActor
 struct ChatInspectorFocus {
     var isPresented: Bool
-    var toggle: () -> Void
+    var toggle: @MainActor () -> Void
 }
 
 extension FocusedValues {
     @Entry var chatInspector: ChatInspectorFocus?
+}
+
+extension View {
+    /// M5: a screen that shows the chat its own way (Review's Tutor tab) publishes View ▸ Show
+    /// Chat / Hide Chat ⌘J with this: `isPresented` is whether the chat is on screen, `toggle`
+    /// shows or hides it. Only while Claude Code is available (`ChatActions.isAvailable`).
+    public func chatCommand(isPresented: Bool, toggle: @escaping @MainActor () -> Void) -> some View {
+        modifier(ChatCommandPublisher(isPresented: isPresented, toggle: toggle))
+    }
+}
+
+private struct ChatCommandPublisher: ViewModifier {
+    let isPresented: Bool
+    let toggle: @MainActor () -> Void
+    @Environment(\.chatActions) private var actions
+
+    func body(content: Content) -> some View {
+        content.focusedSceneValue(
+            \.chatInspector,
+            actions.isAvailable ? ChatInspectorFocus(isPresented: isPresented, toggle: toggle) : nil
+        )
+    }
 }
 
 /// View ▸ Show Chat / Hide Chat ⌘J (reserved for it in docs/DESIGN.md §6.8). Only on a screen
