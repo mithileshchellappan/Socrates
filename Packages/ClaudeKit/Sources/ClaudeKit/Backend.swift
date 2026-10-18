@@ -108,12 +108,18 @@ public protocol ClaudeBackend: Sendable {
         handler: @escaping ToolHandler,
         onEvent: @escaping @Sendable (ToolLoopEvent) async -> Void
     ) async throws -> ToolLoopResult
+
+    /// ma: how many background calls may run at once from now on (nil: the backend's default).
+    /// The app lowers it under memory pressure. Backends without slots ignore it.
+    func setBackgroundSlotLimit(_ limit: Int?) async
 }
 
 extension ClaudeBackend {
     public func refreshAvailability() async -> ClaudeAvailability {
         await availability()
     }
+
+    public func setBackgroundSlotLimit(_ limit: Int?) async {}
 }
 
 /// A backend that can never run (iOS and iPadOS, where the AI does not run; previews).
