@@ -31,7 +31,9 @@ public struct ChatActions: Sendable {
     /// then reads "Paused until 17:20".
     public var pausedUntil: Date?
     /// Sends the student's words with the screen's context to a conversation (nil: starts a new
-    /// `mail_chat`); returns the conversation's id at once, the answer streams in the background.
+    /// one of `context.kind`); returns the conversation's id at once, the answer streams in the
+    /// background. M5: the app routes by `context.kind`: `mail_chat` → `MailChat.send`, `tutor` →
+    /// `TutorChat.send`.
     public var send: @Sendable (_ text: String, _ context: ChatContext, _ conversation: AgentConversation.ID?) async throws -> AgentConversation.ID
     /// Stops the agent working in a conversation.
     public var stop: @Sendable (AgentConversation.ID) async -> Void

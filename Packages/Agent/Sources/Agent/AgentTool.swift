@@ -60,37 +60,64 @@ public enum ToolSetError: Error, Hashable, CustomStringConvertible {
     /// A conversation that reads untrusted content may only stage proposals, never write (PRD trust rule).
     case untrustedContentWithWriteTool(reader: String, writer: String)
     case duplicateName(String)
+    /// M5: the web tools (Claude Code's WebSearch / WebFetch) never sit beside a tool that reads
+    /// untrusted content (mail) or a `.write` tool (PRD: the web agent never sees mail).
+    case webToolsBeside(String)
+    /// M5: only `.webSearch` / `.webFetch` are web tools.
+    case notAWebTool(String)
 
     public var description: String {
         switch self {
         case .untrustedContentWithWriteTool(let reader, let writer):
             "\(reader) reads untrusted content, so \(writer) may not write in the same conversation"
         case .duplicateName(let name): "two tools are called \(name)"
+        case .webToolsBeside(let name): "\(name) reads untrusted content or writes, so the web tools may not be in the same conversation"
+        case .notAWebTool(let name): "\(name) is not a web tool"
         }
     }
 }
 
 /// The fixed tools of one conversation kind. Checked when built: a set with a tool that reads
 /// untrusted content (mail, web, files) and any `.write` tool is refused (`.verifiedWrite`,
-/// `.draft`, `.stage` and `.read` may sit beside it).
+/// `.draft`, `.stage` and `.read` may sit beside it). M5: `webTools` (`.webSearch` / `.webFetch`,
+/// run by Claude Code itself, or by the API as server tools) are refused beside any tool that
+/// reads untrusted content and beside any `.write` tool.
 public struct ToolSet: Sendable {
     public let kind: ConversationKind
     public let tools: [AgentTool]
+    /// M5: Claude Code's WebSearch / WebFetch, sent after the custom tools.
+    public let webTools: [Tool]
 
-    public init(kind: ConversationKind, tools: [AgentTool]) throws {
+    public init(kind: ConversationKind, tools: [AgentTool], webTools: [Tool] = []) throws {
         if let reader = tools.first(where: \.readsUntrustedContent), let writer = tools.first(where: { $0.effect == .write }) {
             throw ToolSetError.untrustedContentWithWriteTool(reader: reader.name, writer: writer.name)
         }
+        for web in webTools {
+            switch web {
+            case .webSearch, .webFetch: break
+            default: throw ToolSetError.notAWebTool(web.name)
+            }
+        }
+        if !webTools.isEmpty, let tool = tools.first(where: { $0.readsUntrustedContent || $0.effect == .write }) {
+            throw ToolSetError.webToolsBeside(tool.name)
+        }
         var names: Set<String> = []
-        for tool in tools where !names.insert(tool.name).inserted {
-            throw ToolSetError.duplicateName(tool.name)
+        for name in tools.map(\.name) + webTools.map(\.name) where !names.insert(name).inserted {
+            throw ToolSetError.duplicateName(name)
         }
         self.kind = kind
         self.tools = tools
+        self.webTools = webTools
     }
 
-    /// The definitions sent with every request of the conversation, in a fixed order.
+    /// The custom tools' definitions sent with every request of the conversation, in a fixed
+    /// order (the web tools follow them: `ConversationSpec.requestTools`).
     public var definitions: [Tool] { tools.map(\.tool) }
+
+    /// The same set with `more` custom tools after these (checked again).
+    func adding(_ more: [AgentTool]) throws -> ToolSet {
+        try ToolSet(kind: kind, tools: tools + more, webTools: webTools)
+    }
 
     public func tool(named name: String) -> AgentTool? { tools.first { $0.name == name } }
 
@@ -141,11 +168,32 @@ public struct ConversationSpec: Sendable {
     }
 
     public var purpose: String { AgentModule.purpose(of: kind) }
+
+    /// M5: the web tools of this kind (`ToolSet.webTools`; the tutor's `.webSearch`, `.webFetch`).
+    public var webTools: [Tool] { tools.webTools }
+
+    /// What a request of this kind sends as `tools`: the custom tools, then the web tools.
+    public var requestTools: [Tool] { tools.definitions + tools.webTools }
 }
 
 /// The courses a system prompt names.
 public struct CourseList: Sendable {
     let tokens: CourseTokens
+
+    /// M5: the courses in sidebar order with their tokens (the Tutor package's tools and context
+    /// blocks name courses as the deadline tools do).
+    public static func load(_ database: any DatabaseReader) async throws -> CourseList {
+        CourseList(tokens: try await CourseTokens.load(database))
+    }
+
+    /// The courses in sidebar order.
+    public var courses: [Course] { tokens.entries.map(\.course) }
+
+    /// "DC" for the course with `courseID`.
+    public func token(for courseID: Course.ID?) -> String? { tokens.token(for: courseID) }
+
+    /// The course a token, name, short name or id names.
+    public func course(_ reference: String?) -> Course? { tokens.course(reference) }
 
     /// "Fri 16 Oct 2026, 15:02" in the university's time zone: how a system prompt states when the conversation
     /// started (M3.5: the mail chat's prompt is built in MailIntelligence).

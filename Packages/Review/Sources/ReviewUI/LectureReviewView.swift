@@ -1,4 +1,5 @@
 import Capture
+import ChatUI
 import Review
 import StudyCore
 import StudyUI
@@ -186,6 +187,7 @@ struct ReviewScreen: View {
             }
         }
         .background(ReviewActionsPublisher(model: model))
+        .background(ReviewChatCommand(model: model))
         .onChange(of: timeline, initial: true) { _, timeline in
             model.session.update(timeline: timeline)
         }
@@ -208,6 +210,28 @@ struct ReviewScreen: View {
     /// Room under the rail and transcript: the player, its distance from the bottom edge and 8 pt
     /// above it.
     static let playerClearance: CGFloat = PlayerBar.height + playerBottom + 8
+}
+
+/// M5: View ▸ Show Chat / Hide Chat ⌘J on a review: Show Chat opens the inspector on the Tutor
+/// tab, Hide Chat hides the inspector. Only with Claude Code (`ChatActions.isAvailable`).
+private struct ReviewChatCommand: View {
+    let model: ReviewModel
+
+    var body: some View {
+        let model = model
+        let isPresented = model.showsInspector && model.inspectorTab == .tutor
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .chatCommand(isPresented: isPresented) {
+                if model.showsInspector && model.inspectorTab == .tutor {
+                    model.showsInspector = false
+                } else {
+                    model.inspectorTab = .tutor
+                    model.showsInspector = true
+                }
+            }
+    }
 }
 
 /// The window title (mockup 03): the lecture in the title style, course and day under it.

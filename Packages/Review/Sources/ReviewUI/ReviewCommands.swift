@@ -191,7 +191,7 @@ struct ReviewActionsPublisher: View {
             isFollowing: session.isFollowing,
             canSetSlideStart: model.canSetAnchor && session.shownPage != nil,
             isReviewed: isReviewed,
-            isEditingText: model.isEditingText || isSearchFieldFocused,
+            isEditingText: model.isEditingText || model.isComposingChat || isSearchFieldFocused,
             playPause: { session.togglePlayPause() },
             back: { session.skip(by: -LecturePlayer.skipInterval) },
             forward: { session.skip(by: LecturePlayer.skipInterval) },
