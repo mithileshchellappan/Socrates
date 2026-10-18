@@ -4,9 +4,11 @@ import StudyUI
 import SwiftUI
 
 /// The inspector: "This slide | Whole lecture" and the hide button in one 52 pt header row level
-/// with the window toolbar, a hairline, then the pane. This slide holds your notes for the slide
-/// on screen (editable, autosaved); Whole lecture lists every note of the lecture by slide. AI
-/// blocks (summary, further reading, exam hints, only said in class) arrive in M4.
+/// with the window toolbar, a hairline, then the pane. This slide holds the slide's summary, your
+/// notes for the slide on screen (editable, autosaved) and its further reading, then, under a
+/// hairline, the lecture-wide exam hints and things only said in class (3 rows each, then "Show N
+/// more"); Whole lecture holds the lecture's summary, every exam hint, everything only said in
+/// class by category, every further reading and every note of the lecture by slide (M4).
 ///
 /// In the window the header is a toolbar item: macOS 26 lays the toolbar out as one row whose
 /// trailing items pack against the window's edge, with no section of its own over the inspector.
@@ -28,6 +30,7 @@ struct ReviewInspector: View {
     @State private var listHeight: CGFloat = 0
     private let notesQuery: FetchAll<Note>
     private var notes: [Note] { notesQuery.wrappedValue }
+    private let annotationsQuery: FetchAll<Annotation>
 
     init(model: ReviewModel) {
         self.model = model
@@ -36,6 +39,7 @@ struct ReviewInspector: View {
             Note.where { $0.lectureID.eq(lectureID) }.order { ($0.pageNumber, $0.createdAt) },
             database: model.services.database
         )
+        annotationsQuery = .studyItems(of: model)
     }
 
     var body: some View {
@@ -47,14 +51,15 @@ struct ReviewInspector: View {
             }
             Divider()
             ScrollView {
+                let items = StudyItems(annotationsQuery.wrappedValue)
                 if model.deck == nil {
-                    LectureOnlyNotesPane(model: model, notes: notes)
+                    LectureOnlyNotesPane(model: model, notes: notes, items: items)
                 } else {
                     switch model.inspectorTab {
                     case .slide:
-                        SlideNotesPane(model: model, notes: notes, minHeight: listHeight)
+                        SlideNotesPane(model: model, notes: notes, items: items, minHeight: listHeight)
                     case .lecture:
-                        LectureNotesPane(model: model, notes: notes)
+                        LectureNotesPane(model: model, notes: notes, items: items)
                     }
                 }
             }
@@ -148,6 +153,9 @@ private struct InspectorTabPicker: View {
 private struct SlideNotesPane: View {
     let model: ReviewModel
     let notes: [Note]
+    /// The study pass's rows (M4): the slide's summary and further reading, then the lecture-wide
+    /// exam hints and things only said in class.
+    let items: StudyItems
     /// The list's visible height, which the pane fills.
     var minHeight: CGFloat = 0
     /// The slide whose notes are being typed (nil: follow the slide on screen).
@@ -161,10 +169,31 @@ private struct SlideNotesPane: View {
 
     var body: some View {
         let page = typingOn.map(\.page) ?? model.session.shownPage
-        VStack(alignment: .leading, spacing: 7) {
-            SectionLabel("Your notes")
-            SlideNoteEditorView(model: model, page: page, notes: notes.filter { $0.pageNumber == page }, focusRequest: focusRequest)
-                .id(page)
+        VStack(alignment: .leading, spacing: 14) {
+            if let page, let summary = items.slideSummaries[page] {
+                SummaryBlock(model: model, summary: summary)
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                SectionLabel("Your notes")
+                SlideNoteEditorView(model: model, page: page, notes: notes.filter { $0.pageNumber == page }, focusRequest: focusRequest)
+                    .id(page)
+            }
+            if let page {
+                let readings = items.furtherReading(page: page)
+                if !readings.isEmpty {
+                    FurtherReadingBlock(model: model, readings: Array(readings.prefix(2)))
+                }
+            }
+            // Lecture-wide (mockup 03): the admission rules at 0:37 never hide behind slide 16.
+            if items.hasLectureWideItems {
+                Hairline()
+                if !items.examHints.isEmpty {
+                    ExamHintsBlock(model: model, hints: items.examHints, limit: 3)
+                }
+                if !items.saidInClass.isEmpty {
+                    SaidInClassBlock(model: model, items: items.saidInClass, limit: 3)
+                }
+            }
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
@@ -349,7 +378,7 @@ private struct NoteAtRest: View {
 
 /// Words left to right, wrapping at the proposed width; a `LineBreak` view starts a new line.
 /// Each line is centred on its tallest item (the chip), lines `lineSpacing` apart.
-private struct NoteFlowLayout: Layout {
+struct NoteFlowLayout: Layout {
     /// The note text's line pitch (callout with 2 pt line spacing) and a space's width.
     var lineSpacing: CGFloat = 2
     var wordSpacing: CGFloat = 3.3
@@ -407,14 +436,29 @@ private struct NoteFlowLayout: Layout {
 private struct LectureOnlyNotesPane: View {
     let model: ReviewModel
     let notes: [Note]
+    let items: StudyItems
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("Your notes")
-            SlideNoteEditorView(model: model, page: nil, notes: notes.filter { $0.pageNumber == nil })
-            ForEach(notes.filter { $0.pageNumber != nil && !$0.isBlank }) { note in
-                NoteBody(blocks: note.blocks)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 14) {
+            if let summary = items.lectureSummary {
+                SummaryBlock(model: model, summary: summary)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                SectionLabel("Your notes")
+                SlideNoteEditorView(model: model, page: nil, notes: notes.filter { $0.pageNumber == nil })
+                ForEach(notes.filter { $0.pageNumber != nil && !$0.isBlank }) { note in
+                    NoteBody(blocks: note.blocks)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if items.hasLectureWideItems {
+                Hairline()
+                if !items.examHints.isEmpty {
+                    ExamHintsBlock(model: model, hints: items.examHints)
+                }
+                if !items.saidInClass.isEmpty {
+                    SaidInClassBlock(model: model, items: items.saidInClass, groups: items.saidInClassByCategory)
+                }
             }
         }
         .padding(.horizontal, 14)
@@ -427,20 +471,37 @@ private struct LectureOnlyNotesPane: View {
 private struct LectureNotesPane: View {
     let model: ReviewModel
     let notes: [Note]
+    /// The study pass's rows (M4): the lecture's summary, every exam hint, everything only said in
+    /// class by category, every further reading.
+    let items: StudyItems
 
     var body: some View {
         let visible = notes.filter { !$0.isBlank }
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("Your notes")
-            ForEach(visible) { note in
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    if let page = note.pageNumber {
-                        SlideChip(page: page) {
-                            Task { await model.session.selectThumbnail(page: page) }
+        VStack(alignment: .leading, spacing: 14) {
+            if let summary = items.lectureSummary {
+                SummaryBlock(model: model, summary: summary)
+            }
+            if !items.examHints.isEmpty {
+                ExamHintsBlock(model: model, hints: items.examHints)
+            }
+            if !items.saidInClass.isEmpty {
+                SaidInClassBlock(model: model, items: items.saidInClass, groups: items.saidInClassByCategory)
+            }
+            if !items.furtherReading.isEmpty {
+                FurtherReadingBlock(model: model, readings: items.furtherReading, showsSlides: true)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                SectionLabel("Your notes")
+                ForEach(visible) { note in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        if let page = note.pageNumber {
+                            SlideChip(page: page) {
+                                Task { await model.session.selectThumbnail(page: page) }
+                            }
                         }
+                        NoteBody(blocks: note.blocks)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    NoteBody(blocks: note.blocks)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }

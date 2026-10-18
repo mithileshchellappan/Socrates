@@ -18,6 +18,8 @@ struct TranscriptZone: View {
     private var segments: [TranscriptSegment] { segmentsQuery.wrappedValue }
     private let markersQuery: FetchAll<SlideEvent>
     private var markers: [SlideEvent] { markersQuery.wrappedValue }
+    /// The study pass's rows: a line the professor is quoted from ends with their pin (M4).
+    private let annotationsQuery: FetchAll<Annotation>
 
     init(model: ReviewModel, timeline: SlideTimeline) {
         self.model = model
@@ -31,6 +33,7 @@ struct TranscriptZone: View {
             SlideEvent.where { $0.recordingID.eq(recordingID) && $0.kind.eq(SlideEventKind.manual) }.order(by: \.sampleTime),
             database: model.services.database
         )
+        annotationsQuery = .studyItems(of: model)
     }
 
     var body: some View {
@@ -43,7 +46,8 @@ struct TranscriptZone: View {
                     model: model,
                     sections: timeline.sections(of: segments),
                     markers: markers,
-                    language: model.lecture.language
+                    language: model.lecture.language,
+                    items: StudyItems(annotationsQuery.wrappedValue)
                 )
             }
         }
@@ -72,9 +76,11 @@ private struct TranscriptList: View {
     let sections: [TranscriptSection]
     let markers: [SlideEvent]
     let language: String
+    let items: StudyItems
 
     var body: some View {
         let rate = model.recording?.sampleRate ?? 48_000
+        let recordingID = model.recording?.id
         let lined = LinedSection.make(sections)
         let lineIDs = TranscriptLines.lineIDs(lined.flatMap(\.lines))
         ScrollViewReader { proxy in
@@ -94,6 +100,9 @@ private struct TranscriptList: View {
                                 markers: AnchorEditor.markers(
                                     in: markers, from: line.start - 0.25, to: max(line.end, line.start + 0.5),
                                     sampleRate: rate
+                                ),
+                                professorItem: items.professorItem(
+                                    recordingID: recordingID, segmentIDs: line.segmentIDs, start: line.start, end: line.end
                                 )
                             )
                             .id(line.id)
@@ -213,29 +222,49 @@ private struct SectionDivider: View {
 }
 
 /// "36:57  So the hypervisor traps it, …" (a sentence; mockup 03). The current line is tinted;
-/// low-confidence words are dotted; a language tag appears only when the line is not in the
-/// lecture's language. Click plays from the line.
+/// low-confidence words are dotted; a corrected word reads ~~old~~ new (M4); a line the professor
+/// is quoted from ends with their 16 pt pin and its card; a language tag appears only when the
+/// line is not in the lecture's language. Click plays from the line.
 private struct TranscriptRow: View {
     let model: ReviewModel
     let line: TranscriptLine
     let lineIDs: [UUID: UUID]
     let language: String
     let markers: [SlideEvent]
+    /// The exam hint or highlight quoted from this line.
+    var professorItem: Annotation?
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let isCurrent = model.player?.currentSegmentID.flatMap { lineIDs[$0] } == line.id
+        let pieces = TranscriptText.pieces(line)
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(TimeText.clock(line.start))
                 .font(.subheadline.monospaced())
                 .monospacedDigit()
                 .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                 .frame(width: 54, alignment: .leading)
-            Text(TranscriptText.attributed(line))
-                .font(.body)
-                .lineSpacing(2.5)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if let professorItem {
+                    QuotedLineText(pieces: pieces) {
+                        AnnotationPin(.professor, style: .inline) {
+                            ProfessorPinCard(model: model, item: professorItem)
+                        }
+                        .contextMenu {
+                            Button("Hide") { model.hide(professorItem.id) }
+                        }
+                    }
+                } else if pieces.contains(where: { $0.kind == .inserted }) {
+                    TranscriptText.text(pieces)
+                        .textRenderer(CorrectionRenderer(fill: TranscriptText.insertedFill(colorScheme)))
+                } else {
+                    TranscriptText.text(pieces)
+                }
+            }
+            .font(.body)
+            .lineSpacing(2.5)
+            .frame(maxWidth: .infinity, alignment: .leading)
             if !line.language.isEmpty, !language.isEmpty, line.language != language {
                 Text(line.language.uppercased())
                     .font(.caption2.weight(.semibold))
@@ -281,6 +310,58 @@ private struct TranscriptRow: View {
             }
             .disabled(model.recording == nil)
         }
+        if line.segments.contains(where: { !$0.activePatches.isEmpty }) {
+            Button("Revert Correction") {
+                model.revertCorrections(line)
+            }
+        }
+    }
+}
+
+/// A line the professor is quoted from: its words flow like the text would wrap, and the pin
+/// sits right after the last word (mockup `.seg .pin.inline`).
+private struct QuotedLineText<Pin: View>: View {
+    let pieces: [TranscriptText.Piece]
+    @ViewBuilder let pin: Pin
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        NoteFlowLayout(lineSpacing: 2.5, wordSpacing: 3.6) {
+            ForEach(Array(TranscriptText.words(pieces).enumerated()), id: \.offset) { _, word in
+                switch word.kind {
+                case .plain:
+                    Text(word.text)
+                case .deleted:
+                    TranscriptText.deleted(word.text)
+                case .inserted:
+                    Text(word.text)
+                        .padding(.horizontal, 2)
+                        .background(TranscriptText.insertedFill(colorScheme), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        .padding(.horizontal, -2)
+                }
+            }
+            pin
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Marks an inserted correction in a line's `Text`, for `CorrectionRenderer`.
+struct InsertedRun: TextAttribute {}
+
+/// Draws a line with its inserted corrections on the green soft fill (radius 3, 2 pt past the
+/// word on either side), under the glyphs.
+struct CorrectionRenderer: TextRenderer {
+    let fill: Color
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        for line in layout {
+            for run in line where run[InsertedRun.self] != nil {
+                let rect = run.typographicBounds.rect.insetBy(dx: -2, dy: 0)
+                context.fill(Path(roundedRect: rect, cornerRadius: 3, style: .continuous), with: .color(fill))
+            }
+            context.draw(line)
+        }
     }
 }
 
@@ -315,27 +396,150 @@ enum TranscriptText {
     static let doubtColor = Color(uiColor: .tertiaryLabel)
     #endif
 
-    /// A line's segments one space apart, each keeping its dotted doubts, with the transcriber's
-    /// cut-off marks as prose (`cleaningCutOffs`).
-    static func attributed(_ line: TranscriptLine) -> AttributedString {
-        var result = AttributedString()
-        for segment in line.segments where !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if !result.characters.isEmpty { result += AttributedString(" ") }
-            result += attributed(segment, trimmed: true)
+    /// A run of a line as drawn: plain text (with its doubt dots), or a correction's old word
+    /// (tertiary, struck through in red) and new word (on green soft). Corrected words carry no
+    /// doubt dots.
+    struct Piece: Hashable {
+        enum Kind: Hashable {
+            case plain
+            case deleted
+            case inserted
         }
-        cleanCutOffs(&result)
-        return result
+
+        var text: AttributedString
+        var kind: Kind
+    }
+
+    /// A line's segments one space apart, each keeping its dotted doubts and drawing its active
+    /// patches (`TranscriptPatch.runs` over `original_text`, M4), with the transcriber's cut-off
+    /// marks as prose (`cleanCutOffs`). Adjacent plain runs are merged.
+    static func pieces(_ line: TranscriptLine) -> [Piece] {
+        var pieces: [Piece] = []
+        func append(_ piece: Piece) {
+            guard !piece.text.characters.isEmpty else { return }
+            if piece.kind == .plain, let last = pieces.last, last.kind == .plain {
+                pieces[pieces.count - 1].text += piece.text
+            } else {
+                pieces.append(piece)
+            }
+        }
+        for segment in line.segments {
+            let segmentPieces = TranscriptText.pieces(segment)
+            guard !segmentPieces.isEmpty else { continue }
+            if !pieces.isEmpty { append(Piece(text: AttributedString(" "), kind: .plain)) }
+            segmentPieces.forEach(append)
+        }
+        for index in pieces.indices where pieces[index].kind == .plain {
+            replaceDashes(&pieces[index].text)
+        }
+        if let last = pieces.indices.last, pieces[last].kind == .plain {
+            endWithEllipsis(&pieces[last].text)
+        }
+        return pieces
+    }
+
+    /// One segment's pieces, trimmed. Without patches it reads its `text` as before M4.
+    static func pieces(_ segment: TranscriptSegment) -> [Piece] {
+        guard let patches = segment.patches, !patches.isEmpty else {
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? [] : [Piece(text: dotted(text, words: segment.words), kind: .plain)]
+        }
+        let original = segment.originalText
+        let dotted = dotted(original, words: segment.words)
+        var pieces: [Piece] = []
+        var offset = 0
+        for run in TranscriptPatch.runs(patches, in: original) {
+            switch run {
+            case .text(let plain):
+                let start = dotted.characters.index(dotted.startIndex, offsetBy: offset)
+                let end = dotted.characters.index(start, offsetBy: plain.count)
+                pieces.append(Piece(text: AttributedString(dotted[start..<end]), kind: .plain))
+                offset += plain.count
+            case .corrected(let from, let to, _):
+                pieces.append(Piece(text: AttributedString(from), kind: .deleted))
+                pieces.append(Piece(text: AttributedString(" "), kind: .plain))
+                pieces.append(Piece(text: AttributedString(to), kind: .inserted))
+                offset += from.count
+            }
+        }
+        if let first = pieces.indices.first, pieces[first].kind == .plain {
+            trimLeading(&pieces[first].text)
+        }
+        if let last = pieces.indices.last, pieces[last].kind == .plain {
+            trimTrailing(&pieces[last].text)
+        }
+        return pieces.filter { !$0.text.characters.isEmpty }
+    }
+
+    /// The line as one `Text`: inserted corrections are tagged for `CorrectionRenderer`.
+    static func text(_ pieces: [Piece]) -> Text {
+        pieces.reduce(Text(verbatim: "")) { text, piece in
+            switch piece.kind {
+            case .plain:
+                return Text("\(text)\(Text(piece.text))")
+            case .deleted:
+                return Text("\(text)\(deleted(piece.text))")
+            case .inserted:
+                return Text("\(text)\(Text(piece.text).customAttribute(InsertedRun()))")
+            }
+        }
+    }
+
+    /// A correction's old word: tertiary, struck through in red.
+    static func deleted(_ text: AttributedString) -> Text {
+        Text(text)
+            .foregroundStyle(.tertiary)
+            .strikethrough(color: .red)
+    }
+
+    /// The fill under an inserted correction: green at 14 % (18 % in dark mode).
+    static func insertedFill(_ colorScheme: ColorScheme) -> Color {
+        Color.green.opacity(colorScheme == .dark ? 0.18 : 0.14)
+    }
+
+    /// The pieces cut into words (attributes kept), for a line that ends with a pin.
+    static func words(_ pieces: [Piece]) -> [Piece] {
+        var words: [Piece] = []
+        for piece in pieces {
+            let characters = piece.text.characters
+            var start: AttributedString.Index?
+            var index = characters.startIndex
+            while index < characters.endIndex {
+                let next = characters.index(after: index)
+                if characters[index].isWhitespace {
+                    if let begun = start {
+                        words.append(Piece(text: AttributedString(piece.text[begun..<index]), kind: piece.kind))
+                        start = nil
+                    }
+                } else if start == nil {
+                    start = index
+                }
+                index = next
+            }
+            if let begun = start {
+                words.append(Piece(text: AttributedString(piece.text[begun..<characters.endIndex]), kind: piece.kind))
+            }
+        }
+        return words
     }
 
     /// Whisper marks a broken-off phrase with "--" ("the guest can-- on the other side"): a
     /// spaced em dash inside the line ("the guest can — on the other side"), an ellipsis at its
     /// end ("in order…"). Display only; the transcript keeps its text.
     static func cleanCutOffs(_ text: inout AttributedString) {
+        replaceDashes(&text)
+        endWithEllipsis(&text)
+    }
+
+    static func replaceDashes(_ text: inout AttributedString) {
         while let range = text.range(of: "--") {
             let afterSpace = range.lowerBound > text.startIndex
                 && text.characters[text.characters.index(before: range.lowerBound)].isWhitespace
             text.replaceSubrange(range, with: AttributedString(afterSpace ? "—" : " —"))
         }
+    }
+
+    static func endWithEllipsis(_ text: inout AttributedString) {
         guard let dash = text.range(of: "—", options: .backwards),
               text.characters[dash.upperBound...].allSatisfy(\.isWhitespace)
         else { return }
@@ -346,14 +550,12 @@ enum TranscriptText {
         text.replaceSubrange(start..<text.endIndex, with: AttributedString("…"))
     }
 
-    static func attributed(_ segment: TranscriptSegment, trimmed: Bool = false) -> AttributedString {
-        var segment = segment
-        if trimmed { segment.text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-        var result = AttributedString(segment.text)
-        guard let words = segment.words, words.contains(where: isDoubtful) else {
+    /// `text` with its doubtful words (`words`, matched in order) dotted.
+    static func dotted(_ text: String, words: [TranscriptWord]?) -> AttributedString {
+        var result = AttributedString(text)
+        guard let words, words.contains(where: isDoubtful) else {
             return result
         }
-        let text = segment.text
         var searchStart = text.startIndex
         for word in words {
             let token = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -366,6 +568,18 @@ enum TranscriptText {
             result[lower..<upper].underlineStyle = Text.LineStyle(pattern: .dot, color: doubtColor)
         }
         return result
+    }
+
+    private static func trimLeading(_ text: inout AttributedString) {
+        while let first = text.characters.first, first.isWhitespace {
+            text.characters.removeFirst()
+        }
+    }
+
+    private static func trimTrailing(_ text: inout AttributedString) {
+        while let last = text.characters.last, last.isWhitespace {
+            text.characters.removeLast()
+        }
     }
 }
 

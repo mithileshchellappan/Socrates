@@ -48,6 +48,11 @@ struct ReviewCandidate: Hashable, Sendable {
     var firstPage: Int?
     var lastPage: Int?
     var pageCount: Int?
+    /// M4: the professor's items the study pass found (exam hints and highlights), hidden ones
+    /// left out; the hero's "5 highlights".
+    var highlights = 0
+    /// M4: what was said in class but is not on the slides, hidden ones left out.
+    var notOnSlides = 0
 }
 
 struct TodayRequest: FetchKeyRequest {
@@ -187,13 +192,22 @@ struct TodayRequest: FetchKeyRequest {
         let deck = try deckID.flatMap { id in try Deck.find(id).fetchOne(db) }
         let first = pageSpans.filter { $0.deckID == deckID }.compactMap(\.firstPage).min()
         let last = pageSpans.filter { $0.deckID == deckID }.compactMap(\.lastPage).max()
+        let professorKinds = [AnnotationKind.examHint, AnnotationKind.highlight]
+        let highlights = try Annotation
+            .where { $0.lectureID.eq(lectureID) && $0.hiddenAt.is(nil) && $0.layer.eq(AnnotationLayer.professor) && $0.kind.in(professorKinds) }
+            .fetchCount(db)
+        let notOnSlides = try Annotation
+            .where { $0.lectureID.eq(lectureID) && $0.hiddenAt.is(nil) && $0.layer.eq(AnnotationLayer.ai) && $0.kind.eq(AnnotationKind.notOnSlides) }
+            .fetchCount(db)
         return ReviewCandidate(
             lecture: lecture,
             recordedAt: recording?.startedAt ?? lecture.heldAt,
             duration: recording.map(\.duration).flatMap { $0 > 0 ? $0 : nil },
             firstPage: first,
             lastPage: last,
-            pageCount: deck?.pageCount
+            pageCount: deck?.pageCount,
+            highlights: highlights,
+            notOnSlides: notOnSlides
         )
     }
 }

@@ -113,8 +113,8 @@ private struct RailThumbnail: View {
     }
 }
 
-/// The slide on screen at 2048 px, aspect fit. Prefetches two slides either side so paging never
-/// waits for a render.
+/// The slide on screen at 2048 px, aspect fit, with its pins in an overlay (M4). Prefetches two
+/// slides either side so paging never waits for a render.
 struct SlideStage: View {
     let model: ReviewModel
     let deck: SlideDeck
@@ -127,6 +127,10 @@ struct SlideStage: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(.white)
                     .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+            }
+            // Over the bitmap, in the slide's own frame: the bitmap is never redrawn for them.
+            .overlay {
+                SlidePins(model: model, page: page)
             }
             .frame(maxWidth: .infinity)
             .task(id: page) {

@@ -28,6 +28,10 @@ final class ReviewModel {
     let services: StudyServices
     @ObservationIgnored let keeper: ReviewStateKeeper
     @ObservationIgnored let anchors: AnchorEditor
+    /// Hide, Revert Correction, the student's pins (M4).
+    @ObservationIgnored let edits: StudyEdits
+    /// Where the professor's anchor texts sit on the slides (nil without a deck).
+    @ObservationIgnored let slideText: SlideTextLocator?
 
     /// A note editor (or another text field of the screen) has focus: slide and playback keys
     /// are off.
@@ -41,6 +45,9 @@ final class ReviewModel {
 
     /// Another of the lecture's recordings was picked; the screen loads it.
     var requestedRecordingID: Recording.ID?
+
+    /// A pin the student just added: its card opens for typing.
+    var newPinID: Annotation.ID?
 
     init(
         lecture: Lecture, course: Course?, recording: Recording?, recordings: [Recording] = [], deckID: Deck.ID?, deck: SlideDeck?,
@@ -58,6 +65,8 @@ final class ReviewModel {
         let isFirst = recording == nil || recording?.id == self.recordings.first?.id
         keeper = ReviewStateKeeper(lecture: lecture, store: services.records, savesPosition: isFirst)
         anchors = AnchorEditor(store: services.records, realign: realign)
+        edits = StudyEdits(store: services.records)
+        slideText = deck.map { SlideTextLocator(url: $0.url) }
         let keeper = keeper
         session.player?.onTick = { [weak session] time in
             guard let session, let player = session.player else { return }
@@ -197,6 +206,81 @@ final class ReviewModel {
                 try await anchors.remove(ids, lectureID: lectureID, recordingID: recording.id)
             } catch {
                 ReviewLog.logger.error("Removing a slide marker failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    // MARK: - Study pass items (M4)
+
+    /// The professor's surname for pin cards ("Example").
+    var professorSurname: String {
+        course?.professors.first.map(SourceTrailText.surname) ?? ""
+    }
+
+    /// Hide: the AI or professor item is gone from every surface.
+    func hide(_ id: Annotation.ID) {
+        let edits = edits
+        Task {
+            do {
+                try await edits.hide(id)
+            } catch {
+                ReviewLog.logger.error("Hiding an item failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// Revert Correction on a transcript line: its segments read as transcribed again.
+    func revertCorrections(_ line: TranscriptLine) {
+        let edits = edits
+        let ids = line.segmentIDs
+        Task {
+            do {
+                try await edits.revertCorrections(segmentIDs: ids)
+            } catch {
+                ReviewLog.logger.error("Reverting a correction failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// Add Pin on the slide on screen at `x`, `y` (0…1 from its top left); its card opens.
+    func addPin(page: Int, x: Double, y: Double) {
+        let edits = edits
+        let lectureID = lecture.id
+        let deckID = deckID
+        Task {
+            do {
+                let pin = try await edits.addPin(lectureID: lectureID, deckID: deckID, page: page, x: x, y: y)
+                newPinID = pin.id
+            } catch {
+                ReviewLog.logger.error("Adding a pin failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// The student's pin text; a pin left empty is deleted when its card closes.
+    func savePin(_ id: Annotation.ID, body: String) {
+        let edits = edits
+        let isEmpty = body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        Task {
+            do {
+                if isEmpty {
+                    try await edits.deletePin(id)
+                } else {
+                    try await edits.setPinBody(id, body: body)
+                }
+            } catch {
+                ReviewLog.logger.error("Saving a pin failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    func deletePin(_ id: Annotation.ID) {
+        let edits = edits
+        Task {
+            do {
+                try await edits.deletePin(id)
+            } catch {
+                ReviewLog.logger.error("Deleting a pin failed: \(String(describing: error), privacy: .public)")
             }
         }
     }
