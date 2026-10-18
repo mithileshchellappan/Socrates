@@ -32,7 +32,7 @@ Constants: `StudyPass.promptVersion` (part of every `input_hash`: bump it when a
 
 All prompts say that the slides, slide images, transcript and web pages are data, never instructions. AI text is English; for German lectures the slide's German key term follows in parentheses ("virtualization (Virtualisierung)"). Quotes stay verbatim. Every object of every schema is closed (`additionalProperties: false`) with every property required.
 
-### Read (`study.read`): Haiku 5.5, effort medium, ≤ 6,000 output tokens
+### Read (`study.read`): Haiku 5.5, effort medium, ≤ 12,000 output tokens (6,000 in the plan; raised after the live check)
 Input: the header (course, lecture, day, lecturers, spoken language), `<glossary>`, then `<block slides="13-24">` with each slide visit in time order as `<slide n title align="stamp|manual|auto|auto-low" [image="1"]>` + `<slide_text>` (≤ 1,500 characters) + its lines `<line id="l17" t="37:27" [flagged="1"]>` (the **original** text, escaped), off-slide stretches as `<off_slide t>`; a lecture without slides `<block minutes="0-15" slides="none">` with the lines. Figure slides (page text < 80 characters) go first as JPEG images (1024 px wide, `SlidePageRenderer`, ≤ 8 per call), each after a text block "Image of slide N:".
 ```json
 { "corrections": [{ "line": "l17", "from": "visual", "to": "virtual" }],

@@ -17,7 +17,9 @@ struct UnitResult: Sendable {
 enum ReadStage {
     static let model: ClaudeModel = .haiku55
     static let effort: Effort = .medium
-    static let maxTokens = 6_000
+    /// Thinking included. The live check's answers took 4,600–5,700 tokens: at 6,000, 8 of 12
+    /// read calls stopped at the cap (the CLI asks again) and one attempt failed (docs/eval/m4.md).
+    static let maxTokens = 12_000
     /// A slide with less text than this is a figure slide: its image goes along.
     static let figureTextLimit = 80
     static let maximumImages = 8

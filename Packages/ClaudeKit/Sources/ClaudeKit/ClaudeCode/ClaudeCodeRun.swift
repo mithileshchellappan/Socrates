@@ -135,7 +135,18 @@ struct ClaudeCodeCall: Sendable {
     func recordUnstreamedCost(result: JSONObject?, streamed: [Message], startedAt: Date, elapsed: Duration) async {
         guard let total = result?["total_cost_usd"]?.doubleValue else { return }
         let recorded = streamed.reduce(0.0) { $0 + (configuration.pricing.cost(of: $1.usage, model: $1.model) ?? 0) }
-        let rest = total - recorded
+        // The tools' own calls run on another model (WebSearch/WebFetch on Haiku 4.5 in CLI
+        // 2.1.268): `modelUsage` prices them per model. `total - recorded` would also count the
+        // streamed model at the CLI's price, which is wrong for a model the CLI does not know yet
+        // (it priced Haiku 5.5 about 150 times too high in the M4 live check).
+        let streamedModels = Set(streamed.map(\.model.rawValue))
+        let rest: Double
+        if let perModel = result?.object("modelUsage"), !perModel.isEmpty {
+            rest = perModel.filter { !streamedModels.contains($0.key) }
+                .reduce(0.0) { $0 + ($1.value.objectValue?["costUSD"]?.doubleValue ?? 0) }
+        } else {
+            rest = total - recorded
+        }
         guard rest >= 0.002 else { return }
         let record = CallRecord(
             model: request.model, requestedModel: request.model, purpose: context.purpose, lectureID: context.lectureID,
@@ -276,6 +287,12 @@ struct CLIOutput {
             ?? "the process exited with status \(status) without an answer"
         // The CLI has already retried these; as retryable errors the work stays pending.
         let lower = reason.lowercased()
+        // A CLI too old for the model ("Claude Code 2.1.268 does not support this model; version
+        // 2.1.280 or newer is required. Run 'claude update'…", M4 live check): nothing about the
+        // request, so the work waits for the student's update instead of counting attempts.
+        if lower.contains("claude update") || lower.contains("or newer is required") {
+            return ClaudeError.claudeCodeProcess(reason)
+        }
         if lower.contains("overloaded") || lower.contains("529") {
             return ClaudeError.overloaded(APIErrorInfo(status: 529, type: "overloaded_error", message: reason))
         }
