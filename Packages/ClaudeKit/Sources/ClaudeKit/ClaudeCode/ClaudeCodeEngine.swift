@@ -205,14 +205,49 @@ public actor ClaudeCodeEngine: ClaudeBackend {
 
     // MARK: - Calls
 
+    /// One-shot calls. `request.tools` may hold `.webSearch` / `.webFetch` only (M4 research): the
+    /// CLI then runs its own WebSearch/WebFetch and nothing else (see `webRun`); custom tools need
+    /// `runToolLoop` (`invalidArgument`).
     public func streamMessage(
         _ request: MessageRequest, context: CallContext, ledger: any CostLedger,
         onEvent: @escaping @Sendable (StreamEvent) async -> Void
     ) async throws -> Message {
-        try await scheduled(context.priority) { binary in
+        let web = try WebToolSet(request.tools)
+        return try await scheduled(context.priority) { binary in
             let call = ClaudeCodeCall(
                 binary: binary, configuration: configuration, request: request, context: context, ledger: ledger)
+            if let web { return try await webRun(call, tools: web, onEvent: onEvent) }
             return try await ClaudeCodeRun.oneShot(call, onEvent: onEvent)
+        }
+    }
+
+    /// A one-shot call with the CLI's web tools, relaunched once with the other isolation variant
+    /// when `system/init` shows more than those tools or any MCP server: `--safe-mode` first (it
+    /// turns MCP servers, plugins and hooks off; or the variant that passed for this CLI version),
+    /// then `--setting-sources ""`. The variant that passed is kept per CLI version in
+    /// `state.json` (`webIsolation`).
+    private func webRun(
+        _ call: ClaudeCodeCall, tools: WebToolSet, onEvent: @escaping @Sendable (StreamEvent) async -> Void
+    ) async throws -> Message {
+        let version = await current().availability.status?.version ?? "unknown"
+        var variant = state.webIsolation?[version] ?? .safeMode
+        var tried: Set<IsolationVariant> = []
+        while true {
+            tried.insert(variant)
+            do {
+                let message = try await ClaudeCodeRun.oneShot(call, web: (tools, variant), onEvent: onEvent)
+                if state.webIsolation?[version] != variant {
+                    state.webIsolation = (state.webIsolation ?? [:]).merging([version: variant]) { _, new in new }
+                    state.save(to: configuration.stateFile)
+                    ClaudeClient.logger.info("Claude Code \(version, privacy: .public) web isolation: \(variant.rawValue, privacy: .public)")
+                }
+                return message
+            } catch RunRelaunch.isolation {
+                guard !tried.contains(variant.other) else {
+                    throw ClaudeError.claudeCode("the web tools did not run isolated (more tools or an MCP server in the session)")
+                }
+                variant = variant.other
+            }
         }
     }
 

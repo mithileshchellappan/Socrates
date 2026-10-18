@@ -48,11 +48,15 @@ struct ClaudeCodeCall: Sendable {
 
     // MARK: Arguments
 
-    /// Flags shared by one-shot calls and tool loops.
-    var commonArguments: [String] {
+    /// Flags shared by one-shot calls and tool loops (no built-in tool).
+    var commonArguments: [String] { arguments(tools: "") }
+
+    /// The shared flags with `--tools <tools>` (the CLI's built-in tools, comma separated; "" =
+    /// none).
+    func arguments(tools: String) -> [String] {
         let system = request.system.map(\.text).joined(separator: "\n\n")
         return [
-            "-p", "--tools", "", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "-p", "--tools", tools, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--include-partial-messages", "--model", request.model.rawValue, "--effort", request.effort.rawValue,
             // An empty value would bring back the CLI's own coding-agent prompt.
             "--system-prompt", system.isEmpty ? "Answer the user's message." : system,
@@ -122,6 +126,28 @@ struct ClaudeCodeCall: Sendable {
             try await ledger.record(record)
         } catch {
             logger.error("Cost ledger failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// One more `CallRecord` for the API calls a web run's tools made inside the CLI (WebSearch
+    /// sends its own request, which is not streamed): the CLI's `total_cost_usd` minus the
+    /// streamed calls, no tokens, no request id. Nothing below a fifth of a cent.
+    func recordUnstreamedCost(result: JSONObject?, streamed: [Message], startedAt: Date, elapsed: Duration) async {
+        guard let total = result?["total_cost_usd"]?.doubleValue else { return }
+        let recorded = streamed.reduce(0.0) { $0 + (configuration.pricing.cost(of: $1.usage, model: $1.model) ?? 0) }
+        let rest = total - recorded
+        guard rest >= 0.002 else { return }
+        let record = CallRecord(
+            model: request.model, requestedModel: request.model, purpose: context.purpose, lectureID: context.lectureID,
+            requestID: nil, usage: Usage(), costUSD: rest, startedAt: startedAt, duration: elapsed,
+            stopReason: nil, error: nil, streamed: false, attempts: 1, billing: .subscription)
+        ClaudeClient.logger.info(
+            "\(context.purpose, privacy: .public) web tools inside Claude Code notionalCost=\(rest) (total \(total), streamed \(recorded))"
+        )
+        do {
+            try await ledger.record(record)
+        } catch {
+            ClaudeClient.logger.error("Cost ledger failed: \(String(describing: error), privacy: .public)")
         }
     }
 }
@@ -372,18 +398,32 @@ enum ClaudeCodeRun {
     /// the single user turn on stdin. With `outputFormat`, the returned message's text is the
     /// `structured_output` JSON (sorted keys) and `onEvent` sees events of that message;
     /// otherwise it sees the API message's own events.
+    ///
+    /// With `web` (M4 research runs): `--tools` and `--allowedTools` name only the CLI's
+    /// WebSearch/WebFetch, `--permission-mode dontAsk`, `--max-turns`, no MCP server, isolation
+    /// `variant`. The `system/init` line must list exactly those tools and no MCP server, else the
+    /// child is killed before the first model call and `RunRelaunch.isolation` is thrown. The CLI
+    /// runs its tools across several API calls (each one ledger row, plus one for the tools' own
+    /// unstreamed calls); the answer is the final message (or the structured output), whose
+    /// events `onEvent` sees at the end.
     static func oneShot(
-        _ call: ClaudeCodeCall, onEvent: @escaping @Sendable (StreamEvent) async -> Void
+        _ call: ClaudeCodeCall, web: (tools: WebToolSet, variant: IsolationVariant)? = nil,
+        onEvent: @escaping @Sendable (StreamEvent) async -> Void
     ) async throws -> Message {
         let request = call.request
         guard request.messages.count == 1, let turn = request.messages.first, turn.role == .user else {
             throw ClaudeError.invalidArgument("Claude Code one-shot calls take exactly one user turn; use ToolLoop for conversations")
         }
-        guard request.tools.isEmpty else {
+        guard web != nil || request.tools.isEmpty else {
             throw ClaudeError.invalidArgument("tools need a ToolLoop on the Claude Code backend")
         }
         let input = try ClaudeCodeCall.inputLine(try ClaudeCodeCall.promptBlocks([turn], droppingToolResults: false))
-        var arguments = call.commonArguments + ["--safe-mode", "--no-session-persistence"]
+        var arguments: [String]
+        if let web {
+            arguments = call.arguments(tools: web.tools.names.joined(separator: ",")) + web.tools.arguments(variant: web.variant)
+        } else {
+            arguments = call.commonArguments + ["--safe-mode", "--no-session-persistence"]
+        }
         if let format = request.outputFormat {
             arguments += ["--json-schema", try format.schema.serializedString()]
         }
@@ -393,19 +433,39 @@ enum ClaudeCodeRun {
             directory: call.configuration.workspace, input: input)
 
         let structured = request.outputFormat != nil
+        let runStarted = Date()
+        let runClock = ContinuousClock.now
         var tracker = MessageTracker()
         var output = CLIOutput()
         var answer: Message?
+        var initChecked = false
+        var isolationFailed = false
         let processResult: ChildProcessResult
         do {
             processResult = try await ChildProcess.run(spec) { line in
                 guard let object = parse(line) else { return .proceed }
                 output.observe(object)
+                if let web {
+                    if object.string("type") == "system", object.string("subtype") == "init", !initChecked {
+                        initChecked = true
+                        guard web.tools.holds(object, structured: structured, variant: web.variant) else {
+                            isolationFailed = true
+                            return .stop
+                        }
+                        return .proceed
+                    }
+                    if object.string("type") == "stream_event", !initChecked {
+                        // No init event before the first model call: isolation is unverified.
+                        isolationFailed = true
+                        return .stop
+                    }
+                }
                 guard object.string("type") == "stream_event" else { return .proceed }
                 let step = await tracker.apply(object) { partial, started, elapsed in
                     await call.record(partial, error: "interrupted", startedAt: started, elapsed: elapsed)
                 }
-                let forward = !structured && tracker.iteration == 1
+                // A web run's events come at the end, as the final message's.
+                let forward = web == nil && !structured && tracker.iteration == 1
                 switch step {
                 case .ignored:
                     return .proceed
@@ -417,6 +477,8 @@ enum ClaudeCodeRun {
                     let (started, elapsed) = tracker.takeSegment()
                     await call.record(message, error: nil, startedAt: started, elapsed: elapsed)
                     guard !structured, answer == nil else { return .proceed }
+                    // The CLI runs its web tools and calls the model again.
+                    if web != nil, message.stopReason == .toolUse || message.stopReason == .pauseTurn { return .proceed }
                     answer = message
                     // A cut-off or declined answer is final; the CLI must not continue it.
                     return message.stopReason == .endTurn || message.stopReason == .stopSequence ? .proceed : .stop
@@ -431,9 +493,22 @@ enum ClaudeCodeRun {
         if let (partial, started, elapsed) = tracker.openMessage {
             await call.record(partial, error: "interrupted", startedAt: started, elapsed: elapsed)
         }
+        if isolationFailed {
+            ClaudeClient.logger.notice("Claude Code web isolation \(web?.variant.rawValue ?? "?", privacy: .public) failed its init check")
+            throw RunRelaunch.isolation
+        }
         output.logCost(recorded: tracker.completed, pricing: call.configuration.pricing)
+        if web != nil {
+            await call.recordUnstreamedCost(
+                result: output.result, streamed: tracker.completed, startedAt: runStarted, elapsed: ContinuousClock.now - runClock)
+        }
 
-        if let answer { return answer }
+        if let answer {
+            if web != nil {
+                for event in syntheticEvents(for: answer) { await onEvent(event) }
+            }
+            return answer
+        }
         if structured, output.isSuccess, let value = output.result?["structured_output"], !value.isNull,
            let last = tracker.completed.last {
             let message = Message(
