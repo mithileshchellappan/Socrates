@@ -11,12 +11,15 @@ let package = Package(
         .library(name: "Courses", targets: ["Courses"]),
         // EventKit mirror of lecture sessions into the app-owned "Study Portal" calendar.
         .library(name: "CalendarSync", targets: ["CalendarSync"]),
-        // SwiftUI: course setup (08), new course, semester settings, light Today (01).
+        // SwiftUI: course setup (08), new course, semester settings, light Today (01; mc: the plan's
+        // hero, mockups 11–12).
         .library(name: "CoursesUI", targets: ["CoursesUI"])
     ],
     dependencies: [
         .package(path: "../StudyCore"),
-        .package(path: "../StudyUI")
+        .package(path: "../StudyUI"),
+        // mc: Today's hero is the plan's first block (`PlanHero`).
+        .package(path: "../Coach")
     ],
     targets: [
         .target(
@@ -32,7 +35,8 @@ let package = Package(
             dependencies: [
                 "Courses", "CalendarSync",
                 .product(name: "StudyCore", package: "StudyCore"),
-                .product(name: "StudyUI", package: "StudyUI")
+                .product(name: "StudyUI", package: "StudyUI"),
+                .product(name: "CoachUI", package: "Coach")
             ]
         ),
     ],

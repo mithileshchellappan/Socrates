@@ -1,3 +1,4 @@
+import CoachUI
 import Courses
 import Foundation
 import StudyCore
@@ -10,6 +11,8 @@ struct TodayPlan: Equatable {
     enum Hero: Equatable {
         case review(ReviewCandidate)
         case session(LectureSession)
+        /// mc: the plan's first open block (`PlanHero`, mockups 11–12).
+        case plan(StudyBlock)
     }
 
     var hero: Hero?
@@ -18,6 +21,9 @@ struct TodayPlan: Equatable {
     var comingUp: [ComingUpEntry]
     var mail: MailLine?
     var hasClassesToday: Bool
+    /// mc: the minutes of today's plan, done blocks included (the subtitle's "5 h 15 min
+    /// planned"); nil without plan rows.
+    var plannedMinutes: Int?
 
     /// A class this close lets the hero offer Record.
     static let recordLead: TimeInterval = 30 * 60
@@ -34,9 +40,24 @@ struct TodayPlan: Equatable {
         let horizon = today.adding(days: Self.sessionDays).start(in: timeZone)
         let known = data.sessions.filter { data.courses[$0.courseID] != nil }
         hasClassesToday = known.contains { !$0.isCancelled && CalendarDay($0.startsAt, in: timeZone) == today }
+        plannedMinutes = (data.plan?.hasBlocks ?? false) ? data.plan?.plannedMinutes : nil
 
         var shown: Set<LectureSession.ID> = []
-        if let review = data.review {
+        // mc: while the hero is a plan block, each course's next lecture is a row (the hero's
+        // aside names the next block, not a lecture); later weekly lectures stay out; the hero's
+        // own item is not repeated.
+        var nextLectures: Set<LectureSession.ID> = []
+        var listed = data
+        if let block = data.plan?.current {
+            hero = .plan(block)
+            var courses: Set<Course.ID> = []
+            for session in known where session.kind == .lecture && !session.isCancelled && session.endsAt > now && session.startsAt < horizon {
+                if courses.insert(session.courseID).inserted { nextLectures.insert(session.id) }
+            }
+            if let itemID = block.trackedItemID {
+                listed.items.removeAll { $0.id == itemID }
+            }
+        } else if let review = data.review {
             hero = .review(review)
             nextLecture = data.nextLectures.first { $0.startsAt > now }
             if let nextLecture { shown.insert(nextLecture.id) }
@@ -47,9 +68,10 @@ struct TodayPlan: Equatable {
         // Everything but the weekly lectures (mockup 01): exercises, tutorials, seminars and
         // one-off sessions; a cancelled lecture stays, struck through, so it can be restored.
         let sessions = known.filter {
-            $0.endsAt > now && $0.startsAt < horizon && !shown.contains($0.id) && ($0.kind != .lecture || $0.isCancelled)
+            $0.endsAt > now && $0.startsAt < horizon && !shown.contains($0.id)
+                && ($0.kind != .lecture || $0.isCancelled || nextLectures.contains($0.id))
         }
-        comingUp = Self.comingUp(sessions: sessions, data: data, now: now, timeZone: timeZone)
+        comingUp = Self.comingUp(sessions: sessions, data: listed, now: now, timeZone: timeZone)
         mail = MailLine(data: data)
     }
 

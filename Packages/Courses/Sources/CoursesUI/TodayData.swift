@@ -1,3 +1,4 @@
+import CoachUI
 import Courses
 import Foundation
 import StudyCore
@@ -26,6 +27,8 @@ struct TodayData: Hashable, Sendable {
     /// Unread inbox mail per course and category; the mail line shows only with an account.
     var unread = MailUnreadCounts()
     var hasMailAccount = false
+    /// mc: today's plan (`study_block` rows); with an open block the hero is its `PlanHero`.
+    var plan: PlanDay?
 }
 
 /// A mail that needs a reply (`needs_reply` and not `is_answered`): Coming up's "Reply to …" row.
@@ -61,6 +64,7 @@ struct TodayRequest: FetchKeyRequest {
 
     func fetch(_ db: Database) throws -> TodayData {
         var data = TodayData()
+        data.plan = try PlanDay.fetch(db, day: day)
         let courses = try Course.all.fetchAll(db)
         data.courses = Dictionary(courses.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
