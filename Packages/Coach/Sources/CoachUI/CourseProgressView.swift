@@ -280,10 +280,10 @@ private struct ProgressHero: View {
     /// The last practice exam's settings ("8 questions · 90 min"), else what the sheet would start.
     private var examAside: Text? {
         if let last = exams.first {
-            return aside(questions: last.questionIDs.count, length: last.minutes.map { DurationText.text(minutes: $0) } ?? Text("Untimed"))
+            return aside(questions: last.questionIDs.count, length: last.minutes.map { ExamLength.text(minutes: $0) } ?? Text("Untimed"))
         }
         guard let examPreview, examPreview.questions > 0 else { return nil }
-        return aside(questions: examPreview.questions, length: examPreview.minutes.map { DurationText.text(minutes: $0) } ?? Text("Untimed"))
+        return aside(questions: examPreview.questions, length: examPreview.minutes.map { ExamLength.text(minutes: $0) } ?? Text("Untimed"))
     }
 
     private func aside(questions: Int, length: Text) -> Text {

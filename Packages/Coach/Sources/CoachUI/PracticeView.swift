@@ -246,9 +246,11 @@ private struct PracticeContent: View {
                     state: picked == nil ? .open : (index == question.correctChoice ? .right : (index == picked ? .wrong : .dim)),
                     isPicked: index == picked
                 ) {
-                    answer(.choice(index))
+                    if picked == nil, coach != nil { answer(.choice(index)) }
                 }
-                .disabled(picked != nil || coach == nil)
+                // Not `.disabled`: a disabled button greys its label, and the answered rows keep
+                // their colours (the right one primary semibold, mockup 15).
+                .allowsHitTesting(picked == nil && coach != nil)
             }
         }
     }

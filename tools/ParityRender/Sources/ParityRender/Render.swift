@@ -92,10 +92,12 @@ struct RenderOptions {
             case "--settle": settle = .seconds(Double(try value()) ?? 3)
             case "--now":
                 let text = try value()
-                guard let day = CalendarDay(rawValue: String(text.prefix(10))) else { throw RenderFailure("--now takes 2026-10-16T15:02") }
+                guard let day = CalendarDay(rawValue: String(text.prefix(10))) else { throw RenderFailure("--now takes 2026-10-16T15:02 or 2027-01-19T09:13:55") }
                 let parts = text.dropFirst(11).split(separator: ":").compactMap { Int($0) }
                 let zone = TimeZone(identifier: "Europe/Lisbon") ?? .current
-                now = day.date(minute: parts.count == 2 ? parts[0] * 60 + parts[1] : 0, in: zone)
+                // HH:MM, or HH:MM:SS (mc: the practice exam's clock at 09:13:55).
+                now = day.date(minute: parts.count >= 2 ? parts[0] * 60 + parts[1] : 0, in: zone)
+                    .addingTimeInterval(parts.count == 3 ? Double(parts[2]) : 0)
             case "--week":
                 guard let day = CalendarDay(rawValue: try value()) else { throw RenderFailure("--week takes 2026-10-19") }
                 week = day

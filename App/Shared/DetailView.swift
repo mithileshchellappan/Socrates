@@ -87,6 +87,7 @@ struct DetailView: View {
             // mc: full window (mockups 15, 18); RootView hides the sidebar, and for an exam the
             // agent panel and the search field.
             PracticeScreen(sessionID: id, now: model.fixedNow)
+                .modifier(CourseToolbarSpacer())
                 .id(id)
         case .practiceResults(let id, _):
             // mc (mockup 19): pushed on the course's Progress, with Back.
@@ -133,8 +134,9 @@ struct DetailView: View {
     }
 }
 
-/// A course screen without toolbar items of its own (Lectures, Slides, Notes): a flexible spacer
-/// keeps the toolbar's title and history chevrons at the leading end, as on Course Settings.
+/// A screen whose toolbar items sit at the trailing end (a course's Lectures, Slides, Notes and
+/// Progress; Study; a round's End, an exam's Flag and Pause): a flexible spacer keeps the title and
+/// history chevrons at the leading end, as on Course Settings.
 private struct CourseToolbarSpacer: ViewModifier {
     func body(content: Content) -> some View {
         content

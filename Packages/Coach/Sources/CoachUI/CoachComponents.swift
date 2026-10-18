@@ -408,3 +408,15 @@ struct CoachRouter {
         return nil
     }
 }
+
+/// An exam's length as exams state it: "90 min", "120 min" (mockups 14, 17, 19), never "1 h 30 min";
+/// the digits in SF Mono.
+enum ExamLength {
+    static func string(minutes: Int) -> String {
+        String(localized: "\(minutes) min")
+    }
+
+    static func text(minutes: Int) -> Text {
+        Text("\(Text(verbatim: "\(minutes)").monospaced()) min")
+    }
+}

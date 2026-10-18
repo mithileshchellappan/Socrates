@@ -121,7 +121,7 @@ private struct ResultsContent: View {
                 StatFigure(value: CoachFigure.count(scored), caption: Text("of \(CoachText.points(session.points))"))
                 StatFigure(
                     value: CoachFigure.duration(minutes: used),
-                    caption: session.minutes.map { Text("of \(DurationText.text(minutes: $0))") } ?? Text("Untimed")
+                    caption: session.minutes.map { Text("of \(ExamLength.text(minutes: $0))") } ?? Text("Untimed")
                 )
             }
             if coach != nil {
@@ -261,6 +261,9 @@ private struct ResultRow: View {
                     TimeChip(time, prefix: CoachText.lecturePrefix(lecture), showsPlayGlyph: false) {
                         openDestination(.lecture(lectureID, ReviewTarget(page: row.question.pageNumber, time: time, recordingID: row.question.recordingID)))
                     }
+                } else {
+                    // The chip's column stays, so every score lines up (mockup 19).
+                    Color.clear.frame(height: 1)
                 }
             }
             .frame(width: 92, alignment: .trailing)

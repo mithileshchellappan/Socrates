@@ -217,7 +217,7 @@ public struct PracticeExamSheet: View {
 
     private func label(_ length: Length) -> String {
         switch length {
-        case .minutes(let minutes): DurationText.string(minutes: minutes)
+        case .minutes(let minutes): ExamLength.string(minutes: minutes)
         case .untimed: String(localized: "Untimed")
         }
     }

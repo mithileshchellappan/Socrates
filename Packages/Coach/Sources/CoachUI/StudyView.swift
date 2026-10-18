@@ -147,8 +147,7 @@ private struct StudyContent: View {
         }
     }
 
-    /// Seen topics that are not solid and need practice now, weakest first (≤ 6); when none is
-    /// due, the weakest that are not solid.
+    /// Seen topics that are not solid, weakest first (by mastery, then next due; ≤ 6).
     private func weakestTopics(_ lines: [StudyCourseLine]) -> [WeakTopic] {
         var seen: Set<TopicKey> = []
         var candidates: [WeakTopic] = []
@@ -165,8 +164,8 @@ private struct StudyContent: View {
                 ))
             }
         }
-        let due = candidates.filter(\.isDue)
-        return (due.isEmpty ? candidates : due)
+        // Plan §6.2 and mockup 13: every seen topic that is not solid, by mastery then next due.
+        return candidates
             .sorted { TopicMastery.weakestFirst($0.mastery, $1.mastery) }
             .prefix(CoachRules.weakestLimit)
             .map { $0 }
@@ -208,6 +207,7 @@ private struct StudyCoursesZone: View {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text("Courses")
                     .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("Ready")
                     .frame(width: 128, alignment: .trailing)
