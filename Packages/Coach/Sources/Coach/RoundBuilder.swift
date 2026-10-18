@@ -30,7 +30,8 @@ public enum CodeGrading {
 }
 
 /// What a round asks (plan §4 "Rounds"): due cards first (misses, then the oldest due), then new
-/// cards of the weakest and newest topics; about 1.2 questions a minute, a written one counting 3,
+/// cards of the weakest and newest topics, then (when that is short of the round's size) seen cards
+/// not due yet, weakest topic first; about 1.2 questions a minute, a written one counting 3,
 /// at most 2 written; in the runway confusable topics (one lecture's neighbours) interleaved; a
 /// Read block's round is its reading's 2–3 recall questions. Pure: rows in, questions out.
 public enum RoundBuilder {
@@ -114,8 +115,20 @@ public enum RoundBuilder {
                 if leftHeld != rightHeld { return leftHeld > rightHeld }
                 return (lhs.topic, lhs.createdAt) < (rhs.topic, rhs.createdAt)
             }
+        // Practice asked for when little is due (Progress's Practice, Practice This Topic, a plan
+        // block sized ahead): seen cards that are not due yet fill the round, weakest topic first,
+        // then the soonest due (an early review; FSRS takes the shorter interval into account).
+        let taken = Set((due + fresh).map(\.id))
+        let ahead = pool
+            .filter { $0.reps > 0 && !taken.contains($0.id) }
+            .sorted { lhs, rhs in
+                let left = lhs.topicKey.flatMap { mastery[$0] }?.level ?? 0
+                let right = rhs.topicKey.flatMap { mastery[$0] }?.level ?? 0
+                if left != right { return left < right }
+                return (lhs.dueAt ?? .distantFuture) < (rhs.dueAt ?? .distantFuture)
+            }
         // A misses round asks every miss; others fill to their size.
-        let candidates = scope.kind == .misses ? pool : due + fresh
+        let candidates = scope.kind == .misses ? pool : due + fresh + ahead
         var picked: [StudyQuestion] = []
         var weights = 0
         var written = 0
