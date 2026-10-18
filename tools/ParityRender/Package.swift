@@ -29,7 +29,8 @@ let package = Package(
         .package(path: "../../Packages/Agent"),
         .package(path: "../../Packages/CalendarUI"),
         .package(path: "../../Packages/ChatUI"),
-        .package(path: "../../Packages/StudyPass")
+        .package(path: "../../Packages/StudyPass"),
+        .package(path: "../../Packages/Tutor")
     ],
     targets: [
         .executableTarget(
@@ -59,7 +60,8 @@ let package = Package(
                 .product(name: "Agent", package: "Agent"),
                 .product(name: "CalendarUI", package: "CalendarUI"),
                 .product(name: "ChatUI", package: "ChatUI"),
-                .product(name: "StudyPass", package: "StudyPass")
+                .product(name: "StudyPass", package: "StudyPass"),
+                .product(name: "Tutor", package: "Tutor")
             ],
             exclude: [
                 "App/Info.plist",

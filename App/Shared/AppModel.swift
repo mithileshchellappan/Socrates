@@ -19,6 +19,7 @@ import StudyCore
 import StudyPass
 import StudyUI
 import Transcription
+import Tutor
 #if os(macOS)
 import AppKit
 import EventKit
@@ -42,6 +43,13 @@ final class AppModel {
     let calendarMirror: CalendarMirror?
     /// Keeps the keyword search index in step with transcripts, slides and notes.
     let searchIndexer: SearchIndexer?
+    /// On-device meaning search (M5): embeds what the keyword index holds, in the background.
+    /// Mac only; nil on iOS and in snapshot and parity modes (renders search keywords and cached
+    /// plans).
+    let semanticIndex: SemanticIndex?
+    /// Search's "Also searched" (M5): one Haiku call per settled query, cached in `search_plan`.
+    /// Mac only, like the semantic index.
+    let queryPlanner: HaikuQueryPlanner?
     /// The app's one Claude client (M3.5): the student's Claude Code CLI on the Mac (their
     /// subscription, no API key), unavailable on iOS. Its engine is the one-process queue, so
     /// every caller shares it; every call is logged to `api_call` (notional cost).
@@ -54,6 +62,9 @@ final class AppModel {
     let mailPipeline: MailPipeline?
     /// The chat with the agent (Today and Mail): carries the open mail with the student's words.
     let mailChat: MailChat?
+    /// The tutor (M5): a lecture (Review's Tutor tab), a course or Search's selected hits as the
+    /// context of the student's words. Never mail.
+    let tutorChat: TutorChat?
     #if os(macOS)
     /// IMAP sync of the uni account (INBOX IDLE, a pass every 5 minutes and on wake). Mac only
     /// until the library syncs between devices, like the calendar mirror.
@@ -164,11 +175,29 @@ final class AppModel {
             // The mail chat writes reply drafts through the pipeline's own drafter (the one Mail's
             // Reply uses), so it sees the drafts that one is writing.
             let drafter = pipeline.drafter
+            #if os(macOS)
+            let semanticIndex = startsProcessing ? SemanticIndex(services: services) : nil
+            queryPlanner = startsProcessing ? HaikuQueryPlanner(client: claude, database: services.database) : nil
+            #else
+            let semanticIndex: SemanticIndex? = nil
+            queryPlanner = nil
+            #endif
+            self.semanticIndex = semanticIndex
+            // The tutor's and the mail chat's lecture search: the same index, no planner (the model
+            // writes German and English terms itself).
+            let engine = SearchEngine(database: services.database, planner: nil, semantic: semanticIndex)
             let agent = AgentRuntime(services: services, client: claude, memory: memory, additionalSpecs: [
-                .mailChat: { try MailChat.spec(services: services, memory: memory, drafter: drafter) }
+                .mailChat: {
+                    try MailChat.spec(
+                        services: services, memory: memory, drafter: drafter,
+                        lectureTools: TutorChat.lectureTools(services: services, search: engine)
+                    )
+                },
+                .tutor: { try TutorChat.spec(services: services, search: engine) }
             ])
             self.agent = agent
             mailChat = MailChat(services: services)
+            tutorChat = TutorChat(services: services)
             composer = DeadlineComposer(services: services, memory: memory, runtime: agent)
             transcriptItems = TranscriptItemPipeline(services: services, client: claude, memory: memory)
             self.owner = owner
@@ -185,6 +214,9 @@ final class AppModel {
             filing = nil
             filingCenter = nil
             searchIndexer = nil
+            semanticIndex = nil
+            queryPlanner = nil
+            tutorChat = nil
             calendarMirror = nil
             claude = nil
             mailPipeline = nil
@@ -264,7 +296,12 @@ final class AppModel {
         }
 
         if let searchIndexer {
-            Task { await searchIndexer.start() }
+            let semanticIndex = semanticIndex
+            Task {
+                await searchIndexer.start()
+                // Returns at once; embeds in the background, paused while a lecture processes.
+                await semanticIndex?.start()
+            }
         }
         let transcribed = transcribed
         Task { [weak self] in
@@ -571,11 +608,16 @@ final class AppModel {
         }
         // Synchronous, while the app still runs: a tool loop's MCP server lives in the app.
         let studyPass = studyPass
+        let semanticIndex = semanticIndex
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
             ClaudeCodeEngine.terminateRunningProcesses()
             // A unit in flight stays pending (nothing is written before its call ends).
             if let studyPass {
                 Task { await studyPass.stop() }
+            }
+            // A batch ends after its current unit; unchanged text is never embedded twice.
+            if let semanticIndex {
+                Task { await semanticIndex.stop() }
             }
         }
         #endif
@@ -598,15 +640,20 @@ final class AppModel {
     }
 
     /// The chat's effects (`\.chatActions`), rebuilt when the availability changes: sending goes
-    /// through `MailChat` (the open mail as context) to the agent runtime. Absent without Claude
-    /// Code.
+    /// by the context's kind through `MailChat` (Today, Mail: the open mail as context) or
+    /// `TutorChat` (a lecture, a course, Search) to the agent runtime. Absent without Claude Code.
     var chatActions: ChatActions {
-        guard let availability = claudeAvailability, availability.isReady, let agent, let mailChat else { return ChatActions() }
+        guard let availability = claudeAvailability, availability.isReady, let agent, let mailChat, let tutorChat else { return ChatActions() }
         return ChatActions(
             isAvailable: true,
             pausedUntil: availability.status?.pausedUntil,
             send: { text, context, conversation in
-                try await mailChat.send(text, openMessage: context.messageID, to: conversation, runtime: agent)
+                switch context.kind {
+                case .tutor:
+                    try await tutorChat.send(text, context: context, to: conversation, runtime: agent)
+                default:
+                    try await mailChat.send(text, openMessage: context.messageID, to: conversation, runtime: agent)
+                }
             },
             stop: { id in await agent.stop(id) },
             liveReply: { id in

@@ -4,6 +4,7 @@ import Capture
 import CaptureUI
 import Filing
 import FilingUI
+import ReviewUI
 import SearchUI
 import StudyCore
 import StudyUI
@@ -70,8 +71,15 @@ enum ParityMode {
         var query = ""
         var reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)?
         var mailSelection: MailMessage.ID?
-        /// The chat inspector shown (Today, Mail; needs Claude Code available).
+        /// The chat inspector shown (Today, Mail, a course, Search; on a lecture Review's Tutor tab;
+        /// needs Claude Code available).
         var showsChat = false
+
+        /// Review opens on its Tutor tab when the chat is shown on a lecture (M5).
+        var reviewInspectorTab: ReviewInspectorTab {
+            if showsChat, case .lecture = selection { return .tutor }
+            return .slide
+        }
     }
 
     static let windowSize = CGSize(width: 1440, height: 900)
@@ -520,6 +528,7 @@ struct ParityRootView: View {
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, showsChat: launch.showsChat
                 )
+                .environment(\.reviewInspectorTab, launch.reviewInspectorTab)
                 .environment(model)
             } else {
                 Color.clear

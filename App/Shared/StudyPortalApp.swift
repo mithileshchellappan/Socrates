@@ -58,7 +58,8 @@ struct StudyPortalApp: App {
             Group {
                 MailCommands()
                 CalendarCommands()
-                // View ▸ Show Chat / Hide Chat ⌘J on Today and Mail, only with Claude Code.
+                // View ▸ Show Chat / Hide Chat ⌘J on Today, Mail, a course, Search and Review (its Tutor
+                // tab), only with Claude Code.
                 ChatCommands()
             }
         }

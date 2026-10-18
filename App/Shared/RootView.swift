@@ -6,6 +6,7 @@ import CoursesUI
 import FilingUI
 import MailUI
 import Processing
+import SearchUI
 import StudyCore
 import StudyUI
 import SwiftUI
@@ -34,7 +35,8 @@ struct RootView: View {
     @FocusState private var searchFocused: Bool
     /// ↩ in the search field: the search screen opens its selected (or first) hit.
     @State private var searchSubmits = 0
-    /// The chat inspector on Today and Mail (M3.5), kept per window.
+    /// The chat inspector (Today, Mail: the mail chat; a course's screens, Search: the tutor),
+    /// kept per window.
     @SceneStorage("chat.shown") private var showsChat = false
 
     init(
@@ -88,8 +90,10 @@ struct RootView: View {
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
                 .environment(\.deadlineActions, model.deadlineActions)
-                // The chat (Today, Mail): absent until Claude Code is available.
+                // The chat and the tutor: absent until Claude Code is available.
                 .environment(\.chatActions, model.chatActions)
+                // Search's planner ("Also searched") and on-device meaning search (Mac only).
+                .environment(\.searchProviders, SearchProviders(planner: model.queryPlanner, semantic: model.semanticIndex))
                 // Calendar: the student's other calendars, read-only (Mac only, like the mirror).
                 .environment(\.foreignCalendars, model.calendarMirror.map { $0 as any ForeignCalendarSource })
                 .environment(\.calendarVisibility, model.calendarVisibility)
@@ -302,16 +306,21 @@ struct RootView: View {
                 .frame(width: ToolbarGlyph.pillWidth)
             }
         }
-        // Show Chat at the trailing end of Today and Mail, only while the chat is hidden and
-        // Claude Code is available (DESIGN §6.3).
+        // Show Chat at the trailing end of Today, Mail and a course's screens, only while the chat
+        // is hidden; on Search the "Tutor" toggle after the field, shown on and off (mockup 07).
+        // Only with Claude Code (DESIGN §6.3).
         if hasChat {
-            ChatToolbarItem(isPresented: $showsChat, isAvailable: model.chatActions.isAvailable)
+            ChatToolbarItem(
+                isPresented: $showsChat, isAvailable: model.chatActions.isAvailable,
+                style: selection == .search ? .tutorToggle : .showChat
+            )
         }
     }
 
-    /// The screens with the chat inspector: Today and Mail.
+    /// The screens with the chat inspector: Today and Mail (the mail chat), a course's screens and
+    /// Search (the tutor). Review has its own Tutor tab.
     private var hasChat: Bool {
-        isToday || selection?.isMail == true
+        isToday || selection?.isMail == true || selection == .search || selection?.courseScreenID != nil
     }
 
     #if os(macOS)

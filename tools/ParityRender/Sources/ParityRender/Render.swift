@@ -3,6 +3,7 @@ import CaptureUI
 import ClaudeKit
 import FilingUI
 import MailIntelligence
+import ReviewUI
 import SearchUI
 import StudyCore
 import StudyUI
@@ -275,6 +276,7 @@ struct ParityRender {
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, showsChat: launch.showsChat
                 )
+                .environment(\.reviewInspectorTab, launch.reviewInspectorTab)
                 .environment(model)
             )
         case .live:

@@ -17,11 +17,14 @@ struct DetailView: View {
     let target: (lectureID: Lecture.ID, target: ReviewTarget)?
     /// The message selected on Mail (in Drafts, the draft).
     var mailSelection: Binding<MailMessage.ID?> = .constant(nil)
-    /// The chat inspector of Today and Mail is shown (one per window; only with Claude Code).
+    /// The chat inspector is shown (Today, Mail, a course's screens, Search; one per window; only
+    /// with Claude Code).
     var showsChat: Binding<Bool> = .constant(false)
     let record: () -> Void
 
     @Environment(AppModel.self) private var model
+    /// Search's tutor context: the query and the selected hits (`SearchResultsView` writes it).
+    @State private var searchContext = ChatContext.none
 
     var body: some View {
         switch item {
@@ -39,7 +42,9 @@ struct DetailView: View {
             MailView(scope: scope, selection: mailSelection, query: query, now: model.fixedNow)
                 .chatInspector(isPresented: showsChat, context: chatContext(scope), showsToolbarItem: false)
         case .search:
-            SearchResultsView(query: query, submits: searchSubmits)
+            // The Tutor toggle is placed by the window's toolbar, after the search field (RootView).
+            SearchResultsView(query: query, submits: searchSubmits, context: $searchContext)
+                .chatInspector(isPresented: showsChat, context: searchContext, showsToolbarItem: false, toolbarStyle: .tutorToggle)
         case .course(let id), .courseSettings(let id):
             CourseSettingsView(
                 courseID: id,
@@ -48,9 +53,11 @@ struct DetailView: View {
                 importDropped: { file($0, into: id) },
                 newCourse: { model.sheet = .newCourse }
             )
+            .chatInspector(isPresented: showsChat, context: .course(id), showsToolbarItem: false)
             .id(id)
         case .courseLectures(let id):
             CourseLecturesView(courseID: id)
+                .chatInspector(isPresented: showsChat, context: .course(id), showsToolbarItem: false)
                 .id(id)
         case .courseSlides(let id):
             CourseSlidesView(
@@ -59,9 +66,11 @@ struct DetailView: View {
                 importFiles: { model.filingCenter?.importFiles(to: .course(id)) },
                 importDropped: { file($0, into: id) }
             )
+            .chatInspector(isPresented: showsChat, context: .course(id), showsToolbarItem: false)
             .id(id)
         case .courseNotes(let id):
             CourseNotesView(courseID: id)
+                .chatInspector(isPresented: showsChat, context: .course(id), showsToolbarItem: false)
                 .id(id)
         case .lecture(let id):
             if let services = model.services {

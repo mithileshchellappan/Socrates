@@ -63,6 +63,8 @@ packages:
     path: Packages/ChatUI
   StudyPass:
     path: Packages/StudyPass
+  Tutor:
+    path: Packages/Tutor
 
 targets:
   StudyPortal:
@@ -184,3 +186,6 @@ targets:
       # M4 (docs/plan-m4.md): the AI study pass. Compiles on macOS and iOS, runs on the Mac only.
       - package: StudyPass
         product: StudyPass
+      # M5 (docs/plan-m5.md): the tutor (lecture tools, context blocks); search lives in Search.
+      - package: Tutor
+        product: Tutor
