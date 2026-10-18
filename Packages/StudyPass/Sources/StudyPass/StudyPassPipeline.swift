@@ -176,6 +176,37 @@ public actor StudyPassPipeline {
         await wake()
     }
 
+    /// ma: runs the lecture's study pass again (the app agent's `rerun_study_pass`, a `study_pass`
+    /// task): its done and failed units go back to `pending` (attempts 0; their rows stay until
+    /// the new answers replace them), it is no longer settled and goes first, and a pass runs.
+    /// The number of units reset.
+    @discardableResult
+    public func rerun(lectureID: Lecture.ID) async throws -> Int {
+        let store = services.records
+        let stamp = now()
+        let reset = try await services.database.write { db -> Int in
+            let units = try StudyUnit
+                .where { $0.lectureID.eq(lectureID) && ($0.state.eq(ExtractionState.done) || $0.state.eq(ExtractionState.failed)) }
+                .fetchAll(db)
+            for var unit in units {
+                unit.state = .pending
+                unit.attempts = 0
+                unit.error = nil
+                unit.finishedAt = nil
+                let stamped = store.stamp(unit)
+                try StudyUnit.upsert { stamped }.execute(db)
+            }
+            return units.count
+        }
+        settled[lectureID] = nil
+        transient.remove(lectureID)
+        generationStart[lectureID] = stamp
+        completedRuns = completedRuns.filter { !$0.key.hasPrefix(lectureID.uuidString) }
+        preferred = lectureID
+        Task { await self.wake() }
+        return reset
+    }
+
     /// Stops following and ends the loop; a unit in flight stays `pending` (nothing half-written).
     public func stop() {
         stopped = true
@@ -480,6 +511,15 @@ public actor StudyPassPipeline {
                 guard written else {
                     StudyPass.log.notice("\(purpose, privacy: .public) \(unit.key, privacy: .public): inputs changed during the call; not written")
                     return .discarded
+                }
+                // ma: a synthesis with said-in-class admin or deadline rows is a new fact for the
+                // app agent's triage (dates, rooms, rules said in class); one event per version.
+                if case .synthesize = spec.work,
+                   result.annotations.contains(where: { $0.kind == .notOnSlides && ($0.category == .admin || $0.category == .deadline) }) {
+                    try? await AgentEventRepository(store: services.records).record(AgentEvent(
+                        kind: .studyPass, sourceKey: "study_pass:\(material.lecture.id.uuidString.lowercased()):\(unit.inputHash)",
+                        courseID: material.lecture.courseID, lectureID: material.lecture.id
+                    ))
                 }
                 let patchedLines = (result.patches ?? [:]).values.filter { !$0.isEmpty }.count
                 StudyPass.log.info(
