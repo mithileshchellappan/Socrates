@@ -214,9 +214,15 @@ enum CalendarText {
     }
 
     /// A settled or waiting change of a session as its popover names it: "Move to Room 5?",
-    /// "Cancelled?" while it waits; "Moved to Room 5", "Cancelled" once confirmed; another tied
-    /// item by its title.
-    static func change(_ item: TrackedItem) -> String {
+    /// "Cancelled?" while it waits; "Moved to Room 5", "Cancelled" once confirmed; ma: "Moved to Thu
+    /// 22 Oct, 10:15" (the session's new start) and "Extra session", applied on their own; another
+    /// tied item by its title.
+    static func change(_ item: TrackedItem, session: LectureSession? = nil, locale: Locale = .current, timeZone: TimeZone = .current) -> String {
+        if item.kind == .timeChange {
+            guard let start = session?.startsAt ?? item.dueAt else { return item.title }
+            return String(localized: "Moved to \(DayText.dayTime(start, locale: locale, timeZone: timeZone))")
+        }
+        if item.kind == .extraSession { return String(localized: "Extra session") }
         guard item.kind.isSessionProposal, item.status != .open else {
             return item.kind.isSessionProposal ? question(item) : item.title
         }

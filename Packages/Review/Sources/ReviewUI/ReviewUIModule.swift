@@ -21,18 +21,16 @@ enum ReviewChrome: Hashable, Sendable {
     case snapshot
 }
 
-/// The review inspector's tabs: "This slide | Whole lecture", and M5's "Tutor" (the chat about
-/// the lecture, only with Claude Code: `ChatActions.isAvailable`).
+/// The review inspector's tabs: "This slide | Whole lecture" (ma: M5's Tutor tab went to the
+/// agent panel).
 public enum ReviewInspectorTab: Hashable, Sendable {
     case slide
     case lecture
-    case tutor
 }
 
 extension EnvironmentValues {
     @Entry var reviewChrome: ReviewChrome = .window
-    /// The inspector tab a newly opened review starts on (M5: `.tutor` opens it on the Tutor tab,
-    /// when Claude Code is available; the app's 03-review-chat render sets it).
+    /// The inspector tab a newly opened review starts on (renders).
     @Entry public var reviewInspectorTab: ReviewInspectorTab = .slide
 }
 

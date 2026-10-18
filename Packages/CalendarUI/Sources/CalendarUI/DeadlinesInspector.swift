@@ -12,11 +12,11 @@ struct InspectorHandlers {
     var addToCalendar: (TrackedItem.ID) -> Void
     var remove: (TrackedItem.ID) -> Void
     var trail: (TrackedItem.ID) -> TrailInfo
-    var submit: () -> Void
 }
 
 /// The inspector "Deadlines" (mockup 06): waiting proposals as cards, then what is due from
-/// today on, soonest first; the "New deadline" composer pinned at the bottom.
+/// today on, soonest first; it ends with its last row (ma: new deadlines go through the agent
+/// panel, which Calendar's [+] opens).
 struct DeadlinesInspector: View {
     static let width: CGFloat = 336
     static let headerHeight: CGFloat = 52
@@ -26,8 +26,6 @@ struct DeadlinesInspector: View {
     let data: CalendarData
     let now: Date
     let selection: CalendarSelection?
-    let composer: ComposerModel
-    let composerFocused: FocusState<Bool>.Binding
     let handlers: InspectorHandlers
     /// The inspector is shown. SwiftUI keeps a hidden inspector's content alive, and with it the
     /// header's toolbar item, which would stay in the toolbar beside Show Inspector.
@@ -67,7 +65,6 @@ struct DeadlinesInspector: View {
                 .padding(.vertical, 12)
             }
             .scrollIndicators(.automatic)
-            composerBar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { InspectorBackground() }
@@ -141,49 +138,6 @@ struct DeadlinesInspector: View {
             Divider()
             Button("Delete") { handlers.remove(item.id) }
         }
-    }
-
-    // MARK: Composer
-
-    private var composerBar: some View {
-        @Bindable var composer = composer
-        return VStack(spacing: 0) {
-            Hairline()
-            HStack(spacing: 6) {
-                AIMark()
-                TextField("", text: $composer.text, prompt: Text("New deadline"))
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .focused(composerFocused)
-                    .onSubmit(handlers.submit)
-                    .onKeyPress(.escape) {
-                        guard composer.hasText else { return .ignored }
-                        composer.clear()
-                        return .handled
-                    }
-                if composer.hasText {
-                    Button(action: handlers.submit) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundStyle(.tint)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(Text("Add Deadline"))
-                }
-            }
-            .padding(.leading, 9)
-            .padding(.trailing, 5)
-            .padding(.vertical, 5)
-            .frame(minHeight: 32)
-            .background(Color.contentBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(.separator, lineWidth: 0.5)
-            }
-            .padding(.top, 12)
-        }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 12)
     }
 }
 

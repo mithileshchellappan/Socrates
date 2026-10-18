@@ -118,25 +118,14 @@ struct WeekPlan: Equatable {
         var itemID: TrackedItem.ID?
     }
 
-    /// The composer's parse, drawn dashed.
-    struct Preview: Hashable {
-        var day: Int
-        /// Nil: an all-day pill.
-        var minute: Int?
-        var title: String
-        var colorHex: String?
-    }
-
     var events: [Event] = []
     var dues: [Due] = []
     var pills: [Pill] = []
-    var preview: Preview?
 
-    /// The most pills on one day (the preview's included).
+    /// The most pills on one day.
     var maxPills: Int {
         var counts = [Int](repeating: 0, count: 7)
         for pill in pills { counts[pill.day] += 1 }
-        if let preview, preview.minute == nil { counts[preview.day] += 1 }
         return counts.max() ?? 0
     }
 
@@ -149,8 +138,7 @@ struct WeekPlan: Equatable {
         timeZone: TimeZone,
         showsStudyPortal: Bool = true,
         foreignEvents: [ForeignEvent] = [],
-        foreignColors: [String: String] = [:],
-        preview draft: DeadlineDraft? = nil
+        foreignColors: [String: String] = [:]
     ) -> WeekPlan {
         var plan = WeekPlan()
         func slot(_ date: Date) -> (day: Int, minute: Int)? {
@@ -238,12 +226,6 @@ struct WeekPlan: Equatable {
                 id: event.id, day: start.day, startMinute: start.minute, endMinute: max(end, start.minute + 15),
                 time: range(event.startsAt, event.endsAt), title: event.title, colorHex: color
             ))
-        }
-
-        if let draft, let due = draft.dueAt, let at = slot(due) {
-            let color = draft.courseID.flatMap { data.courses[$0]?.colorHex }
-            let allDay = draft.isAllDay || at.minute == Self.endOfDay
-            plan.preview = Preview(day: at.day, minute: allDay ? nil : at.minute, title: draft.title, colorHex: color)
         }
 
         plan.events = Self.laidOut(plan.events)

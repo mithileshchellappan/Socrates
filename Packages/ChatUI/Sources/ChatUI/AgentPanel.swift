@@ -1,6 +1,7 @@
 import StudyCore
 import StudyUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 // The agent panel (ma, docs/plan-agent.md §6): ONE panel for the whole main window. Compact, it
 // floats over the content near the bottom-trailing corner (movable by its title row, the place
@@ -12,8 +13,8 @@ extension View {
     /// Installs the agent panel on the main window's split view (once): the compact panel as an
     /// overlay, the expanded one as the window's trailing inspector column, View ▸ Show Chat ⌘J /
     /// Expand Chat ⌥⌘J (`AgentPanelCommands`), `\.openAgentPanel`, `\.agentPanelExpanded` and the
-    /// composer's focus (`\.isAgentComposerFocused`, folded into `\.isSearchFieldFocused`, so apply
-    /// it inside the app's own `.environment(\.isSearchFieldFocused, …)`). Without
+    /// composer's focus (`\.isAgentComposerFocused`, also folded into `\.isSearchFieldFocused`, so
+    /// apply it inside the app's own `.environment(\.isSearchFieldFocused, …)`). Without
     /// `AgentPanelActions.isAvailable` none of it shows.
     ///
     /// - Parameters:
@@ -25,6 +26,13 @@ extension View {
     public func agentPanel(context: AgentContext, launch: AgentPanelLaunch = AgentPanelLaunch(), floatingLauncher: Bool = false) -> some View {
         modifier(AgentPanelModifier(context: context, launch: launch, floatingLauncher: floatingLauncher))
     }
+
+    /// Reads what the screen in this column publishes (`.agentContext`) for the window's panel.
+    /// `.agentPanel` reads it too, but a split view's columns are hosted apart and their
+    /// preferences may stop at the column: apply this to the detail column's root as well.
+    public func agentPanelContextReader() -> some View {
+        modifier(AgentContextReader())
+    }
 }
 
 /// Sizes of the panel (docs/plan-agent.md §6).
@@ -33,12 +41,17 @@ enum AgentPanelMetrics {
     static let compactWidth: CGFloat = 336
     static let margin: CGFloat = 12
     static let radius: CGFloat = 14
+    /// The compact title row; the expanded header is level with the toolbar.
+    static let compactHeader: CGFloat = 38
+    static let expandedHeader: CGFloat = 52
     /// The expanded column: min, ideal, max.
     static let minWidth: CGFloat = 300
     static let idealWidth: Double = 380
     static let maxWidth: CGFloat = 560
     /// The window toolbar's height (the compact panel never goes under it).
     static let toolbarHeight: CGFloat = 52
+    /// The toolbar's inset from the window's trailing edge (the expanded header's toolbar item).
+    static let toolbarTrailingInset: CGFloat = 11
 }
 
 /// What one window's panel shows and holds: its size, the conversation, the composer's text and
@@ -75,11 +88,19 @@ final class AgentPanelModel {
     var reading = 0
     var pending: PendingPanelMessage?
     var isSending = false
+    /// The conversation on screen is answering (its thread reports it).
+    var isRunning = false
+    /// Stored turns of the conversation on screen (a pending message follows exactly these).
+    var turnCount = 0
+    /// The student asked something since the panel opened: the prompt turns to "Ask a follow-up…".
+    var askedSinceOpen = false
     /// Mirrors the composer's focus.
     var composerFocused = false
     /// Bumped to put the caret in the composer.
     var focusRequests = 0
     var shown: ThreadWindow
+    /// What the screen on display publishes (`.agentContext`).
+    var source: AgentContextSource?
     let fixedNow: Date?
 
     init(launch: AgentPanelLaunch) {
@@ -93,7 +114,7 @@ final class AgentPanelModel {
         draft = launch.draft
         attachments = launch.attachments
         fixedNow = launch.now
-        shown = launch.exchanges.map(ThreadWindow.exchanges) ?? .since(launch.now ?? .distantFuture)
+        shown = launch.exchanges.map(ThreadWindow.exchanges) ?? .since(Date())
     }
 
     var now: Date { fixedNow ?? Date() }
@@ -109,7 +130,8 @@ final class AgentPanelModel {
     /// composer; a compact panel opened again shows only its title row and composer.
     func open(expanded: Bool = false) {
         if mode == .closed {
-            shown = .since(now)
+            shown = .since(Date())
+            askedSinceOpen = false
         }
         mode = expanded ? .expanded : (mode == .expanded ? .expanded : .compact)
         focusRequests += 1
@@ -139,7 +161,8 @@ final class AgentPanelModel {
         startsNew = true
         selected = nil
         pending = nil
-        shown = .since(now)
+        askedSinceOpen = false
+        shown = .since(Date())
         focusRequests += 1
     }
 
@@ -148,13 +171,26 @@ final class AgentPanelModel {
         startsNew = false
         selected = id
         pending = nil
+        askedSinceOpen = false
         shown = .last
         focusRequests += 1
+    }
+
+    /// The context a message carries: the app's, with the screen's publication (and its
+    /// `refine`, the playhead) merged over it.
+    func sendContext(app: AgentContext) -> AgentContext {
+        source.map { app.merging($0.current()) } ?? app
+    }
+
+    /// The context as the panel shows it (prompt, context lines): settled, no playhead.
+    func shownContext(app: AgentContext) -> AgentContext {
+        (source.map { app.merging($0.context) } ?? app).settled
     }
 
     // MARK: Files
 
     var canAttach: Bool { attachments.count + reading < AgentAttachment.maximumPerMessage }
+    var hasFiles: Bool { !attachments.isEmpty }
 
     /// Reads files into attachments off the main actor; anything the accept rule refuses (or past
     /// five per message) is left out without a word.
@@ -172,9 +208,9 @@ final class AgentPanelModel {
         }
     }
 
-    /// Pasted or dropped bytes (a screenshot).
+    /// Pasted or dropped bytes (a screenshot; TIFF becomes PNG).
     func attach(data: Data, type: UTType, fileName: String, blobs: BlobStore) {
-        guard canAttach, AgentAttachment.kind(for: type) != nil else { return }
+        guard canAttach, AgentAttachment.kind(for: type) != nil || type.conforms(to: .tiff) else { return }
         reading += 1
         Task {
             let made = await Self.make(data: data, type: type, fileName: fileName, blobs: blobs)
@@ -206,6 +242,16 @@ final class AgentPanelModel {
 
     @concurrent
     nonisolated private static func make(data: Data, type: UTType, fileName: String, blobs: BlobStore) async -> AgentAttachment? {
+        var data = data
+        var type = type
+        var fileName = fileName
+        if type.conforms(to: .tiff) {
+            // A screenshot on the pasteboard is TIFF; Claude reads PNG.
+            guard let png = AttachmentImages.png(fromImageData: data) else { return nil }
+            data = png
+            type = .png
+            fileName = (fileName as NSString).deletingPathExtension + ".png"
+        }
         do {
             return try AgentAttachment.make(data: data, contentType: type, fileName: fileName, blobs: blobs)
         } catch {
@@ -230,6 +276,19 @@ extension EnvironmentValues {
     @Entry var agentPanelModel: AgentPanelModel?
 }
 
+/// View ▸ Show Chat / Expand Chat of the key window's panel (`AgentPanelCommands`).
+@MainActor
+struct AgentPanelFocus {
+    var isOpen: Bool
+    var isExpanded: Bool
+    var toggle: @MainActor () -> Void
+    var toggleExpanded: @MainActor () -> Void
+}
+
+extension FocusedValues {
+    @Entry var agentPanel: AgentPanelFocus?
+}
+
 struct AgentPanelModifier: ViewModifier {
     let context: AgentContext
     let floatingLauncher: Bool
@@ -237,8 +296,6 @@ struct AgentPanelModifier: ViewModifier {
     @Environment(\.agentPanelActions) private var actions
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
     @State private var model: AgentPanelModel
-    /// What the screen on display publishes (`.agentContext`).
-    @State private var source: AgentContextSource?
     @State private var windowSize: CGSize = .zero
     /// The compact panel's place: its offset from the bottom-trailing corner, "x,y".
     @SceneStorage("agent.panel.position") private var position = ""
@@ -254,12 +311,9 @@ struct AgentPanelModifier: ViewModifier {
         let available = actions.isAvailable
         let model = model
         let composing = available && model.composerFocused
-        let shownContext = source.map { context.merging($0.context) } ?? context
         let appContext = context
-        let source = source
-        let sendContext: @MainActor () -> AgentContext = {
-            source.map { appContext.merging($0.current()) } ?? appContext
-        }
+        let shown = model.shownContext(app: appContext)
+        let sendContext: @MainActor () -> AgentContext = { model.sendContext(app: appContext) }
         content
             .environment(\.isSearchFieldFocused, isSearchFieldFocused || composing)
             .environment(\.isAgentComposerFocused, composing)
@@ -269,7 +323,7 @@ struct AgentPanelModifier: ViewModifier {
             })
             .environment(\.agentPanelModel, available ? model : nil)
             .onPreferenceChange(AgentContextPreferenceKey.self) { value in
-                Task { @MainActor in self.source = value }
+                Task { @MainActor in model.source = value }
             }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { windowSize = $0 }
             .overlay(alignment: .bottomLeading) {
@@ -280,22 +334,31 @@ struct AgentPanelModifier: ViewModifier {
             }
             .overlay(alignment: .bottomTrailing) {
                 if available, model.mode == .compact {
-                    CompactAgentPanel(
-                        model: model, context: shownContext.settled, sendContext: sendContext, position: $position, windowSize: windowSize
-                    )
+                    CompactAgentPanel(model: model, context: shown, sendContext: sendContext, position: $position, windowSize: windowSize)
                 }
             }
             .inspector(isPresented: Binding(
                 get: { available && model.mode == .expanded },
-                set: { shown in if !shown, model.mode == .expanded { model.close() } }
+                set: { isShown in if !isShown, model.mode == .expanded { model.close() } }
             )) {
-                ExpandedAgentPanel(model: model, context: shownContext.settled, sendContext: sendContext, width: $width)
+                ExpandedAgentPanel(model: model, context: shown, sendContext: sendContext, width: $width)
                     .inspectorColumnWidth(min: AgentPanelMetrics.minWidth, ideal: width, max: AgentPanelMetrics.maxWidth)
             }
             .focusedSceneValue(\.agentPanel, available ? AgentPanelFocus(
                 isOpen: model.isOpen, isExpanded: model.mode == .expanded,
                 toggle: { model.toggle() }, toggleExpanded: { model.toggleExpanded() }
             ) : nil)
+    }
+}
+
+/// `agentPanelContextReader()`: the column's publication into the window's panel.
+private struct AgentContextReader: ViewModifier {
+    @Environment(\.agentPanelModel) private var model
+
+    func body(content: Content) -> some View {
+        content.onPreferenceChange(AgentContextPreferenceKey.self) { value in
+            Task { @MainActor in model?.source = value }
+        }
     }
 }
 
@@ -320,7 +383,7 @@ struct CompactAgentPanel: View {
         let shape = RoundedRectangle(cornerRadius: AgentPanelMetrics.radius, style: .continuous)
         AgentPanelView(
             style: .compact, model: model, context: context, sendContext: sendContext,
-            maxThreadHeight: max(80, windowSize.height / 2 - 110),
+            maxThreadHeight: Self.maxThreadHeight(windowHeight: windowSize.height),
             moved: { translation in drag = translation },
             moveEnded: { translation in
                 let end = clamped(Self.parse(position), adding: translation)
@@ -347,6 +410,11 @@ struct CompactAgentPanel: View {
         .padding(.trailing, AgentPanelMetrics.margin)
         .padding(.bottom, AgentPanelMetrics.margin)
         .transition(.opacity)
+    }
+
+    /// The thread's room: the panel is at most half the window (title row and composer included).
+    static func maxThreadHeight(windowHeight: CGFloat) -> CGFloat {
+        max(80, (windowHeight > 0 ? windowHeight : 740) / 2 - 110)
     }
 
     /// The stored offset plus a drag (a drag right or down moves toward the corner), kept inside
@@ -385,7 +453,8 @@ struct PanelSurface: ShapeStyle {
 // MARK: - Expanded
 
 /// The full-height trailing column: the panel at the inspector's place, its title row level with
-/// the toolbar (52 pt), resizable by its leading edge (300–560, the width kept).
+/// the toolbar (52 pt, a toolbar item while shown), resizable by its leading edge (300–560, the
+/// width kept).
 struct ExpandedAgentPanel: View {
     let model: AgentPanelModel
     let context: AgentContext
@@ -395,25 +464,28 @@ struct ExpandedAgentPanel: View {
     @State private var isDropTargeted = false
 
     var body: some View {
-        AgentPanelView(style: .expanded, model: model, context: context, sendContext: sendContext, maxThreadHeight: .infinity)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background { ExpandedPanelBackground() }
-            .overlay {
-                if isDropTargeted {
-                    Rectangle().strokeBorder(Color.accentColor, lineWidth: 2).ignoresSafeArea()
-                }
+        AgentPanelView(
+            style: .expanded, model: model, context: context, sendContext: sendContext, maxThreadHeight: .infinity,
+            headerPlacement: .toolbar
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background { ExpandedPanelBackground() }
+        .overlay {
+            if isDropTargeted {
+                Rectangle().strokeBorder(Color.accentColor, lineWidth: 2).ignoresSafeArea()
             }
-            .agentFileDrop(model: model, isTargeted: $isDropTargeted)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
-                // The column's width as the student left it (dragging its leading edge).
-                let rounded = Double(newWidth.rounded())
-                if rounded >= Double(AgentPanelMetrics.minWidth), abs(rounded - width) >= 1 { width = rounded }
-            }
+        }
+        .agentFileDrop(model: model, isTargeted: $isDropTargeted)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
+            // The column's width as the student left it (dragging its leading edge).
+            let rounded = Double(newWidth.rounded())
+            if rounded >= Double(AgentPanelMetrics.minWidth), abs(rounded - width) >= 1 { width = rounded }
+        }
     }
 }
 
 /// As Review's and Calendar's inspectors: the system's column, lifted by white 2.5 % in dark mode.
-private struct ExpandedPanelBackground: View {
+struct ExpandedPanelBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -454,5 +526,60 @@ private struct PanelOverlaySpace: ViewModifier {
         if before == nil || insets.bottom != applied { before = insets.bottom }
         applied = max(before ?? 0, height)
         insets.bottom = applied
+    }
+}
+
+// MARK: - Renders
+
+/// The panel alone, as the window would show it, for off-screen renders (`tools/parity`): the
+/// compact panel at its width with its surface and edge, or the expanded column with its header
+/// drawn inline (an off-screen host has no toolbar). Reads the rows like the real panel; needs
+/// `\.agentPanelActions` with `isAvailable` only for the composer's Send and Stop.
+public struct AgentPanelSnapshot: View {
+    public enum Style: Hashable, Sendable {
+        case compact
+        case expanded
+    }
+
+    private let style: Style
+    private let context: AgentContext
+    private let windowHeight: CGFloat
+    @State private var model: AgentPanelModel
+
+    /// - Parameters:
+    ///   - context: the screen the panel is on (its prompt and context lines).
+    ///   - launch: the conversation, the exchanges shown (compact), the composer's text and files.
+    ///   - windowHeight: the window it would be in (the compact panel is at most half of it).
+    public init(style: Style, context: AgentContext, launch: AgentPanelLaunch, windowHeight: CGFloat = 740) {
+        self.style = style
+        self.context = context
+        self.windowHeight = windowHeight
+        _model = State(initialValue: AgentPanelModel(launch: launch))
+    }
+
+    public var body: some View {
+        let model = model
+        let context = context
+        switch style {
+        case .compact:
+            let shape = RoundedRectangle(cornerRadius: AgentPanelMetrics.radius, style: .continuous)
+            AgentPanelView(
+                style: .compact, model: model, context: context.settled, sendContext: { context },
+                maxThreadHeight: CompactAgentPanel.maxThreadHeight(windowHeight: windowHeight)
+            )
+            .frame(width: AgentPanelMetrics.compactWidth)
+            .background(PanelSurface(), in: shape)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(.separator, lineWidth: 0.5) }
+            .shadow(color: .black.opacity(0.22), radius: 20, y: 12)
+        case .expanded:
+            AgentPanelView(
+                style: .expanded, model: model, context: context.settled, sendContext: { context }, maxThreadHeight: .infinity,
+                headerPlacement: .inline
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(.background.secondary)
+            .overlay(alignment: .leading) { Hairline(.vertical) }
+        }
     }
 }

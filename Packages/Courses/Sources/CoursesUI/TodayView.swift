@@ -32,13 +32,17 @@ public struct TodayView: View {
     }
 
     public var body: some View {
-        if let fixedNow {
-            content(now: fixedNow)
-        } else {
-            TimelineView(.everyMinute) { context in
-                content(now: context.date)
+        Group {
+            if let fixedNow {
+                content(now: fixedNow)
+            } else {
+                TimelineView(.everyMinute) { context in
+                    content(now: context.date)
+                }
             }
         }
+        // ma: the agent panel's context ("Ask about today").
+        .agentContext(.today)
     }
 
     private func content(now: Date) -> some View {

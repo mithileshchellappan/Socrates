@@ -97,7 +97,8 @@ struct CitationCheck: Sendable {
         case unknownRecording = "moment_unknown_recording"
         case momentOutsideRecording = "moment_outside_recording"
         case pageNotInResults = "web_not_in_tool_results"
-        /// ma: a change row marker; the agent panel draws these (until then not shown).
+        /// ma: a change row marker reaching an answer's text: the agent panel draws these as
+        /// change rows before the text is checked; elsewhere (the old chat) they are not shown.
         case changeMarker = "change_marker"
     }
 
@@ -387,9 +388,10 @@ struct AnswerText: Equatable {
     }
 
     /// The answer as one `Text`: one sparkle, then the Markdown runs (links removed: only checked
-    /// chips link) and the chips as link runs for `AnswerChipRenderer`.
-    func text() -> Text {
-        var result = Text("\(Text(Image(systemName: "sparkle")).foregroundStyle(Color.ai)) ")
+    /// chips link) and the chips as link runs for `AnswerChipRenderer`. ma: `sparkle` false for a
+    /// paragraph after the answer's first block (one sparkle per answer).
+    func text(sparkle: Bool = true) -> Text {
+        var result = sparkle ? Text("\(Text(Image(systemName: "sparkle")).foregroundStyle(Color.ai)) ") : Text(verbatim: "")
         for piece in pieces {
             switch piece {
             case .text(let text):

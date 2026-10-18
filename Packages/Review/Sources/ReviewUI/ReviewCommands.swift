@@ -1,3 +1,4 @@
+import ChatUI
 import Review
 import StudyCore
 import StudyUI
@@ -213,6 +214,9 @@ struct ReviewActionsPublisher: View {
     /// stays true until the search is cancelled, which would detach the review keys while a
     /// search hit plays).
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
+    /// ma: the agent panel's composer has focus (the plain keys stand down while the student
+    /// types to the agent).
+    @Environment(\.isAgentComposerFocused) private var isAgentComposerFocused
     /// The window's: Flag's undo step goes there (as the ink canvas's do).
     @Environment(\.undoManager) private var undoManager
     /// The screen's layout (`ReviewContent` reads the same value and animates the change).
@@ -247,7 +251,7 @@ struct ReviewActionsPublisher: View {
             isFollowing: session.isFollowing,
             canSetSlideStart: model.canSetAnchor && session.shownPage != nil,
             isReviewed: isReviewed,
-            isEditingText: model.isEditingText || model.isComposingChat || isSearchFieldFocused,
+            isEditingText: model.isEditingText || isAgentComposerFocused || isSearchFieldFocused,
             playPause: { session.togglePlayPause() },
             back: { session.skip(by: -LecturePlayer.skipInterval) },
             forward: { session.skip(by: LecturePlayer.skipInterval) },

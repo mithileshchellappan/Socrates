@@ -16,6 +16,7 @@ extension View {
     /// M5: a screen that shows the chat its own way (Review's Tutor tab) publishes View ▸ Show
     /// Chat / Hide Chat ⌘J with this: `isPresented` is whether the chat is on screen, `toggle`
     /// shows or hides it. Only while Claude Code is available (`ChatActions.isAvailable`).
+    @available(*, deprecated, message: "ma: the agent panel replaces the per-screen chat (.agentPanel, AgentPanelLauncher)")
     public func chatCommand(isPresented: Bool, toggle: @escaping @MainActor () -> Void) -> some View {
         modifier(ChatCommandPublisher(isPresented: isPresented, toggle: toggle))
     }
@@ -38,6 +39,7 @@ private struct ChatCommandPublisher: ViewModifier {
 /// with the chat and only with Claude Code: elsewhere the item, and its key, are absent.
 ///
 ///     WindowGroup { … }.commands { ChatCommands() }
+@available(*, deprecated, message: "ma: the agent panel replaces the per-screen chat (.agentPanel, AgentPanelLauncher)")
 public struct ChatCommands: Commands {
     @FocusedValue(\.chatInspector) private var chat
 

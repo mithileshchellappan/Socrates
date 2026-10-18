@@ -127,9 +127,6 @@ struct AllDayRow: View {
                     ForEach(plan.pills.filter { $0.day == index }) { pill in
                         PillView(pill: pill, isSelected: pill.itemID.map { selection == .item($0) } ?? false, handlers: handlers)
                     }
-                    if let preview = plan.preview, preview.minute == nil, preview.day == index {
-                        PreviewPill(preview: preview)
-                    }
                 }
                 .padding(.top, 4)
                 .padding(.leading, 2)
@@ -176,30 +173,9 @@ private struct PillView: View {
     }
 }
 
-/// The composer's all-day parse, dashed.
-private struct PreviewPill: View {
-    let preview: WeekPlan.Preview
-
-    var body: some View {
-        let tint = GridTint(hex: preview.colorHex)
-        Text(preview.title)
-            .font(.system(size: 11, weight: .medium))
-            .lineLimit(1)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .frame(height: GridMetrics.pillHeight)
-            .background(Color.contentBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(tint.base.opacity(0.75), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
-            }
-            .allowsHitTesting(false)
-    }
-}
-
 // MARK: - Body
 
-/// The 24 hours (56 pt each) with lines, labels, events, due lines, the preview and the now line.
+/// The 24 hours (56 pt each) with lines, labels, events, due lines and the now line.
 struct WeekBody: View {
     let plan: WeekPlan
     let columns: WeekColumns
@@ -251,12 +227,6 @@ struct WeekBody: View {
                 DueView(due: due, isSelected: selection == .item(due.id), handlers: handlers)
                     .frame(width: columns.width(due.day))
                     .offset(x: columns.x(due.day), y: GridMetrics.y(minute: due.minute))
-            }
-
-            if let preview = plan.preview, let minute = preview.minute {
-                PreviewMark(preview: preview)
-                    .frame(width: columns.width(preview.day))
-                    .offset(x: columns.x(preview.day), y: GridMetrics.y(minute: minute))
             }
 
             if let now {
@@ -404,43 +374,6 @@ private struct DueView: View {
                 .accessibilityAddTraits(.isButton)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-}
-
-/// The composer's timed parse: a dashed 1.5 pt line, a hollow dot, a dashed tag above the line.
-private struct PreviewMark: View {
-    let preview: WeekPlan.Preview
-    /// An 11 pt line with 3 pt above and below.
-    static let tagHeight: CGFloat = 20
-
-    var body: some View {
-        let tint = GridTint(hex: preview.colorHex)
-        ZStack(alignment: .topLeading) {
-            Line()
-                .stroke(tint.base, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
-                .frame(height: 1.5)
-            Circle()
-                .fill(Color.contentBackground)
-                .overlay { Circle().strokeBorder(tint.base, lineWidth: 1.5) }
-                .frame(width: 8, height: 8)
-                .offset(x: -4, y: -3.25)
-            Text(preview.title)
-                .font(.system(size: 11, weight: .medium))
-                .lineLimit(1)
-                .foregroundStyle(.secondary)
-                .padding(.vertical, 3)
-                .padding(.horizontal, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.contentBackground, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(tint.base.opacity(0.75), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
-                }
-                .padding(.horizontal, 3)
-                .offset(y: -(Self.tagHeight + 4))
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .allowsHitTesting(false)
     }
 }
 

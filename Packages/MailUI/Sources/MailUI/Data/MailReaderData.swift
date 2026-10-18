@@ -49,10 +49,13 @@ struct FoundRow: Hashable, Sendable, Identifiable {
     }
 
     var state: State {
-        if item.kind.isSessionProposal {
+        // ma: session changes (room, cancellation, time, extra session) are applied on their own
+        // and read "In Calendar" with Undo while this source stands; M2's open proposals still
+        // wait for Confirm.
+        if item.kind.isSessionChange {
             switch item.status {
-            case .open: return .proposal
-            case .done: return .inCalendar(undoable: false)
+            case .open: return item.kind.isSessionProposal ? .proposal : .info
+            case .done: return .inCalendar(undoable: source.undoneAt == nil)
             case .dismissed: return .discarded
             }
         }
