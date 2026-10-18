@@ -240,8 +240,9 @@ struct AnswerText: Equatable {
     }
 
     /// Checks every marker of `text`. "L2 · " goes before lecture chips only when the answer cites
-    /// more than one lecture. `logs`: dropped markers are logged (once per marker and rule).
-    init(_ text: String, check: CitationCheck?, logs: Bool) {
+    /// more than one lecture, or (Review) a lecture other than `openLecture`, the one on screen.
+    /// `logs`: dropped markers are logged (once per marker and rule).
+    init(_ text: String, check: CitationCheck?, logs: Bool, openLecture: Lecture.ID? = nil) {
         let raw = ChatCitation.pieces(of: text)
         var checked: [Int: CheckedCitation] = [:]
         if let check {
@@ -255,7 +256,7 @@ struct AnswerText: Equatable {
             }
         }
         let lectures = Set(checked.values.compactMap(\.lectureID))
-        let prefixes = lectures.count > 1
+        let prefixes = lectures.count > 1 || openLecture.map { open in lectures.contains { $0 != open } } ?? false
         var pieces: [Piece] = []
         for (index, piece) in raw.enumerated() {
             switch piece {

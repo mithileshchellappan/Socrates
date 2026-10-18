@@ -60,6 +60,12 @@ struct ChatPane: View {
     private var isRunning: Bool { conversation?.state == .running }
     private var isTutor: Bool { context.kind == .tutor }
 
+    /// The lecture on screen (Review's Tutor tab): a chip of another lecture says which one.
+    private var openLecture: Lecture.ID? {
+        if case .lecture(let id, _, _) = context { return id }
+        return nil
+    }
+
     /// The live text belongs after exactly the stored turns it follows, while the run lasts.
     private var liveText: String? {
         guard isRunning, let live, live.afterTurns == transcript.turnCount, !live.text.isEmpty else { return nil }
@@ -136,7 +142,7 @@ struct ChatPane: View {
                 let isWorking = isLast && isRunning
                 AnswerBlock(
                     text: isLast ? Self.joined(text, liveText) : text, isWorking: isWorking && liveText == nil, isStreaming: isWorking,
-                    check: check, showsCopy: isTutor && !isWorking
+                    check: check, showsCopy: isTutor && !isWorking, openLecture: openLecture
                 )
             }
         }
@@ -145,7 +151,7 @@ struct ChatPane: View {
         }
         if pending != nil || (isRunning && (transcript.awaitsAnswer || entries.isEmpty)) {
             // The answer's first words, or a skeleton until they come.
-            AnswerBlock(text: pending == nil ? liveText ?? "" : "", isWorking: false, isStreaming: true, check: check, showsCopy: false)
+            AnswerBlock(text: pending == nil ? liveText ?? "" : "", isWorking: false, isStreaming: true, check: check, showsCopy: false, openLecture: openLecture)
         }
         if let state = stateLine {
             state
@@ -323,6 +329,7 @@ private struct AnswerBlock: View {
     let isStreaming: Bool
     let check: CitationCheck
     let showsCopy: Bool
+    let openLecture: Lecture.ID?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -335,7 +342,8 @@ private struct AnswerBlock: View {
                 }
             } else {
                 let answer = AnswerText(
-                    isStreaming ? AnswerText.withoutOpenMarker(text) : text, check: text.contains("[[") ? check : nil, logs: !isStreaming
+                    isStreaming ? AnswerText.withoutOpenMarker(text) : text, check: text.contains("[[") ? check : nil, logs: !isStreaming,
+                    openLecture: openLecture
                 )
                 answerText(answer)
                     .font(.system(size: 13))
