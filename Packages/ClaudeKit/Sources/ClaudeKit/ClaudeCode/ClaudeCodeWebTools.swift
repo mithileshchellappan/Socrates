@@ -3,9 +3,11 @@ import Foundation
 
 // M4 (docs/plan-m4.md §3.4, §7 "A details" 1): one-shot calls with Claude Code's own web tools,
 // for the study pass's research runs. The request's `.webSearch` / `.webFetch` become the CLI's
-// built-in WebSearch / WebFetch; nothing else is allowed in such a run.
+// built-in WebSearch / WebFetch; nothing else is allowed in such a run. M5: tool loops take them
+// beside their custom tools too (the tutor; `ClaudeCodeRun.toolLoop` uses `names`, not
+// `arguments(variant:)`, and its own init check).
 
-/// The CLI's built-in web tools a one-shot call asked for.
+/// The CLI's built-in web tools a call asked for.
 struct WebToolSet: Sendable, Hashable {
     /// CLI tool names in a fixed order ("WebSearch", "WebFetch").
     let names: [String]

@@ -180,4 +180,34 @@ final class ChunkBuilder {
     static func noteText(_ note: Note) -> String {
         SlideText.joinLines(note.plainText)
     }
+
+    /// M5: a verified further-reading row (ai · `further_reading`, not hidden) as one chunk:
+    /// "title · byline", its lecture, deck and page; `source_id` = the annotation.
+    func readingChunk(annotation: Annotation, courseID: Course.ID?, fallbackLanguage: String, now: Date) -> ChunkRow? {
+        let text = Self.readingText(annotation)
+        guard !text.isEmpty else { return nil }
+        let language = lemmatizer.language(of: text, fallback: fallbackLanguage)
+        return ChunkRow(
+            kind: .furtherReading,
+            sourceID: annotation.id,
+            courseID: courseID,
+            lectureID: annotation.lectureID,
+            deckID: annotation.deckID,
+            pageNumber: annotation.pageNumber,
+            lang: language,
+            text: text,
+            lemmaText: lemmatizer.lemmaText(of: text, language: language),
+            sourceUpdatedAt: annotation.updatedAt,
+            updatedAt: now
+        )
+    }
+
+    /// "Xen and the Art of Virtualization · Barham et al. · SOSP 2003" (the title alone without a
+    /// byline).
+    static func readingText(_ annotation: Annotation) -> String {
+        let title = annotation.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let byline = annotation.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !title.isEmpty else { return "" }
+        return byline.isEmpty ? title : title + " · " + byline
+    }
 }

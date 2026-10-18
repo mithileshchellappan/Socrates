@@ -14,14 +14,17 @@ public struct SearchQuery: Hashable, Sendable {
         /// M5: the student's study material for the tutor: transcripts, slides, notes and verified
         /// further reading. Never mail (the tutor has web tools; PRD: the web agent never sees mail).
         case material
+        /// M5: the verified further reading the study pass found (Search's Web segment).
+        case web
 
-        var kinds: [SearchChunkKind] {
+        public var kinds: [SearchChunkKind] {
             switch self {
-            case .all: [.transcript, .slide, .note, .mail]
+            case .all: [.transcript, .slide, .note, .furtherReading, .mail]
             case .lectures: [.transcript, .slide]
             case .notes: [.note]
             case .mail: [.mail]
             case .material: [.transcript, .slide, .note, .furtherReading]
+            case .web: [.furtherReading]
             }
         }
     }
@@ -102,6 +105,14 @@ public struct SearchHit: Identifiable, Hashable, Sendable {
     /// A mail hit's message and its sender's name (else address).
     public var mailMessageID: MailMessage.ID? = nil
     public var sender: String? = nil
+    /// M5, a further-reading hit (`kind == .furtherReading`, `title` its title): the byline
+    /// ("Barham et al. · SOSP 2003"), the page it links to and its annotation.
+    public var byline: String? = nil
+    public var url: URL? = nil
+    public var annotationID: Annotation.ID? = nil
+    /// M5: the chunk's whole text (the line, the slide's text, the note, "title · byline"), for
+    /// the tutor's sources (`snippet` may be a window of it).
+    public var text: String = ""
 }
 
 /// Hits of one lecture (or of one deck no lecture uses, or the student's notes), best first.
@@ -111,6 +122,8 @@ public struct SearchGroup: Identifiable, Hashable, Sendable {
         case deck(Deck.ID)
         /// "Your notes".
         case notes
+        /// M5: "Web", the verified further reading (after the notes, before mail).
+        case web
         /// Mail, one hit per message.
         case mail
     }
@@ -127,7 +140,7 @@ public struct SearchGroup: Identifiable, Hashable, Sendable {
 public struct SearchResults: Hashable, Sendable {
     public var query: SearchQuery
     /// Courses with hits in order of their best hit, each course's lectures/decks likewise, then
-    /// "Your notes", then Mail.
+    /// "Your notes", then Web (M5), then Mail.
     public var groups: [SearchGroup]
     /// Course of every group and hit, for labels (lecturer surname, short name).
     public var courses: [Course.ID: Course]
@@ -135,6 +148,9 @@ public struct SearchResults: Hashable, Sendable {
     public var lectures: [Lecture.ID: Lecture]
     /// Decks of the slide hits (thumbnails).
     public var decks: [Deck.ID: Deck]
+    /// M5: what was also searched ("Also searched"): the query's alternatives that went into this
+    /// search, in order, without the query itself; empty without a plan.
+    public var alternatives: [String] = []
     /// Wall time of the search.
     public var duration: Duration
 
@@ -165,8 +181,9 @@ public struct SearchResults: Hashable, Sendable {
     }
 }
 
-/// Supplies "Also searched" phrasings for a query: the hook for M5's DE↔EN Haiku query planner
-/// and course-glossary expansion. M1 ships none.
+/// Supplies "Also searched" phrasings for a query: M5's `HaikuQueryPlanner` (DE↔EN and the
+/// slides' terms). `SearchEngine.search` never calls it; `SearchEngine.plannedAlternatives(for:)`
+/// does (after the cache), and the caller searches again with the answer.
 public protocol QueryPlanning: Sendable {
     func alternatives(for query: SearchQuery) async throws -> [String]
 }

@@ -15,12 +15,14 @@ public actor SearchIndexer {
         public var recordings = 0
         public var decks = 0
         public var notes = 0
+        /// M5: further-reading rows.
+        public var readings = 0
         /// Chunks written.
         public var chunks = 0
         /// Chunks deleted without being rewritten (orphans, blanked sources).
         public var removed = 0
 
-        public var isEmpty: Bool { recordings == 0 && decks == 0 && notes == 0 && removed == 0 }
+        public var isEmpty: Bool { recordings == 0 && decks == 0 && notes == 0 && readings == 0 && removed == 0 }
     }
 
     private let database: any DatabaseWriter
@@ -33,18 +35,27 @@ public actor SearchIndexer {
     private var isCatchingUp = false
     private var catchUpAgain = false
 
-    /// Tables whose changes can make chunks stale.
-    static let observedTables = ["transcript_segment", "deck_page", "note", "lecture_deck_span", "lecture", "deck", "recording"]
+    /// Tables whose changes can make chunks stale (M5: `annotation`, for further reading).
+    static let observedTables = [
+        "transcript_segment", "deck_page", "note", "lecture_deck_span", "lecture", "deck", "recording", "annotation",
+    ]
 
-    /// What the indexer watches: every column of the tables above, except that of `lecture` only
-    /// the columns chunks are built from (rows added or deleted always count). The review screen
-    /// writes `lecture.review_position` every few seconds while playing; that must not start a
-    /// staleness scan.
+    /// What the indexer watches: every column of the tables above, except that of `lecture` and
+    /// `annotation` only the columns chunks are built from (rows added or deleted always count).
+    /// The review screen writes `lecture.review_position` every few seconds while playing, and
+    /// the student moves pins (`annotation.anchor_*`); neither must start a staleness scan.
     static var observedRegions: [any DatabaseRegionConvertible] {
         observedTables.map { table in
-            table == "lecture"
-                ? SQLRequest<Row>(sql: "SELECT id, course_id, language FROM lecture")
-                : SQLRequest<Row>(sql: "SELECT * FROM \"\(table)\"")
+            switch table {
+            case "lecture":
+                SQLRequest<Row>(sql: "SELECT id, course_id, language FROM lecture")
+            case "annotation":
+                SQLRequest<Row>(sql: """
+                    SELECT id, lecture_id, layer, kind, deck_id, page_number, body, detail, hidden_at FROM annotation
+                    """)
+            default:
+                SQLRequest<Row>(sql: "SELECT * FROM \"\(table)\"")
+            }
         }
     }
 
@@ -136,6 +147,10 @@ public actor SearchIndexer {
             report.chunks += written.written
             if written.changed { report.notes += 1 }
         }
+        for annotationID in work.readings {
+            report.chunks += try await indexReading(annotationID)
+            report.readings += 1
+        }
         report.removed = try await database.write { db in try IndexState.removeOrphans(db) }
         return report
     }
@@ -160,8 +175,9 @@ public actor SearchIndexer {
                 if !report.isEmpty {
                     let elapsed = ContinuousClock.now - started
                     Log.search.info("""
-                        Indexed \(report.recordings) transcripts, \(report.decks) decks, \(report.notes) notes \
-                        (\(report.chunks) chunks, \(report.removed) removed) in \(elapsed.formatted(.units(allowed: [.milliseconds])), privacy: .public)
+                        Indexed \(report.recordings) transcripts, \(report.decks) decks, \(report.notes) notes, \
+                        \(report.readings) further reading (\(report.chunks) chunks, \(report.removed) removed) \
+                        in \(elapsed.formatted(.units(allowed: [.milliseconds])), privacy: .public)
                         """)
                 }
             } catch {
@@ -244,6 +260,25 @@ public actor SearchIndexer {
             : nil
         let removed = try await replace(draft.map { [$0] } ?? [], kind: .note) { $0.noteID.eq(noteID) }
         return (draft == nil ? 0 : 1, draft != nil || removed > 0)
+    }
+
+    /// M5: one further-reading row as a chunk ("title · byline", its lecture, deck and page); a
+    /// row no longer visible (hidden, gone, not the study pass's) loses its chunk.
+    private func indexReading(_ annotationID: Annotation.ID) async throws -> Int {
+        let source = try await database.read { db -> (Annotation, Lecture, Course?)? in
+            guard let annotation = try Annotation.find(annotationID).fetchOne(db),
+                  annotation.kind == .furtherReading, annotation.layer == .ai, annotation.hiddenAt == nil,
+                  let lectureID = annotation.lectureID, let lecture = try StudyCore.Lecture.find(lectureID).fetchOne(db)
+            else { return nil }
+            return (annotation, lecture, try StudyCore.Course.find(lecture.courseID).fetchOne(db))
+        }
+        let draft = source.flatMap { annotation, lecture, course in
+            builder.readingChunk(
+                annotation: annotation, courseID: lecture.courseID,
+                fallbackLanguage: Self.language(lecture.language, course?.language), now: now())
+        }
+        try await replace(draft.map { [$0] } ?? [], kind: .furtherReading) { $0.sourceID.eq(annotationID) }
+        return draft == nil ? 0 : 1
     }
 
     /// Deletes the unit's chunks and inserts `drafts` in one transaction (never INSERT OR REPLACE).

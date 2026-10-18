@@ -11,15 +11,21 @@ import StudyCore
 ///   said), as long as it contains one decisive term itself: "paravirtualization drawback" finds
 ///   a line on its drawback said over the paravirtualization slide.
 /// - Ranking: every term > the exact phrase > more terms > Reciprocal Rank Fusion of the bm25
-///   lists (word index with `text` weighted above `lemma_text`, trigram, near spellings, and each
-///   "Also searched" phrasing).
-/// - When few chunks match every term, chunks matching some of them follow.
+///   lists (word index with `text` weighted above `lemma_text`, trigram, near spellings, each
+///   "Also searched" phrasing, and M5's semantic neighbours).
+/// - When few chunks match every term, chunks matching some of them follow; then (M5), while
+///   fewer than 10 hits were found, up to 3 chunks only the semantic index found, from the clear
+///   head of its list (meaning without the words: a paraphrase, a German query over English
+///   slides before its plan lands).
 public struct SearchEngine: Sendable {
     public let database: any DatabaseReader
     public let planner: (any QueryPlanning)?
-    /// M5: on-device semantic neighbours fused with the keyword lists (contract landed with
-    /// docs/plan-m5.md; workstream A fuses it). Nil: keyword search only.
+    /// M5: on-device semantic neighbours fused with the keyword lists (`SemanticIndex`). Nil:
+    /// keyword search only.
     public let semantic: (any SemanticSearching)?
+
+    /// Semantic neighbours asked for per search (the RRF list and the fill after keyword hits).
+    static let semanticLimit = 40
 
     public init(database: any DatabaseReader, planner: (any QueryPlanning)? = nil, semantic: (any SemanticSearching)? = nil) {
         self.database = database
@@ -27,29 +33,43 @@ public struct SearchEngine: Sendable {
         self.semantic = semantic
     }
 
+    /// Searches `query.text` and `query.alternatives` at once. Never waits for the planner (M5:
+    /// the first results show at once): callers fetch alternatives with
+    /// `plannedAlternatives(for:)` and search again with them.
     public func search(_ query: SearchQuery) async throws -> SearchResults {
         let started = ContinuousClock.now
         guard !query.isEmpty else { return SearchResults(query: query) }
-        var texts = [query.text]
-        var alternatives = query.alternatives
-        if alternatives.isEmpty, let planner {
-            do {
-                alternatives = try await planner.alternatives(for: query)
-            } catch {
-                Log.search.error("Query planning failed: \(String(describing: error), privacy: .public)")
-            }
+        if query.scope == .web {
+            // The Web segment: the reading that matches itself and the reading on the slides of
+            // what the material search finds, as in All's Web group.
+            var material = query
+            material.scope = .material
+            var results = try await search(material)
+            results.query = query
+            results.groups = results.groups.filter { $0.kind == .web }
+            results.duration = ContinuousClock.now - started
+            return results
         }
-        for alternative in alternatives where !texts.contains(alternative) { texts.append(alternative) }
+        var texts = [query.text]
+        var keys: Set<String> = [QueryPlans.key(for: query.text)]
+        var alternatives: [String] = []
+        for alternative in query.alternatives where keys.insert(QueryPlans.key(for: alternative)).inserted {
+            texts.append(alternative)
+            alternatives.append(alternative)
+        }
 
         let lemmatizer = Lemmatizer()
         let plans = texts.map { QueryPlan.make($0, lemmatizer: lemmatizer) }.filter { !$0.terms.isEmpty }
         guard !plans.isEmpty else { return SearchResults(query: query) }
 
-        var outcome = try await database.read { db in
-            try Retrieval(plans: plans, query: query, nearWords: [:]).run(db)
-        }
-        if !outcome.wantsNearWords.isEmpty {
-            let wanted = outcome.wantsNearWords
+        // The semantic index works on its own actor while the keyword lists are read.
+        let searchTexts = texts
+        async let neighbours = semanticNeighbours(of: searchTexts, query: query)
+
+        var retrieval = Retrieval(plans: plans, query: query, nearWords: [:])
+        var scoring = try await database.read { [retrieval] db in try retrieval.score(db) }
+        if !scoring.wantsNearWords.isEmpty {
+            let wanted = scoring.wantsNearWords
             // `unsafeRead`: the vocabulary table lives in the connection's temp schema.
             let near = try await database.unsafeRead { db in
                 var near: [TermKey: [String]] = [:]
@@ -59,14 +79,46 @@ public struct SearchEngine: Sendable {
                 return near
             }
             if near.values.contains(where: { !$0.isEmpty }) {
-                outcome = try await database.read { db in
-                    try Retrieval(plans: plans, query: query, nearWords: near).run(db)
-                }
+                retrieval = Retrieval(plans: plans, query: query, nearWords: near)
+                scoring = try await database.read { [retrieval] db in try retrieval.score(db) }
             }
         }
-        var results = outcome.results
+        let semanticList = await neighbours
+        var results = try await database.read { [retrieval, scoring] db in
+            try retrieval.finish(db, scoring, semantic: semanticList)
+        }
+        results.alternatives = alternatives
         results.duration = ContinuousClock.now - started
         return results
+    }
+
+    /// The semantic index's neighbours of the query and its alternatives, nearest first; empty
+    /// without an index or on an error (logged).
+    private func semanticNeighbours(of texts: [String], query: SearchQuery) async -> [SemanticMatch] {
+        guard let semantic else { return [] }
+        do {
+            return try await semantic.nearest(to: texts, query: query, limit: Self.semanticLimit)
+        } catch {
+            if !(error is CancellationError) {
+                Log.search.error("Semantic search failed: \(String(describing: error), privacy: .public)")
+            }
+            return []
+        }
+    }
+
+    /// The "Also searched" phrasings of `query`: the cached plan (`search_plan`, read with or
+    /// without a planner), else the planner's answer (one Haiku call, cached), else none.
+    /// Throws only `CancellationError`.
+    public func plannedAlternatives(for query: SearchQuery) async throws -> [String] {
+        if let cached = await QueryPlans.cached(query.text, in: database) { return cached }
+        guard let planner else { return [] }
+        do {
+            return try await planner.alternatives(for: query)
+        } catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            Log.search.error("Query planning failed: \(String(describing: error), privacy: .public)")
+            return []
+        }
     }
 }
 
@@ -75,7 +127,8 @@ struct TermKey: Hashable, Sendable {
     var term: Int
 }
 
-/// One search inside one read transaction.
+/// One search: the keyword lists scored in one read transaction (`score`), then fused with the
+/// semantic list and assembled in another (`finish`).
 struct Retrieval {
     let plans: [QueryPlan]
     let query: SearchQuery
@@ -87,12 +140,21 @@ struct Retrieval {
     static let fusionConstant = 60.0
     /// Partial matches fill the list up to this many hits when few chunks match every term.
     static let partialFill = 10
+    /// Chunks only the semantic index found follow the keyword hits, at most this many, at a
+    /// cosine of at least `semanticFillScore` and within `semanticFillMargin` of the best
+    /// (calibrated once on the parity library: unrelated text scores 0.6–0.85 in this model).
+    static let semanticFill = 3
+    static let semanticFillScore = 0.80
+    static let semanticFillMargin = 0.03
+    /// Further reading on the hits' slides (the Web group), at most this many.
+    static let relatedReadingLimit = 5
     /// A long word is also looked up as a substring (German compounds) while it occurs in fewer
     /// chunks than this; a common word gains little from it and the trigram scan is not free.
     static let compoundLookupLimit = 200
 
-    struct Outcome: Sendable {
-        var results: SearchResults
+    struct Scoring: Sendable {
+        var scored: [Int64: Scored]
+        var matchers: [TermMatcher]
         /// Terms nothing matched that may try near spellings.
         var wantsNearWords: [TermKey]
     }
@@ -120,7 +182,7 @@ struct Retrieval {
         var page: Int
     }
 
-    func run(_ db: Database) throws -> Outcome {
+    func score(_ db: Database) throws -> Scoring {
         var wants: [TermKey] = []
         var matchers: [TermMatcher] = []
         var scored: [Int64: Scored] = [:]
@@ -227,13 +289,72 @@ struct Retrieval {
             }
         }
 
+        return Scoring(scored: scored, matchers: matchers, wantsNearWords: wants)
+    }
+
+    /// Fuses the semantic list (`semantic`, nearest first) with the keyword scores and assembles
+    /// the hits. The semantic list joins the RRF lists, so within a keyword tier (every term,
+    /// phrase, more terms) a chunk it also found ranks higher; the tiers stay as they are. While
+    /// the keywords found fewer than `partialFill` hits, chunks only the semantic list found
+    /// follow them: at most `semanticFill`, each at cosine ≥ `semanticFillScore` and within
+    /// `semanticFillMargin` of the best (this model's similarities are high for everything, so
+    /// only the clear head of the list fills in).
+    func finish(_ db: Database, _ scoring: Scoring, semantic: [SemanticMatch]) throws -> SearchResults {
+        var scored = scoring.scored
+        for (rank, match) in semantic.enumerated() where scored[match.chunkID] != nil {
+            scored[match.chunkID]?.fusion += 1 / (Self.fusionConstant + Double(rank + 1))
+        }
         let ordered = scored.values.sorted(by: Self.ranksBefore)
         let complete = ordered.prefix { $0.all }.prefix(query.limit)
         let partialCount = max(0, min(query.limit, Self.partialFill) - complete.count)
         let partial = ordered.dropFirst(complete.count).prefix(partialCount)
-        let chosen = Array(complete) + Array(partial)
-        let results = try assemble(db, chosen: chosen, matchers: matchers)
-        return Outcome(results: results, wantsNearWords: wants)
+        var chosen = Array(complete) + Array(partial)
+        let room = min(Self.semanticFill, query.limit - chosen.count)
+        if room > 0, chosen.count < Self.partialFill, let best = semantic.first?.score {
+            let taken = Set(chosen.map(\.candidate.id))
+            let floor = max(Self.semanticFillScore, best - Self.semanticFillMargin)
+            let extra = Array(semantic.lazy.filter { $0.score >= floor && !taken.contains($0.chunkID) }.map(\.chunkID).prefix(room))
+            let candidates = try self.candidates(db, ids: Set(extra).subtracting(scored.keys))
+            for id in extra {
+                if let entry = scored[id] {
+                    chosen.append(entry)
+                } else if let candidate = candidates[id] {
+                    chosen.append(Scored(candidate: candidate))
+                }
+            }
+        }
+        if query.scope.kinds.contains(.furtherReading) {
+            chosen += try relatedReadings(db, of: chosen)
+        }
+        return try assemble(db, chosen: chosen, matchers: scoring.matchers)
+    }
+
+    /// Further reading the study pass verified for the slides of the hits (a slide hit's page, a
+    /// line's or a note's slide), in the order of those hits, at most `relatedReadingLimit`: the
+    /// Web group's papers and manuals for what was found ("Your material first, then the web").
+    private func relatedReadings(_ db: Database, of chosen: [Scored]) throws -> [Scored] {
+        let ids = chosen.map(\.candidate.id)
+        guard !ids.isEmpty else { return [] }
+        let taken = Set(ids)
+        let position = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        let pairs = try Row.fetchAll(db, sql: """
+            SELECT r.id AS reading, h.id AS hit FROM search_chunk h
+            JOIN search_chunk r ON r.kind = 'further_reading' AND r.deck_id = h.deck_id AND r.page_number = h.page_number
+            WHERE h.id IN (SELECT value FROM json_each(?)) AND h.kind IN ('transcript', 'slide', 'note')
+            """, arguments: [Self.json(ids)])
+        var ordered: [(Int64, Int)] = []
+        for row in pairs {
+            let reading: Int64 = row["reading"]
+            let hit: Int64 = row["hit"]
+            ordered.append((reading, position[hit] ?? Int.max))
+        }
+        var seen = taken
+        var related: [Scored] = []
+        for (reading, _) in ordered.sorted(by: { $0.1 != $1.1 ? $0.1 < $1.1 : $0.0 < $1.0 }) where seen.insert(reading).inserted {
+            related.append(Scored(candidate: Candidate(id: reading, kind: .furtherReading, page: nil)))
+            if related.count == Self.relatedReadingLimit { break }
+        }
+        return related
     }
 
     static func ranksBefore(_ a: Scored, _ b: Scored) -> Bool {
@@ -270,8 +391,14 @@ struct Retrieval {
                 arguments += [courseID.storageText]
             }
             if let lectureID = query.lectureID {
-                filter += " AND c.lecture_id = ?"
-                arguments += [lectureID.storageText]
+                // A slide belongs to its deck, not a lecture: the lecture's slides are the pages
+                // inside its deck spans.
+                filter += """
+                     AND (c.lecture_id = ? OR (c.kind = 'slide' AND EXISTS (SELECT 1 FROM lecture_deck_span s
+                       WHERE s.lecture_id = ? AND s.deck_id = c.deck_id AND s.first_page IS NOT NULL
+                         AND c.page_number BETWEEN s.first_page AND coalesce(s.last_page, s.first_page))))
+                    """
+                arguments += [lectureID.storageText, lectureID.storageText]
             }
             filter += ")"
         }
@@ -328,6 +455,8 @@ struct Retrieval {
         var start: Double?
         var text: String
         var lemmaText: String
+        /// A further-reading chunk's annotation.
+        var sourceID: UUID?
     }
 
     private func uuid(_ value: String?) -> UUID? {
@@ -339,7 +468,7 @@ struct Retrieval {
         var chunks: [Int64: Chunk] = [:]
         let rows = try Row.fetchCursor(db, sql: """
             SELECT id, kind, course_id, lecture_id, deck_id, page_number, recording_id, note_id, start_time, text, lemma_text,
-                   mail_message_id
+                   mail_message_id, source_id
             FROM search_chunk WHERE id IN (SELECT value FROM json_each(?))
             """, arguments: [Self.json(chosen.map(\.candidate.id))])
         while let row = try rows.next() {
@@ -347,7 +476,7 @@ struct Retrieval {
             chunks[id] = Chunk(
                 id: id, kind: SearchChunkKind(rawValue: row[1]), courseID: uuid(row[2]), lectureID: uuid(row[3]),
                 deckID: uuid(row[4]), page: row[5], recordingID: uuid(row[6]), noteID: uuid(row[7]),
-                mailMessageID: uuid(row[11]), start: row[8], text: row[9], lemmaText: row[10]
+                mailMessageID: uuid(row[11]), start: row[8], text: row[9], lemmaText: row[10], sourceID: uuid(row[12])
             )
         }
 
@@ -370,6 +499,14 @@ struct Retrieval {
             for message in try MailMessage.where({ $0.id.in(Array(messageIDs)) }).fetchAll(db) { messages[message.id] = message }
         }
 
+        let readingIDs = chunks.values.compactMap { $0.kind == .furtherReading ? $0.sourceID : nil }
+        var readings: [Annotation.ID: Annotation] = [:]
+        if !readingIDs.isEmpty {
+            for annotation in try Annotation.where({ $0.id.in(readingIDs) }).fetchAll(db) where annotation.hiddenAt == nil {
+                readings[annotation.id] = annotation
+            }
+        }
+
         var hits: [SearchHit] = []
         var mailSeen: Set<MailMessage.ID> = []
         for entry in chosen {
@@ -382,7 +519,7 @@ struct Retrieval {
                     id: meta.id, kind: .mail, courseID: meta.courseID ?? message.courseID,
                     snippet: Snippet.make(text: meta.text, lemmaText: meta.lemmaText, matchers: matchers),
                     matchesAllTerms: entry.all, target: .mail(messageID), title: message.subject, mailMessageID: messageID,
-                    sender: message.fromName.isEmpty ? message.fromAddress : message.fromName
+                    sender: message.fromName.isEmpty ? message.fromAddress : message.fromName, text: meta.text
                 ))
                 continue
             }
@@ -392,6 +529,7 @@ struct Retrieval {
                 snippet: Snippet.make(text: meta.text, lemmaText: meta.lemmaText, matchers: matchers),
                 matchesAllTerms: entry.all, target: nil
             )
+            hit.text = meta.text
             switch meta.kind {
             case .transcript:
                 if let lectureID = meta.lectureID {
@@ -405,6 +543,20 @@ struct Retrieval {
                     hit.recordingID = visit.recording
                     hit.courseID = hit.courseID ?? lectures[visit.lecture]?.courseID
                     hit.target = .lecture(visit.lecture, page: page, time: visit.time, plays: false, recording: visit.recording)
+                } else if let courseID = meta.courseID {
+                    hit.target = .course(courseID)
+                }
+            case .furtherReading:
+                // Its title and byline from the annotation (a hidden one is gone); a click opens
+                // the page, the target is the slide it was found for.
+                guard let annotation = meta.sourceID.flatMap({ readings[$0] }) else { continue }
+                hit.title = annotation.body
+                hit.byline = annotation.detail.flatMap { $0.isEmpty ? nil : $0 }
+                hit.url = annotation.citations.first { $0.kind == .web }?.url
+                hit.annotationID = annotation.id
+                hit.time = nil
+                if let lectureID = meta.lectureID {
+                    hit.target = .lecture(lectureID, page: meta.page, time: nil, plays: false)
                 } else if let courseID = meta.courseID {
                     hit.target = .course(courseID)
                 }
@@ -450,7 +602,7 @@ struct Retrieval {
     }
 
     /// Courses in order of their best hit, each course's lectures and decks likewise, then the
-    /// notes, then mail (one hit per message).
+    /// notes, then the web (M5: verified further reading), then mail (one hit per message).
     static func group(
         _ hits: [SearchHit],
         courses: [Course.ID: Course],
@@ -460,11 +612,15 @@ struct Retrieval {
         var groups: [SearchGroup] = []
         var index: [SearchGroup.Kind: Int] = [:]
         var notes: [SearchHit] = []
+        var web: [SearchHit] = []
         var mail: [SearchHit] = []
         for hit in hits {
             let kind: SearchGroup.Kind
             if hit.kind == .note {
                 notes.append(hit)
+                continue
+            } else if hit.kind == .furtherReading {
+                web.append(hit)
                 continue
             } else if hit.kind == .mail {
                 mail.append(hit)
@@ -494,6 +650,7 @@ struct Retrieval {
         for group in groups where !courseOrder.contains(group.course?.id) { courseOrder.append(group.course?.id) }
         var ordered = courseOrder.flatMap { courseID in groups.filter { $0.course?.id == courseID } }
         if !notes.isEmpty { ordered.append(SearchGroup(kind: .notes, course: nil, lecture: nil, deck: nil, hits: notes)) }
+        if !web.isEmpty { ordered.append(SearchGroup(kind: .web, course: nil, lecture: nil, deck: nil, hits: web)) }
         if !mail.isEmpty { ordered.append(SearchGroup(kind: .mail, course: nil, lecture: nil, deck: nil, hits: mail)) }
         return ordered
     }

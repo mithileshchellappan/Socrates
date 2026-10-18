@@ -28,6 +28,10 @@ enum SearchMetrics {
     static let trailingMargin: CGFloat = 14
     /// Between the filters and the groups, and between groups.
     static let groupSpacing: CGFloat = 14
+    /// M5: between "Also searched" and the filters (mockup: the column's 14 pt gap, filters 4 pt up).
+    static let alsoSearchedSpacing: CGFloat = 10
+    /// M5: a web row's padding (mockup `.hit.web`: 7 pt above and below).
+    static let webHitPadding = EdgeInsets(top: 7, leading: 10, bottom: 7, trailing: 10)
     /// A hit's padding inside its (selection) block.
     static let hitPadding = EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
     static let selectionRadius: CGFloat = 10

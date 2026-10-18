@@ -95,8 +95,14 @@ public actor StudyPassPipeline {
     /// budget counts the calls since.
     private var generationStart: [Lecture.ID: Date] = [:]
     /// What a lecture's inputs and rows looked like when a pass last found nothing to do for it;
-    /// it is planned again only once that changes.
+    /// it is planned again only once that changes. Kept across launches in `settledFile` (M5: no
+    /// launch burst), except the lectures in `transient`.
     private var settled: [Lecture.ID: Fingerprint] = [:]
+    /// Lectures settled for a reason that ends with the launch (a stage's backoff, the run cap, an
+    /// unreadable state): settled now, planned again after a relaunch, so never written down.
+    private var transient: Set<Lecture.ID> = []
+    /// What `settledFile` holds (nil: not read yet).
+    private var persistedSettled: [Lecture.ID: Fingerprint]?
     /// Units (lecture/stage/key) that reached `done` since launch, and how often.
     private var completedRuns: [String: Int] = [:]
     static let maximumRunsPerLaunch = 5
@@ -108,12 +114,18 @@ public actor StudyPassPipeline {
         writer = StudyWriter(database: services.database, store: services.records)
     }
 
+    /// `settled` across launches: `AppPaths.caches/StudyPass/settled.json`.
+    var settledFile: SettledFile {
+        SettledFile(url: services.paths.caches.appending(path: "StudyPass/settled.json"))
+    }
+
     // MARK: - Entry points
 
     /// Starts following lectures (transcripts, spans, deck pages, jobs, the prompt header's course
     /// and lecture columns); a first pass follows in the background. Returns at once.
     public func start() async {
         guard client != nil, observation == nil, !stopped else { return }
+        restoreSettled()
         let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let regions: [any DatabaseRegionConvertible] = [
             SQLRequest<Row>(sql: "SELECT lecture_id, updated_at FROM transcript_segment"),
@@ -190,13 +202,35 @@ public actor StudyPassPipeline {
             } catch {
                 StudyPass.log.error("Study pass failed: \(String(describing: error), privacy: .public)")
             }
+            persistSettled()
         } while again && !stopped && !Task.isCancelled
         passTask = nil
+    }
+
+    /// Reads what the last launch had settled, once (at `start()`, or the first pass if a wake came
+    /// first): the first pass then plans only lectures whose cheap fingerprint changed since,
+    /// instead of loading every lecture at launch.
+    private func restoreSettled() {
+        guard persistedSettled == nil else { return }
+        let restored = settledFile.read()
+        settled.merge(restored) { current, _ in current }
+        persistedSettled = restored
+    }
+
+    /// Writes `settled` (minus `transient`) when it changed since the file was last read or
+    /// written.
+    private func persistSettled() {
+        let lasting = settled.filter { !transient.contains($0.key) }
+        guard let persisted = persistedSettled, persisted != lasting else { return }
+        if settledFile.write(lasting) { persistedSettled = lasting }
     }
 
     enum WorkOutcome: Sendable {
         /// Nothing left to run for the lecture (done, skipped, failed, over budget).
         case finished
+        /// Nothing to run for now for a reason that ends with the launch (the run cap, an
+        /// unreadable state or plan): settled, but not kept across launches.
+        case finishedForNow
         /// Its inputs moved during the pass, or it is busy: planned again in a later pass (not
         /// marked settled).
         case unsettled
@@ -211,7 +245,11 @@ public actor StudyPassPipeline {
     /// One pass over the eligible lectures, one unit at a time.
     func pass() async throws {
         guard let client, await runsNow(client) else { return }
+        restoreSettled()
         let states = try await lectureStates()
+        // Lectures gone (or without lines) leave the settled set.
+        let present = Set(states.map(\.id))
+        settled = settled.filter { present.contains($0.key) }
         let date = now()
         var settleAt: Date?
         var ran: Set<String> = []
@@ -238,12 +276,18 @@ public actor StudyPassPipeline {
             switch await work(on: state.id, client: client, ran: &ran) {
             case .finished:
                 if let fresh = try await lectureStates(only: state.id).first { settled[state.id] = fresh.fingerprint }
+                transient.remove(state.id)
+            case .finishedForNow:
+                if let fresh = try await lectureStates(only: state.id).first { settled[state.id] = fresh.fingerprint }
+                transient.insert(state.id)
             case .blocked:
                 // Observation wakes leave it alone until the backoff ends.
                 if let fresh = try await lectureStates(only: state.id).first { settled[state.id] = fresh.fingerprint }
                 waitingOnBackoff.insert(state.id)
+                transient.insert(state.id)
             case .unsettled:
                 settled[state.id] = nil
+                transient.remove(state.id)
             case .serviceTrouble:
                 _ = await runsNow(client)
                 return
@@ -277,14 +321,14 @@ public actor StudyPassPipeline {
                 }
             } catch {
                 StudyPass.log.error("Study lecture state unreadable: \(String(describing: error), privacy: .public)")
-                return .finished
+                return .finishedForNow
             }
             let planned: (LectureMaterial, PassRows, [(StudyUnit, UnitSpec)])?
             do {
                 planned = try await plan(lectureID, now: date)
             } catch {
                 StudyPass.log.error("Study pass planning failed: \(String(describing: error), privacy: .public)")
-                return .finished
+                return .finishedForNow
             }
             guard case let (material, rows, units)? = planned else { return .finished }
             guard case let (unit, spec)? = Self.next(units, blocked: blockedStages(at: date)) else {
@@ -302,7 +346,7 @@ public actor StudyPassPipeline {
                 // A unit that keeps coming back would spend the student's usage: never more than
                 // this per launch.
                 StudyPass.log.error("Study unit \(unit.stage.rawValue, privacy: .public) \(unit.key, privacy: .public) ran \(Self.maximumRunsPerLaunch) times since launch; held until the next launch")
-                return .finished
+                return .finishedForNow
             }
             // The budget is per generation: the calls since its units went pending (a prompt
             // change or a glossary edit starts a new one).
@@ -318,7 +362,7 @@ public actor StudyPassPipeline {
                 }
             } catch {
                 StudyPass.log.error("Study budget unreadable: \(String(describing: error), privacy: .public)")
-                return .finished
+                return .finishedForNow
             }
             switch await run(unit, spec: spec, material: material, rows: rows, client: client) {
             case .done:
@@ -448,6 +492,23 @@ public actor StudyPassPipeline {
                 request.maxTokens = min(firstMaxTokens * 2, StudyPass.largestMaxTokens)
                 StudyPass.log.notice("\(purpose, privacy: .public) \(unit.key, privacy: .public) cut off at \(firstMaxTokens) tokens; asking once more with \(request.maxTokens)")
                 continue
+            } catch ClaudeError.turnLimit(let reason) where spec.work.isResearch {
+                // The web run kept searching until its turn limit: asking again would end the same
+                // way. Done without sources (no attempt counted, never retried; its inputs changing
+                // plans it again).
+                if stopped || Task.isCancelled { return .stopped }
+                var result = UnitResult()
+                result.drops.drop("research.turn_limit")
+                do {
+                    let written = try await writer.finish(unit.id, expectedHash: unit.inputHash, result: result, apiCallID: nil, now: now())
+                    backoffs[unit.stage] = nil
+                    guard written else { return .discarded }
+                } catch {
+                    StudyPass.log.error("Study unit result not recorded: \(String(describing: error), privacy: .public)")
+                    return .stopped
+                }
+                StudyPass.log.notice("\(purpose, privacy: .public) \(unit.key, privacy: .public) done without sources: \(reason, privacy: .public)")
+                return .done
             } catch let error as ClaudeError where error.isServiceTrouble {
                 StudyPass.log.notice("\(purpose, privacy: .public) \(unit.key, privacy: .public) waits: \(error.description, privacy: .public)")
                 guard !error.stopsEveryCall else { return .serviceTrouble }
@@ -568,8 +629,8 @@ public actor StudyPassPipeline {
 
     /// What decides whether a lecture is planned again: its lines, spans, deck pages, units and
     /// the columns of its row and course that its prompts' hashes see (`header`; not
-    /// `updated_at`, which Review moves every few seconds).
-    struct Fingerprint: Hashable, Sendable {
+    /// `updated_at`, which Review moves every few seconds). Codable for `settled.json`.
+    struct Fingerprint: Hashable, Sendable, Codable {
         var lines = 0
         var oldestLine: Date?
         var newestLine: Date?
@@ -666,6 +727,13 @@ public actor StudyPassPipeline {
                 return LectureState(id: id, heldAt: lecture.heldAt, busy: busy.contains(id), lastChange: lastChange, fingerprint: fingerprint)
             }
         }
+    }
+}
+
+extension UnitSpec.Work {
+    var isResearch: Bool {
+        if case .research = self { return true }
+        return false
     }
 }
 

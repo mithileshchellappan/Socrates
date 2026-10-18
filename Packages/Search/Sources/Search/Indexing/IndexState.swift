@@ -13,14 +13,17 @@ enum IndexState {
         var recordings: [Recording.ID] = []
         var decks: [Deck.ID] = []
         var notes: [Note.ID] = []
+        /// M5: further-reading annotations.
+        var readings: [Annotation.ID] = []
 
-        var isEmpty: Bool { recordings.isEmpty && decks.isEmpty && notes.isEmpty }
+        var isEmpty: Bool { recordings.isEmpty && decks.isEmpty && notes.isEmpty && readings.isEmpty }
 
         /// Adds `other`'s units that are not here yet.
         mutating func formUnion(_ other: Work) {
             recordings += other.recordings.filter { !recordings.contains($0) }
             decks += other.decks.filter { !decks.contains($0) }
             notes += other.notes.filter { !notes.contains($0) }
+            readings += other.readings.filter { !readings.contains($0) }
         }
     }
 
@@ -129,6 +132,24 @@ enum IndexState {
                 work.notes.append(row["id"])
             }
         }
+
+        // M5: visible further reading (ai, not hidden), one chunk each, on its lecture's course.
+        for row in try Row.fetchAll(db, sql: """
+            SELECT a.id AS id, a.updated_at AS version,
+              (SELECT count(*) FROM search_chunk c WHERE c.kind = 'further_reading' AND c.source_id = a.id) AS have,
+              (SELECT max(c.source_updated_at) FROM search_chunk c WHERE c.kind = 'further_reading' AND c.source_id = a.id) AS indexed,
+              (SELECT count(*) FROM search_chunk c WHERE c.kind = 'further_reading' AND c.source_id = a.id
+                 AND (c.lecture_id IS NOT a.lecture_id OR c.course_id IS NOT l.course_id
+                      OR c.deck_id IS NOT a.deck_id OR c.page_number IS NOT a.page_number)) AS moved
+            FROM annotation a JOIN lecture l ON l.id = a.lecture_id
+            WHERE a.kind = 'further_reading' AND a.layer = 'ai' AND a.hidden_at IS NULL AND \(String(format: blank, "a.body"))
+            """) {
+            let have: Int = row["have"]
+            let moved: Int = row["moved"]
+            if have != 1 || moved > 0 || !same(row["version"], row["indexed"]) {
+                work.readings.append(row["id"])
+            }
+        }
         return work
     }
 
@@ -143,6 +164,13 @@ enum IndexState {
         try db.execute(sql: "DELETE FROM search_chunk WHERE kind = 'slide' AND deck_id IS NULL")
         removed += db.changesCount
         try db.execute(sql: "DELETE FROM search_chunk WHERE kind = 'note' AND note_id IS NULL")
+        removed += db.changesCount
+        // M5: further reading hidden, deleted, or no longer the study pass's (no cascade).
+        try db.execute(sql: """
+            DELETE FROM search_chunk WHERE kind = 'further_reading' AND source_id NOT IN (
+              SELECT a.id FROM annotation a JOIN lecture l ON l.id = a.lecture_id
+              WHERE a.kind = 'further_reading' AND a.layer = 'ai' AND a.hidden_at IS NULL)
+            """)
         removed += db.changesCount
         return removed
     }

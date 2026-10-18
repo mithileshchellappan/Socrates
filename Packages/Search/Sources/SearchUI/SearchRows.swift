@@ -129,6 +129,117 @@ struct SearchHitRow: View {
     }
 }
 
+/// M5, a Web group row (mockup 07 `.hit.web`): a quiet glyph (a paper, else a book), the title
+/// (13 pt, primary: a name) over "byline · domain" (11.5 pt, secondary). The row opens the page.
+struct WebHitRow: View {
+    let hit: SearchHit
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: Self.symbol(hit))
+                .symbolRenderingMode(.monochrome)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
+                .padding(.top, 1)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: hit.title ?? hit.text)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if let line = Self.sourceLine(hit) {
+                    Text(verbatim: line)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(SearchMetrics.webHitPadding)
+    }
+
+    /// "Barham et al. · SOSP 2003 · dl.acm.org"; the domain alone without a byline.
+    static func sourceLine(_ hit: SearchHit) -> String? {
+        let parts = [hit.byline, hit.url.flatMap(FurtherReadingRow.domain)].compactMap { part -> String? in
+            guard let part = part?.trimmingCharacters(in: .whitespacesAndNewlines), !part.isEmpty else { return nil }
+            return part
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// A paper (a DOI or arXiv link, or "et al." in the byline) gets a document; anything else
+    /// (a manual, documentation, a book) a book.
+    static func symbol(_ hit: SearchHit) -> String {
+        let link = hit.url?.absoluteString.lowercased() ?? ""
+        let byline = hit.byline?.lowercased() ?? ""
+        let paper = link.contains("doi.org/") || link.contains("/doi/") || link.contains("arxiv.org") || byline.contains("et al")
+        return paper ? "doc.text" : "book"
+    }
+}
+
+/// M5, "Also searched" (mockup 07 `.expand`): one sparkle, "Also searched" in tertiary, then the
+/// planner's alternatives in grey joined by " · ". Hovering a term shows an × that removes it
+/// (and searches again). Shown only while a plan was searched.
+struct AlsoSearchedLine: View {
+    let terms: [String]
+    let remove: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            AIMark()
+                .font(.system(size: 12))
+            HStack(spacing: 0) {
+                Text("Also searched")
+                    .foregroundStyle(.tertiary)
+                    .padding(.trailing, 6)
+                ForEach(Array(terms.enumerated()), id: \.element) { index, term in
+                    if index > 0 {
+                        Text(verbatim: " · ")
+                            .foregroundStyle(.secondary)
+                    }
+                    AlsoSearchedTerm(term: term) { remove(term) }
+                }
+            }
+            .lineLimit(1)
+        }
+        .font(.callout)
+        .frame(minHeight: 17)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// One alternative; its × appears on hover.
+private struct AlsoSearchedTerm: View {
+    let term: String
+    let remove: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(verbatim: term)
+                .foregroundStyle(.secondary)
+            if isHovered {
+                Button(action: remove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help(Text("Remove"))
+                .accessibilityLabel(Text("Remove \(term)"))
+            }
+        }
+        .contentShape(.rect)
+        .onHover { isHovered = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: Text("Remove")) { remove() }
+    }
+}
+
 /// Marks a matched run of a snippet for `MatchHighlightRenderer`.
 struct MatchHighlight: TextAttribute {}
 
@@ -178,6 +289,15 @@ struct SearchGroupHeader: View {
                     .frame(width: 14)
                     .accessibilityHidden(true)
                 Text("Mail")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                    .layoutPriority(1)
+            } else if group.kind == .web {
+                Image(systemName: "globe")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
+                Text("Web")
                     .fontWeight(.semibold)
                     .foregroundStyle(.primary)
                     .layoutPriority(1)
@@ -231,8 +351,10 @@ struct SearchGroupHeader: View {
 
 extension SearchResults {
     /// Whether `group` shows as one collapsed row: it has only weak matches (not every word),
-    /// another group matches fully, and the student has not opened it (`expanded`).
+    /// another group matches fully, and the student has not opened it (`expanded`). The Web
+    /// group never collapses (its rows are the reading for the hits' slides, mockup 07).
     func collapses(_ group: SearchGroup, expanded: Set<SearchGroup.ID> = []) -> Bool {
+        guard group.kind != .web else { return false }
         guard !expanded.contains(group.id), group.hits.allSatisfy({ !$0.matchesAllTerms }) else { return false }
         return groups.contains { other in other.hits.contains(where: \.matchesAllTerms) }
     }
@@ -255,6 +377,8 @@ extension SearchResults {
         case .mail:
             // Collapsed: the subject (mockup 07); a row: who wrote it and the subject.
             return [hit.sender, hit.title].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+        case .furtherReading:
+            return hit.title ?? ""
         default:
             var parts: [String] = []
             var place = course.map { $0.shortName.isEmpty ? $0.name : $0.shortName } ?? ""
