@@ -1,4 +1,5 @@
 import AppKit
+import CalendarUI
 import CaptureUI
 import ClaudeKit
 import FilingUI
@@ -29,6 +30,12 @@ import SwiftUI
 // `01-today-chat` and `05-mail-chat` (the chat inspector open), and M5's `08-course-chat`, `07-search-chat` and
 // `03-review-chat` (seed the copy with `tools/parity/seed --library <copy> --m5-sample` first).
 //
+// `--calendar-sample` (a library with mockup 06's rows, e.g. .data/parity/m3/library): adds an
+// exam review from a timetable file (Mon 19 Oct, 11:00), a Data Centers exam (Fri 23 Oct,
+// 09:00, two rooms) and study-pass rows for DC Lecture 2 to the clone, and the shots
+// `06-calendar-session` (the week's first session with a lecture, its detail popover drawn
+// inline: render with `--week 2026-10-12`) and `06-calendar-exam` (the week's exam).
+//
 // Builds the app's real views (`RootView` with its sidebar and toolbar, `LiveLectureScreen`) in
 // windows that are never ordered on screen, at the mockups' 1440×900 points, and writes
 // <out>/<screen>-<appearance>.png (2×). The process has no Dock icon and never activates, so it
@@ -52,6 +59,8 @@ struct RenderOptions {
     var week = CalendarDay(year: 2026, month: 10, day: 19)
     /// M3.5's sample rows and Claude Code available (`--m35-sample`).
     var m35Sample = false
+    /// Calendar's detail popovers with sample exam rows (`--calendar-sample`).
+    var calendarSample = false
 
     init(arguments: [String]) throws {
         var index = 0
@@ -76,6 +85,7 @@ struct RenderOptions {
                 guard let day = CalendarDay(rawValue: try value()) else { throw RenderFailure("--week takes 2026-10-19") }
                 week = day
             case "--m35-sample": m35Sample = true
+            case "--calendar-sample": calendarSample = true
             case "--appearance":
                 switch try value() {
                 case "light": schemes = [.light]
@@ -103,6 +113,8 @@ struct RenderShot {
 
     var name: String
     var window: Window
+    /// Calendar draws this item's detail popover inline (`--calendar-sample`).
+    var calendarDetail: CalendarDetailPreview?
     var prepare: ((AppModel, CGSize) async throws -> Void)?
 }
 
@@ -157,6 +169,7 @@ struct ParityRender {
             try await seedM35(services: services, newestMail: newestMail, now: options.now ?? Date())
             model.claudeAvailability = .ready(ClaudeBackendStatus(kind: .claudeCode, version: "2.1.268", subscription: "team"))
         }
+        if options.calendarSample { try await seedCalendar(services: services) }
         let cc = try ParityMode.course("Data Centers", services: services)
         let (_, dcLecture2) = try ParityMode.lecture("Data Centers", 2, services: services)
         // M6 (`--m6-sample`): mockup 04's open note, the DC L2 note (titled in its first block).
@@ -174,6 +187,9 @@ struct ParityRender {
                 reviewTarget: (dcLecture2.id, ReviewTarget(page: 16, time: 2247, request: UUID()))
             ))),
             RenderShot(name: "06-calendar", window: .main(ParityMode.Launch(selection: .calendar))),
+            // `--calendar-sample`: a detail popover drawn inline (off-screen windows draw none).
+            RenderShot(name: "06-calendar-session", window: .main(ParityMode.Launch(selection: .calendar)), calendarDetail: .session),
+            RenderShot(name: "06-calendar-exam", window: .main(ParityMode.Launch(selection: .calendar)), calendarDetail: .exam),
             RenderShot(name: "07-search", window: .main(ParityMode.Launch(selection: .search, query: "paravirtualization"))),
             // Mockup 05: the Inbox, its newest message selected.
             RenderShot(name: "05-mail", window: .main(ParityMode.Launch(selection: .mailScope(.inbox), mailSelection: newestMail))),
@@ -206,6 +222,7 @@ struct ParityRender {
             }
         ]
         if !options.m35Sample { shots = shots.filter { !$0.name.hasSuffix("-chat") } }
+        if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
         if let only = options.only { shots = shots.filter { only.contains($0.name) } }
         // The live screen last: its preview session keeps "recording", and a running recording
         // shows in every main window's toolbar.
@@ -272,6 +289,42 @@ struct ParityRender {
         }
     }
 
+    /// `--calendar-sample` rows in the clone: an exam review and an exam as a timetable import
+    /// writes them (an item added on its own, its source the file with the description and date),
+    /// and the study pass's counts for DC Lecture 2. Synthetic text; no model call.
+    static func seedCalendar(services: StudyServices) async throws {
+        let berlin = TimeZone(identifier: "Europe/Lisbon") ?? .current
+        let cl = try ParityMode.course("Computational Linguistics", services: services)
+        let cc = try ParityMode.course("Data Centers", services: services)
+        let samples: [(TrackedItem, file: String, quote: String)] = [
+            (TrackedItem(
+                courseID: cl.id, kind: .event, title: "Computational Linguistics exam review", details: "Room 204",
+                dueAt: CalendarDay(year: 2026, month: 10, day: 20).date(minute: 14 * 60, in: berlin),
+                room: "B2-0204 (Room 204) Sample Street 3, Seminar Building (S | 02)", inCalendar: true
+            ), "timetable (7).ics", "Computational Linguistics - Klausureinsicht · 19.10.2026 11:00"),
+            (TrackedItem(
+                courseID: cc.id, kind: .exam, title: "Data Centers exam", details: "Room 102 / Hall A",
+                dueAt: CalendarDay(year: 2026, month: 10, day: 23).date(minute: 9 * 60, in: berlin),
+                room: "B1-0102 (Room 102) Sample Street 1, Lecture Building (L | 01) / B0-0001 (Hall A) Example Road 2, Main Hall (M | 02)",
+                inCalendar: true
+            ), "timetable13.ics", "Klausurtermin 1 · 23.10.2026 09:00")
+        ]
+        for (item, file, quote) in samples {
+            let saved = try await services.records.save(item)
+            _ = try await services.records.save(TrackedItemSource(
+                trackedItemID: saved.id, kind: .timetable, rfcMessageID: file, quote: quote, calendarAdded: true
+            ))
+        }
+        let (_, lecture) = try ParityMode.lecture("Data Centers", 2, services: services)
+        let highlights = (1...5).map { index in
+            Annotation(lectureID: lecture.id, layer: .professor, kind: .highlight, body: "Sample highlight \(index)")
+        }
+        let saidInClass = (1...3).map { index in
+            Annotation(lectureID: lecture.id, layer: .ai, kind: .notOnSlides, body: "Sample said in class \(index)")
+        }
+        _ = try await services.records.save(highlights + saidInClass)
+    }
+
     static func isLive(_ shot: RenderShot) -> Bool {
         if case .live = shot.window { return true }
         return false
@@ -291,6 +344,7 @@ struct ParityRender {
                     showsChat: launch.showsChat
                 )
                 .environment(\.reviewInspectorTab, launch.reviewInspectorTab)
+                .environment(\.calendarDetailPreview, shot.calendarDetail)
                 .environment(model)
             )
         case .live:

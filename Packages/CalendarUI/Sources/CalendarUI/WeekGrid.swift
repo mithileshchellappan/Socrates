@@ -37,11 +37,21 @@ struct TrailInfo {
 
 /// What the grid asks the screen to do.
 struct GridHandlers {
+    /// A click: selects the item and opens its detail popover (nil: the background, which
+    /// deselects and closes it).
     var select: (CalendarSelection?) -> Void
     var open: (WeekPlan.Event) -> Void
     var cancelSession: (LectureSession.ID) -> Void
     var restoreSession: (LectureSession.ID) -> Void
+    var remove: (TrackedItem.ID) -> Void
+    var addToCalendar: (TrackedItem.ID) -> Void
     var trail: (TrackedItem.ID) -> TrailInfo
+    /// The item whose detail popover is open.
+    var detailTarget: CalendarSelection?
+    /// Closes the item's detail popover when it is the open one (a click outside, Esc).
+    var closeDetail: (CalendarSelection) -> Void
+    /// The detail popover's content.
+    var detail: (CalendarSelection) -> CalendarDetail
     var now: Date
 }
 
@@ -158,7 +168,7 @@ private struct PillView: View {
             label
                 .contentShape(Rectangle())
                 .onTapGesture { handlers.select(.item(itemID)) }
-                .trailPopover(handlers.trail(itemID), now: handlers.now)
+                .gridPopover(.item(itemID), handlers: handlers)
                 .accessibilityAddTraits(.isButton)
         } else {
             label
@@ -232,7 +242,7 @@ struct WeekBody: View {
                 let laneWidth = (columns.width(event.day) - 5) / CGFloat(event.lanes)
                 let top = GridMetrics.y(minute: event.startMinute)
                 let height = max(18, GridMetrics.y(minute: event.endMinute) - top - 1)
-                EventView(event: event, isSelected: event.sessionID.map { selection == .session($0) } ?? false, handlers: handlers)
+                EventView(event: event, isSelected: event.target.map { selection == $0 } ?? false, handlers: handlers)
                     .frame(width: max(0, laneWidth - (event.lanes > 1 ? 1 : 0)), height: height)
                     .offset(x: columns.x(event.day) + 2 + CGFloat(event.lane) * laneWidth, y: top)
             }
@@ -261,8 +271,9 @@ struct WeekBody: View {
     }
 }
 
-/// A session (or another calendar's event): radius 6, course tint 15 %, a 3 pt course bar,
-/// 11 pt course text — mono range, semibold title, the room; a waiting proposal as a dashed tag.
+/// A session, an event item (an exam review: its start alone) or another calendar's event:
+/// radius 6, course tint 15 %, a 3 pt course bar, 11 pt course text — mono range, semibold
+/// title, the room; a waiting proposal as a dashed tag.
 private struct EventView: View {
     let event: WeekPlan.Event
     let isSelected: Bool
@@ -322,16 +333,25 @@ private struct EventView: View {
         }
         .clipShape(shape)
 
-        if let sessionID = event.sessionID {
+        if let target = event.target {
             content
                 .contentShape(shape)
-                .onTapGesture { handlers.select(.session(sessionID)) }
+                .onTapGesture { handlers.select(target) }
                 .simultaneousGesture(TapGesture(count: 2).onEnded { handlers.open(event) })
+                .gridPopover(target, handlers: handlers)
                 .contextMenu {
-                    if event.isCancelled {
-                        Button("Restore Session") { handlers.restoreSession(sessionID) }
-                    } else {
-                        Button("Cancel Session") { handlers.cancelSession(sessionID) }
+                    if let sessionID = event.sessionID {
+                        if event.isCancelled {
+                            Button("Restore Session") { handlers.restoreSession(sessionID) }
+                        } else {
+                            Button("Cancel Session") { handlers.cancelSession(sessionID) }
+                        }
+                    } else if let itemID = event.itemID {
+                        if !handlers.trail(itemID).inCalendar {
+                            Button("Add to Calendar") { handlers.addToCalendar(itemID) }
+                            Divider()
+                        }
+                        Button("Delete") { handlers.remove(itemID) }
                     }
                 }
                 .accessibilityElement(children: .combine)
@@ -378,7 +398,7 @@ private struct DueView: View {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { handlers.select(.item(due.id)) }
-                .trailPopover(handlers.trail(due.id), now: handlers.now)
+                .gridPopover(.item(due.id), handlers: handlers)
                 .padding(.horizontal, 3)
                 .offset(y: 5)
                 .accessibilityAddTraits(.isButton)
@@ -453,63 +473,94 @@ private struct NowLine: View {
     }
 }
 
-// MARK: - Source popover on hover
+// MARK: - Popovers: the source trail on hover, the detail on click
 
 extension View {
-    /// Opens the item's source popover while the pointer rests on the view (on tap on iPad and
-    /// iPhone), with the in-calendar check and Undo in its footer.
-    func trailPopover(_ trail: TrailInfo, now: Date) -> some View {
-        modifier(TrailPopover(trail: trail, now: now))
+    /// The grid item's one popover: its source trail while the pointer rests on it (an item with
+    /// sources, on the Mac), its detail once clicked, until Esc or a click elsewhere. A click on
+    /// an open trail turns it into the detail in place.
+    func gridPopover(_ target: CalendarSelection, handlers: GridHandlers) -> some View {
+        modifier(GridPopover(target: target, handlers: handlers))
     }
 }
 
-private struct TrailPopover: ViewModifier {
-    let trail: TrailInfo
-    let now: Date
-    @State private var isPresented = false
+private struct GridPopover: ViewModifier {
+    let target: CalendarSelection
+    let handlers: GridHandlers
+    @State private var showsTrail = false
     @State private var overAnchor = false
     @State private var overPopover = false
     @State private var pending: Task<Void, Never>?
 
-    func body(content: Content) -> some View {
-        if trail.entries.contains(where: \.isActive) {
-            content
-                #if os(macOS)
-                .onHover { inside in
-                    overAnchor = inside
-                    settle()
-                }
-                #else
-                .simultaneousGesture(TapGesture().onEnded { isPresented = true })
-                #endif
-                .popover(isPresented: $isPresented, arrowEdge: .leading) {
-                    let presented = $isPresented
-                    SourceTrailPopover(
-                        entries: trail.entries, now: now, header: trail.header, inCalendar: trail.inCalendar,
-                        undo: trail.undo.map { undo in { @MainActor @Sendable in undo(); presented.wrappedValue = false } }
-                    )
-                    #if os(macOS)
-                    .onHover { inside in
-                        overPopover = inside
-                        settle()
-                    }
-                    #endif
-                }
-        } else {
-            content
-        }
+    private var showsDetail: Bool { handlers.detailTarget == target }
+
+    /// The item's trail when it has a source to show.
+    private var trail: TrailInfo? {
+        guard case .item(let id) = target else { return nil }
+        let trail = handlers.trail(id)
+        return trail.entries.contains(where: \.isActive) ? trail : nil
     }
 
-    /// Opens after a short rest, closes a moment after the pointer left both (as
-    /// `SourceTrailButton`).
+    func body(content: Content) -> some View {
+        let trail = trail
+        content
+            #if os(macOS)
+            .onHover { inside in
+                guard trail != nil else { return }
+                overAnchor = inside
+                settle()
+            }
+            #endif
+            .popover(isPresented: presented, arrowEdge: .leading) {
+                Group {
+                    if showsDetail {
+                        handlers.detail(target)
+                    } else if let trail {
+                        SourceTrailPopover(
+                            entries: trail.entries, now: handlers.now, header: trail.header, inCalendar: trail.inCalendar,
+                            undo: trail.undo.map { undo in { @MainActor @Sendable in undo(); showsTrail = false } }
+                        )
+                    }
+                }
+                #if os(macOS)
+                .onHover { inside in
+                    overPopover = inside
+                    settle()
+                }
+                #endif
+            }
+            .onChange(of: showsDetail) { _, shown in
+                guard shown else { return }
+                pending?.cancel()
+                showsTrail = false
+            }
+            // Done, deleted, undone or another week: the detail goes with its item.
+            .onDisappear { handlers.closeDetail(target) }
+    }
+
+    private var presented: Binding<Bool> {
+        Binding(
+            get: { showsDetail || showsTrail },
+            set: { shown in
+                guard !shown else { return }
+                pending?.cancel()
+                showsTrail = false
+                handlers.closeDetail(target)
+            }
+        )
+    }
+
+    /// The trail opens after a short rest and closes a moment after the pointer left both (as
+    /// `SourceTrailButton`); an open detail stays.
     private func settle() {
         pending?.cancel()
+        guard !showsDetail else { return }
         let wanted = overAnchor || overPopover
-        guard wanted != isPresented else { return }
+        guard wanted != showsTrail else { return }
         pending = Task { @MainActor in
             try? await Task.sleep(for: wanted ? .milliseconds(350) : .milliseconds(250))
             guard !Task.isCancelled else { return }
-            isPresented = wanted
+            showsTrail = wanted
         }
     }
 }
