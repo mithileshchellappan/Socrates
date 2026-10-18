@@ -119,6 +119,13 @@ public struct ClaudeClient: Sendable {
         return await availability()
     }
 
+    /// ma: background calls (pipelines, sub-agent tasks) allowed at once from now on: the app
+    /// passes 1 while `memory_pressure` reports less than 25 % free and nil when it recovers
+    /// (Claude Code: `ClaudeCodeConfiguration.backgroundSlots`, 2). The Messages API ignores it.
+    public func setBackgroundSlotLimit(_ limit: Int?) async {
+        await backend?.setBackgroundSlotLimit(limit)
+    }
+
     /// The gate for model work (replaces "an API key is saved"). True while a usage pause holds
     /// (calls then fail with `.usageLimited`); background work checks
     /// `availability().pausedUntil` too.

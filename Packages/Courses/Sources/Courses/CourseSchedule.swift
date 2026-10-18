@@ -217,6 +217,20 @@ public struct CourseSchedule: Sendable {
         }
     }
 
+    /// ma: moves a session to another time, keeping its room (a time change from mail or class).
+    @discardableResult
+    public func setTime(_ sessionID: LectureSession.ID, startsAt: Date, endsAt: Date, now: Date = Date()) async throws -> LectureSession? {
+        try await move(sessionID, startsAt: startsAt, endsAt: endsAt, now: now)
+    }
+
+    /// ma: adds a one-off session the course announced (a block lecture, a make-up date).
+    @discardableResult
+    public func addExtra(
+        courseID: Course.ID, kind: SessionKind, startsAt: Date, endsAt: Date, room: String = "", now: Date = Date()
+    ) async throws -> LectureSession {
+        try await addSession(courseID: courseID, kind: kind, startsAt: startsAt, endsAt: endsAt, room: room, now: now)
+    }
+
     private func edit(
         _ sessionID: LectureSession.ID,
         now: Date,
@@ -225,16 +239,58 @@ public struct CourseSchedule: Sendable {
         let planner = planner
         let store = store
         return try await services.database.write { db in
-            guard var session = try LectureSession.find(sessionID).fetchOne(db) else { return nil }
-            let before = session
-            change(&session)
-            guard session != before else { return session }
-            session.editedAt = now
-            let stamped = store.stamp(session)
-            try LectureSession.upsert { stamped }.execute(db)
-            try Self.replan(courseID: session.courseID, now: now, planner: planner, store: store, db: db)
-            return try LectureSession.find(sessionID).fetchOne(db)
+            try Self.edit(sessionID, now: now, planner: planner, store: store, db: db, change)?.after
         }
+    }
+
+    // MARK: - ma: inside the caller's transaction (AppAgent's change log, the timetable import)
+
+    /// Changes one session inside the caller's transaction: the edit (marked `edited_at`, so
+    /// planning keeps it), the reconciliation and the renumbering. The session before and after;
+    /// nil when it is gone. An edit that changes nothing writes nothing (before == after).
+    @discardableResult
+    public static func edit(
+        _ sessionID: LectureSession.ID,
+        now: Date,
+        planner: SessionPlanner = SessionPlanner(),
+        store: RecordStore,
+        db: Database,
+        _ change: (inout LectureSession) -> Void
+    ) throws -> (before: LectureSession, after: LectureSession)? {
+        guard var session = try LectureSession.find(sessionID).fetchOne(db) else { return nil }
+        let before = session
+        change(&session)
+        session.endsAt = max(session.endsAt, session.startsAt)
+        guard session != before else { return (before, before) }
+        session.editedAt = now
+        let stamped = store.stamp(session)
+        try LectureSession.upsert { stamped }.execute(db)
+        try replan(courseID: session.courseID, now: now, planner: planner, store: store, db: db)
+        let after = try LectureSession.find(sessionID).fetchOne(db) ?? stamped
+        return (before, after)
+    }
+
+    /// Adds a one-off session (no weekly slot, `edited_at` set) inside the caller's transaction
+    /// and replans its course; the session as written (numbered).
+    @discardableResult
+    public static func insertSession(
+        courseID: Course.ID,
+        kind: SessionKind,
+        startsAt: Date,
+        endsAt: Date,
+        room: String,
+        now: Date,
+        planner: SessionPlanner = SessionPlanner(),
+        store: RecordStore,
+        db: Database
+    ) throws -> LectureSession {
+        let session = store.stamp(LectureSession(
+            courseID: courseID, kind: kind, startsAt: startsAt, endsAt: max(endsAt, startsAt),
+            room: room.trimmingCharacters(in: .whitespacesAndNewlines), editedAt: now
+        ))
+        try LectureSession.upsert { session }.execute(db)
+        try replan(courseID: courseID, now: now, planner: planner, store: store, db: db)
+        return try LectureSession.find(session.id).fetchOne(db) ?? session
     }
 
     // MARK: - Matching

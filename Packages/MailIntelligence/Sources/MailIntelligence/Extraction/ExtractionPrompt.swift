@@ -36,6 +36,41 @@ enum ExtractionPrompt {
         }
     }
 
+    /// ma: a change of one class session the mail states (applied on its own with Undo by the
+    /// app agent's change log; replaces M2's room change / cancellation proposals).
+    struct SessionChange: Decodable, Sendable {
+        /// room, time, cancel, restore, extra.
+        var change: String
+        var course: String?
+        /// The session as it was planned: "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM".
+        var sessionDay: String?
+        var sessionKind: String?
+        /// The new start and end (time changes, extra sessions).
+        var startsAt: String?
+        var endsAt: String?
+        var room: String?
+        var quote: String
+        var confidence: Double
+
+        enum CodingKeys: String, CodingKey {
+            case change, course, room, quote, confidence
+            case sessionDay = "session_day"
+            case sessionKind = "session_kind"
+            case startsAt = "starts_at"
+            case endsAt = "ends_at"
+        }
+    }
+
+    /// ma: a fact about a course the mail states (lecturers, exam admission, exam form, bonus,
+    /// exercise rules, attendance).
+    struct CourseFact: Decodable, Sendable {
+        var course: String?
+        var fact: String
+        var text: String
+        var quote: String
+        var confidence: Double
+    }
+
     /// The answer for one mail of the batch.
     struct MailAnswer: Decodable, Sendable {
         /// The envelope's id ("m1").
@@ -43,10 +78,26 @@ enum ExtractionPrompt {
         /// The mail directly asks this student for an answer or a decision.
         var needsReply: Bool
         var items: [Item]
+        /// ma: session changes, course facts, and whether a bigger model must decide.
+        var sessions: [SessionChange]
+        var facts: [CourseFact]
+        var escalate: Bool
+        var reason: String
 
         enum CodingKeys: String, CodingKey {
-            case id, items
+            case id, items, sessions, facts, escalate, reason
             case needsReply = "needs_reply"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            needsReply = try container.decode(Bool.self, forKey: .needsReply)
+            items = try container.decode([Item].self, forKey: .items)
+            sessions = try container.decodeIfPresent([SessionChange].self, forKey: .sessions) ?? []
+            facts = try container.decodeIfPresent([CourseFact].self, forKey: .facts) ?? []
+            escalate = try container.decodeIfPresent(Bool.self, forKey: .escalate) ?? false
+            reason = try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
         }
     }
 
@@ -54,7 +105,11 @@ enum ExtractionPrompt {
         var mails: [MailAnswer]
     }
 
-    static let kinds = ["deadline", "exercise", "exam", "event", "room_change", "cancellation", "announcement", "task"]
+    /// ma: room changes and cancellations are `sessions` now (applied with Undo, no proposals).
+    static let kinds = ["deadline", "exercise", "exam", "event", "announcement", "task"]
+    static let sessionChanges = ["room", "time", "cancel", "restore", "extra"]
+    static let sessionKinds = ["lecture", "exercise", "tutorial", "seminar"]
+    static let facts = ["lecturers", "exam_admission", "exam_form", "bonus", "exercise", "attendance", "other"]
     static let relevances = [ItemRelevance.examAdmission.rawValue, ItemRelevance.bonus.rawValue]
 
     /// The model's details, at most 12 words.
@@ -90,6 +145,32 @@ enum ExtractionPrompt {
                             "confidence": ["type": "number"],
                         ]),
                     ],
+                    "sessions": [
+                        "type": "array",
+                        "items": Schemas.object([
+                            "change": Schemas.stringEnum(sessionChanges),
+                            "course": Schemas.nullable(["type": "string"]),
+                            "session_day": Schemas.nullable(["type": "string"]),
+                            "session_kind": Schemas.nullable(Schemas.stringEnum(sessionKinds)),
+                            "starts_at": Schemas.nullable(["type": "string"]),
+                            "ends_at": Schemas.nullable(["type": "string"]),
+                            "room": Schemas.nullable(["type": "string"]),
+                            "quote": ["type": "string"],
+                            "confidence": ["type": "number"],
+                        ]),
+                    ],
+                    "facts": [
+                        "type": "array",
+                        "items": Schemas.object([
+                            "course": Schemas.nullable(["type": "string"]),
+                            "fact": Schemas.stringEnum(facts),
+                            "text": ["type": "string"],
+                            "quote": ["type": "string"],
+                            "confidence": ["type": "number"],
+                        ]),
+                    ],
+                    "escalate": ["type": "boolean"],
+                    "reason": ["type": "string"],
                 ]),
             ]
         ])
@@ -111,8 +192,6 @@ enum ExtractionPrompt {
         - exercise: an exercise sheet or assignment with a due date.
         - exam: an exam date, or the period to register for an exam.
         - event: a dated meeting that is not due work (first tutorial, info session, a talk).
-        - room_change: a lecture, exercise or tutorial session takes place in another room; put the new room in "room".
-        - cancellation: a session is cancelled.
         - task: something the student must do that has no date to do it by (register in a system, fill in a \
         form, bring a laptop, read a text before class). With a date it is a deadline.
         - announcement: something else the student needs to know from this mail that has no date to act on. \
@@ -134,6 +213,24 @@ enum ExtractionPrompt {
         when it earns bonus points, else null.
         - confidence: how sure you are that the item is real and correct, from 0 to 1.
         List each thing once. Never list anything a mail does not state. No items: an empty list.
+
+        sessions: changes to the course's class sessions the mail states (they are applied to the student's \
+        timetable, so only what the mail clearly says):
+        - change: room (another room; the new room in "room"), time (another time or day; the new start and end in \
+        starts_at and ends_at as "YYYY-MM-DDTHH:MM"), cancel (it does not take place), restore (a cancelled session \
+        takes place after all), extra (an additional session: starts_at, ends_at, room).
+        - session_day: the day of the session as it was planned, "YYYY-MM-DDTHH:MM" when the mail gives its time, \
+        else "YYYY-MM-DD"; null when the mail names only a week ("next week's lecture") or for an extra session.
+        - session_kind: lecture, exercise, tutorial or seminar when the mail says which; course: its token.
+        - quote: the mail's exact words that state the change and its day (as for items).
+
+        facts: rules of a course the mail states: lecturers (text: the names, separated by ";"), exam_admission \
+        (what admits to the exam), exam_form (written, oral, project, its length), bonus, exercise (how sheets are \
+        handed in or graded), attendance, other. text: the rule in at most 20 words; quote: the mail's exact words.
+
+        escalate: true when the mail changes an exam date, cancels an exam, contradicts what the student already \
+        has, or is too ambiguous to apply safely (then say why in reason, one short sentence); else false and \
+        reason "".
 
         Answer once for every mail, with its id attribute as id.
 

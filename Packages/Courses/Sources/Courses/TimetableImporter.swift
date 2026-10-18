@@ -50,6 +50,27 @@ public struct TimetableRecordedItem: Sendable {
 /// Writes one exam draft into the deadline memory inside the import's transaction.
 public typealias TimetableItemRecorder = @Sendable (TimetableItemDraft, Database) throws -> TimetableRecordedItem?
 
+/// ma: a change an import made to an existing session (a meeting the series skips outside a
+/// break is cancelled), with the file's words for the activity log. The app hands it to AppAgent's
+/// change log inside the import's transaction (`agent_change`, source `timetable`, model "",
+/// Undo); the session row is already changed.
+public struct TimetableSessionChange: Sendable {
+    public enum Kind: Sendable, Hashable {
+        case cancel
+    }
+
+    public var kind: Kind
+    public var before: LectureSession
+    public var after: LectureSession
+    /// The file's name (the source's reference).
+    public var file: String
+    /// What the file says ("Data Centers · Vorlesung · ausgenommen 2026-11-05").
+    public var quote: String
+}
+
+/// Logs one session change of the import inside its transaction.
+public typealias TimetableSessionChangeRecorder = @Sendable (TimetableSessionChange, Database) throws -> Void
+
 /// What an import wrote.
 public struct TimetableImportResult: Sendable {
     public var createdCourses: [Course] = []
@@ -104,6 +125,32 @@ public struct TimetableImporter: Sendable {
         }
     }
 
+    /// ma: what a re-import adds to existing courses, one line per row (≤ 6,000 characters): the
+    /// `timetable` event's detail for the app agent's triage. Empty when nothing changed.
+    static func diff(_ courses: [TimetableCourse]) -> String {
+        let zone = TimetableText.berlin
+        var lines: [String] = []
+        for course in courses where !course.isEmpty {
+            let name = course.existing?.name ?? course.name
+            for slot in course.slots {
+                var line = "\(name): new weekly \(slot.kind.displayName) on weekday \(slot.weekday), "
+                line += SessionText.minutes(slot.startMinute, slot.endMinute) + (slot.room.isEmpty ? "" : ", \(slot.room)")
+                if !slot.excluded.isEmpty { line += "; skips " + slot.excluded.map(\.rawValue).joined(separator: ", ") }
+                lines.append(line)
+            }
+            for session in course.sessions {
+                let day = CalendarDay(session.startsAt, in: zone).rawValue
+                let minute = Calendar.current.dateComponents(in: zone, from: session.startsAt)
+                let time = String(format: "%02d:%02d", minute.hour ?? 0, minute.minute ?? 0)
+                lines.append("\(name): new \(session.kind.displayName) on \(day) \(time)" + (session.room.isEmpty ? "" : ", \(session.room)"))
+            }
+            for item in course.items {
+                lines.append("\(name): \(item.kind.rawValue) \(item.title) · \(item.quote)")
+            }
+        }
+        return String(lines.joined(separator: "\n").prefix(AgentEvent.detailLimit))
+    }
+
     /// The files' events, each UID once (the same course downloaded twice).
     public static func events(in files: [TimetableFile]) -> [TimetableEvent] {
         var seen = Set<String>()
@@ -126,7 +173,8 @@ public struct TimetableImporter: Sendable {
         _ proposal: TimetableImport,
         including included: Set<UUID>,
         now: Date = Date(),
-        record: TimetableItemRecorder? = nil
+        record: TimetableItemRecorder? = nil,
+        sessionChange: TimetableSessionChangeRecorder? = nil
     ) async throws -> TimetableImportResult {
         let store = store
         let chosen = proposal.courses.filter { !$0.isNew || included.contains($0.id) }
@@ -190,11 +238,20 @@ public struct TimetableImporter: Sendable {
                     guard !skipped.isEmpty else { continue }
                     let sessions = try LectureSession.where { $0.weeklySlotID.eq(WeeklySlot.ID?.some(slotID)) }.fetchAll(db)
                     for var session in sessions where !session.isCancelled && skipped.contains(CalendarDay(session.startsAt, in: zone)) {
+                        let before = session
                         session.isCancelled = true
                         session.editedAt = now
                         let stamped = store.stamp(session)
                         try LectureSession.upsert { stamped }.execute(db)
                         cancelled = true
+                        // ma: the activity log (source timetable, the file's words, Undo).
+                        if let sessionChange {
+                            let day = CalendarDay(session.startsAt, in: zone)
+                            try sessionChange(TimetableSessionChange(
+                                kind: .cancel, before: before, after: stamped, file: entry.course.items.first?.file ?? entry.course.name,
+                                quote: "\(entry.course.name) · \(slot.kind.displayName) · ausgenommen \(day.rawValue)"
+                            ), db)
+                        }
                     }
                 }
                 if cancelled {
@@ -220,6 +277,16 @@ public struct TimetableImporter: Sendable {
                         if item.kind == .event { result.eventItemIDs.append(recorded.itemID) }
                     }
                 }
+            }
+            // ma: a re-import that changed an existing course is a new fact for the app agent's
+            // triage (its items and sessions may need reconciling); the diff is the event's detail.
+            let diff = Self.diff(written.filter { $0.course.existing != nil }.map(\.course))
+            if !diff.isEmpty {
+                let key = "timetable:\(Int(now.timeIntervalSince1970 * 1_000)):\(proposal.id.uuidString.lowercased())"
+                let event = store.stamp(AgentEvent(
+                    kind: .timetable, sourceKey: key, courseID: written.first { $0.course.existing != nil }?.courseID, detail: diff
+                ))
+                try AgentEvent.upsert { event }.execute(db)
             }
             CoursesLog.schedule.info(
                 "Timetable import: \(written.count) course(s), \(result.createdCourses.count) new, \(written.map(\.slots.count).reduce(0, +)) slot(s)"

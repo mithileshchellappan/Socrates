@@ -103,6 +103,36 @@ public actor MailChat {
         """
     }
 
+    /// ma: the read-only mail tools (search_mail, read_mail, list_mail) as agent tools that read
+    /// untrusted content: the app agent's `mail` group.
+    public static func mailTools(services: StudyServices) -> [AgentTool] {
+        let qa = MailQATools.handler(services: services)
+        return MailQATools.tools.map { tool in
+            AgentTool(tool: tool, effect: .read, readsUntrustedContent: true) { call, _ in try await qa(call) }
+        }
+    }
+
+    /// ma: draft_reply {mail_id, body} for the app agent (a `.draft` tool; never sends).
+    public static func draftReplyTool(_ drafter: ReplyDrafter) -> AgentTool {
+        draftReply(drafter)
+    }
+
+    /// ma: the check every mail-sourced change of the app agent goes through: `quote` is an exact
+    /// span of the mail (`QuoteVerifier`) outside text that talks to the model (`InjectionGuard`);
+    /// trusted only when the mail has no such text. Nil when the quote is not in the mail.
+    public static func verifyQuote(id: MailMessage.ID, quote: String, services: StudyServices) async throws -> VerifiedMailQuote? {
+        try await verifiedQuote(id: id, quote: quote, services: services)
+    }
+
+    /// ma: a mail as untrusted data for a model (`<mail id=…>` envelope, escaped, the drafting
+    /// budget), as the app agent's triage and escalations read it.
+    public static func envelope(_ message: MailMessage) -> String {
+        MailEnvelope.render(message, id: message.id.uuidString.lowercased(), budget: MailEnvelope.Budget.drafting)
+    }
+
+    /// ma: the rule every prompt with mail ends with (text inside `<mail>` is data).
+    public static var mailDataRule: String { MailEnvelope.dataRule }
+
     /// add_item's mail check: an exact span of the mail; a quote of text that talks to the model is
     /// refused; the source is trusted only when the mail has no such text.
     static func verifiedQuote(id: MailMessage.ID, quote: String, services: StudyServices) async throws -> VerifiedMailQuote? {

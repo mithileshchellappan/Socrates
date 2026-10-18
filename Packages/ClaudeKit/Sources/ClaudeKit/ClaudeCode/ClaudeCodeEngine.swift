@@ -19,18 +19,27 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
     public var pricing: PricingTable
     /// How long an availability answer is reused before `claude auth status` runs again.
     public var availabilityLifetime: Duration
+    /// ma: `claude` processes background calls (pipelines, sub-agent tasks) may hold at once,
+    /// beside the one interactive slot (docs/plan-agent.md §1). The app lowers it at run time
+    /// under memory pressure (`ClaudeClient.setBackgroundSlotLimit`).
+    public var backgroundSlots: Int
 
     public init(
         directory: URL,
         candidates: [URL] = ClaudeCodeConfiguration.defaultCandidates,
         pricing: PricingTable = .standard,
-        availabilityLifetime: Duration = .seconds(60)
+        availabilityLifetime: Duration = .seconds(60),
+        backgroundSlots: Int = ClaudeCodeConfiguration.defaultBackgroundSlots
     ) {
         self.directory = directory
         self.candidates = candidates
         self.pricing = pricing
         self.availabilityLifetime = availabilityLifetime
+        self.backgroundSlots = max(1, backgroundSlots)
     }
+
+    /// Background processes at once by default (PRD "Sub-agents": two at once).
+    public static let defaultBackgroundSlots = 2
 
     /// `~/.local/bin/claude` (the native installer), `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`.
     public static var defaultCandidates: [URL] {
@@ -59,8 +68,10 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
 /// - Availability: the binary (`configuration.candidates`, then once the login shell's `PATH`)
 ///   and `claude auth status --json` (`loggedIn`), cached for `availabilityLifetime`; no model
 ///   call.
-/// - One `claude` process at a time (`ClaudeCodeQueue`): interactive calls first, FIFO within a
-///   priority.
+/// - ma: process slots (`ClaudeCodeSlots`): one interactive slot and
+///   `configuration.backgroundSlots` background slots (2; the app lowers the limit under memory
+///   pressure with `setBackgroundSlotLimit`). An interactive call never waits behind background
+///   holders; FIFO within a priority. A call a running loop's tool makes bypasses the slots.
 /// - `streamMessage`: one-shot calls; `runToolLoop`: tool loops whose tools the CLI calls through
 ///   an MCP server the app hosts for the run.
 /// - A usage limit pauses the queue until the stated reset (kept in `state.json`): every call
@@ -70,7 +81,7 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
 /// - Cancelling the caller kills the child process.
 public actor ClaudeCodeEngine: ClaudeBackend {
     public nonisolated let configuration: ClaudeCodeConfiguration
-    private let queue = ClaudeCodeQueue()
+    private let slots: ClaudeCodeSlots
     private var state: ClaudeCodeState
     private var cached: (availability: ClaudeAvailability, binary: URL?, expires: ContinuousClock.Instant)?
     private var probing: Task<(ClaudeAvailability, URL?), Never>?
@@ -79,6 +90,7 @@ public actor ClaudeCodeEngine: ClaudeBackend {
 
     public init(configuration: ClaudeCodeConfiguration) {
         self.configuration = configuration
+        slots = ClaudeCodeSlots(backgroundSlots: configuration.backgroundSlots)
         state = ClaudeCodeState.load(from: configuration.stateFile)
         // MCP configs left by runs the app did not finish (each holds that run's bearer token).
         let fileManager = FileManager.default
@@ -88,6 +100,13 @@ public actor ClaudeCodeEngine: ClaudeBackend {
     }
 
     public nonisolated var kind: ClaudeBackendKind { .claudeCode }
+
+    /// ma: background processes allowed at once from now on (the app passes 1 while
+    /// `memory_pressure` reports less than 25 % free, nil to go back to
+    /// `configuration.backgroundSlots`). Never below 1; running calls are not stopped.
+    public func setBackgroundSlotLimit(_ limit: Int?) async {
+        await slots.setBackgroundLimit(limit)
+    }
 
     /// Ends every `claude` process the app started (SIGTERM), for the app's quit
     /// (`NSApplication.willTerminateNotification`): a tool loop's MCP server lives in the app and
@@ -317,10 +336,10 @@ public actor ClaudeCodeEngine: ClaudeBackend {
         }
     }
 
-    /// Runs `body` with the binary when the queue gives the turn and no usage pause holds. During
-    /// a pause every call throws `.usageLimited` at once: a background call never sleeps through
-    /// it, since its pipeline's other work (rules, indexing) must go on; it stays pending and the
-    /// pipeline wakes itself at the reset.
+    /// Runs `body` with the binary when a slot of `priority` is free and no usage pause holds.
+    /// During a pause every call throws `.usageLimited` at once: a background call never sleeps
+    /// through it, since its pipeline's other work (rules, indexing) must go on; it stays pending
+    /// and the pipeline wakes itself at the reset.
     private func scheduled<T: Sendable>(_ priority: CallPriority, _ body: (URL) async throws -> T) async throws -> T {
         let (availability, binary) = await current()
         guard availability.isReady, let binary else { throw ClaudeError.unavailable(availability) }
@@ -328,23 +347,23 @@ public actor ClaudeCodeEngine: ClaudeBackend {
         // A call made by a tool of a running loop does not queue behind that loop (it would wait
         // for itself); it runs beside it.
         let queued = !Self.insideToolCall
-        if queued { try await queue.acquire(priority) }
+        if queued { try await slots.acquire(priority) }
         if let until = activePause() {
-            // The previous holder hit the limit while this call waited.
-            if queued { await queue.release() }
+            // Another holder hit the limit while this call waited.
+            if queued { await slots.release(priority) }
             throw ClaudeError.usageLimited(resetsAt: until)
         }
         do {
             let value = try await body(binary)
-            if queued { await queue.release() }
+            if queued { await slots.release(priority) }
             return value
         } catch let hit as UsageLimitHit {
-            if queued { await queue.release() }
+            if queued { await slots.release(priority) }
             let until = hit.resetsAt.flatMap { $0 > Date() ? $0 : nil } ?? Date().addingTimeInterval(3600)
             pause(until: until)
             throw ClaudeError.usageLimited(resetsAt: until)
         } catch {
-            if queued { await queue.release() }
+            if queued { await slots.release(priority) }
             if let error = error as? ClaudeError {
                 switch error {
                 case .unavailable, .claudeCode, .claudeCodeProcess: cached = nil  // signed out or gone: check again

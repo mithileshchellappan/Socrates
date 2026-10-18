@@ -223,6 +223,13 @@ public actor CalendarMirror {
             do {
                 let course = courses[session.courseID]
                 let draft = course.flatMap { Self.wantsEvent(session, course: $0) ? Self.event(for: session, course: $0) : nil }
+                // ma: a synced session whose event the student changed in another calendar app is
+                // a new fact for the app agent; its event stays as the student left it until
+                // triage has decided (then the session's version is written again).
+                if !calendarChanged, !dirty.contains(session.id), let draft, let course,
+                   try await keepsEditElsewhere(session, course: course, draft: draft, calendarID: calendarID, pass: &pass) {
+                    continue
+                }
                 let eventID = try await reconcile(.session(session.id), eventID: session.calendarEventID, draft: draft, calendarID: calendarID, pass: &pass)
                 if dirty.contains(session.id) || eventID != session.calendarEventID {
                     synced.append((session, eventID))
@@ -330,6 +337,64 @@ public actor CalendarMirror {
             pass.report.removed += 1
         }
         return nil
+    }
+
+    /// ma: whether the event of a synced session was moved, re-roomed or deleted in another
+    /// calendar app and is kept as it is for now. The first time a version of such an edit is
+    /// seen it is recorded as a `calendar` event (`agent_event`, detail = what changed); while
+    /// triage has not decided it, the event stays; once decided (applied to the session or not),
+    /// the session's version is written again as usual.
+    private func keepsEditElsewhere(
+        _ session: LectureSession, course: Course, draft: CalendarEvent, calendarID: String, pass: inout PassState
+    ) async throws -> Bool {
+        guard let eventID = session.calendarEventID else { return false }
+        var current = pass.byID[eventID]
+        if current == nil { current = try await store.event(id: eventID, calendarID: calendarID) }
+        let zone = TimeZone(identifier: "Europe/Lisbon") ?? .current
+        let was = Self.describe(start: session.startsAt, end: session.endsAt, location: session.room, zone: zone)
+        let name = SessionText.title(of: session, courseName: course.name, shortName: course.shortName)
+        let detail: String
+        let version: String
+        if let current {
+            let moved = current.startsAt != draft.startsAt || current.endsAt != draft.endsAt
+            let reroomed = (current.location ?? "").trimmingCharacters(in: .whitespaces) != (draft.location ?? "")
+            guard moved || reroomed, !current.isAllDay else { return false }
+            let now = Self.describe(start: current.startsAt, end: current.endsAt, location: current.location ?? "", zone: zone)
+            detail = "The student changed the Study Portal event of \(name) (session \(session.id.uuidString.lowercased())) in the Calendar app: was \(was), now \(now)."
+            version = "\(Int(current.startsAt.timeIntervalSince1970))-\(Int(current.endsAt.timeIntervalSince1970))-\(current.location ?? "")"
+        } else {
+            detail = "The student deleted the Study Portal event of \(name) (session \(session.id.uuidString.lowercased())), \(was), in the Calendar app."
+            version = "deleted"
+        }
+        let key = "calendar:\(eventID):\(version)"
+        let records = services.records
+        let keep = try await services.database.write { db -> Bool in
+            if let state = try AgentEvent.where({ $0.sourceKey.eq(key) }).fetchOne(db)?.state {
+                return state == .pending || state == .escalated
+            }
+            let event = records.stamp(AgentEvent(kind: .calendar, sourceKey: key, courseID: session.courseID, detail: detail))
+            try AgentEvent.upsert { event }.execute(db)
+            return true
+        }
+        guard keep else { return false }
+        if let current, let id = current.id {
+            pass.owned[id] = .session(session.id)
+            pass.report.unchanged += 1
+        }
+        return true
+    }
+
+    /// "Tue 2026-10-20 12:15–13:45 in Room 5".
+    static func describe(start: Date, end: Date, location: String, zone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][(calendar.component(.weekday, from: start) - 1 + 7) % 7]
+        func clock(_ date: Date) -> String {
+            let parts = calendar.dateComponents([.hour, .minute], from: date)
+            return String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+        }
+        let room = location.trimmingCharacters(in: .whitespaces)
+        return "\(weekday) \(CalendarDay(start, in: zone).rawValue) \(clock(start))–\(clock(end))" + (room.isEmpty ? "" : " in \(room)")
     }
 
     private func load() async throws -> ([LectureSession], [Course.ID: Course], [TrackedItem]) {

@@ -2,9 +2,9 @@
 import Foundation
 
 /// One holder at a time (docs/plan-m35.md §3.3): interactive waiters before background ones, FIFO
-/// within a priority; a cancelled waiter leaves the queue. Used for the `claude` processes (about
-/// 0.5 GB each) and, per run, for the MCP tool calls (one at a time, like `ToolLoop` with
-/// `parallelToolExecution: false`).
+/// within a priority; a cancelled waiter leaves the queue. Used per run for the MCP tool calls (one
+/// at a time, like `ToolLoop` with `parallelToolExecution: false`). ma: the `claude` processes
+/// themselves are held by `ClaudeCodeSlots` (1 interactive + 2 background).
 actor ClaudeCodeQueue {
     private struct Waiter {
         let id: UInt64

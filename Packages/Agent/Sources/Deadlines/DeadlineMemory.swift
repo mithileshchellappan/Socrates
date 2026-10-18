@@ -22,10 +22,12 @@ import StudyCore
 ///   relevance are filled in; a repeat never changes the title or date of an item the student
 ///   created. Those changes store the item's fields before them on the new source (`previous`).
 ///   The student's own words (chat) bring back an item they had dismissed.
-/// - **Proposals**: a room change or cancellation is a proposal only when exactly one
-///   non-cancelled session of the course matches the quoted day (and time), else an
-///   announcement; an event or announcement with a time 15 minutes around a session start is
-///   tied to that session.
+/// - **Proposals** (M2): a room change or cancellation that repeats an existing proposal row adds a
+///   source to it (Confirm / Discard still work). ma: no new proposals are made: a session change
+///   is applied on its own through AppAgent's change log (`recordSessionChange`, status `done`),
+///   and a room change or cancellation finding without an existing proposal is an announcement.
+///   An event or announcement with a time 15 minutes around a session start is tied to that
+///   session.
 /// - **Undo** puts back `previous` when the source changed the item, else dismisses it and takes
 ///   it out of the calendar; Restore takes the Undo back. Nothing is ever deleted.
 public struct DeadlineMemory: Sendable {
@@ -67,6 +69,66 @@ public struct DeadlineMemory: Sendable {
     /// `record(_:in:store:now:)` (calls `onChange`).
     public func didChange() async {
         await onChange()
+    }
+
+    // MARK: - ma: inside the caller's transaction (AppAgent's change log)
+
+    /// `update(_:to:by:)` inside the caller's transaction; no `onChange`. Returns the item and the
+    /// source written (nil: nothing changed).
+    public static func update(
+        _ itemID: TrackedItem.ID, to draft: DeadlineDraft, by finding: ItemFinding, in db: Database, store: RecordStore, now: Date
+    ) throws -> (item: TrackedItem, source: TrackedItemSource?)? {
+        try MemoryWriter(db: db, store: store, now: now, timeZone: DeadlinesModule.timeZone).updateWithSource(itemID, to: draft, by: finding)
+    }
+
+    /// `complete(_:by:)` inside the caller's transaction; the source written with the fields before.
+    public static func complete(
+        _ itemID: TrackedItem.ID, by finding: ItemFinding, in db: Database, store: RecordStore, now: Date
+    ) throws -> (item: TrackedItem, source: TrackedItemSource?)? {
+        try MemoryWriter(db: db, store: store, now: now, timeZone: DeadlinesModule.timeZone).completeWithSource(itemID, by: finding)
+    }
+
+    /// `undo(_:)` inside the caller's transaction.
+    @discardableResult
+    public static func undo(_ sourceID: TrackedItemSource.ID, in db: Database, store: RecordStore, now: Date) throws -> TrackedItem? {
+        try MemoryWriter(db: db, store: store, now: now, timeZone: DeadlinesModule.timeZone).undo(sourceID)
+    }
+
+    /// `restore(_:)` inside the caller's transaction.
+    @discardableResult
+    public static func restore(_ sourceID: TrackedItemSource.ID, in db: Database, store: RecordStore, now: Date) throws -> TrackedItem? {
+        try MemoryWriter(db: db, store: store, now: now, timeZone: DeadlinesModule.timeZone).restore(sourceID)
+    }
+
+    /// ma: a session change applied on its own (room change, cancellation, time change, extra
+    /// session): a tracked item of that kind tied to the session, settled at once (status `done`,
+    /// never in the calendar: the session's own event moves), with its source row (the exact
+    /// quote). The session row itself is changed by the caller in the same transaction. `title`
+    /// is what the item's popover shows ("Moved to Room 5"); `room` the new room (room changes,
+    /// extra sessions).
+    public static func recordSessionChange(
+        kind: TrackedItemKind, session: LectureSession, title: String, room: String?, finding: ItemFinding,
+        in db: Database, store: RecordStore, now: Date
+    ) throws -> RecordResult {
+        let writer = MemoryWriter(db: db, store: store, now: now, timeZone: DeadlinesModule.timeZone)
+        let item = store.stamp(TrackedItem(
+            courseID: session.courseID, kind: kind, title: String(title.prefix(120)), dueAt: session.startsAt, isAllDay: false,
+            status: .done, sourceQuote: finding.quote, createdBy: finding.createdBy, lectureSessionID: session.id,
+            room: room?.trimmingCharacters(in: .whitespacesAndNewlines), inCalendar: false, createdAt: now
+        ))
+        try TrackedItem.upsert { item }.execute(db)
+        let source = try writer.insertSource(itemID: item.id, finding: finding, calendarAdded: false)
+        return RecordResult(item: item, source: source, created: true)
+    }
+
+    /// ma: another source of an existing item (a second mail or the lecture saying a session
+    /// change that is already applied): only the source row, the item stays as it is.
+    @discardableResult
+    public static func addSource(
+        _ finding: ItemFinding, to itemID: TrackedItem.ID, in db: Database, store: RecordStore, now: Date
+    ) throws -> TrackedItemSource {
+        try MemoryWriter(db: db, store: store, now: now, timeZone: DeadlinesModule.timeZone)
+            .insertSource(itemID: itemID, finding: finding, calendarAdded: false)
     }
 
     // MARK: - Changes
@@ -181,6 +243,15 @@ struct MemoryWriter {
                 return try merge(finding, into: item)
             }
         }
+        // ma: no new session proposals. A room change or cancellation that repeats no existing
+        // proposal is an announcement (session changes are applied by AppAgent's change log).
+        if draft.kind.isSessionProposal {
+            var announcement = original
+            announcement.draft.kind = .announcement
+            announcement.draft.lectureSessionID = sessionID
+            announcement.draft.room = nil
+            return try record(announcement)
+        }
 
         let adds = finding.addsToCalendar
         let item = store.stamp(TrackedItem(
@@ -244,6 +315,9 @@ struct MemoryWriter {
             source.time = time
         case .chat(let conversationID):
             source.conversationID = conversationID
+        case .external(let kind, let reference):
+            source.kind = kind
+            source.rfcMessageID = reference
         }
         let stamped = store.stamp(source)
         try TrackedItemSource.upsert { stamped }.execute(db)
@@ -289,6 +363,10 @@ struct MemoryWriter {
                     .where { $0.kind.eq(SourceRef.Kind.chat) && $0.conversationID.is(nil) && $0.quote.eq(quote) }
                     .fetchAll(db)
             }
+        case .external(let kind, let reference):
+            sameSource = try TrackedItemSource
+                .where { $0.kind.eq(kind) && $0.rfcMessageID.eq(reference) && $0.quote.eq(quote) }
+                .fetchAll(db)
         }
         for source in sameSource {
             guard let item = try TrackedItem.find(source.trackedItemID).fetchOne(db), ItemMatching.group(item.kind) == group else { continue }
@@ -418,6 +496,10 @@ struct MemoryWriter {
     // MARK: Changes
 
     func update(_ itemID: TrackedItem.ID, to draft: DeadlineDraft, by finding: ItemFinding) throws -> TrackedItem? {
+        try updateWithSource(itemID, to: draft, by: finding)?.item
+    }
+
+    func updateWithSource(_ itemID: TrackedItem.ID, to draft: DeadlineDraft, by finding: ItemFinding) throws -> (item: TrackedItem, source: TrackedItemSource?)? {
         guard var item = try TrackedItem.find(itemID).fetchOne(db) else { return nil }
         let before = TrackedItemSnapshot(item)
         let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -444,24 +526,32 @@ struct MemoryWriter {
             }
         }
         if item.kind.isSessionProposal { item.inCalendar = false }
-        guard TrackedItemSnapshot(item) != before else { return item }
+        guard TrackedItemSnapshot(item) != before else { return (item, nil) }
         let updated = store.stamp(item)
         try TrackedItem.upsert { updated }.execute(db)
-        _ = try insertSource(itemID: itemID, finding: finding, calendarAdded: calendarAdded, previous: before)
-        return updated
+        let source = try insertSource(itemID: itemID, finding: finding, calendarAdded: calendarAdded, previous: before)
+        return (updated, source)
     }
 
     func complete(_ itemID: TrackedItem.ID, by finding: ItemFinding?) throws -> TrackedItem? {
+        if let finding { return try completeWithSource(itemID, by: finding)?.item }
         guard var item = try TrackedItem.find(itemID).fetchOne(db) else { return nil }
         guard item.status != .done else { return item }
+        item.status = .done
+        let done = store.stamp(item)
+        try TrackedItem.upsert { done }.execute(db)
+        return done
+    }
+
+    func completeWithSource(_ itemID: TrackedItem.ID, by finding: ItemFinding) throws -> (item: TrackedItem, source: TrackedItemSource?)? {
+        guard var item = try TrackedItem.find(itemID).fetchOne(db) else { return nil }
+        guard item.status != .done else { return (item, nil) }
         let before = TrackedItemSnapshot(item)
         item.status = .done
         let done = store.stamp(item)
         try TrackedItem.upsert { done }.execute(db)
-        if let finding {
-            _ = try insertSource(itemID: itemID, finding: finding, calendarAdded: false, previous: before)
-        }
-        return done
+        let source = try insertSource(itemID: itemID, finding: finding, calendarAdded: false, previous: before)
+        return (done, source)
     }
 
     func remove(_ itemID: TrackedItem.ID) throws -> TrackedItem? {
