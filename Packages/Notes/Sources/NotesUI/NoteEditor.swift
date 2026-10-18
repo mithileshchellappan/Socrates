@@ -20,6 +20,7 @@ public struct NoteEditor: View {
     private let lectureID: Lecture.ID?
     private let trailingTime: Double?
     private let focusRequest: Int
+    private let startsFocused: Bool
     private let onFocusChange: ((Bool) -> Void)?
     private let onLink: ((NoteLink) -> Bool)?
 
@@ -35,6 +36,7 @@ public struct NoteEditor: View {
     ///   - lectureID: the lecture chips without one of their own open.
     ///   - trailingTime: a time chip after the last word (Review: the note's moment).
     ///   - focusRequest: bump to put the caret in the editor.
+    ///   - startsFocused: the caret is in the editor when it appears (a new note).
     ///   - onLink: a chip was clicked; return true when the host handled it (else it navigates).
     public init(
         session: NoteSession,
@@ -45,6 +47,7 @@ public struct NoteEditor: View {
         lectureID: Lecture.ID? = nil,
         trailingTime: Double? = nil,
         focusRequest: Int = 0,
+        startsFocused: Bool = false,
         onFocusChange: ((Bool) -> Void)? = nil,
         onLink: ((NoteLink) -> Bool)? = nil
     ) {
@@ -57,6 +60,7 @@ public struct NoteEditor: View {
         self.lectureID = lectureID
         self.trailingTime = trailingTime
         self.focusRequest = focusRequest
+        self.startsFocused = startsFocused
         self.onFocusChange = onFocusChange
         self.onLink = onLink
         _context = State(initialValue: NoteEditorContext(metrics: NoteMetrics(style: style)))
@@ -73,6 +77,7 @@ public struct NoteEditor: View {
         lectureID = note.lectureID
         trailingTime = nil
         focusRequest = 0
+        startsFocused = false
         onFocusChange = nil
         self.onLink = onLink
         _context = State(initialValue: NoteEditorContext(metrics: NoteMetrics(style: style)))
@@ -88,7 +93,7 @@ public struct NoteEditor: View {
         context.lectureID = lectureID ?? session?.note?.lectureID ?? readOnlyNote?.lectureID
         context.handleLink = onLink
         #if os(macOS)
-        let editor = NoteTextEditor(
+        var editor = NoteTextEditor(
             session: session,
             blocks: blocks,
             stamp: style == .document ? stamp : nil,
@@ -101,6 +106,7 @@ public struct NoteEditor: View {
             onFocus: onFocusChange,
             onHeight: style == .inspector ? { height = $0 } : nil
         )
+        editor.startsFocused = startsFocused
         return Group {
             if style == .inspector {
                 editor.frame(height: height)

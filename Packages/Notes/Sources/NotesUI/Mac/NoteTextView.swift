@@ -25,7 +25,7 @@ final class NoteTextView: NSTextView {
         didSet {
             oldValue?.removeFromSuperview()
             if let trailingAccessory { addSubview(trailingAccessory) }
-            positionTrailingAccessory()
+            needsLayout = true
         }
     }
 
@@ -91,27 +91,28 @@ final class NoteTextView: NSTextView {
     /// Extra height the trailing accessory needs when it goes on a line of its own.
     private(set) var accessoryOverflow: CGFloat = 0
 
-    func positionTrailingAccessory() {
-        guard let accessory = trailingAccessory else {
-            accessoryOverflow = 0
-            return
-        }
+    /// Where the trailing accessory goes: after the last word when it fits, else at the start of
+    /// the next line (`overflow`: the height that adds). Computes only; never moves a view.
+    private func trailingAccessoryLayout() -> (frame: CGRect, overflow: CGFloat)? {
+        guard let accessory = trailingAccessory else { return nil }
         let size = accessory.fittingSize
         let width = textContainer?.size.width ?? bounds.width
-        guard let end = endOfText() else {
-            accessory.frame = CGRect(origin: .zero, size: size)
+        guard let end = endOfText() else { return (CGRect(origin: .zero, size: size), 0) }
+        let gap: CGFloat = 5
+        if end.x - textContainerOrigin.x + gap + size.width <= width {
+            return (CGRect(x: end.x + gap, y: (end.top + (end.height - size.height) / 2).rounded(), width: size.width, height: size.height), 0)
+        }
+        let top = end.top + end.height + 4
+        return (CGRect(x: textContainerOrigin.x, y: top, width: size.width, height: size.height), size.height + 4)
+    }
+
+    func positionTrailingAccessory() {
+        guard let accessory = trailingAccessory, let layout = trailingAccessoryLayout() else {
             accessoryOverflow = 0
             return
         }
-        let gap: CGFloat = 5
-        if end.x - textContainerOrigin.x + gap + size.width <= width {
-            accessory.frame = CGRect(x: end.x + gap, y: (end.top + (end.height - size.height) / 2).rounded(), width: size.width, height: size.height)
-            accessoryOverflow = 0
-        } else {
-            let top = end.top + end.height + 4
-            accessory.frame = CGRect(x: textContainerOrigin.x, y: top, width: size.width, height: size.height)
-            accessoryOverflow = size.height + 4
-        }
+        accessoryOverflow = layout.overflow
+        if accessory.frame != layout.frame { accessory.frame = layout.frame }
     }
 
     /// The text's height (inspector style: the view is as tall as its text).
@@ -119,8 +120,8 @@ final class NoteTextView: NSTextView {
         guard let layout = textLayoutManager else { return 0 }
         layout.ensureLayout(for: layout.documentRange)
         let used = layout.usageBoundsForTextContainer.height
-        positionTrailingAccessory()
-        return ceil(used + textContainerInset.height * 2 + accessoryOverflow)
+        let overflow = trailingAccessoryLayout()?.overflow ?? 0
+        return ceil(used + textContainerInset.height * 2 + overflow)
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -593,6 +594,18 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
 
     func textViewDidChangeSelection(_ notification: Notification) {
         guard let textView else { return }
+        // At the start of a paragraph, typing takes that paragraph's format (not the previous
+        // paragraph's, whose newline is before the caret).
+        let selection = textView.selectedRange()
+        if selection.length == 0, let storage = textView.textStorage, selection.location < storage.length {
+            let paragraph = (storage.string as NSString).paragraphRange(for: selection)
+            if paragraph.location == selection.location, paragraph.length > 0 {
+                var attributes = storage.attributes(at: selection.location, effectiveRange: nil)
+                attributes[.attachment] = nil
+                attributes[.link] = nil
+                textView.typingAttributes = attributes
+            }
+        }
         controller?.selectionChanged(format: textView.format(of: textView.selectedParagraphs().last ?? NSRange()).paragraphKind)
     }
 
@@ -692,9 +705,10 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
 
     func sizeChanged() {
         guard let textView, let onHeight, !textView.isDocument else {
-            textView?.positionTrailingAccessory()
+            textView?.needsLayout = true
             return
         }
+        textView.needsLayout = true
         let height = textView.contentHeight()
         guard abs(height - lastHeight) > 0.5 else { return }
         lastHeight = height
@@ -785,6 +799,8 @@ struct NoteTextEditor: NSViewRepresentable {
     let focusRequest: Int
     let onFocus: ((Bool) -> Void)?
     let onHeight: ((CGFloat) -> Void)?
+    /// Puts the caret in the editor once it is in its window (a new note).
+    var startsFocused = false
 
     @Environment(\.studyServices) private var services
     @Environment(\.openDestination) private var openDestination
@@ -845,11 +861,22 @@ struct NoteTextEditor: NSViewRepresentable {
         coordinator.load(blocks, into: textView, startsWith: startsWith)
         textView.stampLabel.stringValue = stamp ?? ""
         session?.contentProvider = { [weak textView] in
-            guard let storage = textView?.textStorage else { return [] }
+            guard let storage = textView?.textStorage else { return nil }
             return NoteDocumentReader.blocks(from: storage)
         }
         controller.attach(textView)
         updateAccessory(textView, coordinator: coordinator)
+        if startsFocused {
+            Task { @MainActor [weak textView] in
+                for _ in 0..<10 {
+                    if let textView, let window = textView.window {
+                        window.makeFirstResponder(textView)
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(30))
+                }
+            }
+        }
 
         guard style == .document else {
             textView.isVerticallyResizable = false
@@ -898,22 +925,14 @@ struct NoteTextEditor: NSViewRepresentable {
 
     static func dismantleNSView(_ view: NSView, coordinator: NoteEditorCoordinator) {
         coordinator.context.endEditingSketch()
+        // The body as it is now, before the text goes away: a pending change is never lost.
+        coordinator.session?.saveNow()
         if let textView = coordinator.textView {
             textView.undoManager?.removeAllActions(withTarget: textView)
             if let storage = textView.textStorage { textView.undoManager?.removeAllActions(withTarget: storage) }
             if textView.window?.firstResponder === textView { coordinator.focusChanged(false) }
             coordinator.controller?.detach(textView)
         }
-    }
-
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
-        guard style == .inspector, let textView = context.coordinator.textView else { return nil }
-        let width = proposal.width ?? 280
-        guard width.isFinite, width > 0 else { return nil }
-        if abs(textView.frame.width - width) > 0.5 {
-            textView.setFrameSize(NSSize(width: width, height: max(textView.frame.height, 1)))
-        }
-        return CGSize(width: width, height: max(textView.contentHeight(), 18))
     }
 
     private func configure(_ editorContext: NoteEditorContext) {
@@ -937,7 +956,7 @@ struct NoteTextEditor: NSViewRepresentable {
         } else {
             textView.trailingAccessory = NSHostingView(rootView: chip)
         }
-        textView.positionTrailingAccessory()
+        textView.needsLayout = true
     }
 }
 #endif

@@ -31,6 +31,7 @@ public struct NotesView: View {
     @State private var showsImageImporter = false
     @State private var showsSlides = false
     @State private var showsQuotes = false
+    @State private var showsStyles = false
     @State private var undoTarget = NotesUndoTarget()
     @FocusState private var listFocused: Bool
 
@@ -225,7 +226,8 @@ public struct NotesView: View {
                 controller: controller,
                 professor: professorName(editingCourse),
                 lectureID: editingLectureID,
-                focusRequest: focusRequest
+                focusRequest: focusRequest,
+                startsFocused: session.isNew
             )
             .id(session.id)
         } else {
@@ -249,36 +251,50 @@ public struct NotesView: View {
             .help(Text("New Note"))
         }
         ToolbarItemGroup(placement: .primaryAction) {
-            Menu {
-                ForEach([NoteParagraphKind.title, .heading, .subheading, .body], id: \.self) { kind in
-                    Toggle(isOn: Binding(get: { controller.paragraphKind == kind }, set: { _ in controller.apply(kind) })) {
-                        Text(kind.label)
-                    }
-                }
+            // Aa ⌄: a popover of the paragraph styles, as in Notes (a toolbar Menu would leave the
+            // group's glass).
+            Button {
+                showsStyles = true
             } label: {
-                Text(verbatim: "Aa")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .accessibilityLabel(Text("Paragraph Style"))
+                HStack(spacing: 3) {
+                    Text(verbatim: "Aa")
+                        .font(.system(size: 13.5, weight: .semibold))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text("Paragraph Style"))
             }
             .help(Text("Paragraph Style"))
+            .disabled(session == nil)
+            .popover(isPresented: $showsStyles, arrowEdge: .bottom) {
+                NoteStylePicker(current: controller.paragraphKind) { kind in
+                    showsStyles = false
+                    controller.apply(kind)
+                }
+            }
             Button {
                 controller.apply(.checklist)
             } label: {
                 Label("Checklist", systemImage: "checklist")
             }
             .help(Text("Checklist"))
+            .disabled(session == nil)
             Button {
                 showsImageImporter = true
             } label: {
                 Label("Image", systemImage: "photo")
             }
             .help(Text("Image"))
+            .disabled(session == nil)
             Button {
                 controller.insertSketch()
             } label: {
                 Label("Sketch", systemImage: "pencil")
             }
             .help(Text("Sketch"))
+            .disabled(session == nil)
         }
         ToolbarSpacer(.fixed, placement: .primaryAction)
         ToolbarItemGroup(placement: .primaryAction) {
@@ -451,6 +467,47 @@ struct NoteTimeText: View {
         case .day(let date):
             Text(verbatim: DayText.day(date))
                 .font(.system(size: 12, weight: .medium))
+        }
+    }
+}
+
+/// Aa's popover: Title, Heading, Subheading, Body, each in its own type; the current one checked.
+struct NoteStylePicker: View {
+    let current: NoteParagraphKind
+    let pick: (NoteParagraphKind) -> Void
+
+    var body: some View {
+        let metrics = NoteMetrics(style: .document)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach([NoteParagraphKind.title, .heading, .subheading, .body], id: \.self) { kind in
+                Button {
+                    pick(kind)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .opacity(kind == current ? 1 : 0)
+                        Text(kind.label)
+                            .font(font(kind, metrics: metrics))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 6)
+        .frame(width: 200)
+    }
+
+    private func font(_ kind: NoteParagraphKind, metrics: NoteMetrics) -> Font {
+        switch kind {
+        case .title: .system(size: metrics.headingSize(1), weight: .bold)
+        case .heading: .system(size: metrics.headingSize(2), weight: .semibold)
+        case .subheading: .system(size: metrics.headingSize(3), weight: .semibold)
+        default: .system(size: metrics.bodySize)
         }
     }
 }

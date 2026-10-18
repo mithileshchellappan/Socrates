@@ -26,8 +26,8 @@ public final class NoteSession: Identifiable {
     /// True once the student changed something that is not written yet.
     public private(set) var hasPendingChanges = false
 
-    /// Reads the editor's current body. Set by the editor.
-    @ObservationIgnored public var contentProvider: (@MainActor () -> [NoteBlock])?
+    /// Reads the editor's current body; nil once the editor is gone. Set by the editor.
+    @ObservationIgnored public var contentProvider: (@MainActor () -> [NoteBlock]?)?
 
     @ObservationIgnored private let repository: NoteRepository
     @ObservationIgnored private let store: RecordStore
@@ -77,6 +77,13 @@ public final class NoteSession: Identifiable {
         schedule(after: debounce)
     }
 
+    /// The editor is closing: its body is read now and written (in the background) if changed.
+    public func saveNow() {
+        pending?.cancel()
+        pending = nil
+        save()
+    }
+
     /// Writes a pending change now (leaving the note, the screen going away).
     public func flush() async {
         pending?.cancel()
@@ -109,9 +116,9 @@ public final class NoteSession: Identifiable {
 
     /// Reads the editor's body and queues the write when it differs from the stored one.
     private func save() {
-        guard hasPendingChanges, var row = note, let contentProvider else { return }
+        guard hasPendingChanges, var row = note, let content = contentProvider?() else { return }
         hasPendingChanges = false
-        let fresh = NoteBlocks.reconcile(contentProvider(), previous: blocks)
+        let fresh = NoteBlocks.reconcile(content, previous: blocks)
         guard !NoteBlocks.sameContent(fresh, blocks) else { return }
         blocks = fresh
         row.blocks = fresh
