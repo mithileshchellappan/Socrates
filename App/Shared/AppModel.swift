@@ -16,6 +16,7 @@ import Observation
 import Processing
 import Search
 import StudyCore
+import StudyPass
 import StudyUI
 import Transcription
 #if os(macOS)
@@ -72,6 +73,9 @@ final class AppModel {
     let composer: DeadlineComposer?
     /// Deadlines and announcements from lecture transcripts, with Claude Code.
     let transcriptItems: TranscriptItemPipeline?
+    /// The AI study pass (M4): corrections, summaries, said in class, exam hints, further reading,
+    /// one unit at a time in the background through Claude Code. Mac only.
+    let studyPass: StudyPassPipeline?
     /// What Today and Calendar ask the app to do (`\.deadlineActions`).
     @ObservationIgnored private(set) var deadlineActions = DeadlineActions()
 
@@ -96,6 +100,10 @@ final class AppModel {
 
     /// Recordings whose transcription just finished (from the processor's observer).
     @ObservationIgnored private let transcribed: AsyncStream<Recording.ID>
+    /// Lectures whose processing step just succeeded (transcribe or align), for the study pass.
+    @ObservationIgnored private let processed: AsyncStream<Lecture.ID>
+    /// The lecture open in Review, whose study units go first.
+    @ObservationIgnored private var reviewedLecture: Lecture.ID?
     @ObservationIgnored private var didStartBackgroundWork = false
     /// False in unit-test hosts and snapshot mode: nothing runs in the background.
     @ObservationIgnored private let runsBackgroundWork: Bool
@@ -112,6 +120,8 @@ final class AppModel {
         self.launchError = launchError
         let (transcribed, finishedTranscription) = AsyncStream.makeStream(of: Recording.ID.self)
         self.transcribed = transcribed
+        let (processed, finishedProcessing) = AsyncStream.makeStream(of: Lecture.ID.self)
+        self.processed = processed
         runsBackgroundWork = startsProcessing
         var processor: LectureProcessor?
         if startsProcessing, let services, let store = try? WhisperModelStore.shared() {
@@ -126,6 +136,9 @@ final class AppModel {
                     if case .finished(let job, _) = event, job.stage == .transcribe, job.state == .succeeded,
                        let recordingID = job.recordingID {
                         finishedTranscription.yield(recordingID)
+                    }
+                    if case .finished(let job, _) = event, job.state == .succeeded, let lectureID = job.lectureID {
+                        finishedProcessing.yield(lectureID)
                     }
                 }
             )
@@ -160,11 +173,13 @@ final class AppModel {
             transcriptItems = TranscriptItemPipeline(services: services, client: claude, memory: memory)
             self.owner = owner
             #if os(macOS)
+            studyPass = startsProcessing ? StudyPassPipeline(services: services, client: claude) : nil
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
             mailEngine = startsProcessing ? MailSyncEngine(services: services, onNewMail: { _ in await pipeline.wake() }) : nil
             mailSender = startsProcessing ? MailSender(services: services) : nil
             #else
             calendarMirror = nil
+            studyPass = nil
             #endif
         } else {
             filing = nil
@@ -178,6 +193,7 @@ final class AppModel {
             agent = nil
             composer = nil
             transcriptItems = nil
+            studyPass = nil
             owner = ModelReference()
             #if os(macOS)
             mailEngine = nil
@@ -286,6 +302,16 @@ final class AppModel {
         startMail(services: services)
         // Transcripts waiting for extraction are read in the background (only with Claude Code).
         await transcriptItems?.start()
+        // The study pass follows lectures from here on; a finished lecture wakes it at once.
+        if let studyPass {
+            await studyPass.start()
+            let processed = processed
+            Task {
+                for await _ in processed {
+                    Task { await studyPass.wake() }
+                }
+            }
+        }
         await syncCalendar(full: true)
     }
 
@@ -500,12 +526,34 @@ final class AppModel {
         Task { _ = try? await processor?.retry(lectureID: lectureID) }
     }
 
-    /// Re-aligns one recording at once (a manual "slide starts here").
-    nonisolated static func realign(services: StudyServices) -> @Sendable (Lecture.ID, Recording.ID) async throws -> Void {
+    /// Re-aligns one recording at once (a manual "slide starts here"); the study pass then looks
+    /// at the lecture again (it waits for the realign burst to settle).
+    nonisolated static func realign(services: StudyServices, studyPass: StudyPassPipeline?) -> @Sendable (Lecture.ID, Recording.ID) async throws -> Void {
         let realigner = Realigner(services: services)
         return { lectureID, recordingID in
             _ = try await realigner.realign(lectureID: lectureID, recordingID: recordingID)
+            if let studyPass {
+                Task { await studyPass.wake() }
+            }
         }
+    }
+
+    /// A lecture opened in Review (nil: it closed): its study units go first.
+    func reviewOpened(_ lectureID: Lecture.ID) {
+        reviewedLecture = lectureID
+        preferStudyPass(lectureID)
+    }
+
+    func reviewClosed(_ lectureID: Lecture.ID) {
+        // Another lecture may have opened first (the views swap in either order).
+        guard reviewedLecture == lectureID else { return }
+        reviewedLecture = nil
+        preferStudyPass(nil)
+    }
+
+    private func preferStudyPass(_ lectureID: Lecture.ID?) {
+        guard let studyPass else { return }
+        Task { await studyPass.prefer(lectureID) }
     }
 
     // MARK: - Claude Code
@@ -522,14 +570,19 @@ final class AppModel {
             }
         }
         // Synchronous, while the app still runs: a tool loop's MCP server lives in the app.
+        let studyPass = studyPass
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
             ClaudeCodeEngine.terminateRunningProcesses()
+            // A unit in flight stays pending (nothing is written before its call ends).
+            if let studyPass {
+                Task { await studyPass.stop() }
+            }
         }
         #endif
     }
 
     /// Checks Claude Code again (`force`: no cached answer). When it turns ready, the work that
-    /// waited for it starts: mail triage with its backlog, and transcripts.
+    /// waited for it starts: mail triage with its backlog, transcripts and the study pass.
     func refreshClaudeAvailability(force: Bool = true) async {
         guard let claude else { return }
         let availability = force ? await claude.refreshAvailability() : await claude.availability()
@@ -538,8 +591,10 @@ final class AppModel {
         guard availability.isReady, !wasReady, runsBackgroundWork else { return }
         let pipeline = mailPipeline
         let transcriptItems = transcriptItems
+        let studyPass = studyPass
         Task { await pipeline?.wake() }
         Task { await transcriptItems?.wake() }
+        Task { await studyPass?.wake() }
     }
 
     /// The chat's effects (`\.chatActions`), rebuilt when the availability changes: sending goes

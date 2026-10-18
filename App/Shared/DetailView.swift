@@ -68,9 +68,11 @@ struct DetailView: View {
                 LectureReviewView(
                     lectureID: id,
                     target: target?.lectureID == id ? target?.target ?? ReviewTarget() : ReviewTarget(),
-                    realign: AppModel.realign(services: services)
+                    realign: AppModel.realign(services: services, studyPass: model.studyPass)
                 )
                 .toolbar { RetryToolbarItem(lectureID: id) }
+                .onAppear { model.reviewOpened(id) }
+                .onDisappear { model.reviewClosed(id) }
                 .id(id)
             }
         }

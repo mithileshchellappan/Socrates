@@ -61,6 +61,8 @@ packages:
     path: Packages/CalendarUI
   ChatUI:
     path: Packages/ChatUI
+  StudyPass:
+    path: Packages/StudyPass
 
 targets:
   StudyPortal:
@@ -179,3 +181,6 @@ targets:
       # M3.5 (docs/plan-m35.md): the chat with the agent, the inspector of Today and Mail.
       - package: ChatUI
         product: ChatUI
+      # M4 (docs/plan-m4.md): the AI study pass. Compiles on macOS and iOS, runs on the Mac only.
+      - package: StudyPass
+        product: StudyPass
