@@ -8,7 +8,8 @@ import StudyCore
 /// deadline memory, as `transcript` sources at the moment they were said.
 ///
 /// - **Queue**: a recording with transcript lines is pending when its `transcript_extraction` row
-///   is missing or older than its newest line (a replaced transcript is read again) and no job of
+///   is missing or older than its oldest line (a replaced transcript is read again; corrections,
+///   which touch only some lines, are not) and no job of
 ///   it is still queued or running. Calls run only with an available client (M3.5: Claude Code) and while the
 ///   daily guard allows; otherwise rows stay `pending` (no call, nothing on screen). At most one
 ///   call at a time. Service trouble (no key, rate limits, outages) does not count an attempt;
@@ -16,7 +17,7 @@ import StudyCore
 /// - **Prefilter**: only windows of ±3 lines around cue lines are sent; no cue → `skipped`, no call.
 /// - **Validation in code**: the quote must be in the window lines from the named line on (it may
 ///   run across lines; the original span is stored, 8–300 characters); its time is the first
-///   word's start, else the line's; `DateMentions` over the quote, relative to the class's day,
+///   word's start, else the line's (`Deadlines.TranscriptQuote`); `DateMentions` over the quote, relative to the class's day,
 ///   decides whether the date is verified; the lecture's course is the item's.
 public actor TranscriptItemPipeline {
     /// What one pass did.
@@ -135,9 +136,10 @@ public actor TranscriptItemPipeline {
 
     struct Pending: Sendable {
         var recordingID: Recording.ID
+        /// The newest line's `updated_at`: what the row's `source_updated_at` records.
         var newest: Date
         var row: TranscriptExtraction?
-        /// The transcript changed since the row was written (attempts start again).
+        /// The transcript was replaced since the row was written (attempts start again).
         var changed: Bool
     }
 
@@ -184,22 +186,26 @@ public actor TranscriptItemPipeline {
         return report
     }
 
-    /// Recordings whose transcript was not read since it last changed.
+    /// Recordings whose transcript was not read since it was last replaced.
+    ///
+    /// Stale means the *oldest* line's `updated_at` is newer than `source_updated_at`: a
+    /// transcription replaces every line, while a correction (M4's study pass patches, Revert
+    /// Correction) touches only some, so corrections never trigger a deadline re-read.
     func pendingRecordings() async throws -> [Pending] {
         try await services.database.read { db in
-            let newest = try TranscriptSegment
+            let stamps = try TranscriptSegment
                 .group(by: \.recordingID)
-                .select { ($0.recordingID, $0.updatedAt.max()) }
+                .select { ($0.recordingID, $0.updatedAt.min(), $0.updatedAt.max()) }
                 .fetchAll(db)
             let rows = Dictionary(
                 try TranscriptExtraction.all.fetchAll(db).map { ($0.recordingID, $0) }, uniquingKeysWith: { first, _ in first }
             )
             let busyStates: [JobState] = [.queued, .running]
             let busy = Set(try Job.where { $0.recordingID.isNot(nil) && $0.state.in(busyStates) }.select(\.recordingID).fetchAll(db).compactMap { $0 })
-            return newest.compactMap { recordingID, latest -> Pending? in
-                guard let latest, !busy.contains(recordingID) else { return nil }
+            return stamps.compactMap { recordingID, oldest, latest -> Pending? in
+                guard let oldest, let latest, !busy.contains(recordingID) else { return nil }
                 let row = rows[recordingID]
-                let changed = row?.sourceUpdatedAt.map { $0 < latest } ?? true
+                let changed = row?.sourceUpdatedAt.map { $0 < oldest } ?? true
                 guard changed || row?.state == .pending else { return nil }
                 return Pending(recordingID: recordingID, newest: latest, row: row, changed: changed)
             }
@@ -319,13 +325,13 @@ public actor TranscriptItemPipeline {
     func findings(from answer: TranscriptPrompt.Answer, source: Source, windows: [ClosedRange<Int>], apiCallID: APICall.ID?) -> ([ItemFinding], Int) {
         var findings: [ItemFinding] = []
         var rejected = 0
-        let lines = source.lines.lines
+        let quoteLines = source.lines.lines.map { TranscriptQuote.Line(id: $0.id, text: $0.text, start: $0.start, words: $0.words) }
         for item in answer.items {
             let kind = TrackedItemKind(rawValue: item.kind.trimmingCharacters(in: .whitespaces).lowercased())
             let confidence = min(max(item.confidence.isFinite ? item.confidence : 0, 0), 1)
             let title = String(item.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
             guard TranscriptPrompt.kinds.contains(kind.rawValue), confidence >= TranscriptPrompt.minimumConfidence, !title.isEmpty,
-                  let found = Self.locate(item.quote, line: item.line, lines: lines, windows: windows)
+                  let found = TranscriptQuote.locate(item.quote, line: item.line, lines: quoteLines, windows: windows)
             else {
                 rejected += 1
                 continue
@@ -351,61 +357,6 @@ public actor TranscriptItemPipeline {
             ))
         }
         return (findings, rejected)
-    }
-
-    /// The original span of `quote` in the window lines from `line` on (or the line before it, as
-    /// models are off by one), and the moment it starts: the first word's start, else the line's.
-    static func locate(_ quote: String, line: String, lines: [TranscriptLines.Line], windows: [ClosedRange<Int>]) -> (quote: String, time: Double)? {
-        let cleaned = cleaned(quote)
-        guard cleaned.count >= 8 else { return nil }
-        guard let named = lines.firstIndex(where: { $0.id == line.trimmingCharacters(in: .whitespaces).lowercased() }) else { return nil }
-        for start in [named, named - 1] {
-            guard let window = windows.first(where: { $0.contains(start) }) else { continue }
-            // The window's lines from `start` on, joined by spaces, with each line's start index.
-            var text = ""
-            var starts: [(index: Int, offset: String.Index)] = []
-            for index in start...window.upperBound {
-                if !text.isEmpty { text += " " }
-                starts.append((index, text.endIndex))
-                text += lines[index].text
-            }
-            guard let span = NormalizedText(text).originalSpan(of: cleaned) else { continue }
-            let original = String(span)
-            guard (8...300).contains(original.count) else { return nil }
-            guard let first = starts.last(where: { $0.offset <= span.startIndex }) else { return nil }
-            let lineText = lines[first.index].text
-            let offset = text.distance(from: first.offset, to: span.startIndex)
-            return (original, time(at: offset, in: lineText, words: lines[first.index].words) ?? lines[first.index].start)
-        }
-        return nil
-    }
-
-    /// The start of the word at character `offset` of a line, from its word timings.
-    static func time(at offset: Int, in text: String, words: [TranscriptWord]) -> Double? {
-        guard !words.isEmpty else { return nil }
-        var cursor = text.startIndex
-        for word in words {
-            let token = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !token.isEmpty else { continue }
-            guard let range = text.range(of: token, range: cursor..<text.endIndex) else { return nil }
-            if text.distance(from: text.startIndex, to: range.upperBound) > offset { return word.start }
-            cursor = range.upperBound
-        }
-        return nil
-    }
-
-    /// The model's quote without entities, surrounding quotation marks or ellipses.
-    static func cleaned(_ quote: String) -> String {
-        var text = TranscriptPrompt.unescape(quote).trimmingCharacters(in: .whitespacesAndNewlines)
-        let wrappers: Set<Character> = ["\"", "'", "„", "“", "”", "‚", "‘", "’", "«", "»"]
-        while let first = text.first, let last = text.last, text.count >= 2, wrappers.contains(first), wrappers.contains(last) {
-            text = String(text.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        for ellipsis in ["...", "…"] {
-            while text.hasPrefix(ellipsis) { text = String(text.dropFirst(ellipsis.count)).trimmingCharacters(in: .whitespaces) }
-            while text.hasSuffix(ellipsis) { text = String(text.dropLast(ellipsis.count)).trimmingCharacters(in: .whitespaces) }
-        }
-        return text
     }
 
     // MARK: - Writing

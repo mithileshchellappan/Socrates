@@ -27,6 +27,9 @@ struct ClaudeCodeState: Codable, Sendable, Equatable {
     var pausedUntil: Date?
     /// The isolation variant whose `system/init` passed, per CLI version ("2.1.268").
     var isolation: [String: IsolationVariant] = [:]
+    /// M4: the same for one-shot calls with the CLI's web tools (exactly WebSearch/WebFetch, no
+    /// MCP server). Optional so a `state.json` written before M4 still reads.
+    var webIsolation: [String: IsolationVariant]?
 
     static func load(from url: URL) -> ClaudeCodeState {
         guard let data = try? Data(contentsOf: url) else { return ClaudeCodeState() }

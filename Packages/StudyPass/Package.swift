@@ -20,7 +20,10 @@ let package = Package(
         // time) and `TextFolding`.
         .package(path: "../Agent"),
         // `SlidePageRenderer` (figure slides as images for the read calls), deck files.
-        .package(path: "../Capture")
+        .package(path: "../Capture"),
+        // Already in the graph through SQLiteData (same pin as Agent); used directly for
+        // `DatabaseRegionObservation` (the pass follows transcripts, spans, deck pages and jobs).
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0")
     ],
     targets: [
         .target(
@@ -29,7 +32,8 @@ let package = Package(
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "ClaudeKit", package: "ClaudeKit"),
                 .product(name: "Deadlines", package: "Agent"),
-                .product(name: "Capture", package: "Capture")
+                .product(name: "Capture", package: "Capture"),
+                .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),
     ],
