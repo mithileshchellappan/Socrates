@@ -80,7 +80,7 @@ struct SearchHitRow: View {
         switch kind {
         case .transcript: .system(size: 13)
         case .slide: .system(size: 11)
-        case .mail: .system(size: 12)
+        case .mail, .document: .system(size: 12)
         default: .system(size: 14, weight: .medium)
         }
     }
@@ -90,6 +90,8 @@ struct SearchHitRow: View {
         case .transcript: "waveform"
         case .slide: "display"
         case .mail: "envelope"
+        // md: a kept document (the Documents row's glyph; never notes' doc.text).
+        case .document: "doc.on.doc"
         default: "pencil"
         }
     }
@@ -98,7 +100,7 @@ struct SearchHitRow: View {
     static func glyphStyle(_ kind: SearchChunkKind) -> AnyShapeStyle {
         switch kind {
         case .note: AnyShapeStyle(.tint)
-        case .mail: AnyShapeStyle(.secondary)
+        case .mail, .document: AnyShapeStyle(.secondary)
         default: AnyShapeStyle(Color.professor)
         }
     }
@@ -292,6 +294,16 @@ struct SearchGroupHeader: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.primary)
                     .layoutPriority(1)
+            } else if group.kind == .documents {
+                // md: the student's kept documents, after "Your notes".
+                Image(systemName: "doc.on.doc")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
+                Text("Documents")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                    .layoutPriority(1)
             } else if group.kind == .web {
                 Image(systemName: "globe")
                     .foregroundStyle(.secondary)
@@ -308,7 +320,7 @@ struct SearchGroupHeader: View {
                     .foregroundStyle(.primary)
                     .layoutPriority(1)
             }
-            if let subtitle = isCollapsed && (group.kind == .notes || group.kind == .mail) ? collapsedLabel : subtitle, !subtitle.isEmpty {
+            if let subtitle = isCollapsed && [.notes, .mail, .documents].contains(group.kind) ? collapsedLabel : subtitle, !subtitle.isEmpty {
                 Text(verbatim: subtitle)
                     .foregroundStyle(.secondary)
             }
@@ -379,6 +391,9 @@ extension SearchResults {
             return [hit.sender, hit.title].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
         case .furtherReading:
             return hit.title ?? ""
+        case .document:
+            // md: "Modulhandbuch M.Sc. Informatik · p. 3".
+            return [hit.title, hit.page.map { "p.\u{00A0}\($0)" }].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
         default:
             var parts: [String] = []
             var place = course.map { $0.shortName.isEmpty ? $0.name : $0.shortName } ?? ""

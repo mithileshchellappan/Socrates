@@ -15,7 +15,9 @@ import AppKit
 
 /// The types the paperclip's open panel offers (the accept rule: `AgentAttachment.kind(for:)`).
 enum AttachmentTypes {
+    /// md: Word, OpenDocument, RTF and Pages files too (`.document`: sent as their text, or kept).
     static let accepted: [UTType] = [.png, .jpeg, .gif, .webP, .heic, .pdf, .text, .sourceCode, .json]
+        + StudyDocument.acceptedTypes.filter { AgentAttachment.kind(for: $0) == .document }
 }
 
 /// Image work for attachments, off the main actor.

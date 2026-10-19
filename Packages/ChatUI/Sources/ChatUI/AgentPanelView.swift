@@ -157,6 +157,7 @@ struct AgentPanelView: View {
         case .course: Text("Ask about this course")
         case .notes: context.noteID == nil ? Text("Ask about your lectures") : Text("Ask about this note")
         case .search: context.selection.isEmpty ? Text("Ask about your lectures") : Text("Ask about the selection")
+        case .documents: context.documentID == nil ? Text("Ask about your documents") : Text("Ask about this document")
         default: Text("Ask about your lectures")
         }
     }

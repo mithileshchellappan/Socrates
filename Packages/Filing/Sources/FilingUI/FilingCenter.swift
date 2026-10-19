@@ -112,6 +112,9 @@ public final class FilingCenter {
     /// being filed, with the row's (or the course's Import's) destination. Nil: they are filed
     /// (and fail as neither slides nor a recording).
     @ObservationIgnored public var timetableDrop: (@MainActor ([URL], FilingDestination?) -> Void)?
+    /// md: window drops of files smart import never takes (Word, RTF, Pages, text, images) go to
+    /// the document bank, with an "Added to Documents" toast (`DocumentDrop.swift`). Nil: filed.
+    public var documents: DocumentDropHandler?
 
     /// Seconds a confident toast stays (while not hovered).
     @ObservationIgnored var toastLifetime: Duration = .seconds(8)
@@ -183,6 +186,8 @@ public final class FilingCenter {
         let drag = self.drag
         dropCount += 1
         dragExited()
+        // md: documents (not PDFs) go to the bank; smart import files the rest.
+        let urls = documents?.take(urls) ?? urls
         guard !urls.isEmpty else { return }
         var destination: FilingDestination?
         var opensChange = false
