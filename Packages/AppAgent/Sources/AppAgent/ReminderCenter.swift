@@ -25,6 +25,12 @@ actor ReminderCenter {
     let now: @Sendable () -> Date
     private var timer: Task<Void, Never>?
     private var authorized: Bool?
+    /// One check at a time (wake, the `agent_reminder` observation its own writes fire, and the
+    /// timer all call it); a call meanwhile runs it once more after.
+    private var checking = false
+    private var checkAgain = false
+    /// Reminders being handed to the notification center (never added twice).
+    private var delivering: Set<AgentReminder.ID> = []
 
     init(services: StudyServices, changeLog: ChangeLog, now: @escaping @Sendable () -> Date) {
         self.services = services
@@ -44,13 +50,22 @@ actor ReminderCenter {
     /// Plans the automatic reminders, delivers what is due and sleeps until the next one.
     func check() async {
         #if os(macOS)
-        do {
-            try await planAutomatic()
-            try await deliverDue()
-            try await scheduleNext()
-        } catch {
-            AppAgentModule.log.error("Reminders failed: \(String(describing: error), privacy: .public)")
+        if checking {
+            checkAgain = true
+            return
         }
+        checking = true
+        repeat {
+            checkAgain = false
+            do {
+                try await planAutomatic()
+                try await deliverDue()
+                try await scheduleNext()
+            } catch {
+                AppAgentModule.log.error("Reminders failed: \(String(describing: error), privacy: .public)")
+            }
+        } while checkAgain
+        checking = false
         #endif
     }
 
@@ -121,12 +136,15 @@ actor ReminderCenter {
         #if os(macOS)
         guard await authorize() else { return }
         let center = UNUserNotificationCenter.current()
-        for reminder in due {
+        for reminder in due where !delivering.contains(reminder.id) {
             let content = UNMutableNotificationContent()
             content.title = reminder.title
             content.body = reminder.body
             content.sound = .default
             let request = UNNotificationRequest(identifier: reminder.notificationID, content: content, trigger: nil)
+            // Held before the notification is added: no other pass adds it meanwhile.
+            delivering.insert(reminder.id)
+            defer { delivering.remove(reminder.id) }
             do {
                 try await center.add(request)
                 try await reminders.markDelivered(reminder.id)
@@ -181,16 +199,18 @@ actor ReminderCenter {
     /// Sleeps until the next pending reminder still to come, however far away (a reminder that
     /// could not be shown waits for the next check, never a busy timer).
     func scheduleNext() async throws {
-        timer?.cancel()
-        timer = nil
         let date = now()
         let next = try await reminders.pending(before: .distantFuture).first { $0.fireAt > date }
+        // Replaced after the await, right before the new one is set: one timer at a time.
+        timer?.cancel()
+        timer = nil
         guard let next else { return }
         let delay = max(1, next.fireAt.timeIntervalSince(date))
         timer = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            await self?.check()
+            guard !Task.isCancelled, let self else { return }
+            // In a task of its own: the check's scheduleNext replaces this timer, not the check.
+            Task { await self.check() }
         }
     }
 }

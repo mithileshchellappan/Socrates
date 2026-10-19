@@ -40,6 +40,9 @@ actor AgentTaskQueue {
     let runtime: AgentRuntime
     let studyPass: StudyPassPipeline?
     let coach: CoachEngine?
+    /// A task's spec from its row (`AppAgentChat.taskSpec(_:task:)`): its conversation starts
+    /// with it, before the row is linked to the conversation.
+    let taskSpec: @Sendable (AgentTask) async throws -> ConversationSpec
     let quit: QuitSignal
     let now: @Sendable () -> Date
 
@@ -51,16 +54,20 @@ actor AgentTaskQueue {
     private var follower: Task<Void, Never>?
     private var pauseWake: Task<Void, Never>?
     private var stopping = false
+    /// When the queue started: tasks without a parent that finish from then on join the newest
+    /// `app` conversation (`settleFinished`).
+    private var startedAt = Date.distantFuture
 
     init(
         services: StudyServices, client: ClaudeClient, runtime: AgentRuntime, studyPass: StudyPassPipeline?, coach: CoachEngine?,
-        quit: QuitSignal, now: @escaping @Sendable () -> Date
+        taskSpec: @escaping @Sendable (AgentTask) async throws -> ConversationSpec, quit: QuitSignal, now: @escaping @Sendable () -> Date
     ) {
         self.services = services
         self.client = client
         self.runtime = runtime
         self.studyPass = studyPass
         self.coach = coach
+        self.taskSpec = taskSpec
         self.quit = quit
         self.now = now
     }
@@ -73,10 +80,11 @@ actor AgentTaskQueue {
     func start() async {
         guard observation == nil else { return }
         stopping = false
+        startedAt = now()
         do {
             try await tasks.requeueInterrupted()
         } catch {
-            AppAgentModule.log.error("Re-queueing tasks failed: \(String(describing: error), privacy: .public)")
+            AppAgentModule.log.error("Re-queueing tasks failed: \(ReadableError.kind(of: error), privacy: .public)")
         }
         let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         observation = DatabaseRegionObservation(tracking: SQLRequest<Row>(sql: "SELECT id, state FROM agent_task"))
@@ -97,6 +105,7 @@ actor AgentTaskQueue {
     func wake() async {
         guard !stopping, !quit.isSet else { return }
         await stopCancelled()
+        await settleFinished()
         let free = limit - running.count
         guard free > 0 else { return }
         let availability = await client.availability()
@@ -236,16 +245,15 @@ actor AgentTaskQueue {
         }
     }
 
-    /// False when the app quits (the row stays `running`, re-queued at the next launch) or the
-    /// task was cancelled meanwhile: nothing more to write.
+    /// False when the app quits: the row stays `running`, re-queued at the next launch, so nothing
+    /// more is written. (A cancel meanwhile is kept by the repository: `finish` and `pause` only
+    /// change an open row.)
     private func stillOpen(_ task: AgentTask) async -> Bool {
-        if stopping || quit.isSet { return false }
-        if let row = try? await services.records.fetch(AgentTask.self, id: task.id), row.state == .cancelled { return false }
-        return true
+        !(stopping || quit.isSet)
     }
 
-    /// A code-run task that waits for Claude Code (a usage pause, or not available): paused until
-    /// the reset (or a quarter of an hour), then queued again.
+    /// A task that waits for Claude Code (a usage pause, signed out, the CLI or the network in
+    /// trouble): paused until the reset (or a quarter of an hour), then queued again.
     private func wait(_ task: AgentTask, until: Date?) async {
         guard await stillOpen(task) else { return }
         let date = until ?? now().addingTimeInterval(15 * 60)
@@ -253,42 +261,127 @@ actor AgentTaskQueue {
         schedulePauseWake(at: date)
     }
 
+    /// Whether a task that stopped should wait for the service instead of failing: the error (or
+    /// the run's) was service trouble, or Claude Code is not ready or paused now. The pause's end
+    /// when there is one.
+    private func waitsForService(error: (any Error)?, conversation: AgentConversation.ID?) async -> (waits: Bool, until: Date?) {
+        let availability = await client.availability()
+        if let until = availability.pausedUntil { return (true, until) }
+        if !availability.isReady { return (true, nil) }
+        if let error = error as? ClaudeError, error.isServiceTrouble { return (true, nil) }
+        if let conversation, await runtime.endedWithServiceTrouble(conversation) { return (true, nil) }
+        return (false, nil)
+    }
+
     private func runConversation(_ task: AgentTask) async {
         guard let conversation = running[task.id]?.conversation else { return }
         do {
             if task.conversationID == nil {
                 // The conversation row must exist before the task points at it (agent_task's
-                // conversation_id is a foreign key): start writes the row, then the link follows.
+                // conversation_id is a foreign key), so its spec comes from the row as claimed:
+                // start writes the conversation, then the link follows (later sends find the
+                // spec by the link).
+                let spec = try await taskSpec(task)
                 _ = try await runtime.start(
-                    .task, text: Self.prompt(task), courseID: task.courseID, lectureID: task.lectureID, id: conversation, title: task.title
+                    .task, text: Self.prompt(task), courseID: task.courseID, lectureID: task.lectureID, id: conversation, title: task.title,
+                    spec: spec
                 )
                 try await tasks.setConversation(task.id, conversation)
             } else {
-                // Interrupted by a quit: the conversation goes on where it stopped.
+                // Interrupted by a quit or paused: the conversation goes on where it stopped.
                 try await runtime.send("Continue the task where you stopped, then give its result.", to: conversation)
             }
         } catch {
             if stopping || quit.isSet { return }
-            AppAgentModule.log.error("A task could not start: \(String(describing: error), privacy: .public)")
-            try? await tasks.finish(task.id, .failed, error: Self.readable(error))
+            AppAgentModule.log.error(
+                "A task could not start: \(ReadableError.kind(of: error), privacy: .public): \(String(describing: error), privacy: .private)"
+            )
+            let service = await waitsForService(error: error, conversation: nil)
+            if service.waits {
+                await wait(task, until: service.until)
+            } else {
+                try? await tasks.finish(task.id, .failed, error: Self.readable(error))
+            }
             return
         }
+        // A cancel while start or send was in flight found no run to stop yet.
+        if await isCancelled(task.id) { await runtime.stop(conversation) }
         let ended = await runtime.outcome(conversation)
         // The app quits (its process was ended): the row stays `running` for `requeueInterrupted`.
         if stopping || quit.isSet { return }
-        // Cancelled meanwhile (the row says so): nothing more to write.
-        if let row = try? await services.records.fetch(AgentTask.self, id: task.id), row.state == .cancelled { return }
         if ended?.state == .finished {
             let result = (try? await lastAnswer(conversation)) ?? ""
             try? await tasks.finish(task.id, .succeeded, result: result.isEmpty ? "Done." : result)
             return
         }
-        if let until = await client.availability().pausedUntil {
-            try? await tasks.pause(task.id, until: until)
-            schedulePauseWake(at: until)
+        if await isCancelled(task.id) { return }
+        let service = await waitsForService(error: nil, conversation: conversation)
+        if service.waits {
+            await wait(task, until: service.until)
             return
         }
         try? await tasks.finish(task.id, .failed, error: ended?.error ?? "The task stopped.")
+    }
+
+    private func isCancelled(_ id: AgentTask.ID) async -> Bool {
+        (try? await services.records.fetch(AgentTask.self, id: id))?.state == .cancelled
+    }
+
+    // MARK: - Finished tasks
+
+    /// Tasks nobody would hear of otherwise. One without a parent conversation (a triage
+    /// escalation; not the coach's drafting or a study pass) that finished since the queue
+    /// started joins the newest `app` conversation: its
+    /// thread shows it and the next message there carries it. An escalation that failed or was
+    /// cancelled gives its fact back to triage (`pending`, one more attempt; `failed` after
+    /// `AgentTask.maximumAttempts`), so the fact is not lost.
+    private func settleFinished() async {
+        let since = startedAt
+        let stamp = services.records.currentDate
+        do {
+            try await services.database.write { db in
+                let app = ConversationKind.app
+                let newest = try AgentConversation.where { $0.kind.eq(app) }.order { $0.createdAt.desc() }.fetchOne(db)
+                if let newest {
+                    let parent = AgentConversation.ID?.some(newest.id)
+                    // The coach's own bookkeeping (drafting, a study pass) is no news for the thread.
+                    let quiet: [AgentTaskKind] = [.questionDraft, .studyPass]
+                    try AgentTask
+                        .where {
+                            $0.parentConversationID.is(nil) && $0.reportedAt.is(nil) && $0.finishedAt.gte(Date?.some(since))
+                                && !$0.kind.in(quiet)
+                        }
+                        .update {
+                            $0.parentConversationID = parent
+                            $0.updatedAt = stamp
+                        }
+                        .execute(db)
+                }
+                let ended = try Row.fetchAll(db, sql: """
+                    SELECT e.id AS event, e.attempts AS attempts FROM agent_task t
+                    JOIN agent_event e ON e.id = t.event_id AND e.task_id = t.id
+                    WHERE t.kind = ? AND t.state IN (?, ?) AND e.state = ?
+                    """, arguments: [
+                        AgentTaskKind.escalation.rawValue, AgentTaskState.failed.rawValue, AgentTaskState.cancelled.rawValue,
+                        AgentEventState.escalated.rawValue,
+                    ])
+                for row in ended {
+                    guard let eventID = UUID(uuidString: row["event"] as String) else { continue }
+                    let attempts = (row["attempts"] as Int) + 1
+                    let state: AgentEventState = attempts >= AgentTask.maximumAttempts ? .failed : .pending
+                    let error: String? = state == .failed ? "The careful decision did not finish." : nil
+                    try AgentEvent.find(eventID).update {
+                        $0.state = state
+                        $0.attempts = attempts
+                        $0.error = error
+                        $0.updatedAt = stamp
+                    }
+                    .execute(db)
+                }
+            }
+        } catch {
+            AppAgentModule.log.error("Settling finished tasks failed: \(ReadableError.kind(of: error), privacy: .public)")
+        }
     }
 
     /// The task's first message: its goal, then what it was handed (data).
@@ -336,11 +429,10 @@ actor AgentTaskQueue {
         await wake()
     }
 
+    /// What `agent_task.error` says (the panel shows it, the parent's next turn carries it): one
+    /// readable sentence, never SQLite, CLI or Swift text (that goes to the log).
     static func readable(_ error: any Error) -> String {
-        switch error {
-        case let error as ClaudeError: String(error.description.prefix(300))
-        case let error as ToolSetError: error.description
-        default: String(String(describing: error).prefix(300))
-        }
+        if error is ToolSetError { return "The task's tools cannot be used together." }
+        return ReadableError.sentence(for: error)
     }
 }
