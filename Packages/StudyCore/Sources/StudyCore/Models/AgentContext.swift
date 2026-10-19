@@ -215,6 +215,12 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
     /// The long edge of an image as the agent sends it.
     public static let imageLongEdge = 1_568
 
+    /// Opening of the data block that stands in a user turn for slides the agent filed instead of
+    /// sending them whole: `<filed filing="…" change="1a2b3c4d" file="Lecture3.pdf"
+    /// placed="DC · L3 · Virtualization">reason</filed>`. The transcript hides it (the attachment
+    /// chip and the agent's one-line confirmation show the filing).
+    public static let filedBlockOpening = "<filed"
+
     /// Why a file is refused.
     public enum Refusal: Error, Hashable, Sendable {
         /// Not an image, PDF or text/code file (a ZIP, a Keynote file, audio, video).
