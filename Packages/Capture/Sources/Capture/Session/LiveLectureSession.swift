@@ -46,6 +46,14 @@ public final class LiveLectureSession {
         public var segmentDuration: Duration
         /// 1-based page shown first.
         public var initialPage: Int
+        /// iPhone (M7): without a deck, Next and Previous still count slides (from `initialPage`,
+        /// never below 1, no upper bound) and the stamps carry those numbers. Off on the Mac, whose
+        /// deckless live screen does not count.
+        public var countsSlidesWithoutDeck: Bool
+        /// What the manifest says the recording is for besides the ids (M7): the course's name and
+        /// short name, the class's number and name. The iPhone sets them because its ids are not
+        /// the Mac's until sync; the Mac's smart import files a phone capture by them.
+        public var assignment: Assignment
 
         public init(
             directory: URL,
@@ -55,7 +63,9 @@ public final class LiveLectureSession {
             captionLocale: Locale? = nil,
             format: RecordingFormat = .standard,
             segmentDuration: Duration = .seconds(300),
-            initialPage: Int = 1
+            initialPage: Int = 1,
+            countsSlidesWithoutDeck: Bool = false,
+            assignment: Assignment = Assignment()
         ) {
             self.directory = directory
             self.courseID = courseID
@@ -65,10 +75,37 @@ public final class LiveLectureSession {
             self.format = format
             self.segmentDuration = segmentDuration
             self.initialPage = initialPage
+            self.countsSlidesWithoutDeck = countsSlidesWithoutDeck
+            self.assignment = assignment
+        }
+    }
+
+    /// The names a recording is filed by where its ids are unknown (M7: a phone capture on the
+    /// Mac before sync). All optional; written into the manifest.
+    public struct Assignment: Sendable, Hashable {
+        /// "Data Centers".
+        public var courseName: String?
+        /// "DC".
+        public var courseShortName: String?
+        /// The lecture's number when the class is a numbered lecture ("Lecture 2" → 2).
+        public var sessionNumber: Int?
+        /// What the recorder showed ("DC Lecture 2"): the capture's title in the phone's outbox.
+        public var sessionName: String?
+
+        public init(courseName: String? = nil, courseShortName: String? = nil, sessionNumber: Int? = nil, sessionName: String? = nil) {
+            self.courseName = courseName
+            self.courseShortName = courseShortName
+            self.sessionNumber = sessionNumber
+            self.sessionName = sessionName
         }
     }
 
     public let configuration: Configuration
+    /// The course and class the recording is for; `reassign` changes them (the iPhone's course
+    /// menu, also while it records).
+    public private(set) var courseID: UUID?
+    public private(set) var lectureID: UUID?
+    public private(set) var assignment: Assignment
     public let deck: SlideDeck?
     public let pageCount: Int
     /// Short title per page (index 0 = page 1); empty strings when unknown.
@@ -129,7 +166,11 @@ public final class LiveLectureSession {
         self.capture = capture
         self.host = host
         self.now = now
-        self.currentPage = deck.map { min(max(1, configuration.initialPage), $0.pageCount) } ?? 1
+        self.courseID = configuration.courseID
+        self.lectureID = configuration.lectureID
+        self.assignment = configuration.assignment
+        self.currentPage = deck.map { min(max(1, configuration.initialPage), $0.pageCount) }
+            ?? (configuration.countsSlidesWithoutDeck ? max(1, configuration.initialPage) : 1)
         if let deck {
             prerenderTask = Task(priority: .utility) {
                 await deck.prerender(widths: [SlideWidth.thumbnail, SlideWidth.display])
@@ -201,8 +242,10 @@ public final class LiveLectureSession {
     }
 
     public var hasDeck: Bool { pageCount > 0 }
-    public var canGoNext: Bool { hasDeck && currentPage < pageCount }
-    public var canGoPrevious: Bool { hasDeck && currentPage > 1 }
+    /// Slides are tracked and stamped with numbers: a deck is on screen, or the phone counts.
+    public var tracksSlides: Bool { hasDeck || configuration.countsSlidesWithoutDeck }
+    public var canGoNext: Bool { hasDeck ? currentPage < pageCount : configuration.countsSlidesWithoutDeck }
+    public var canGoPrevious: Bool { tracksSlides && currentPage > 1 }
     public var sampleRate: Double { configuration.format.sampleRate }
 
     /// Slide stamps and flags, oldest first (no stop event).
@@ -285,7 +328,7 @@ public final class LiveLectureSession {
         self.isInputAvailable = true
         // Stamp from here on, before any suspension point, so no key press goes unstamped.
         phase = .recording
-        record(.start, page: hasDeck ? currentPage : nil, hostTime: start.hostTimeAtStart, sampleTime: 0)
+        record(.start, page: tracksSlides ? currentPage : nil, hostTime: start.hostTimeAtStart, sampleTime: 0)
         observe(statusUpdates, writer: writer)
         startMeter()
         startCaptions(clock: start.clock)
@@ -306,7 +349,7 @@ public final class LiveLectureSession {
     public func stop() async {
         guard phase == .recording else { return }
         let hostTime = host.now()
-        record(.stop, page: hasDeck ? currentPage : nil, hostTime: hostTime)
+        record(.stop, page: tracksSlides ? currentPage : nil, hostTime: hostTime)
         phase = .stopping
         endedAt = now()
         for task in liveTasks { task.cancel() }
@@ -363,7 +406,7 @@ public final class LiveLectureSession {
     public func flag(_ text: String? = nil) -> LectureEvent.ID? {
         let hostTime = host.now()
         guard phase == .recording else { return nil }
-        return record(.flag, page: hasDeck ? currentPage : nil, text: Self.nonBlank(text), hostTime: hostTime).id
+        return record(.flag, page: tracksSlides ? currentPage : nil, text: Self.nonBlank(text), hostTime: hostTime).id
     }
 
     /// Sets or clears a flag's text (until recording stops).
@@ -371,6 +414,26 @@ public final class LiveLectureSession {
         guard acceptsNotes, let index = events.firstIndex(where: { $0.id == id && $0.kind == .flag }) else { return }
         events[index].text = Self.nonBlank(text)
         persistEvents()
+    }
+
+    // MARK: - Assignment
+
+    /// Files the recording under another course or class (the iPhone's course menu): from now on
+    /// the manifest says so. Before recording it only changes what `start` writes.
+    public func reassign(courseID: UUID?, lectureID: UUID?, assignment: Assignment) async {
+        self.courseID = courseID
+        self.lectureID = lectureID
+        self.assignment = assignment
+        guard let writer else { return }
+        do {
+            try await writer.updateManifest { manifest in
+                manifest.courseID = courseID
+                manifest.lectureID = lectureID
+                manifest.apply(assignment)
+            }
+        } catch {
+            CaptureLog.capture.error("Manifest update failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Notes
@@ -399,7 +462,9 @@ public final class LiveLectureSession {
     // MARK: - Private
 
     private func navigate(to page: Int, kind: LectureEventKind, hostTime: UInt64) {
-        guard hasDeck, (1...pageCount).contains(page), page != currentPage else { return }
+        // With a deck: its pages. Counting without one (iPhone): from 1 up, no upper bound.
+        let inRange = hasDeck ? (1...pageCount).contains(page) : configuration.countsSlidesWithoutDeck && page >= 1
+        guard inRange, page != currentPage else { return }
         let from = currentPage
         currentPage = page
         if phase == .recording {
@@ -539,15 +604,17 @@ public final class LiveLectureSession {
     }
 
     private func makeManifest(id: UUID) -> LectureManifest {
-        LectureManifest(
+        var manifest = LectureManifest(
             id: id,
-            courseID: configuration.courseID,
-            lectureID: configuration.lectureID,
+            courseID: courseID,
+            lectureID: lectureID,
             deck: deck.map {
                 DeckReference(sha256: $0.sha256, pageCount: $0.pageCount, deckID: configuration.deckID)
             },
             format: configuration.format
         )
+        manifest.apply(assignment)
+        return manifest
     }
 
     private static func failure(from error: any Error) -> Failure {
@@ -587,12 +654,14 @@ extension LiveLectureSession {
         deckSHA256: String? = nil,
         cacheDirectory: URL,
         pageTexts: [String]? = nil,
-        captionLocale: Locale? = nil
+        captionLocale: Locale? = nil,
+        countsSlidesWithoutDeck: Bool = false
     ) async throws -> LiveLectureSession {
         try await open(
             configuration: Configuration(
                 directory: URL.temporaryDirectory.appending(path: "StudyPortal-preview", directoryHint: .isDirectory),
-                captionLocale: captionLocale
+                captionLocale: captionLocale,
+                countsSlidesWithoutDeck: countsSlidesWithoutDeck
             ),
             deckURL: deckURL,
             deckSHA256: deckSHA256,
@@ -617,7 +686,11 @@ extension LiveLectureSession {
     ) {
         guard phase == .ready, writer == nil else { return }
         let started = now.addingTimeInterval(-max(0, elapsed))
-        if hasDeck { currentPage = min(max(1, page), pageCount) }
+        if hasDeck {
+            currentPage = min(max(1, page), pageCount)
+        } else if configuration.countsSlidesWithoutDeck {
+            currentPage = max(1, page)
+        }
         startedAt = started
         self.inputName = inputName
         isInputAvailable = true

@@ -346,7 +346,7 @@ public struct LiveLectureView: View {
 
     // MARK: - Failures
 
-    static func title(for failure: LiveLectureSession.Failure) -> String {
+    public static func title(for failure: LiveLectureSession.Failure) -> String {
         switch failure {
         case .notConsented: String(localized: "Recording is off for this course")
         case .microphoneDenied: String(localized: "Microphone access is off")
@@ -356,14 +356,14 @@ public struct LiveLectureView: View {
         }
     }
 
-    static func message(for failure: LiveLectureSession.Failure) -> String? {
+    public static func message(for failure: LiveLectureSession.Failure) -> String? {
         switch failure {
         case .notConsented, .microphoneDenied, .noInputDevice: nil
         case .storage(let detail), .engine(let detail): detail
         }
     }
 
-    static var privacySettingsURL: URL {
+    public static var privacySettingsURL: URL {
         #if os(macOS)
         URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
             ?? URL(filePath: "/System/Applications/System Settings.app")

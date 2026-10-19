@@ -118,6 +118,15 @@ public struct LectureManifest: Codable, Sendable, Hashable {
     public var segments: [AudioSegmentInfo]
     /// Set once the package was imported into the database.
     public var importedAt: Date?
+    /// M7 (additive, optional): what the recording is for in words, for a library whose ids differ
+    /// (a phone capture on the Mac before sync files by these). "Data Centers".
+    public var courseName: String?
+    /// "DC".
+    public var courseShortName: String?
+    /// The lecture's number when the recorder knew the class ("DC Lecture 2" → 2).
+    public var sessionNumber: Int?
+    /// The recorder's name for it ("DC Lecture 2", or "DC Tue 13 Oct" without a known class).
+    public var sessionName: String?
 
     public init(
         version: Int = LectureManifest.currentVersion,
@@ -151,6 +160,19 @@ public struct LectureManifest: Codable, Sendable, Hashable {
         self.captionLocale = captionLocale
         self.segments = segments
         self.importedAt = importedAt
+    }
+
+    /// Writes the recorder's names (blank ones as nil).
+    public mutating func apply(_ assignment: LiveLectureSession.Assignment) {
+        courseName = Self.nonBlank(assignment.courseName)
+        courseShortName = Self.nonBlank(assignment.courseShortName)
+        sessionNumber = assignment.sessionNumber
+        sessionName = Self.nonBlank(assignment.sessionName)
+    }
+
+    private static func nonBlank(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
     }
 
     public static var currentPlatform: String {
