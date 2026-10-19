@@ -10,6 +10,7 @@ import Foundation
 ///       Blobs/ab/abcdef….pdf          content-addressed files (BlobStore)
 ///       Models/                       WhisperKit and other models (excluded from backup)
 ///       Recordings/                   in-progress capture files before they enter Blobs
+///       PhoneCaptures/                iPhone (M7): its recordings as `.lecture` packages until shared
 ///       Agent/                        the Claude Code backend (M3.5): Workspace/, state.json, Runs/
 ///
 /// Caches (slide bitmaps, …) live in the system caches directory and may be purged.
@@ -54,6 +55,10 @@ public struct AppPaths: Hashable, Sendable {
     public var blobs: URL { root.appending(path: "Blobs", directoryHint: .isDirectory) }
     public var models: URL { root.appending(path: "Models", directoryHint: .isDirectory) }
     public var recordings: URL { root.appending(path: "Recordings", directoryHint: .isDirectory) }
+    /// M7, the iPhone: the recordings made on the phone, kept as `.lecture` packages (the outbox)
+    /// until the student shares them to the Mac (a capture bundle) and deletes them; never imported
+    /// into the phone's library. Created by the phone's recorder when it first records, not here.
+    public var phoneCaptures: URL { root.appending(path: "PhoneCaptures", directoryHint: .isDirectory) }
     /// M3.5: the Claude Code backend's folder (`ClaudeCodeConfiguration.directory`): its empty
     /// working directory, its state (usage pause) and each run's MCP config. Created by the backend.
     public var agent: URL { root.appending(path: "Agent", directoryHint: .isDirectory) }

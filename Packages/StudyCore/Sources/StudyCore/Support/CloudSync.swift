@@ -1,0 +1,20 @@
+import Foundation
+
+/// Whether this build syncs the library through iCloud (M7, docs/plan-m7.md §4).
+///
+/// Sync needs a build signed with the iCloud (CloudKit) entitlement and its container, which an
+/// "Apple Development" identity provides; such a build also names the container in its Info.plist
+/// under `StudyPortalCloudKitContainer`. Unsigned simulator builds and the Mac's Developer ID build
+/// have neither: `containerIdentifier()` is nil, nothing about sync runs (no CloudKit call, which
+/// would trap without the entitlement) and the database opens exactly as before.
+public enum CloudSyncConfiguration {
+    /// The Info.plist key a signed build sets to its CloudKit container ("iCloud.com.example.studyportal").
+    public static let infoKey = "StudyPortalCloudKitContainer"
+
+    /// The CloudKit container this build syncs to, or nil: sync off.
+    public static func containerIdentifier(bundle: Bundle = .main) -> String? {
+        guard let value = bundle.object(forInfoDictionaryKey: infoKey) as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("iCloud.") ? trimmed : nil
+    }
+}

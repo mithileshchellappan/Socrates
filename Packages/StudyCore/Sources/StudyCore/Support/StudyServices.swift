@@ -16,12 +16,15 @@ public struct StudyServices: Sendable {
     }
 
     /// Real directories, on-disk database (migrated) and the Keychain.
-    public static func live() throws -> StudyServices {
+    ///
+    /// `syncContainer` (M7): the CloudKit container when this build syncs
+    /// (`CloudSyncConfiguration.containerIdentifier()`); nil opens the database as before.
+    public static func live(syncContainer: String? = nil) throws -> StudyServices {
         let paths = try AppPaths.live()
         try paths.createDirectories()
         return StudyServices(
             paths: paths,
-            database: try StudyDatabase.open(at: paths.database),
+            database: try StudyDatabase.open(at: paths.database, syncContainer: syncContainer),
             blobs: BlobStore(root: paths.blobs),
             secrets: KeychainSecretStore()
         )

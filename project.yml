@@ -71,6 +71,13 @@ packages:
     path: Packages/AppAgent
   Coach:
     path: Packages/Coach
+  # M7 (docs/plan-m7.md): the iPhone recorder and its Live Activity, the phone's shell, iCloud sync.
+  Recorder:
+    path: Packages/Recorder
+  Phone:
+    path: Packages/Phone
+  Sync:
+    path: Packages/Sync
 
 targets:
   StudyPortal:
@@ -81,6 +88,10 @@ targets:
       - path: App/macOS
         destinationFilters: [macOS]
       - path: App/iOS
+        destinationFilters: [iOS]
+      # M7: the Live Activity's intents and views, compiled into the app and the widget extension
+      # (Live Activity buttons run their intents in the app's process).
+      - path: Widgets/Shared
         destinationFilters: [iOS]
     info:
       path: App/Info.plist
@@ -102,6 +113,8 @@ targets:
           UIApplicationSupportsMultipleScenes: true
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
+        # M7: the recording's Live Activity (Lock Screen + Dynamic Island), from StudyPortalWidgets.
+        NSSupportsLiveActivities: true
         UISupportedInterfaceOrientations~iphone:
           - UIInterfaceOrientationPortrait
         # Live capture writes `<uuid>.lecture` folders; declared as a package so Finder and the
@@ -112,6 +125,19 @@ targets:
             UTTypeConformsTo: [com.apple.package, public.composite-content]
             UTTypeTagSpecification:
               public.filename-extension: [lecture]
+          # M7: one `.lecture` package as a single file (Apple Archive), shared from the iPhone
+          # by Share / AirDrop; the Mac's smart import unpacks and files it.
+          - UTTypeIdentifier: com.example.studyportal.lecture-bundle
+            UTTypeDescription: Study Portal Recording
+            UTTypeConformsTo: [public.data, public.archive]
+            UTTypeTagSpecification:
+              public.filename-extension: [lecturebundle]
+        # M7: the Mac opens an AirDropped or double-clicked capture (smart import files it).
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Study Portal Recording
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.example.studyportal.lecture-bundle, com.example.studyportal.lecture]
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
@@ -211,3 +237,50 @@ targets:
         product: Coach
       - package: Coach
         product: CoachUI
+      # M7 (docs/plan-m7.md): the iPhone recorder, its Live Activity and the phone's shell (iOS);
+      # iCloud sync (both, off unless the build is signed for CloudKit).
+      - package: Recorder
+        product: RecorderActivity
+        destinationFilters: [iOS]
+      - package: Recorder
+        product: Recorder
+        destinationFilters: [iOS]
+      - package: Recorder
+        product: RecorderUI
+        destinationFilters: [iOS]
+      - package: Phone
+        product: PhoneUI
+        destinationFilters: [iOS]
+      - package: Sync
+        product: Sync
+      - target: StudyPortalWidgets
+        destinationFilters: [iOS]
+        embed: true
+
+  # M7 (docs/plan-m7.md §3): the recording's Live Activity (Lock Screen + Dynamic Island). Its views
+  # and the two button intents are in Widgets/Shared, which the app compiles too.
+  StudyPortalWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Widgets
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Study Portal
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_NAME: StudyPortalWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.studyportal.widgets
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+    dependencies:
+      - package: Recorder
+        product: RecorderActivity
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework

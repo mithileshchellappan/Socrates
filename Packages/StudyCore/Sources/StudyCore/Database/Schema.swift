@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -57,6 +57,10 @@ public enum Schema {
         migrator.registerMigration("v12") { db in
             try db.execute(sql: v12)
         }
+        // M7, additive only (new tables): the phone's questions to the Mac's agent.
+        migrator.registerMigration("v13") { db in
+            try db.execute(sql: v13)
+        }
         return migrator
     }
 
@@ -74,6 +78,7 @@ public enum Schema {
         "slide_ink",
         "agent_task", "agent_change", "agent_event", "agent_reminder",
         "study_reading", "study_question", "study_session", "study_answer", "study_block",
+        "agent_request", "agent_request_file",
     ]
 
     /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
@@ -1165,6 +1170,40 @@ public enum Schema {
         ALTER TABLE "course" ADD COLUMN "credits" REAL;
         ALTER TABLE "course" ADD COLUMN "self_study_hours" REAL;
         ALTER TABLE "agent_memory" ADD COLUMN "plan_rule" TEXT;
+        """
+
+    /// v13 (M7, docs/plan-m7.md §3): the inbox of questions asked on the iPhone, answered by the
+    /// Mac's app agent once iCloud sync carries them over. A file's bytes live in its row (the
+    /// BlobStore does not sync; CloudKit syncs a BLOB column as an asset).
+    static let v13 = """
+        CREATE TABLE "agent_request" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "conversation_id" TEXT REFERENCES "agent_conversation"("id") ON DELETE CASCADE,
+          "text" TEXT NOT NULL DEFAULT '',
+          "context" TEXT,
+          "device" TEXT NOT NULL DEFAULT 'iphone',
+          "state" TEXT NOT NULL DEFAULT 'pending',
+          "error" TEXT,
+          "started_at" TEXT,
+          "answered_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "agent_request_state" ON "agent_request"("state", "created_at");
+        CREATE INDEX "agent_request_conversation" ON "agent_request"("conversation_id");
+
+        CREATE TABLE "agent_request_file" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "request_id" TEXT NOT NULL REFERENCES "agent_request"("id") ON DELETE CASCADE,
+          "sort_order" INTEGER NOT NULL DEFAULT 0,
+          "file_name" TEXT NOT NULL DEFAULT '',
+          "content_type" TEXT NOT NULL DEFAULT '',
+          "byte_count" INTEGER NOT NULL DEFAULT 0,
+          "data" BLOB NOT NULL DEFAULT x'',
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "agent_request_file_request" ON "agent_request_file"("request_id", "sort_order");
         """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row
