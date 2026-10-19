@@ -306,6 +306,8 @@ struct PendingPanelMessage: Equatable {
     var conversationID: AgentConversation.ID?
     /// Stored turns of that conversation when it was sent.
     var afterTurns: Int
+    /// When ↩ sent it (M7, the sheet: its request row, written after this, takes over).
+    var sentAt = Date()
 }
 
 extension EnvironmentValues {

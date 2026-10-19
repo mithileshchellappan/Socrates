@@ -9,6 +9,8 @@ struct AgentPanelView: View {
     enum Style: Hashable {
         case compact
         case expanded
+        /// M7: the iPhone's sheet (`AgentSheet`; its thread only).
+        case sheet
     }
 
     enum HeaderPlacement: Hashable {
@@ -163,40 +165,47 @@ struct AgentPanelView: View {
     /// words show at once as a pending bubble. One message at a time: nothing while one is being
     /// handed over or not stored yet (`pending`), or while the agent answers; never empty.
     private func send(to conversationID: AgentConversation.ID?) {
-        let text = model.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let files = model.attachments
-        guard !text.isEmpty || !files.isEmpty, model.canSendNow else { return }
-        let actions = actions
-        let context = sendContext()
-        let model = model
-        model.pending = PendingPanelMessage(
-            text: text, attachments: files, conversationID: conversationID, afterTurns: conversationID == nil ? 0 : model.turnCount
+        guard model.canSendNow else { return }
+        model.send(to: conversationID, context: sendContext(), actions: actions)
+    }
+}
+
+extension AgentPanelModel {
+    /// Hands the composer's words and files to `actions.send` (the panel's ↩, the sheet's Send):
+    /// they show at once as the pending bubble; a failure puts them back in the composer with one
+    /// readable line. Callers check when a message may go (`canSendNow`, the sheet's own rule).
+    func send(to conversationID: AgentConversation.ID?, context: AgentContext, actions: AgentPanelActions) {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let files = attachments
+        guard !text.isEmpty || !files.isEmpty, !isSending, reading == 0 else { return }
+        pending = PendingPanelMessage(
+            text: text, attachments: files, conversationID: conversationID, afterTurns: conversationID == nil ? 0 : turnCount
         )
-        model.draft = ""
-        model.attachments = []
-        model.notice = nil
-        model.isSending = true
-        model.askedSinceOpen = true
+        draft = ""
+        attachments = []
+        notice = nil
+        isSending = true
+        askedSinceOpen = true
         Task {
             do {
                 let id = try await actions.send(text, context, files, conversationID)
-                model.selected = id
-                model.startsNew = false
-                if model.pending?.conversationID == nil { model.pending?.conversationID = id }
+                selected = id
+                startsNew = false
+                if pending?.conversationID == nil { pending?.conversationID = id }
             } catch {
                 ChatUILog.ui.error("Sending to the agent failed: \(String(describing: error), privacy: .public)")
-                if model.draft.isEmpty { model.draft = text }
-                if model.attachments.isEmpty { model.attachments = files }
-                model.pending = nil
+                if draft.isEmpty { draft = text }
+                if attachments.isEmpty { attachments = files }
+                pending = nil
                 // The message is back in the composer; one line says why (a readable reason
                 // only, never a raw error).
                 if let reason = (error as? any LocalizedError)?.errorDescription, !reason.isEmpty {
-                    model.notice = String(localized: "Couldn’t send: \(reason)")
+                    notice = String(localized: "Couldn’t send: \(reason)")
                 } else {
-                    model.notice = String(localized: "Couldn’t send. Try again.")
+                    notice = String(localized: "Couldn’t send. Try again.")
                 }
             }
-            model.isSending = false
+            isSending = false
         }
     }
 }
@@ -211,8 +220,6 @@ private struct AgentPanelHeader: View {
     let move: PanelMove?
     let moveEnded: ((CGSize) -> Void)?
 
-    @Environment(\.locale) private var locale
-    @Environment(\.timeZone) private var timeZone
     @State private var showsMemory = false
     /// A drag is in flight (a cancelled one puts the panel back).
     @GestureState private var isMoving = false
@@ -264,6 +271,25 @@ private struct AgentPanelHeader: View {
         }
     }
 
+    private var titleMenu: some View {
+        AgentTitleMenu(model: model, history: history, conversationID: conversationID, showsMemory: $showsMemory)
+    }
+}
+
+/// The conversation's title as the history menu (the panel's title row, the sheet's): recent
+/// conversations by day, titles only, the open one checked; then New Chat and Memory…. 13 pt
+/// semibold in the panel ("New Chat" medium tertiary for an empty one); 17 in the sheet.
+struct AgentTitleMenu: View {
+    let model: AgentPanelModel
+    let history: [AgentConversation]
+    let conversationID: AgentConversation.ID?
+    var fontSize: CGFloat = 13
+    var chevronSize: CGFloat = 8.5
+    @Binding var showsMemory: Bool
+
+    @Environment(\.locale) private var locale
+    @Environment(\.timeZone) private var timeZone
+
     private var current: AgentConversation? {
         conversationID.flatMap { id in history.first { $0.id == id } }
     }
@@ -276,7 +302,7 @@ private struct AgentPanelHeader: View {
         return title.isEmpty ? String(localized: "New Chat") : title
     }
 
-    private var titleMenu: some View {
+    var body: some View {
         Menu {
             ForEach(HistoryDay.groups(history, now: model.now, locale: locale, timeZone: timeZone), id: \.title) { group in
                 Section(group.title) {
@@ -296,17 +322,17 @@ private struct AgentPanelHeader: View {
         } label: {
             HStack(spacing: 5) {
                 Text(verbatim: title)
-                    .font(.system(size: 13, weight: isNew ? .medium : .semibold))
+                    .font(.system(size: fontSize, weight: isNew ? .medium : .semibold))
                     .foregroundStyle(isNew ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8.5, weight: .bold))
+                    .font(.system(size: chevronSize, weight: .bold))
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
             }
             .padding(.horizontal, 8)
-            .frame(height: 26)
+            .frame(minHeight: 26)
             .contentShape(Rectangle())
         }
         .menuStyle(.button)
