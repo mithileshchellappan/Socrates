@@ -1,6 +1,7 @@
 import Agent
 import ClaudeKit
 import CoreGraphics
+import Documents
 import Filing
 import Foundation
 import ImageIO
@@ -18,10 +19,13 @@ enum AttachmentBlocks {
         case tooMany
         /// A PDF sent whole over the document limits (slides are filed instead).
         case pdfTooLarge(String)
+        /// md: a Word, RTF or Pages file whose text could not be read (the extractor's sentence).
+        case refused(String, String)
 
         var description: String {
             switch self {
             case .unreadable(let name): "\(name) could not be read."
+            case .refused(let name, let sentence): "\(name): \(sentence)"
             case .tooMany: "At most \(AgentAttachment.maximumPerMessage) files per message."
             case .pdfTooLarge(let name):
                 "\(name) is too long to read whole (at most \(AgentAttachment.maximumPDFPages) pages and \(AgentAttachment.maximumPDFBytes / 1_048_576) MB)."
@@ -39,6 +43,55 @@ enum AttachmentBlocks {
         if let change = filed.change { head += " change=\"\(change.id.uuidString.lowercased().prefix(8))\"" }
         head += " file=\"\(AgentXML.escape(fileName))\" placed=\"\(AgentXML.escape(filed.placed))\""
         return .text(TextBlock(text: head + ">" + AgentXML.escape(reason) + "</filed>"))
+    }
+
+    /// md: every attachment as it goes to Claude (`AppAgent.send`): a Word, OpenDocument, RTF or
+    /// Pages file (`.document`) as its extracted text in a text document block titled with the
+    /// file name (≤ `documentCharacters`, then "…"; refused with the extractor's readable
+    /// sentence), a PDF over the send limits (not slides: those were filed) as `<attached_file>`
+    /// with its first pages' text (≤ `attachedFileCharacters`, so `keep_document` can still keep
+    /// it), the rest as `blocks`.
+    static func contentBlocks(_ attachments: [AgentAttachment], blobs: BlobStore) async throws -> [ContentBlock] {
+        guard attachments.count <= AgentAttachment.maximumPerMessage else { throw Failure.tooMany }
+        var result: [ContentBlock] = []
+        for attachment in attachments {
+            switch attachment.kind {
+            case .document:
+                result.append(try await documentText(attachment, blobs: blobs))
+            case .pdf where attachment.byteCount > AgentAttachment.maximumPDFBytes
+                || (attachment.pageCount ?? 0) > AgentAttachment.maximumPDFPages:
+                guard blobs.contains(attachment.blob),
+                      let leading = await DocumentExtractor.leadingText(ofPDFAt: blobs.url(for: attachment.blob), characters: attachedFileCharacters)
+                else { throw Failure.unreadable(attachment.fileName) }
+                let head = "<attached_file name=\"\(AgentXML.escape(attachment.fileName))\" pages=\"\(leading.pageCount)\">"
+                result.append(.text(TextBlock(text: head + "\n" + AgentXML.escape(leading.text) + "\n</attached_file>")))
+            default:
+                result += try blocks([attachment], blobs: blobs)
+            }
+        }
+        return result
+    }
+
+    /// The most text of a Word, RTF or Pages attachment sent, and of a long PDF's first pages.
+    static let documentCharacters = 100_000
+    static let attachedFileCharacters = 8_000
+
+    /// A `.document` attachment's text (Documents' extractor, off the main actor), in a text
+    /// document block titled with the file name.
+    static func documentText(_ attachment: AgentAttachment, blobs: BlobStore) async throws -> ContentBlock {
+        guard blobs.contains(attachment.blob) else { throw Failure.unreadable(attachment.fileName) }
+        let type = UTType(attachment.contentType) ?? UTType(filenameExtension: (attachment.fileName as NSString).pathExtension) ?? .data
+        let extracted: ExtractedDocument
+        do {
+            extracted = try await DocumentExtractor.extract(fileAt: blobs.url(for: attachment.blob), type: type)
+        } catch let error as DocumentReadError {
+            throw Failure.refused(attachment.fileName, error.sentence)
+        } catch {
+            throw Failure.unreadable(attachment.fileName)
+        }
+        var text = extracted.pages.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        if text.count > documentCharacters { text = String(text.prefix(documentCharacters)) + "…" }
+        return .document(DocumentBlock(source: .text(text), title: attachment.fileName))
     }
 
     static func blocks(_ attachments: [AgentAttachment], blobs: BlobStore) throws -> [ContentBlock] {
@@ -64,7 +117,7 @@ enum AttachmentBlocks {
                 guard let text = String(data: data, encoding: .utf8) else { throw Failure.unreadable(attachment.fileName) }
                 return .document(DocumentBlock(source: .text(text), title: attachment.fileName))
             case .document:
-                // md contract stub: A sends the extracted text (docs/plan-docs.md §4 "The agent").
+                // Read by `contentBlocks` (its extracted text); never sent as bytes.
                 throw Failure.unreadable(attachment.fileName)
             }
         }

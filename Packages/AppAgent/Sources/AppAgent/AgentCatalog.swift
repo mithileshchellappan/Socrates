@@ -155,6 +155,9 @@ public struct AgentCatalog: Sendable, Hashable {
         let loose = notes.filter { $0.courseID == nil && $0.lectureID == nil }
         if !loose.isEmpty { lines.append("notes without a course: \(loose.count)") }
 
+        // md: the kept documents, one line each (≤ 1,600 characters).
+        lines += try DocumentCatalog.lines(db: db) { tokens.token($0) }
+
         // mc: the study coach (measured at the start of today, so it changes only with the data).
         lines += try CoachCatalog.lines(db: db, now: now) { tokens.token($0) }
 

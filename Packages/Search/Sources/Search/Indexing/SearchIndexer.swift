@@ -6,8 +6,8 @@ import Synchronization
 /// Keeps `search_chunk` (and through its triggers the FTS5 tables) in step with the library.
 ///
 /// `start()` catches up (sources without chunks, or newer than their chunks), then watches
-/// `transcript_segment`, `deck_page`, `note`, `lecture_deck_span`, `lecture` and `deck` and catches
-/// up again about a second after they change. Deleted lectures, recordings, decks and notes take
+/// `transcript_segment`, `deck_page`, `note`, `lecture_deck_span`, `lecture` and `deck` (md: and
+/// `document`, `document_page`) and catches up again about a second after they change. Deleted lectures, recordings, decks and notes take
 /// their chunks with them through foreign-key cascades.
 public actor SearchIndexer {
     /// What one catch-up did.
@@ -17,12 +17,14 @@ public actor SearchIndexer {
         public var notes = 0
         /// M5: further-reading rows.
         public var readings = 0
+        /// md: kept documents.
+        public var documents = 0
         /// Chunks written.
         public var chunks = 0
         /// Chunks deleted without being rewritten (orphans, blanked sources).
         public var removed = 0
 
-        public var isEmpty: Bool { recordings == 0 && decks == 0 && notes == 0 && readings == 0 && removed == 0 }
+        public var isEmpty: Bool { recordings == 0 && decks == 0 && notes == 0 && readings == 0 && documents == 0 && removed == 0 }
     }
 
     private let database: any DatabaseWriter
@@ -55,6 +57,8 @@ public actor SearchIndexer {
     /// `note` is watched on its own (`noteRegion`): its changes start a notes-only pass.
     static let observedTables = [
         "transcript_segment", "deck_page", "lecture_deck_span", "lecture", "deck", "recording", "annotation",
+        // md: the document bank (its pages; of `document` only what chunks are cut from).
+        "document", "document_page",
     ]
 
     static var noteRegion: any DatabaseRegionConvertible { SQLRequest<Row>(sql: "SELECT * FROM \"note\"") }
@@ -72,6 +76,9 @@ public actor SearchIndexer {
                 SQLRequest<Row>(sql: """
                     SELECT id, lecture_id, layer, kind, deck_id, page_number, body, detail, hidden_at FROM annotation
                     """)
+            case "document":
+                // The summary task writes title, summary, facts…: none of it is in a chunk.
+                SQLRequest<Row>(sql: "SELECT id, text_state, language FROM document")
             default:
                 SQLRequest<Row>(sql: "SELECT * FROM \"\(table)\"")
             }
@@ -216,6 +223,10 @@ public actor SearchIndexer {
             report.chunks += try await indexReading(annotationID)
             report.readings += 1
         }
+        for documentID in work.documents {
+            report.chunks += try await indexDocument(documentID)
+            report.documents += 1
+        }
         report.removed = try await database.write { db in try IndexState.removeOrphans(db, notesOnly: scope == .notes) }
         if verifyingText { saveTextVersion() }
         return report
@@ -247,7 +258,8 @@ public actor SearchIndexer {
                     let elapsed = ContinuousClock.now - started
                     Log.search.info("""
                         Indexed \(report.recordings) transcripts, \(report.decks) decks, \(report.notes) notes, \
-                        \(report.readings) further reading (\(report.chunks) chunks, \(report.removed) removed) \
+                        \(report.readings) further reading, \(report.documents) documents \
+                        (\(report.chunks) chunks, \(report.removed) removed) \
                         in \(elapsed.formatted(.units(allowed: [.milliseconds])), privacy: .public)
                         """)
                 }
@@ -349,6 +361,24 @@ public actor SearchIndexer {
         }
         try await replace(draft.map { [$0] } ?? [], kind: .furtherReading) { $0.sourceID.eq(annotationID) }
         return draft == nil ? 0 : 1
+    }
+
+    /// md: a kept document's pages as windows (`ChunkBuilder.documentChunks`); a document gone, or
+    /// whose text is not read (pending, failed), has none.
+    private func indexDocument(_ documentID: StudyDocument.ID) async throws -> Int {
+        let source = try await database.read { db -> (StudyDocument, [StudyDocumentPage])? in
+            guard let document = try StudyDocument.find(documentID).fetchOne(db), document.textState == .done else { return nil }
+            return (document, try StudyDocumentPage.where { $0.documentID.eq(documentID) }.order(by: \.pageNumber).fetchAll(db))
+        }
+        let reference = StudyDocument.ID?.some(documentID)
+        guard let (document, pages) = source else {
+            try await deleteChunks(kind: .document) { $0.documentID.eq(reference) }
+            return 0
+        }
+        let version = pages.map(\.updatedAt).max() ?? document.updatedAt
+        let drafts = builder.documentChunks(document: document, pages: pages, version: version, now: now())
+        try await replace(drafts, kind: .document) { $0.documentID.eq(reference) }
+        return drafts.count
     }
 
     /// Deletes the unit's chunks and inserts `drafts` in one transaction (never INSERT OR REPLACE).

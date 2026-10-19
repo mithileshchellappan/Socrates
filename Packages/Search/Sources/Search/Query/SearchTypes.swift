@@ -16,14 +16,14 @@ public struct SearchQuery: Hashable, Sendable {
         case material
         /// M5: the verified further reading the study pass found (Search's Web segment).
         case web
-        /// md: the student's kept documents (the agent's `search_documents`; the Documents group of
-        /// All once the engine handles them). Never part of `material`: documents hold personal
-        /// data and untrusted text, and the tutor's material reaches web tools.
+        /// md: the student's kept documents (the agent's `search_documents`; All's Documents group).
+        /// Never part of `material`: documents hold personal data and untrusted text, and the
+        /// tutor's material reaches web tools.
         case documents
 
         public var kinds: [SearchChunkKind] {
             switch self {
-            case .all: [.transcript, .slide, .note, .furtherReading, .mail]
+            case .all: [.transcript, .slide, .note, .furtherReading, .mail, .document]
             case .lectures: [.transcript, .slide]
             case .notes: [.note]
             case .mail: [.mail]

@@ -15,8 +15,10 @@ enum IndexState {
         var notes: [Note.ID] = []
         /// M5: further-reading annotations.
         var readings: [Annotation.ID] = []
+        /// md: kept documents.
+        var documents: [StudyDocument.ID] = []
 
-        var isEmpty: Bool { recordings.isEmpty && decks.isEmpty && notes.isEmpty && readings.isEmpty }
+        var isEmpty: Bool { recordings.isEmpty && decks.isEmpty && notes.isEmpty && readings.isEmpty && documents.isEmpty }
 
         /// Adds `other`'s units that are not here yet.
         mutating func formUnion(_ other: Work) {
@@ -24,6 +26,7 @@ enum IndexState {
             decks += other.decks.filter { !decks.contains($0) }
             notes += other.notes.filter { !notes.contains($0) }
             readings += other.readings.filter { !readings.contains($0) }
+            documents += other.documents.filter { !documents.contains($0) }
         }
     }
 
@@ -167,6 +170,28 @@ enum IndexState {
                 work.readings.append(row["id"])
             }
         }
+
+        // md: kept documents whose text is read: windows of their pages, versioned by the newest
+        // page (`setText` and Undo's `restore` stamp them); never a course.
+        for row in try Row.fetchAll(db, sql: """
+            SELECT d.id AS id, d.text_state AS state,
+              (SELECT count(*) FROM document_page p WHERE p.document_id = d.id AND \(String(format: blank, "p.text"))) AS expected,
+              (SELECT max(p.updated_at) FROM document_page p WHERE p.document_id = d.id) AS version,
+              (SELECT count(*) FROM search_chunk c WHERE c.kind = 'document' AND c.document_id = d.id) AS have,
+              (SELECT max(c.source_updated_at) FROM search_chunk c WHERE c.kind = 'document' AND c.document_id = d.id) AS indexed,
+              (SELECT count(*) FROM search_chunk c WHERE c.kind = 'document' AND c.document_id = d.id
+                 AND (c.course_id IS NOT NULL OR c.source_id IS NOT d.id)) AS moved
+            FROM document d
+            """) {
+            let state: String = row["state"]
+            let expected: Int = state == DocumentTextState.done.rawValue ? row["expected"] : 0
+            let have: Int = row["have"]
+            let moved: Int = row["moved"]
+            if (expected > 0 && have == 0) || (expected == 0 && have > 0) || moved > 0
+                || (have > 0 && !same(row["version"], row["indexed"])) {
+                work.documents.append(row["id"])
+            }
+        }
         return work
     }
 
@@ -212,6 +237,9 @@ enum IndexState {
               SELECT a.id FROM annotation a JOIN lecture l ON l.id = a.lecture_id
               WHERE a.kind = 'further_reading' AND a.layer = 'ai' AND a.hidden_at IS NULL)
             """)
+        removed += db.changesCount
+        // md: a deleted document's chunks go by cascade; a chunk without one never stays.
+        try db.execute(sql: "DELETE FROM search_chunk WHERE kind = 'document' AND document_id IS NULL")
         removed += db.changesCount
         return removed
     }

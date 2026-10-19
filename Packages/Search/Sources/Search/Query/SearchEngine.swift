@@ -517,6 +517,8 @@ struct Retrieval {
         var lemmaText: String
         /// A further-reading chunk's annotation.
         var sourceID: UUID?
+        /// md: a document chunk's kept document.
+        var documentID: StudyDocument.ID?
     }
 
     private func uuid(_ value: String?) -> UUID? {
@@ -528,7 +530,7 @@ struct Retrieval {
         var chunks: [Int64: Chunk] = [:]
         let rows = try Row.fetchCursor(db, sql: """
             SELECT id, kind, course_id, lecture_id, deck_id, page_number, recording_id, note_id, start_time, text, lemma_text,
-                   mail_message_id, source_id
+                   mail_message_id, source_id, document_id
             FROM search_chunk WHERE id IN (SELECT value FROM json_each(?))
             """, arguments: [Self.json(chosen.map(\.candidate.id))])
         while let row = try rows.next() {
@@ -536,7 +538,8 @@ struct Retrieval {
             chunks[id] = Chunk(
                 id: id, kind: SearchChunkKind(rawValue: row[1]), courseID: uuid(row[2]), lectureID: uuid(row[3]),
                 deckID: uuid(row[4]), page: row[5], recordingID: uuid(row[6]), noteID: uuid(row[7]),
-                mailMessageID: uuid(row[11]), start: row[8], text: row[9], lemmaText: row[10], sourceID: uuid(row[12])
+                mailMessageID: uuid(row[11]), start: row[8], text: row[9], lemmaText: row[10], sourceID: uuid(row[12]),
+                documentID: uuid(row[13])
             )
         }
 
@@ -567,10 +570,28 @@ struct Retrieval {
             }
         }
 
+        // md: the kept documents' titles.
+        let documentIDs = Array(Set(chunks.values.compactMap { $0.kind == .document ? $0.documentID : nil }))
+        var documentTitles: [StudyDocument.ID: String] = [:]
+        if !documentIDs.isEmpty {
+            for document in try StudyDocument.where({ $0.id.in(documentIDs) }).fetchAll(db) { documentTitles[document.id] = document.title }
+        }
+
         var hits: [SearchHit] = []
         var mailSeen: Set<MailMessage.ID> = []
         for entry in chosen {
             guard let meta = chunks[entry.candidate.id] else { continue }
+            if meta.kind == .document {
+                // A window of a kept document's page: the Documents screen at that page.
+                guard let documentID = meta.documentID, let title = documentTitles[documentID] else { continue }
+                hits.append(SearchHit(
+                    id: meta.id, kind: .document, courseID: nil, page: meta.page,
+                    snippet: Snippet.make(text: meta.text, lemmaText: meta.lemmaText, matchers: matchers),
+                    matchesAllTerms: entry.all, target: .document(documentID, page: meta.page), title: title,
+                    documentID: documentID, text: meta.text
+                ))
+                continue
+            }
             if meta.kind == .mail {
                 // One hit per message: its best chunk (`chosen` is best first).
                 guard let messageID = meta.mailMessageID, let message = messages[messageID],
@@ -665,7 +686,8 @@ struct Retrieval {
     }
 
     /// Courses in order of their best hit, each course's lectures and decks likewise, then the
-    /// notes, then the web (M5: verified further reading), then mail (one hit per message).
+    /// notes, then (md) the kept documents, then the web (M5: verified further reading), then mail
+    /// (one hit per message).
     static func group(
         _ hits: [SearchHit],
         courses: [Course.ID: Course],
@@ -675,12 +697,16 @@ struct Retrieval {
         var groups: [SearchGroup] = []
         var index: [SearchGroup.Kind: Int] = [:]
         var notes: [SearchHit] = []
+        var documents: [SearchHit] = []
         var web: [SearchHit] = []
         var mail: [SearchHit] = []
         for hit in hits {
             let kind: SearchGroup.Kind
             if hit.kind == .note {
                 notes.append(hit)
+                continue
+            } else if hit.kind == .document {
+                documents.append(hit)
                 continue
             } else if hit.kind == .furtherReading {
                 web.append(hit)
@@ -713,6 +739,8 @@ struct Retrieval {
         for group in groups where !courseOrder.contains(group.course?.id) { courseOrder.append(group.course?.id) }
         var ordered = courseOrder.flatMap { courseID in groups.filter { $0.course?.id == courseID } }
         if !notes.isEmpty { ordered.append(SearchGroup(kind: .notes, course: nil, lecture: nil, deck: nil, hits: notes)) }
+        // md: the kept documents, after the notes and before the web.
+        if !documents.isEmpty { ordered.append(SearchGroup(kind: .documents, course: nil, lecture: nil, deck: nil, hits: documents)) }
         if !web.isEmpty { ordered.append(SearchGroup(kind: .web, course: nil, lecture: nil, deck: nil, hits: web)) }
         if !mail.isEmpty { ordered.append(SearchGroup(kind: .mail, course: nil, lecture: nil, deck: nil, hits: mail)) }
         return ordered

@@ -15,6 +15,8 @@ struct ChunkRow: Sendable, Equatable {
     var pageNumber: Int?
     var recordingID: Recording.ID?
     var noteID: Note.ID?
+    /// md: a `document` chunk's kept document (CASCADE).
+    var documentID: StudyDocument.ID?
     var startTime: Double?
     var endTime: Double?
     var lang: String
@@ -26,8 +28,8 @@ struct ChunkRow: Sendable, Equatable {
     init(
         kind: SearchChunkKind, sourceID: UUID, courseID: Course.ID? = nil, lectureID: Lecture.ID? = nil,
         deckID: Deck.ID? = nil, pageNumber: Int? = nil, recordingID: Recording.ID? = nil, noteID: Note.ID? = nil,
-        startTime: Double? = nil, endTime: Double? = nil, lang: String, text: String, lemmaText: String,
-        sourceUpdatedAt: Date?, updatedAt: Date
+        documentID: StudyDocument.ID? = nil, startTime: Double? = nil, endTime: Double? = nil, lang: String, text: String,
+        lemmaText: String, sourceUpdatedAt: Date?, updatedAt: Date
     ) {
         self.kind = kind
         self.sourceID = sourceID
@@ -37,6 +39,7 @@ struct ChunkRow: Sendable, Equatable {
         self.pageNumber = pageNumber
         self.recordingID = recordingID
         self.noteID = noteID
+        self.documentID = documentID
         self.startTime = startTime
         self.endTime = endTime
         self.lang = lang
@@ -48,8 +51,9 @@ struct ChunkRow: Sendable, Equatable {
 
     static let insertSQL = """
         INSERT INTO "search_chunk" ("kind", "source_id", "course_id", "lecture_id", "deck_id", "page_number",
-          "recording_id", "note_id", "start_time", "end_time", "lang", "text", "lemma_text", "source_updated_at", "updated_at")
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          "recording_id", "note_id", "document_id", "start_time", "end_time", "lang", "text", "lemma_text", "source_updated_at",
+          "updated_at")
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
     /// Inserts `rows` with one cached statement.
@@ -60,7 +64,7 @@ struct ChunkRow: Sendable, Equatable {
             try statement.execute(arguments: [
                 row.kind.rawValue, row.sourceID.storageText, row.courseID?.storageText, row.lectureID?.storageText,
                 row.deckID?.storageText, row.pageNumber, row.recordingID?.storageText, row.noteID?.storageText,
-                row.startTime, row.endTime, row.lang, row.text, row.lemmaText, row.sourceUpdatedAt, row.updatedAt,
+                row.documentID?.storageText, row.startTime, row.endTime, row.lang, row.text, row.lemmaText, row.sourceUpdatedAt, row.updatedAt,
             ])
         }
     }
@@ -72,9 +76,10 @@ extension UUID {
 }
 
 /// Cuts library rows into `search_chunk` drafts: one per transcript segment, one per deck page,
-/// one per note. Pure apart from the lemmatizer; not thread-safe (owns an NLTagger).
+/// one per note; md: windows of a kept document's pages (`DocumentChunks.swift`). Pure apart from
+/// the lemmatizer; not thread-safe (owns an NLTagger).
 final class ChunkBuilder {
-    private let lemmatizer = Lemmatizer()
+    let lemmatizer = Lemmatizer()
 
     /// One chunk per non-blank segment of a recording, with the slide on screen at its midpoint
     /// (the timed span containing it; none in an off-slide stretch).

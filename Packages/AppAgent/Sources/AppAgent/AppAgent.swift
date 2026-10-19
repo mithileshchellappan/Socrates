@@ -3,6 +3,7 @@ import ClaudeKit
 import Coach
 import Courses
 import Deadlines
+import Documents
 import Foundation
 import Filing
 import GRDB
@@ -16,14 +17,16 @@ import StudyPass
 ///
 /// Wiring (the integrator, plan §8.2):
 ///
-///     let specs = AppAgent.specs(services: s, search: engine, drafter: mailPipeline.drafter, memory: memory)
+///     let specs = AppAgent.specs(services: s, search: engine, drafter: mailPipeline.drafter, memory: memory,
+///                                documents: bank)   // md: the app's DocumentBank (Mac; keep_document)
 ///     let runtime = AgentRuntime(services: s, client: client, memory: memory,
 ///                                additionalSpecs: [/* mail chat, tutor */].merging(specs.additional) { $1 },
 ///                                conversationSpecs: specs.perConversation)
 ///     let agent = AppAgent(services: s, client: client, runtime: runtime, memory: memory,
 ///                          schedule: CourseSchedule(services: s), studyPass: studyPassPipeline,
 ///                          coach: coach,   // mc: the CoachEngine (queue runners); also AppAgent.specs(…, coach:)
-///                          specs: specs)   // the queue starts `task` conversations with `specs.task`
+///                          specs: specs,   // the queue starts `task` conversations with `specs.task`
+///                          documents: bank) // md
 ///     await agent.start()           // startBackgroundWork, after the pipelines
 ///     await agent.wake()            // new mail, finished transcriptions, study pass units, imports,
 ///                                   // calendar changes, Claude Code turning available
@@ -43,6 +46,9 @@ public actor AppAgent {
     /// automatic change with Undo) instead of being sent whole.
     let filing: FilingService?
     let advisor: (any FilingAdvisor)?
+    /// md: the app's document bank (the Mac; nil: none). The panel's `keep_document` reaches it
+    /// through `specs(…, documents:)`; the queue's `document` tasks need only the rows.
+    let documents: DocumentBank?
     let now: @Sendable () -> Date
 
     /// The activity log and write path of every automatic change.
@@ -74,6 +80,7 @@ public actor AppAgent {
         specs: Specs,
         filing: FilingService? = nil,
         advisor: (any FilingAdvisor)? = nil,
+        documents: DocumentBank? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
@@ -85,6 +92,7 @@ public actor AppAgent {
         self.coach = coach
         self.filing = filing
         self.advisor = advisor
+        self.documents = documents
         self.now = now
         let changeLog = ChangeLog(services: services, memory: memory, filing: filing, now: now)
         self.changeLog = changeLog
@@ -113,12 +121,15 @@ public actor AppAgent {
     /// `search`: the app's engine (with its semantic index; its planner is not used). `drafter`:
     /// the mail pipeline's `ReplyDrafter` (draft_reply; nil: no drafts). `memory`: the app's
     /// deadline memory (its `onChange` syncs the calendar after the agent's writes). `coach` (mc):
-    /// the study coach the plan tools replan through.
+    /// the study coach the plan tools replan through. `documents` (md): the app's document bank
+    /// (`keep_document`; nil: the panel cannot keep files, the read tools still work).
     public static func specs(
         services: StudyServices, search: SearchEngine, drafter: ReplyDrafter?, memory: DeadlineMemory, coach: CoachEngine? = nil,
-        now: @escaping @Sendable () -> Date = { Date() }
+        documents: DocumentBank? = nil, now: @escaping @Sendable () -> Date = { Date() }
     ) -> Specs {
-        let deps = AppAgentChat.Services(services: services, search: search, drafter: drafter, memory: memory, coach: coach, now: now)
+        let deps = AppAgentChat.Services(
+            services: services, search: search, drafter: drafter, memory: memory, coach: coach, documents: documents, now: now
+        )
         return Specs(
             additional: [.app: { try AppAgentChat.spec(deps) }],
             perConversation: [.task: { conversationID in try await AppAgentChat.taskSpec(deps, conversationID: conversationID) }],
@@ -146,7 +157,8 @@ public actor AppAgent {
         if let conversation { history = try await ConversationRepository(store: services.records).turns(conversation) }
         let texts = Self.userTexts(history)
         // Slides are filed where the advisor says (a `<filed>` block in the turn); every other
-        // file goes as it is (a PDF whole within the document limits).
+        // file goes as it is (a PDF whole within the document limits, else its first pages as
+        // `<attached_file>`; md: Word, RTF and Pages as their text).
         var whole: [AgentAttachment] = []
         var filed: [ContentBlock] = []
         for attachment in attachments {
@@ -156,7 +168,7 @@ public actor AppAgent {
                 whole.append(attachment)
             }
         }
-        var blocks = try AttachmentBlocks.blocks(whole, blobs: services.blobs) + filed
+        var blocks = try await AttachmentBlocks.contentBlocks(whole, blobs: services.blobs) + filed
         let catalog = try await AgentCatalog.build(services: services, now: now())
         if AgentCatalog.lastRevision(in: texts) != catalog.revision { blocks.append(.text(catalog.text)) }
         let block = try await AgentContextBlock.build(context, services: services)
