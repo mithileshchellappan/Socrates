@@ -69,6 +69,7 @@ public struct PlanHero: View {
     @Environment(\.locale) private var locale
     @State private var examSheet: SheetCourse?
     @State private var isStarting = false
+    @PhoneLayout private var isPhone
 
     public init(plan: PlanDay, courses: [Course.ID: Course], now: Date) {
         self.plan = plan
@@ -78,11 +79,50 @@ public struct PlanHero: View {
 
     public var body: some View {
         if let block = plan.current {
-            card(block)
-                .sheet(item: $examSheet) { course in
-                    PracticeExamSheet(courseID: course.id, now: now)
-                }
+            if isPhone {
+                phoneCard(block)
+            } else {
+                card(block)
+                    .sheet(item: $examSheet) { course in
+                        PracticeExamSheet(courseID: course.id, now: now)
+                    }
+            }
         }
+    }
+
+    /// The iPhone's card (mockup 16): the eyebrow, the title (26 bold), the meta (15), Start the
+    /// whole width under the thumb, then "Then read J&M §4.9 · 15 min" centred under it. Practice
+    /// exams stay on the Mac: a practice exam block has no Start here.
+    private func phoneCard(_ block: StudyBlock) -> some View {
+        let item = block.trackedItemID.flatMap { plan.items[$0] }
+        return HeroCard {
+            eyebrow(block, item: item, phone: true)
+            Text(block.title)
+                .font(.system(size: 26, weight: .bold))
+                .tracking(-0.5)
+                .lineLimit(2)
+                .padding(.top, 2)
+                .padding(.bottom, 1)
+            meta(block, item: item)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if coach != nil, block.kind != .practiceExam {
+                PhoneHeroButton(title: String(localized: "Start"), systemImage: "play.fill") {
+                    start(block)
+                }
+                .disabled(isStarting)
+                .padding(.top, 8)
+            }
+            if let next = plan.next {
+                PlanHero.then(next)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 4)
+            }
+        }
+        .accessibilityElement(children: .contain)
     }
 
     private func card(_ block: StudyBlock) -> some View {
@@ -126,12 +166,13 @@ public struct PlanHero: View {
 
     // MARK: Eyebrow
 
-    private func eyebrow(_ block: StudyBlock, item: TrackedItem?) -> some View {
+    /// `phone`: mockup 16's sizes (13 pt, 8 pt dots, the 13 pt tram).
+    private func eyebrow(_ block: StudyBlock, item: TrackedItem?, phone: Bool = false) -> some View {
         let ids = block.courses
         return HStack(spacing: 6) {
             if block.isAway {
                 Image(systemName: "tram")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: phone ? 13 : 11, weight: .semibold))
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
             }
@@ -139,7 +180,7 @@ public struct PlanHero: View {
                 if index > 0 {
                     Text(verbatim: "·")
                 }
-                CourseDot(course: courses[id], size: 7)
+                CourseDot(course: courses[id], size: phone ? 8 : 7)
                 Text(ids.count > 1 ? CoachText.shortName(courses[id]) : (courses[id]?.name ?? ""))
             }
             if let item, let due = item.dueAt {
@@ -148,7 +189,7 @@ public struct PlanHero: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .font(.subheadline.weight(.semibold))
+        .font(phone ? .footnote.weight(.semibold) : .subheadline.weight(.semibold))
         .foregroundStyle(.secondary)
         .lineLimit(1)
     }
