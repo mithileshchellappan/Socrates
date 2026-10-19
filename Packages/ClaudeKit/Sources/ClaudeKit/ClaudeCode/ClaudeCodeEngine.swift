@@ -17,8 +17,13 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
     public var candidates: [URL]
     /// List prices for each call's notional cost (`Billing.subscription`).
     public var pricing: PricingTable
-    /// How long an availability answer is reused before `claude auth status` runs again.
+    /// How long a "not ready" answer is reused before `claude auth status` runs again (a sign-in
+    /// is noticed soon).
     public var availabilityLifetime: Duration
+    /// How long a ready answer is reused: every background pass asks, and each probe launches
+    /// Node. A call that fails because the CLI is signed out or gone, and an explicit refresh
+    /// (the app becoming active), check again at once.
+    public var readyLifetime: Duration
     /// ma: `claude` processes background calls (pipelines, sub-agent tasks) may hold at once,
     /// beside the one interactive slot (docs/plan-agent.md §1). The app lowers it at run time
     /// under memory pressure (`ClaudeClient.setBackgroundSlotLimit`).
@@ -29,12 +34,14 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
         candidates: [URL] = ClaudeCodeConfiguration.defaultCandidates,
         pricing: PricingTable = .standard,
         availabilityLifetime: Duration = .seconds(60),
+        readyLifetime: Duration = .seconds(20 * 60),
         backgroundSlots: Int = ClaudeCodeConfiguration.defaultBackgroundSlots
     ) {
         self.directory = directory
         self.candidates = candidates
         self.pricing = pricing
         self.availabilityLifetime = availabilityLifetime
+        self.readyLifetime = readyLifetime
         self.backgroundSlots = max(1, backgroundSlots)
     }
 
@@ -66,8 +73,9 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
 /// `--dangerously-skip-permissions`.
 ///
 /// - Availability: the binary (`configuration.candidates`, then once the login shell's `PATH`)
-///   and `claude auth status --json` (`loggedIn`), cached for `availabilityLifetime`; no model
-///   call.
+///   and `claude auth status --json` (`loggedIn`), cached for `readyLifetime` when ready (20
+///   minutes) and `availabilityLifetime` otherwise; `--version` only on the first probe of a
+///   launch and after a failure; no model call.
 /// - ma: process slots (`ClaudeCodeSlots`): one interactive slot and
 ///   `configuration.backgroundSlots` background slots (2; the app lowers the limit under memory
 ///   pressure with `setBackgroundSlotLimit`). An interactive call never waits behind background
@@ -85,6 +93,9 @@ public actor ClaudeCodeEngine: ClaudeBackend {
     private var state: ClaudeCodeState
     private var cached: (availability: ClaudeAvailability, binary: URL?, expires: ContinuousClock.Instant)?
     private var probing: Task<(ClaudeAvailability, URL?), Never>?
+    /// The CLI's version from the first probe of this launch; nil again after a failure (an
+    /// update may have replaced the CLI), so only then does `--version` run again.
+    private var knownVersion: String?
     private var shellBinary: URL?
     private var searchedShell = false
 
@@ -135,7 +146,9 @@ public actor ClaudeCodeEngine: ClaudeBackend {
         probing = task
         let (availability, binary) = await task.value
         if probing == task { probing = nil }
-        cached = (availability, binary, ContinuousClock.now + configuration.availabilityLifetime)
+        let lifetime = availability.isReady ? configuration.readyLifetime : configuration.availabilityLifetime
+        cached = (availability, binary, ContinuousClock.now + lifetime)
+        if !availability.isReady { knownVersion = nil }
         return (paused(availability), binary)
     }
 
@@ -162,12 +175,13 @@ public actor ClaudeCodeEngine: ClaudeBackend {
             ClaudeClient.logger.info("Claude Code is not signed in")
             return (.signedOut, binary)
         }
-        var version: String?
-        if let answer = try? await ChildProcess.output(
+        var version = knownVersion
+        if version == nil, let answer = try? await ChildProcess.output(
             ChildProcessSpec(executable: binary, arguments: ["--version"], environment: environment, directory: nil, input: nil),
             timeout: .seconds(20)) {
             // "2.1.268 (Claude Code)"
             version = answer.output.split(whereSeparator: \.isWhitespace).first.map(String.init)
+            knownVersion = version
         }
         let status = ClaudeBackendStatus(kind: .claudeCode, version: version, subscription: auth.string("subscriptionType"))
         ClaudeClient.logger.info(
@@ -366,7 +380,10 @@ public actor ClaudeCodeEngine: ClaudeBackend {
             if queued { await slots.release(priority) }
             if let error = error as? ClaudeError {
                 switch error {
-                case .unavailable, .claudeCode, .claudeCodeProcess: cached = nil  // signed out or gone: check again
+                case .unavailable, .claudeCode, .claudeCodeProcess:
+                    // Signed out, gone or updated: check again (the version too).
+                    cached = nil
+                    knownVersion = nil
                 default: break
                 }
             }

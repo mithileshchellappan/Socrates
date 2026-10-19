@@ -631,7 +631,11 @@ enum ClaudeCodeRun {
                     } catch is CancellationError {
                         output = .error("cancelled")
                     } catch {
-                        output = .error(String(describing: error))
+                        // The model gets one readable sentence; the error itself goes to the log only.
+                        ClaudeClient.logger.error(
+                            "Tool \(name, privacy: .public) threw \(ReadableError.kind(of: error), privacy: .public): \(String(describing: error), privacy: .private)"
+                        )
+                        output = .error(ReadableError.sentence(for: error, otherwise: ReadableError.toolFailed))
                     }
                     await onEvent(.toolFinished(use, output))
                     return output
