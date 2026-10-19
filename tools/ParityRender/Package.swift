@@ -35,7 +35,9 @@ let package = Package(
         .package(path: "../../Packages/AppAgent"),
         .package(path: "../../Packages/Coach"),
         // M7: AppModel owns the (gated) iCloud sync.
-        .package(path: "../../Packages/Sync")
+        .package(path: "../../Packages/Sync"),
+        // md: the document bank and the Documents screen.
+        .package(path: "../../Packages/Documents")
     ],
     targets: [
         .executableTarget(
@@ -72,7 +74,9 @@ let package = Package(
                 .product(name: "AppAgent", package: "AppAgent"),
                 .product(name: "Coach", package: "Coach"),
                 .product(name: "CoachUI", package: "Coach"),
-                .product(name: "Sync", package: "Sync")
+                .product(name: "Sync", package: "Sync"),
+                .product(name: "Documents", package: "Documents"),
+                .product(name: "DocumentsUI", package: "Documents")
             ],
             exclude: [
                 "App/Info.plist",

@@ -19,6 +19,8 @@ enum SidebarItem: Hashable {
     /// The Notes screen (mockup 04): All Notes or one course's notes, listed under the Notes row
     /// while one shows.
     case notes(NotesScope)
+    /// md (docs/plan-docs.md §6): Documents, after Notes (Mac only: documents never sync).
+    case documents
     /// mc: Study (mockup 13), after Notes and before Search: the plan's current block, the courses'
     /// readiness and this week, the weakest topics.
     case study
@@ -40,8 +42,12 @@ enum SidebarItem: Hashable {
     /// sidebar shows that course's Progress row selected, the toolbar Back.
     case practiceResults(StudySession.ID, course: Course.ID)
 
-    /// The top-level rows, in sidebar order: Go ⌘1…⌘6.
+    /// The top-level rows, in sidebar order: Go ⌘1…⌘7 (md: Documents ⌘5 on the Mac).
+    #if os(macOS)
+    static let destinations: [SidebarItem] = [.today, .calendar, .mail, .notesRow, .documents, .study, .search]
+    #else
     static let destinations: [SidebarItem] = [.today, .calendar, .mail, .notesRow, .study, .search]
+    #endif
 
     /// A course's own screens, in sidebar order (mockups 08, 14).
     static func courseScreens(_ id: Course.ID) -> [SidebarItem] {
@@ -54,6 +60,7 @@ enum SidebarItem: Hashable {
         case .calendar: String(localized: "Calendar")
         case .mail, .mailScope: String(localized: "Mail")
         case .notesRow, .notes: String(localized: "Notes")
+        case .documents: String(localized: "Documents")
         case .study: String(localized: "Study")
         case .search: String(localized: "Search")
         case .course: String(localized: "Course")
@@ -125,15 +132,15 @@ enum SidebarItem: Hashable {
         switch self {
         case .course(let id), .courseLectures(let id), .courseSlides(let id), .courseNotes(let id),
              .courseProgress(let id), .courseSettings(let id), .practiceResults(_, let id): id
-        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .study, .search, .lecture, .practice: nil
+        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .documents, .study, .search, .lecture, .practice: nil
         }
     }
 
-    /// Today, Calendar, Mail, Notes, Study and Search: one shared detail stack, and the toolbar
-    /// search field on all but Calendar and Study (mockups 06, 13).
+    /// Today, Calendar, Mail, Notes, Documents, Study and Search: one shared detail stack, and the
+    /// toolbar search field on all but Calendar, Documents and Study (mockups 06, 13; plan-docs §6).
     var isTopLevel: Bool {
         switch self {
-        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .study, .search: true
+        case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .documents, .study, .search: true
         case .course, .courseLectures, .courseSlides, .courseNotes, .courseProgress, .courseSettings, .lecture,
              .practice, .practiceResults: false
         }
@@ -147,6 +154,8 @@ enum SidebarItem: Hashable {
         case .notesRow: "note.text"
         // All Notes (mockup 04's `i-doc`); a course's child draws its dot instead.
         case .notes: "doc.text"
+        // md: one glyph for documents everywhere (the row, Search's group, `[[doc …]]` chips).
+        case .documents: "doc.on.doc"
         case .study: "brain"
         case .search: "magnifyingglass"
         case .course: "books.vertical"
@@ -219,8 +228,8 @@ struct ScreenHistory: Equatable {
     }
 }
 
-/// Go: the six top-level screens (⌘1…⌘6: Today, Calendar, Mail, Notes, Study, Search) and Search
-/// Library (⌘F, focuses the toolbar field).
+/// Go: the top-level screens (⌘1…⌘7: Today, Calendar, Mail, Notes, Documents (Mac), Study, Search)
+/// and Search Library (⌘F, focuses the toolbar field).
 struct GoCommands: Commands {
     @FocusedValue(\.sidebarSelection) private var selection
     @FocusedValue(\.focusSearch) private var focusSearch
@@ -228,7 +237,7 @@ struct GoCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Go") {
-            // ⌘1 … ⌘6
+            // ⌘1 … ⌘7
             ForEach(Array(SidebarItem.destinations.enumerated()), id: \.element) { index, item in
                 Button(item.title) { selection?.wrappedValue = item.screen }
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)

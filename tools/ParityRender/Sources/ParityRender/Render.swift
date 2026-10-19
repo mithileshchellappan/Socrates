@@ -36,6 +36,11 @@ import SwiftUI
 // `18-practice-exam-2` / `18-practice-exam-8` (the open exams at question 2 and 8),
 // `19-practice-exam-results` (DC's latest handed-in exam). Pick per state with `--only`.
 //
+// md (the document bank; a copy of .data/parity/docs/library, `tools/parity/seed --docs-sample`):
+// `md-documents` (the Modulhandbuch selected), `md-documents-cv` (the CV, Word),
+// `md-documents-pending` (the letter whose summary is pending), `md-search` (Search "Prüfung" with
+// the Documents group); on a library without documents `md-documents-empty`.
+//
 // `06-calendar` opens on the week of `--week` (default: mockup 06's, Mon 19 Oct 2026); `--now`
 // also fixes Today's clock (the DemoLibrary's is 2026-10-16T09:41, its mail's 15:02).
 //
@@ -290,6 +295,7 @@ struct ParityRender {
             if let (_, clLecture1) = try? ParityMode.lecture("Computational Linguistics", 1, services: services) {
                 shots.append(RenderShot(name: "03-review-cl", window: .main(ParityMode.Launch(selection: .lecture(clLecture1.id)))))
             }
+            shots += try await mdShots(services: services)
             if options.mc { shots = try mcShots(cc: cc, services: services) }
             if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
             if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
@@ -351,6 +357,24 @@ struct ParityRender {
             ]
         }
         return shots
+    }
+
+    /// md: the Documents screen and Search's Documents group (plan-docs §6 "Renders"), or the empty
+    /// Documents screen on a library without documents.
+    static func mdShots(services: StudyServices) async throws -> [RenderShot] {
+        let count = try await services.database.read { db in try StudyDocument.all.fetchCount(db) }
+        guard count > 0 else {
+            return [RenderShot(name: "md-documents-empty", window: .main(ParityMode.Launch(selection: .documents)))]
+        }
+        func documents(_ title: String) -> RenderShot.Window {
+            .main(ParityMode.Launch(selection: .documents, documentSelection: try? ParityMode.document(title, services: services).id))
+        }
+        return [
+            RenderShot(name: "md-documents", window: documents("Modulhandbuch M.Sc. Informatik")),
+            RenderShot(name: "md-documents-cv", window: documents("Curriculum Vitae")),
+            RenderShot(name: "md-documents-pending", window: documents("Pruefungsamt_Hinweis_Anmeldung")),
+            RenderShot(name: "md-search", window: .main(ParityMode.Launch(selection: .search, query: "Prüfung")))
+        ]
     }
 
     /// mc: the study coach's screens (mockups 11–19, 16 is M7's iPhone) the library has.
@@ -452,6 +476,7 @@ struct ParityRender {
                 RootView(
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
+                    documentSelection: launch.documentSelection, documentPage: launch.documentPage,
                     panel: launch.panel
                 )
                 .environment(\.calendarDetailPreview, shot.calendarDetail)

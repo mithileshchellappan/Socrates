@@ -3,6 +3,9 @@ import CalendarUI
 import CaptureUI
 import ChatUI
 import CoursesUI
+#if os(macOS)
+import DocumentsUI
+#endif
 import Filing
 import FilingUI
 import MailUI
@@ -27,6 +30,10 @@ struct RootView: View {
     @State private var keepsMailSelection = false
     /// The note selected on the Notes screen (M6).
     @State private var noteSelection: Note.ID?
+    /// md: the document selected on Documents, and the page a search hit or chip opened it at
+    /// (dropped when another screen opens).
+    @State private var documentSelection: StudyDocument.ID?
+    @State private var documentPage: Int?
     @State private var columns: NavigationSplitViewVisibility = .all
     @State private var query = ""
     /// Back and Forward (Go menu; the course screen's toolbar chevrons, mockup 08).
@@ -56,6 +63,8 @@ struct RootView: View {
         reviewTarget: (lectureID: Lecture.ID, target: ReviewTarget)? = nil,
         mailSelection: MailMessage.ID? = nil,
         noteSelection: Note.ID? = nil,
+        documentSelection: StudyDocument.ID? = nil,
+        documentPage: Int? = nil,
         panel: AgentPanelLaunch = AgentPanelLaunch(),
         examSheet: Course.ID? = nil
     ) {
@@ -64,6 +73,8 @@ struct RootView: View {
         _reviewTarget = State(initialValue: reviewTarget)
         _mailSelection = State(initialValue: mailSelection)
         _noteSelection = State(initialValue: noteSelection)
+        _documentSelection = State(initialValue: documentSelection)
+        _documentPage = State(initialValue: documentPage)
         // A round or an exam opens full window (renders start on one).
         if selection?.isPractice == true {
             _columns = State(initialValue: .detailOnly)
@@ -117,6 +128,10 @@ struct RootView: View {
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
                 .environment(\.deadlineActions, model.deadlineActions)
+                #if os(macOS)
+                // md: the Documents screen's writes, over the app's document bank.
+                .environment(\.documentActions, model.documentActions)
+                #endif
                 // The agent panel: absent until Claude Code is available, and while a practice exam
                 // is being written (mc: the panel, its launcher and ⌘J go until it is handed in).
                 .environment(\.agentPanelActions, panelActions)
@@ -206,6 +221,8 @@ struct RootView: View {
                     target: reviewTarget,
                     mailSelection: $mailSelection,
                     noteSelection: $noteSelection,
+                    documentSelection: $documentSelection,
+                    documentPage: documentPage,
                     searchContext: $searchContext,
                     examSheet: examSheet,
                     record: record
@@ -250,6 +267,7 @@ struct RootView: View {
                 mailSelection = nil
             }
             fullWindow(from: old, to: item)
+            if item != .documents { documentPage = nil }
             // The target was for the lecture `open` showed; anywhere else drops it.
             if case .lecture(let id) = item, id == reviewTarget?.lectureID { return }
             reviewTarget = nil
@@ -342,10 +360,10 @@ struct RootView: View {
     }
 
     /// The toolbar search field shows on the top-level screens, not on a lecture or a course, and
-    /// not on Calendar or Study (mockups 06, 13; ⌘F still opens Search).
+    /// not on Calendar, Study or Documents (mockups 06, 13; plan-docs §6; ⌘F still opens Search).
     private var showsSearchField: Bool {
         let item = selection ?? .today
-        return item.isTopLevel && item != .calendar && item != .study
+        return item.isTopLevel && item != .calendar && item != .study && item != .documents
     }
 
     /// ↩ in the search field: the Search screen opens its selected (or first) hit. (On Mail and
@@ -472,6 +490,9 @@ struct RootView: View {
             return AgentContext(screen: .notes, noteID: noteSelection)
         case .notes(let scope):
             return AgentContext(screen: .notes, courseID: scope.courseID, noteID: noteSelection)
+        case .documents:
+            // md: the screen's publication (the selected document) is merged over it.
+            return AgentContext(screen: .documents)
         case .search:
             if case .search(let text, let sources) = searchContext {
                 return AgentContext(screen: .search, query: text, selection: sources)
@@ -589,9 +610,11 @@ struct RootView: View {
                 let course = try? await services.database.read { db in try StudySession.find(id).fetchOne(db)?.courseID }
                 if let course { selection = .practiceResults(id, course: course) }
             }
-        // md (docs/plan-docs.md §7.2): the Documents row; the integrator replaces this stub.
-        case .documents:
-            break
+        // md: Documents with the document selected (nil: the screen's own) at the page named.
+        case .documents(let id, let page):
+            if let id { documentSelection = id }
+            documentPage = page
+            selection = .documents
         }
     }
 

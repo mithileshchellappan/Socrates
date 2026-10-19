@@ -31,7 +31,9 @@ import SwiftUI
 /// `--mc-runway`): `study`; `progress/<course>` (its Progress); `exam-sheet/<course>` (Progress with
 /// the practice exam sheet presented); `practice/round?question=N` and `practice/exam?question=N`
 /// (the open round or exam at question N, full window); `practice-results/<course>` (the course's
-/// latest handed-in practice exam). Path parts may be percent-encoded.
+/// latest handed-in practice exam). md (on a copy of .data/parity/docs/library): `documents` (the
+/// newest selected) and `documents/<title>?page=N` (that document, the page a hit named). Path
+/// parts may be percent-encoded.
 ///
 /// The library comes from `-StudyPortalDataRoot` (or `STUDYPORTAL_DATA_ROOT`); without either,
 /// or pointed at the real library, the app opens nothing. Nothing runs in the background (no
@@ -65,6 +67,8 @@ enum ParityMode {
         case examSheet(course: String)
         case practice(StudySessionKind, question: Int)
         case practiceResults(course: String)
+        // md: the Documents screen.
+        case documents(title: String?, page: Int?)
     }
 
     enum WindowRole: Hashable {
@@ -90,6 +94,9 @@ enum ParityMode {
         var panel = AgentPanelLaunch()
         /// mc: Progress with its practice exam sheet presented (mockup 17).
         var examSheet: Course.ID?
+        /// md: the document selected on Documents (nil: the newest) and the page a hit named.
+        var documentSelection: StudyDocument.ID?
+        var documentPage: Int?
     }
 
     static let windowSize = CGSize(width: 1440, height: 900)
@@ -267,6 +274,8 @@ enum ParityMode {
             case .practiceResults(let name):
                 let course = try course(name, services: services)
                 show(Launch(selection: .practiceResults(try practiceResults(course, services: services).id, course: course.id)))
+            case .documents(let title, let page):
+                show(Launch(selection: .documents, documentSelection: try title.map { try document($0, services: services).id }, documentPage: page))
             }
             try await Task.sleep(for: options.settle)
             let active = quiet ? false : await activate(shown)
@@ -340,6 +349,16 @@ enum ParityMode {
             throw Failure("No lecture \(number) in \(course.name)")
         }
         return (course, lecture)
+    }
+
+    /// md: the kept document of this title (or file name).
+    static func document(_ title: String, services: StudyServices) throws -> StudyDocument {
+        let documents = try services.database.read { db in try StudyDocument.order { $0.addedAt.desc() }.fetchAll(db) }
+        let wanted = title.lowercased()
+        guard let document = documents.first(where: { $0.title.lowercased() == wanted || $0.fileName.lowercased() == wanted }) else {
+            throw Failure("No document \(title)")
+        }
+        return document
     }
 
     /// mc: the open round or exam whose current question is `question` (1-based).
@@ -568,6 +587,8 @@ extension ParityMode.Route {
             self = .practice(StudySessionKind(rawValue: path[1]), question: question)
         case ("practice-results", 2):
             self = .practiceResults(course: path[1])
+        case ("documents", 1), ("documents", 2):
+            self = .documents(title: path.count == 2 ? path[1] : nil, page: query["page"].flatMap(Int.init))
         default:
             return nil
         }
@@ -586,6 +607,7 @@ struct ParityRootView: View {
                 RootView(
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
+                    documentSelection: launch.documentSelection, documentPage: launch.documentPage,
                     panel: launch.panel, examSheet: launch.examSheet
                 )
                 .environment(model)

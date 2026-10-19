@@ -68,7 +68,12 @@ struct StudyPortalApp: App {
             LectureCommands(model: model)
             CourseCommands { model.sheet = .newCourse }
             if let center = model.filingCenter {
+                // md: on the Mac, File ▸ Import… opens the Documents importer while Documents shows.
+                #if os(macOS)
+                AppImportCommands(center: center)
+                #else
                 ImportCommands(center: center)
+                #endif
             }
             GoCommands()
             ReviewCommands()

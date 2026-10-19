@@ -78,6 +78,9 @@ packages:
     path: Packages/Phone
   Sync:
     path: Packages/Sync
+  # md (docs/plan-docs.md): the document bank. Mac only in the app (documents never sync).
+  Documents:
+    path: Packages/Documents
 
 targets:
   StudyPortal:
@@ -255,6 +258,14 @@ targets:
         destinationFilters: [iOS]
       - package: Sync
         product: Sync
+      # md (docs/plan-docs.md): the document bank and the Documents screen, Mac only (documents
+      # never sync; the iPhone has no Documents). AppAgent depends on Documents on both platforms.
+      - package: Documents
+        product: Documents
+        destinationFilters: [macOS]
+      - package: Documents
+        product: DocumentsUI
+        destinationFilters: [macOS]
       - target: StudyPortalWidgets
         destinationFilters: [iOS]
         embed: true

@@ -25,6 +25,8 @@ import Transcription
 #if os(macOS)
 import AppKit
 import Darwin
+import Documents
+import DocumentsUI
 import EventKit
 #endif
 #if os(iOS)
@@ -75,6 +77,10 @@ final class AppModel {
     let mailEngine: MailSyncEngine?
     /// SMTP for drafts the student sends (the Send button only).
     let mailSender: MailSender?
+    /// md (docs/plan-docs.md): the document bank (the Documents screen, window drops, the agent's
+    /// keep_document and its summary tasks). Mac only: documents never sync. Started (it returns at
+    /// once) only where background work runs; renders draw its rows.
+    let documentBank: DocumentBank?
     #endif
     /// What the Mail screen and the mail account settings ask the app to do (`\.mailActions`).
     @ObservationIgnored private(set) var mailActions = MailActions()
@@ -250,8 +256,14 @@ final class AppModel {
             #endif
             self.coach = coach
             // ma: the `app` conversation (every domain's tools) and the sub-agents' `task`
-            // conversations (their tool groups fixed at spawn).
+            // conversations (their tool groups fixed at spawn). md: the document bank's tools.
+            #if os(macOS)
+            let documentBank = DocumentBank(services: services)
+            self.documentBank = documentBank
+            let specs = AppAgent.specs(services: services, search: engine, drafter: drafter, memory: memory, coach: coach, documents: documentBank)
+            #else
             let specs = AppAgent.specs(services: services, search: engine, drafter: drafter, memory: memory, coach: coach)
+            #endif
             let agent = AgentRuntime(
                 services: services, client: claude, memory: memory,
                 additionalSpecs: specs.additional, conversationSpecs: specs.perConversation
@@ -269,7 +281,7 @@ final class AppModel {
             let appAgent = startsProcessing ? AppAgent(
                 services: services, client: claude, runtime: agent, memory: memory,
                 schedule: CourseSchedule(services: services), studyPass: studyPass, coach: coach, specs: specs,
-                filing: service, advisor: advisor
+                filing: service, advisor: advisor, documents: documentBank
             ) : nil
             self.appAgent = appAgent
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
@@ -305,6 +317,7 @@ final class AppModel {
             #if os(macOS)
             mailEngine = nil
             mailSender = nil
+            documentBank = nil
             #else
             phoneRecorder = nil
             #endif
@@ -317,6 +330,16 @@ final class AppModel {
         }
         mailActions = makeMailActions()
         deadlineActions = makeDeadlineActions()
+        #if os(macOS)
+        // md: Word, RTF, Pages, text and images dropped on the window go to the bank ("Added to
+        // Documents"; Undo deletes only what the drop added).
+        if let bank = documentBank {
+            filingCenter?.documents = DocumentDropHandler(
+                add: { urls in try await bank.add(urls, by: .user).filter(\.isNew).map(\.document.id) },
+                undo: { ids in for id in ids { _ = try? await bank.delete(id) } }
+            )
+        }
+        #endif
         owner.model = self
     }
 
@@ -383,6 +406,10 @@ final class AppModel {
         // come down before anything is created here.
         if let cloudSync { Task { await cloudSync.start() } }
         observeClaudeAvailability()
+        #if os(macOS)
+        // md: returns at once (reading resumes after 20 s at utility, file removal after 60 s).
+        await documentBank?.start()
+        #endif
         // Conversations a quit left running end as failed.
         await agent?.recoverInterrupted()
         // A phone that syncs gets the Mac's courses; it never creates its own (its library from

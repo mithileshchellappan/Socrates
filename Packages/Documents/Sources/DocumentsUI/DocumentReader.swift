@@ -190,7 +190,7 @@ struct DocumentReader: View {
     /// Three lines at the summary's size, redacted, no shimmer (DESIGN 6.6).
     private var skeleton: some View {
         sparkled {
-            Text(verbatim: "The summary of this document is being written now. It says what the document is and what it will be looked up for, in one to three sentences.")
+            Text(verbatim: "The summary of this document is being written now. It says what the document is, who wrote it and for whom, and what it will be looked up for later, in one to three sentences. Key facts and dates follow it once the whole document has been read.")
                 .font(.system(size: 13))
                 .lineSpacing(2)
                 .lineLimit(3, reservesSpace: true)

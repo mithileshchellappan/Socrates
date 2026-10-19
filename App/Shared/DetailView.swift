@@ -1,6 +1,9 @@
 import CalendarUI
 import CoachUI
 import CoursesUI
+#if os(macOS)
+import DocumentsUI
+#endif
 import FilingUI
 import MailUI
 import NotesUI
@@ -20,6 +23,9 @@ struct DetailView: View {
     var mailSelection: Binding<MailMessage.ID?> = .constant(nil)
     /// The note selected on the Notes screen (M6).
     var noteSelection: Binding<Note.ID?> = .constant(nil)
+    /// md: the document selected on Documents, and the page a search hit or chip named.
+    var documentSelection: Binding<StudyDocument.ID?> = .constant(nil)
+    var documentPage: Int?
     /// Search's query and selected hits (`SearchResultsView` writes it; the agent panel's context).
     var searchContext: Binding<ChatContext> = .constant(.none)
     /// mc renders (`ParityMode`): Progress opens with the practice exam sheet presented.
@@ -43,6 +49,14 @@ struct DetailView: View {
             notes(.all)
         case .notes(let scope):
             notes(scope)
+        case .documents:
+            // md (plan-docs §6): no search field; Import… at the trailing end. Mac only.
+            #if os(macOS)
+            DocumentsView(selection: documentSelection, page: documentPage, launch: DocumentsLaunch(now: model.fixedNow))
+                .modifier(CourseToolbarSpacer())
+            #else
+            EmptyView()
+            #endif
         case .study:
             // mc (mockup 13): no search field; the title stays leading.
             StudyView(now: model.fixedNow)
