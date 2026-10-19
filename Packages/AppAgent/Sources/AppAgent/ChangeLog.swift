@@ -173,12 +173,62 @@ public struct ChangeLog: Sendable {
     public func undo(_ id: AgentChange.ID) async throws -> Bool {
         let store = services.records
         let date = now()
-        if let change = try await store.fetch(AgentChange.self, id: id), change.targetTable == .filing {
-            return try await undoFiling(change, at: date)
+        if let change = try await store.fetch(AgentChange.self, id: id) {
+            if change.targetTable == .filing { return try await undoFiling(change, at: date) }
+            if change.kind == .courseRemove { return try await undoCourseRemoval(change, at: date) }
         }
         let undone = try await services.database.write { db in try Self.undo(id, db: db, store: store, now: date) }
         if undone { await onChange() }
         return undone
+    }
+
+    /// `remove_course` (the student asked in chat): deletes the course with everything that
+    /// belongs to it through smart import's delete (the student's notes stay, unlinked) and logs it
+    /// with the deleted rows in `before.deletion`, so Undo puts it all back, in a later session too
+    /// (the course's files are kept for that).
+    public func removeCourse(_ courseID: Course.ID, quote: String, origin: Origin) async throws -> Outcome {
+        let quote = quote.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !quote.isEmpty else { return .refused("A change needs the exact words it comes from.") }
+        let service = filing ?? FilingService(services: services)
+        let deletion: Deletion
+        do {
+            deletion = try await service.delete(.course(courseID), keepsFiles: true)
+        } catch FilingError.missing {
+            return .refused("No course has that token.")
+        }
+        let store = services.records
+        let date = now()
+        do {
+            var change = AgentChange(
+                kind: .courseRemove, targetTable: .course, targetID: courseID, title: deletion.summary.title, summary: "Removed course",
+                before: AgentChangeValues(exists: true, deletion: try deletion.encoded()), after: AgentChangeValues(exists: false),
+                sourceKind: origin.sourceKind, taskID: origin.taskID, eventID: origin.eventID, quote: quote, confidence: 1,
+                model: origin.model, apiCallID: origin.apiCallID, appliedAt: date, createdAt: date, updatedAt: date
+            )
+            ItemChangeRows.apply(origin.source, to: &change)
+            change = Self.finalize(change, origin: origin, store: store)
+            let row = change
+            try await services.database.write { db in try AgentChangeRepository.insert(row, db: db) }
+            await onChange()
+            return .applied(change)
+        } catch {
+            // Not logged: not removed either (no change without its Undo).
+            try await service.restore(deletion)
+            throw error
+        }
+    }
+
+    /// Undo of `remove_course`: the course and everything that went with it come back from the
+    /// rows the change kept (the notes it unlinked are linked again), then the row is marked.
+    private func undoCourseRemoval(_ change: AgentChange, at date: Date) async throws -> Bool {
+        guard change.undoneAt == nil else { return false }
+        guard let kept = change.before?.deletion else { throw UndoRefused.changedSince }
+        let deletion = try Deletion(encoded: kept)
+        try await (filing ?? FilingService(services: services)).restore(deletion)
+        let id = change.id
+        try await services.database.write { db in try AgentChangeRepository.markUndone(id, at: date, db: db) }
+        await onChange()
+        return true
     }
 
     /// Undo of a deck the filing advisor filed or moved: smart import puts the filing back (or
