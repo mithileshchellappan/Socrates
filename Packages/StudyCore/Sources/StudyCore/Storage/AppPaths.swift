@@ -52,6 +52,9 @@ public struct AppPaths: Hashable, Sendable {
 
     public var databaseDirectory: URL { root.appending(path: "Database", directoryHint: .isDirectory) }
     public var database: URL { databaseDirectory.appending(path: "StudyPortal.sqlite") }
+    /// M7, the iPhone with iCloud sync: a library of its own, filled by the Mac's rows. The phone's
+    /// library from before sync (its own seeded courses) stays in `database` and never uploads.
+    public var syncedDatabase: URL { databaseDirectory.appending(path: "StudyPortal-synced.sqlite") }
     public var blobs: URL { root.appending(path: "Blobs", directoryHint: .isDirectory) }
     public var models: URL { root.appending(path: "Models", directoryHint: .isDirectory) }
     public var recordings: URL { root.appending(path: "Recordings", directoryHint: .isDirectory) }

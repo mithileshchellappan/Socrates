@@ -385,7 +385,8 @@ final class AppModel {
         observeClaudeAvailability()
         // Conversations a quit left running end as failed.
         await agent?.recoverInterrupted()
-        // A phone that syncs gets the Mac's courses; it never creates its own.
+        // A phone that syncs gets the Mac's courses; it never creates its own (its library from
+        // before sync stays in another file, `AppPaths.syncedDatabase`, and never uploads).
         if !(Self.isPhone && cloudSync != nil) {
             do {
                 let seeded = try await StudentCourses.seedIfEmpty(services: services)

@@ -45,6 +45,10 @@ public actor FilingService {
     /// Files deleted in this session: Undo can still bring them back, so `removeDeletedBlobs`
     /// keeps them until the next launch.
     var deletedThisSession: Set<String> = []
+    /// Recording ids of captures being filed now. The actor is reentrant: an opened bundle sits
+    /// unpacked in Recordings, without a filing, across the import's suspension points, where the
+    /// launch's `unfiledCaptures` pass (or a second open of it) would file it again.
+    private var capturesInFlight: Set<UUID> = []
 
     /// - Parameters:
     ///   - afterImport: called after every filing that wrote something (wake the processor).
@@ -102,8 +106,8 @@ public actor FilingService {
     // MARK: - Filing
 
     /// Files each file (decks first, then captures, then recordings by start time) and returns
-    /// one outcome per file. With `destination` the user's choice wins (a drop on a lecture or
-    /// session, a picked course).
+    /// one outcome per file, leaving out a capture another call is filing right now. With
+    /// `destination` the user's choice wins (a drop on a lecture or session, a picked course).
     public func file(_ urls: [URL], to destination: FilingDestination? = nil) async -> [FilingOutcome] {
         await file(urls, to: destination, advise: true)
     }
@@ -146,7 +150,10 @@ public actor FilingService {
             do {
                 switch evidence.kind {
                 case .deck: outcome = try await fileDeck(evidence, destination: destination, advise: advise)
-                case .capture: outcome = try await fileCapture(evidence, destination: destination, contested: contested ?? [])
+                case .capture:
+                    // Being filed by another call: that call's toast says where it went.
+                    guard let filed = try await fileCapture(evidence, destination: destination, contested: contested ?? []) else { continue }
+                    outcome = filed
                 default: outcome = try await fileRecording(evidence, destination: destination, contested: contested ?? [])
                 }
             } catch {
@@ -311,9 +318,12 @@ public actor FilingService {
 
     // MARK: - Captures
 
-    private func fileCapture(_ evidence: FileEvidence, destination: FilingDestination?, contested: Set<Lecture.ID>) async throws -> FilingOutcome {
+    /// Nil while another call files the same capture.
+    private func fileCapture(_ evidence: FileEvidence, destination: FilingDestination?, contested: Set<Lecture.ID>) async throws -> FilingOutcome? {
         guard let capture = evidence.capture else { throw FilingError.unreadable(evidence.fileName) }
         let recordingID = capture.recordingID
+        guard capturesInFlight.insert(recordingID).inserted else { return nil }
+        defer { capturesInFlight.remove(recordingID) }
         if let filing = try await FilingRepository(store: store).latest(recordingID: recordingID) {
             // An un-filed capture still waits for its course.
             return try await outcome(evidence, filing: filing, status: filing.lectureID == nil ? .needsCourse : .known)
@@ -388,7 +398,7 @@ public actor FilingService {
             let filed = (try? await services.database.read { db in
                 try Filing.where { $0.recordingID.eq(recordingID) }.fetchCount(db) > 0
             }) ?? true
-            if !filed { urls.append(package.url) }
+            if !filed, !capturesInFlight.contains(recordingID) { urls.append(package.url) }
         }
         return urls
     }

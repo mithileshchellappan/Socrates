@@ -614,6 +614,7 @@ public final class LiveLectureSession {
             format: configuration.format
         )
         manifest.apply(assignment)
+        if deck == nil, configuration.countsSlidesWithoutDeck { manifest.slidesCounted = true }
         return manifest
     }
 

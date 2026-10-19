@@ -127,6 +127,10 @@ public struct LectureManifest: Codable, Sendable, Hashable {
     public var sessionNumber: Int?
     /// The recorder's name for it ("DC Lecture 2", or "DC Tue 13 Oct" without a known class).
     public var sessionName: String?
+    /// M7 (additive, optional): true when the recorder had no deck and counted slides from 1
+    /// (`countsSlidesWithoutDeck`). The counted numbers are not the deck's pages (a deck spans
+    /// lectures), so the import keeps the stamps' times and drops their numbers.
+    public var slidesCounted: Bool?
 
     public init(
         version: Int = LectureManifest.currentVersion,

@@ -167,6 +167,10 @@ public struct LecturePackageImporter: Sendable {
         let recordingID = manifest.id
         let rate = manifest.sampleRate
         let startedAt = manifest.startedAt ?? contents.events.map(\.wallClock).min() ?? updatedAt
+        // Slides the phone counted without a deck are not the deck's pages: the stamps keep their
+        // times, never their numbers (the aligner would take them as hard anchors).
+        let counted = manifest.slidesCounted == true
+        let deckPage: (Int?) -> Int? = { counted ? nil : $0 }
 
         let recording = Recording(
             id: recordingID,
@@ -204,7 +208,7 @@ public struct LecturePackageImporter: Sendable {
             if event.kind.showsSlide, let page = event.page {
                 slideEvents.append(SlideEvent(
                     id: event.id, recordingID: recordingID, lectureID: lectureID, kind: .show,
-                    deckID: deckID, pageNumber: page, sampleTime: event.sampleTime,
+                    deckID: deckID, pageNumber: deckPage(page), sampleTime: event.sampleTime,
                     hostTime: Int64(clamping: event.hostTime), wallClock: event.wallClock, updatedAt: updatedAt
                 ))
             } else if event.kind == .flag {
@@ -220,7 +224,7 @@ public struct LecturePackageImporter: Sendable {
                         layer: .user,
                         kind: .flag,
                         deckID: deckID,
-                        pageNumber: event.page,
+                        pageNumber: deckPage(event.page),
                         recordingID: recordingID,
                         startTime: event.time(sampleRate: rate),
                         body: text,
@@ -237,7 +241,7 @@ public struct LecturePackageImporter: Sendable {
                 courseID: courseID,
                 lectureID: lectureID,
                 deckID: deckID,
-                pageNumber: note.page,
+                pageNumber: deckPage(note.page),
                 recordingID: recordingID,
                 audioTime: note.sampleTime.map { rate > 0 ? Double($0) / rate : 0 },
                 blocksJSON: QuickNoteBlocks.json(for: note.text),
