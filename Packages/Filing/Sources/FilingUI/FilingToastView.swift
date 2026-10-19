@@ -11,6 +11,8 @@ struct FilingToastStack: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
+            // md: drops into the document bank.
+            if let documents = center.documents { DocumentToastList(handler: documents) }
             ForEach(center.toasts) { toast in
                 FilingToastView(
                     toast: toast,
