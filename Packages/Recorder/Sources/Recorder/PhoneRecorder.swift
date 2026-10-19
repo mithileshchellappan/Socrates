@@ -202,6 +202,12 @@ public final class PhoneRecorder {
         classSession?.startsAt ?? session?.startedAt ?? Date()
     }
 
+    /// What the Live Activity shows now (nil before recording): the parity screen draws the Lock
+    /// Screen view (`Widgets/Shared`) from it.
+    public var liveActivityState: RecordingActivityState? {
+        activityState(stoppedAt: session?.endedAt)
+    }
+
     /// A course's colour, for outbox rows.
     public func colorHex(of courseID: Course.ID?) -> String? {
         courseID.flatMap { colors[$0] }

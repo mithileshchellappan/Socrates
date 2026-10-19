@@ -45,6 +45,28 @@ public struct RecordingActivityState: Codable, Hashable, Sendable {
     }
 }
 
+extension RecordingActivityState {
+    /// "Slide 17 of 88"; "Slide 17" without the deck.
+    public var slideText: String {
+        if let slideCount { return String(localized: "Slide \(slide) of \(slideCount)") }
+        return String(localized: "Slide \(slide)")
+    }
+
+    /// "Slide 17 of 88 · DC Lecture 2".
+    public var detailLine: String {
+        sessionName.isEmpty ? slideText : "\(slideText) · \(sessionName)"
+    }
+
+    /// "S17" (the Dynamic Island's compact trailing side).
+    public var shortSlide: String { "S\(slide)" }
+
+    /// The elapsed time's range for `Text(timerInterval:pauseTime:countsDown:)`: it counts up
+    /// from the start (by itself, no updates) and stops at `stoppedAt`.
+    public var timerRange: ClosedRange<Date> {
+        startedAt...max(startedAt, stoppedAt ?? startedAt.addingTimeInterval(12 * 3600))
+    }
+}
+
 #if os(iOS)
 /// The recording's Live Activity (`Activity<RecordingActivityAttributes>`).
 public struct RecordingActivityAttributes: ActivityAttributes {
