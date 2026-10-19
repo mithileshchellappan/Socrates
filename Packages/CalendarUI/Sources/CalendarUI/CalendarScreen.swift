@@ -24,8 +24,11 @@ public struct CalendarScreen: View {
     @State private var showsInspector = true
     @State private var gridWidth: CGFloat = 0
     @State private var scroll = ScrollPosition(y: GridMetrics.openingOffset)
-    /// The body has been scrolled to the opening hour at its real height.
-    @State private var isOpened = false
+    /// The body has been scrolled to its opening offset at its real height, for the grid laid out
+    /// with the agent panel expanded (true) or not (false); nil: not yet.
+    @State private var openedFor: Bool?
+    /// Where the body is scrolled to (08:00 until the student scrolls).
+    @State private var lastOffset = GridOffset(y: GridMetrics.openingOffset)
     @State private var foreignList = ForeignCalendarList.empty
     @State private var foreignEvents: [ForeignEvent] = []
 
@@ -96,10 +99,9 @@ public struct CalendarScreen: View {
                 grid(plan: plan, week: shown, now: now, today: today)
                     .screenTitle(title, subtitle: subtitle, leadingInset: ScreenTitleInset.firstItem)
                     .toolbar { toolbar }
-                    .inspector(isPresented: inspectorShown) {
+                    .modifier(DeadlinesInspectorColumn(isPanelExpanded: agentPanelExpanded, isPresented: inspectorShown) {
                         inspector(now: now)
-                            .inspectorColumnWidth(min: 260, ideal: DeadlinesInspector.width, max: 440)
-                    }
+                    })
             case .snapshot:
                 HStack(spacing: 0) {
                     VStack(spacing: 0) {
@@ -175,12 +177,20 @@ public struct CalendarScreen: View {
             .scrollPosition($scroll)
             // Never a legacy scroller: it would narrow the body under the day headers.
             .scrollIndicators(.never)
-            .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { _, height in
+            .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { [expanded = agentPanelExpanded] _, height in
                 // Opens at 08:00 once the body has its height: AppKit resets the offset when the
-                // scroll view first grows, so a position set before that is lost.
-                guard !isOpened, height > GridMetrics.hourHeight * 2 else { return }
-                isOpened = true
-                scroll.scrollTo(y: GridMetrics.openingOffset)
+                // scroll view first grows, so a position set before that is lost. The inspector
+                // comes and goes with the expanded agent panel, and the grid with it: the new
+                // one opens where the old one was.
+                guard openedFor != expanded, height > GridMetrics.hourHeight * 2 else { return }
+                openedFor = expanded
+                scroll.scrollTo(y: lastOffset.y)
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { [expanded = agentPanelExpanded] _, y in
+                // Kept without re-rendering the screen (a reference, not state); only once this
+                // grid has opened (a new one starts at the top).
+                guard openedFor == expanded else { return }
+                lastOffset.y = y
             }
         }
         // `minWidth: 0`: the rows are laid out at the measured width, which must not become the
@@ -471,5 +481,36 @@ private struct SnapshotCapsule: ViewModifier {
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().stroke(.separator, lineWidth: 0.5))
             .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
+    }
+}
+
+/// The Deadlines inspector, left out entirely while the agent panel is expanded into the window's
+/// trailing column: a hidden inspector still kept its column's room, and with the panel's column
+/// the window grew past a 14" screen (about 1,612 pt from 1,440).
+private struct DeadlinesInspectorColumn<Inspector: View>: ViewModifier {
+    let isPanelExpanded: Bool
+    let isPresented: Binding<Bool>
+    @ViewBuilder let inspector: () -> Inspector
+
+    func body(content: Content) -> some View {
+        if isPanelExpanded {
+            content
+        } else {
+            content
+                .inspector(isPresented: isPresented) {
+                    inspector()
+                        .inspectorColumnWidth(min: 260, ideal: DeadlinesInspector.width, max: 440)
+                }
+        }
+    }
+}
+
+/// The week body's scroll offset, kept outside state: it changes with every scrolled point.
+@MainActor
+final class GridOffset {
+    var y: CGFloat
+
+    init(y: CGFloat) {
+        self.y = y
     }
 }
