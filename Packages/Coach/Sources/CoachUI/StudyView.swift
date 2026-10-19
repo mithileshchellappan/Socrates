@@ -104,8 +104,10 @@ private struct StudyContent: View {
         let semester = CoachRows.semester(for: nil, day: today, in: data.semesters)
         let week = semester.flatMap { TermWeek(day: today, semester: $0) }
         let courses = data.courseMap
+        // Study data: some course has a lecture, a taught topic or a question.
+        let hasStudyData = data.courses.contains { !$0.lectures.isEmpty || !$0.topics.isEmpty || !$0.questions.isEmpty }
         Group {
-            if data.plan.current == nil && lines.isEmpty {
+            if data.plan.current == nil && (!hasStudyData || lines.isEmpty) {
                 // Nothing studied or to study yet: what feeds the screen (smart import, no course).
                 EmptyDropPrompt(systemImage: "brain", line: "Study starts with your lectures' slides and recordings.", target: nil)
             } else {

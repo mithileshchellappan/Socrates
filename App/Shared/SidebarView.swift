@@ -370,6 +370,8 @@ struct SidebarView: View {
             .padding(.top, 8)
             .padding(.bottom, 12)
         }
+        // Rows scrolling under the bar never show through the semester or the launcher.
+        .background(.bar)
     }
 
     @ViewBuilder
