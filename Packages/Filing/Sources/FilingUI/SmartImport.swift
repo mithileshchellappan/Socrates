@@ -20,9 +20,10 @@ extension View {
 }
 
 enum FilingTypes {
-    /// What the importer accepts: slide PDFs, audio and video, captured lectures, timetables.
+    /// What the importer accepts: slide PDFs, audio and video, captured lectures (packages and
+    /// the iPhone's bundles), timetables.
     static var importable: [UTType] {
-        [.pdf, .audio, .audiovisualContent] + (lecturePackage.map { [$0] } ?? []) + timetable
+        [.pdf, .audio, .audiovisualContent] + [lecturePackage, lectureBundle].compactMap(\.self) + timetable
     }
 
     /// Timetable files (`.ics`), which the timetable import reads (`FilingCenter.timetableDrop`).
@@ -36,6 +37,8 @@ enum FilingTypes {
 
     /// `.lecture` packages (declared by the app).
     static let lecturePackage = UTType("com.example.studyportal.lecture")
+    /// `.lecturebundle` files, one package shared from the iPhone (M7; declared by the app).
+    static let lectureBundle = UTType("com.example.studyportal.lecture-bundle")
 }
 
 struct SmartImportModifier: ViewModifier {

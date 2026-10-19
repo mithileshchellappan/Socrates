@@ -325,16 +325,23 @@ public actor FilingService {
 
         let decision = FilingMatcher(library: try await loadLibrary()).decide(evidence, destination: destination, contested: contested)
         let createdAt = now()
+        // A bundle (the iPhone's Share / AirDrop) becomes the library's own package in Recordings;
+        // the bundle file itself is never changed.
+        let packageURL = capture.isBundle
+            ? try await Self.unpack(bundle: evidence.url, recordingID: recordingID, into: services.paths.recordings)
+            : evidence.url
         guard let best = decision.best, decision.verdict != .needsCourse else {
             // Read and copied, never changed: the package stays as it is until it gets a course.
+            // An unpacked bundle is the library's copy: its audio goes into the BlobStore now.
             let result = try await LecturePackageImporter(services: services).importPackage(
-                LecturePackage(url: evidence.url), lectureID: nil, courseID: nil, removeAudioAfterImport: false, markImported: false
+                LecturePackage(url: packageURL), lectureID: nil, courseID: nil,
+                removeAudioAfterImport: capture.isBundle, markImported: capture.isBundle
             )
             let filing = try await store.save(unfiled(evidence, sha256: "", decision: decision, createdAt: createdAt, recordingID: result.recording.id))
             return try await outcome(evidence, filing: filing, status: .needsCourse, decision: decision)
         }
         let imported = try await LectureImporter(services: services).importCapture(
-            at: evidence.url, courseID: best.place.course.id, into: best.target
+            at: packageURL, courseID: best.place.course.id, into: best.target
         )
         let filing = try await store.save(Filing(
             kind: .capture, fileName: evidence.fileName, blobSHA256: "", courseID: imported.lecture.courseID,
@@ -346,6 +353,26 @@ public actor FilingService {
         ))
         Log.importer.info("Filed capture \(evidence.fileName, privacy: .private) (\(best.confidence, privacy: .public))")
         return try await outcome(evidence, filing: filing, status: status(decision, destination: destination), decision: decision)
+    }
+
+    /// The package of a dropped capture bundle in the library's Recordings folder, unpacked off
+    /// the actor at disk speed (`CaptureBundle.unpack` refuses links, paths outside the package
+    /// and a second root). A package already there from an attempt that did not finish is used as
+    /// it is; one whose import finished (its recording was since deleted) is replaced.
+    @concurrent
+    nonisolated static func unpack(bundle url: URL, recordingID: UUID, into recordings: URL) async throws -> URL {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: recordings, withIntermediateDirectories: true)
+        let existing = recordings.appending(path: "\(recordingID.uuidString).\(LecturePackage.pathExtension)", directoryHint: .isDirectory)
+        if fileManager.fileExists(atPath: existing.path(percentEncoded: false)) {
+            if let manifest = try? LecturePackageReader.read(LecturePackage(url: existing)).manifest, manifest.importedAt == nil {
+                return existing
+            }
+            try fileManager.removeItem(at: existing)
+        }
+        let package = try CaptureBundle.unpack(url, into: recordings)
+        Log.importer.info("Unpacked capture bundle \(url.lastPathComponent, privacy: .private) to \(package.name, privacy: .public)")
+        return package.url
     }
 
     /// Capture packages in `directory` (the library's Recordings folder) that never reached a

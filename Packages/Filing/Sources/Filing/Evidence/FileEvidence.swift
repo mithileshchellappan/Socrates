@@ -61,13 +61,19 @@ public struct FileEvidence: Sendable, Hashable {
         case unknown
     }
 
-    /// A live capture package's facts.
+    /// A live capture package's facts (a `.lecture` folder, or an iPhone's `.lecturebundle`).
     public struct CaptureEvidence: Sendable, Hashable {
         public var recordingID: UUID
         public var courseID: Course.ID?
         public var lectureID: Lecture.ID?
         public var startedAt: Date?
         public var duration: Double
+        /// M7: the course and class in words (the phone's ids are not this library's until sync).
+        public var courseName: String? = nil
+        public var courseShortName: String? = nil
+        public var sessionNumber: Int? = nil
+        /// A capture bundle (one file), unpacked into the library's Recordings folder on filing.
+        public var isBundle = false
     }
 
     /// When the recorded audio starts, for recordings and captures.
@@ -117,7 +123,7 @@ extension FileEvidence {
     /// What kind of file `url` is for filing, or nil when it is none of deck, recording, capture.
     public static func kind(of url: URL) -> FilingKind? {
         let ext = url.pathExtension.lowercased()
-        if ext == LecturePackage.pathExtension { return .capture }
+        if ext == LecturePackage.pathExtension || ext == CaptureBundle.pathExtension { return .capture }
         if let type = UTType(filenameExtension: ext) {
             if type.conforms(to: .pdf) { return .deck }
             if type.conforms(to: .audio) || type.conforms(to: .audiovisualContent) { return .recording }
@@ -136,12 +142,33 @@ extension FileEvidence {
             guard let probe = DeckProbe.read(url) else { return nil }
             evidence.deck = deckEvidence(probe)
         case .capture:
-            guard let contents = try? LecturePackageReader.read(LecturePackage(url: url)) else { return nil }
-            let manifest = contents.manifest
+            let manifest: LectureManifest
+            let events: [LectureEvent]
+            let duration: Double
+            let isBundle = url.pathExtension.lowercased() == CaptureBundle.pathExtension
+            if isBundle {
+                // Its first entries only: the audio stays packed until it is filed.
+                guard let summary = try? CaptureBundle.summary(of: url) else { return nil }
+                manifest = summary.manifest
+                events = summary.events
+                duration = summary.duration
+            } else {
+                guard let contents = try? LecturePackageReader.read(LecturePackage(url: url)) else { return nil }
+                manifest = contents.manifest
+                events = contents.events
+                duration = contents.duration
+            }
             evidence.capture = CaptureEvidence(
                 recordingID: manifest.id, courseID: manifest.courseID, lectureID: manifest.lectureID,
-                startedAt: manifest.startedAt ?? contents.events.map(\.wallClock).min(), duration: contents.duration
+                startedAt: manifest.startedAt ?? events.map(\.wallClock).min(), duration: duration,
+                courseName: manifest.courseName, courseShortName: manifest.courseShortName,
+                sessionNumber: manifest.sessionNumber, isBundle: isBundle
             )
+            // The class the phone recorded ("DC Lecture 2"), when its name says no number.
+            if evidence.fileNumber == nil, let number = manifest.sessionNumber, (1...Numbering.maximum).contains(number) {
+                evidence.fileNumber = number
+                evidence.fileNumberEvidence = String(localized: "Lecture \(number)")
+            }
         default:
             evidence.recording = await recordingEvidence(url)
         }

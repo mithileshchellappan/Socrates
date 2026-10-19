@@ -15,27 +15,44 @@ struct StudyPortalWidgets: WidgetBundle {
 }
 
 /// The recording's Live Activity: course, session, slide, elapsed; [Next Slide] [Stop Recording].
-///
-/// Skeleton landed with the plan; workstream A builds the Lock Screen and Dynamic Island views.
+/// The Lock Screen and the expanded Dynamic Island show the same content; compact: the red dot
+/// and the elapsed time, "S17"; minimal: the red dot.
 struct RecordingLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: RecordingActivityAttributes.self) { context in
-            Text(context.state.courseName)
-                .padding()
+            RecordingLockScreenView(state: context.state, recordingID: context.attributes.recordingID)
+                .activitySystemActionForegroundColor(.primary)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Text(context.state.courseName)
+                    RecordingTitle(state: context.state)
+                        .padding(.leading, 4)
+                        .dynamicIsland(verticalPlacement: .belowIfTooWide)
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    RecordingElapsed(state: context.state, size: 20)
+                        .padding(.trailing, 4)
+                }
+                DynamicIslandExpandedRegion(.bottom) {
+                    RecordingButtons(recordingID: context.attributes.recordingID)
+                        .padding(.top, 6)
                 }
             } compactLeading: {
-                Image(systemName: "record.circle")
-                    .foregroundStyle(.red)
+                HStack(spacing: 5) {
+                    Circle().fill(.red).frame(width: 7, height: 7)
+                    Text(timerInterval: context.state.timerRange, pauseTime: context.state.stoppedAt, countsDown: false, showsHours: true)
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .monospacedDigit()
+                        .frame(maxWidth: 58, alignment: .leading)
+                }
             } compactTrailing: {
-                Text("S\(context.state.slide)")
+                Text(context.state.shortSlide)
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    .monospacedDigit()
             } minimal: {
-                Image(systemName: "record.circle")
-                    .foregroundStyle(.red)
+                Circle().fill(.red).frame(width: 9, height: 9)
             }
+            .keylineTint(.red)
         }
     }
 }
