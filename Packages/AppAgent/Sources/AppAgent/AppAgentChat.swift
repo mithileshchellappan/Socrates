@@ -17,8 +17,10 @@ import Tutor
 ///   through the change log: add_item, move_item, complete_item, update_item, change_session,
 ///   add_session, set_course_fact, set_reminder, append_note and remove_course (only when the
 ///   student asks; a course with recordings or notes is left to the app's Delete Course…),
-///   undo_change, and the memory's remember / update_memory / forget (added by the runtime). Draft:
-///   draft_reply. Delegate: spawn_task, cancel_task, rerun_study_pass. No web tool (it reads mail:
+///   add_course, add_weekly_slot, change_weekly_slot and remove_weekly_slot (only when the student
+///   asks; `CourseTools.swift`), undo_change, and the memory's remember / update_memory / forget
+///   (added by the runtime). Draft: draft_reply. Delegate: spawn_task, cancel_task,
+///   rerun_study_pass. No web tool (it reads mail:
 ///   web goes through a research task), no send, no other calendars, no delete of notes or
 ///   recordings: those tools do not exist.
 /// - `task` (a sub-agent): the tool groups of its `agent_task` row, fixed at spawn; its model and
@@ -81,6 +83,7 @@ public enum AppAgentChat {
             query.listChanges, query.checkTasks,
             writes.addItem, writes.moveItem, writes.completeItem, writes.updateItem, writes.changeSession, writes.addSession,
             writes.setCourseFact, writes.setReminder, writes.appendNote, writes.removeCourse, writes.undoChange,
+            writes.addCourse, writes.addWeeklySlot, writes.changeWeeklySlot, writes.removeWeeklySlot,
             plan.planQuery, plan.planAdjust, plan.setCourseCredits, plan.markAwayDays,
         ]
         if let drafter = deps.drafter { tools.append(MailChat.draftReplyTool(drafter)) }
@@ -107,7 +110,7 @@ public enum AppAgentChat {
         \(courses.promptLines)
 
         Before the student's words a message may carry: <memory> (what you keep about them), <catalog> (what \
-        exists and can be queried: courses, lectures with their state, notes, the next sessions, mail folders, \
+        exists and can be queried: courses with their weekly classes, lectures with their state, notes, the next sessions, mail folders, \
         open items), <context> (the screen they are on: "this" and "here" mean what it names), \
         <task_result> (a sub-agent's answer), <reminder> (a notification the app showed since their last message: \
         "done" means its item is done, complete_item; "remind me at 22:00" means set_reminder for it), <filed> (slides \
@@ -124,12 +127,15 @@ public enum AppAgentChat {
         ([[key S13]] a slide, [[key 37:59]] a moment); never write a marker you did not see.
         - Change the student's data only when they ask or a source clearly states it, with the write tools: \
         add_item, move_item, complete_item, update_item, change_session, add_session, set_course_fact, \
-        set_reminder, append_note, remove_course, undo_change, remember. Each needs quote = the exact words that state it and \
+        set_reminder, append_note, remove_course, add_course, add_weekly_slot, change_weekly_slot, remove_weekly_slot, \
+        undo_change, remember. Each needs quote = the exact words that state it and \
         source: chat (the student's own words in the message you are answering), mail (with the mail's id as \
         source_id), lecture (the lecture's key) or event. Dates must be in the quote. Look before you write; never \
         add twice. Every change is logged and can be undone.
         - append_note only when the student asks you to write into their notes; it only appends. remove_course only \
         when the student asks to remove a course.
+        - add_course and the weekly slot tools only when the student asks (quote: their words asking); ask once for \
+        what has no default (a class's weekday and times); a slot's sessions reach the Study Portal calendar by themselves.
         - The study plan (the coach): the catalog's "coach" lines give each course's credits, self-study budget, \
         Ready, this week against its share and the exam; "plan today" the day's blocks. plan_query for details. \
         When the student tells you a situational choice (they travel or are away, skip something, a daily cap, \

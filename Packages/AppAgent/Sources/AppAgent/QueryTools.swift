@@ -144,7 +144,7 @@ struct QueryTools: Sendable {
         AgentTool(
             tool: .custom(
                 name: "query_sessions",
-                description: "The class sessions (lectures, exercises, tutorials, seminars) between two days, with ids, rooms, cancellations and the changes applied to them.",
+                description: "The class sessions (lectures, exercises, tutorials, seminars) between two days, with ids, rooms, cancellations, their weekly slot's key and the changes applied to them.",
                 inputSchema: Schema.object([
                     "from": Schema.string("First day, YYYY-MM-DD."),
                     "to": Schema.string("Last day, YYYY-MM-DD (at most 62 days after from)."),
@@ -183,6 +183,7 @@ struct QueryTools: Sendable {
                     "cancelled": .bool(session.isCancelled),
                 ]
                 if let number = session.number { object["number"] = .int(number) }
+                if let slot = session.weeklySlotID { object["slot"] = .string(ChatCitation.key(slot)) }
                 if let applied = changes[session.id]?.map(\.1), !applied.isEmpty {
                     object["changes"] = .array(applied.map { .string("\($0.summary) \($0.citation.marker)") })
                 }

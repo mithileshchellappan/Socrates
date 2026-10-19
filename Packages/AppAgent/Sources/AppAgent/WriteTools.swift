@@ -13,8 +13,9 @@ import StudyCore
 /// - `lecture`: an exact span of the lecture's transcript, with its first word's time;
 /// - `event`: the source of a triage event (an escalation task's).
 /// Dates must be in the quote (`DateMentions`). All are `.verifiedWrite`, so they may sit beside
-/// the mail tools (`ToolSet` refuses plain `.write`). No send, no other calendars; the one delete
-/// is `remove_course`, never of a course with the student's recordings or notes.
+/// the mail tools (`ToolSet` refuses plain `.write`). No send, no other calendars; the deletes are
+/// `remove_course` (never of a course with the student's recordings or notes) and
+/// `remove_weekly_slot` (`CourseTools.swift`), both only when the student asks, both undoable.
 /// Why a write was refused (the model sees the message).
 struct Refusal: Error, ExpressibleByStringLiteral, ExpressibleByStringInterpolation {
     var message: String

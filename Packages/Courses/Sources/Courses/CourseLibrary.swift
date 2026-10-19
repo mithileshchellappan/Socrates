@@ -22,6 +22,12 @@ public struct CourseDraft: Hashable, Sendable {
     /// Recording consent ("Record this course").
     public var records: Bool
     public var rules: [CourseRule]
+    /// The course's short name, its token ("DC"); nil = the initials of the name.
+    public var shortName: String?
+    /// Mirror its sessions to the "Study Portal" calendar.
+    public var showsInCalendar: Bool
+    /// Credit points (ECTS / LP), when known.
+    public var credits: Double?
 
     public init(
         name: String = "",
@@ -31,7 +37,10 @@ public struct CourseDraft: Hashable, Sendable {
         colorHex: String? = nil,
         semesterID: Semester.ID? = nil,
         records: Bool = false,
-        rules: [CourseRule] = []
+        rules: [CourseRule] = [],
+        shortName: String? = nil,
+        showsInCalendar: Bool = true,
+        credits: Double? = nil
     ) {
         self.name = name
         self.lecturers = lecturers
@@ -41,6 +50,9 @@ public struct CourseDraft: Hashable, Sendable {
         self.semesterID = semesterID
         self.records = records
         self.rules = rules
+        self.shortName = shortName
+        self.showsInCalendar = showsInCalendar
+        self.credits = credits
     }
 
     public var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -150,7 +162,10 @@ public struct CourseLibrary: Sendable {
         }
     }
 
-    static func insert(_ draft: CourseDraft, now: Date, consentAt: Date, store: RecordStore, db: Database) throws -> Course {
+    /// Saves a new course from `draft` inside the caller's transaction (`create`, the first-launch
+    /// seed, AppAgent's change log for `add_course`): the same semester, colour, order and mail
+    /// rules as the New Course sheet.
+    public static func insert(_ draft: CourseDraft, now: Date, consentAt: Date, store: RecordStore, db: Database) throws -> Course {
         let courses = try Course.all.fetchAll(db)
         let semester: Semester
         if let id = draft.semesterID, let chosen = try Semester.find(id).fetchOne(db) {
@@ -162,9 +177,10 @@ public struct CourseLibrary: Sendable {
         let color = draft.colorHex
             ?? CourseDraft.palette.first { !used.contains($0) }
             ?? CourseDraft.palette[courses.count % CourseDraft.palette.count]
+        let short = draft.shortName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let course = store.stamp(Course(
             name: draft.trimmedName,
-            shortName: CourseDraft.shortName(for: draft.trimmedName),
+            shortName: short.isEmpty ? CourseDraft.shortName(for: draft.trimmedName) : short,
             professors: draft.professors,
             language: draft.language,
             adminLanguage: draft.adminLanguage,
@@ -173,7 +189,9 @@ public struct CourseLibrary: Sendable {
             sortOrder: (courses.map(\.sortOrder).max() ?? -1) + 1,
             semesterID: semester.id,
             rules: draft.rules,
-            createdAt: now
+            showsInCalendar: draft.showsInCalendar,
+            createdAt: now,
+            credits: draft.credits
         ))
         try Course.upsert { course }.execute(db)
         for rule in CourseDraft.mailRules(for: course, semester: semester) {

@@ -100,6 +100,15 @@ public struct ChangeLog: Sendable {
         /// mc: a planned block moved to another day (`plan_adjust` move): the row itself,
         /// `created_by = user` (a replan never moves or drops it), at the end of that day.
         case planMove(StudyBlock.ID, to: CalendarDay)
+        /// A new course (`add_course`), created as New Course… creates one (`CourseLibrary.insert`).
+        case courseAdd(CourseDraft)
+        /// A new weekly slot (`add_weekly_slot`), saved as Course Settings' Add Slot saves one
+        /// (`CourseSchedule.saveSlot`): its sessions are planned and mirrored to the calendar.
+        case slotAdd(WeeklySlot)
+        /// A weekly slot's new values (`change_weekly_slot`, the same id).
+        case slotChange(WeeklySlot)
+        /// A weekly slot removed (`remove_weekly_slot`, `CourseSchedule.deleteSlot`).
+        case slotRemove(WeeklySlot.ID)
     }
 
     /// What `apply` did.
@@ -131,9 +140,23 @@ public struct ChangeLog: Sendable {
     /// or the student edited it); undoing would overwrite that.
     public enum UndoRefused: Error, Sendable, CustomStringConvertible, LocalizedError {
         case changedSince
+        /// Undo of `add_course`: the course holds the student's lectures, slides, recordings or
+        /// notes now (Delete Course… asks first).
+        case holdsWork
 
-        public var description: String { "Changed since; nothing undone." }
-        public var errorDescription: String? { String(localized: "Changed since; nothing undone.") }
+        public var description: String {
+            switch self {
+            case .changedSince: "Changed since; nothing undone."
+            case .holdsWork: "The course has lectures, slides, recordings or notes now; nothing undone. Delete Course… in its sidebar menu removes it."
+            }
+        }
+
+        public var errorDescription: String? {
+            switch self {
+            case .changedSince: String(localized: "Changed since; nothing undone.")
+            case .holdsWork: String(localized: "The course has lectures, slides, recordings or notes now; nothing undone.")
+            }
+        }
     }
 
     let services: StudyServices
@@ -183,6 +206,7 @@ public struct ChangeLog: Sendable {
         if let change = try await store.fetch(AgentChange.self, id: id) {
             if change.targetTable == .filing { return try await undoFiling(change, at: date) }
             if change.kind == .courseRemove { return try await undoCourseRemoval(change, at: date) }
+            if change.kind == .courseAdd { return try await undoCourseAdd(change, at: date) }
             if change.kind == .documentAdd { return try await undoDocumentAdd(change, at: date) }
         }
         let undone = try await services.database.write { db in try Self.undo(id, db: db, store: store, now: date) }
@@ -363,6 +387,14 @@ public struct ChangeLog: Sendable {
             return try rememberRule(rule, text: text, courseID: courseID, quote: quote, origin: origin, db: db, store: store, now: now)
         case .planMove(let blockID, let day):
             return try moveBlock(blockID, to: day, quote: quote, origin: origin, db: db, store: store, now: now)
+        case .courseAdd(let draft):
+            return try addCourse(draft, quote: quote, origin: origin, db: db, store: store, now: now)
+        case .slotAdd(let slot):
+            return try addSlot(slot, quote: quote, origin: origin, db: db, store: store, now: now)
+        case .slotChange(let slot):
+            return try changeSlot(slot, quote: quote, origin: origin, db: db, store: store, now: now)
+        case .slotRemove(let id):
+            return try removeSlot(id, quote: quote, origin: origin, db: db, store: store, now: now)
         }
     }
 
@@ -1078,6 +1110,10 @@ public struct ChangeLog: Sendable {
                 try AgentReminder.where { $0.id.eq(targetID) && $0.cancelledAt.is(nil) }
                     .update { $0.cancelledAt = Date?.some(now); $0.updatedAt = now }
                     .execute(db)
+            }
+        case .slot:
+            if current, let targetID = change.targetID {
+                try undoSlot(change, slotID: targetID, db: db, store: store, now: now)
             }
         default:
             break
