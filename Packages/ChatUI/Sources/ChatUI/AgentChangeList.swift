@@ -22,7 +22,9 @@ struct AgentChangeRowsRequest: FetchKeyRequest {
         for key in keys {
             let key = key.lowercased()
             guard key.count == 8, key.allSatisfy(\.isHexDigit) else { continue }
-            let ids = try String.fetchAll(db, sql: #"SELECT "id" FROM "agent_change" WHERE "id" LIKE ? LIMIT 2"#, arguments: [key + "%"])
+            // GLOB (case-sensitive; ids are stored lowercased) lets SQLite use the primary key's
+            // index for the prefix; LIKE scanned the whole log.
+            let ids = try String.fetchAll(db, sql: #"SELECT "id" FROM "agent_change" WHERE "id" GLOB ? LIMIT 2"#, arguments: [key + "*"])
             guard ids.count == 1, let id = UUID(uuidString: ids[0]), let change = try AgentChange.find(id).fetchOne(db) else { continue }
             rows[key] = AgentChangeRow(change: change, entry: try Self.entry(change, db: db))
         }

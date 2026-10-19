@@ -12,7 +12,7 @@ import SwiftUI
 /// - `query`: the window's search field ("Search mail"); filters through `MailActions.search`.
 /// - `now`: a fixed "now" (snapshots); nil follows the clock.
 ///
-/// Without a mail account it shows only Set Up Mail…. Selecting an unread message marks it read
+/// Without a mail account it shows one line and Set Up Mail… (title "Mail", no toolbar). Selecting an unread message marks it read
 /// after a short dwell. Keys: ↑/↓ select, ↩ moves focus into the reader (↑/↓ and Space scroll,
 /// Escape goes back), Delete archives; the Message menu (`MailCommands`) has the rest.
 public struct MailView: View {
@@ -86,8 +86,11 @@ public struct MailView: View {
 
     public var body: some View {
         content
-            .screenTitle(title, leadingInset: ScreenTitleInset.firstItem)
-            .toolbar { toolbar }
+            // Without an account there are no lists yet: "Mail", and no message actions.
+            .screenTitle(list.hasAccount == false ? String(localized: "Mail") : title, leadingInset: ScreenTitleInset.firstItem)
+            .toolbar {
+                if list.hasAccount == true { toolbar }
+            }
             .environment(\.mailFocus, focus)
             .focusedSceneValue(\.mailScreen, commands)
             .task(id: request) {
@@ -126,6 +129,8 @@ public struct MailView: View {
     private var noAccount: some View {
         ContentUnavailableView {
             Image(systemName: "envelope")
+        } description: {
+            Text("Connect your student mail.")
         } actions: {
             Button("Set Up Mail…", action: setUpMail)
                 .buttonStyle(.borderedProminent)

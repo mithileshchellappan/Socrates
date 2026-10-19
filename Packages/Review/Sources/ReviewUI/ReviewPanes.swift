@@ -1,5 +1,6 @@
 import Capture
 import Review
+import StudyUI
 import SwiftUI
 
 /// Rail | slide over transcript, with the player floating over the bottom.
@@ -81,9 +82,10 @@ struct ReviewContent: View {
                         .allowsHitTesting(!transcriptCollapsed)
                         .accessibilityHidden(transcriptCollapsed)
                 } else if model.deck == nil {
-                    ContentUnavailableView {
-                        Image(systemName: "rectangle.on.rectangle.slash")
-                    }
+                    // Neither slides nor a recording (or its deck was deleted): the column is a
+                    // drop target for this lecture's slides (the screen reloads once they are in).
+                    EmptyDropPrompt(systemImage: "rectangle.on.rectangle", line: "Drop this lecture's slides here.", target: .lecture(model.lecture.id))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

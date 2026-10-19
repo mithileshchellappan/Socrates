@@ -102,7 +102,11 @@ private struct ProgressContent: View {
     @Environment(\.timeZone) private var timeZone
 
     var body: some View {
-        if let rows = data.rows {
+        if let rows = data.rows, rows.lectures.isEmpty {
+            // Nothing to measure yet: what feeds the screen, as a drop target for the course.
+            EmptyDropPrompt(systemImage: "chart.bar", line: "Progress starts with this course's slides and recordings.", target: .course(rows.course.id))
+                .screenTitle(String(localized: "Progress"), subtitle: rows.course.name)
+        } else if let rows = data.rows {
             let today = CalendarDay(now, in: timeZone)
             let semester = CoachRows.semester(for: rows.course, day: today, in: data.semesters)
             let measures = CourseMeasures(rows: rows, semester: semester, rules: data.rules, now: now)
@@ -156,21 +160,31 @@ private struct ProgressHero: View {
         HeroCard(spacing: 12, top: 16, bottom: 20) {
             eyebrow
             HStack(alignment: .top, spacing: 34) {
-                StatFigure(
-                    value: CoachFigure.percent(measures.ready ?? 0),
-                    caption: Text("ready"),
-                    meter: (measures.ready ?? 0, Color.course(course))
-                )
-                if let budget = measures.budget, budget.totalHours > 0 {
+                // Ready only once something was taught, never for a seminar (no exam to be ready for).
+                if let ready = measures.ready, !measures.isSeminar {
                     StatFigure(
-                        value: CoachFigure.duration(minutes: studiedMinutes),
-                        caption: Text("of \(DurationText.text(minutes: Int((budget.totalHours * 60).rounded()))) self-study"),
-                        meter: (studied / (budget.totalHours * 3_600), Color.secondary)
+                        value: CoachFigure.percent(ready),
+                        caption: Text("ready"),
+                        meter: (ready, Color.course(course))
                     )
                 }
+                if let budget = measures.budget, budget.totalHours > 0 {
+                    if course.credits == nil && course.selfStudyHours == nil {
+                        // The budget would be the profile's default, not a fact about this course.
+                        StatFigure(value: CoachFigure.duration(minutes: studiedMinutes), caption: Text("self-study"))
+                    } else {
+                        StatFigure(
+                            value: CoachFigure.duration(minutes: studiedMinutes),
+                            caption: Text("of \(DurationText.text(minutes: Int((budget.totalHours * 60).rounded()))) self-study"),
+                            meter: (studied / (budget.totalHours * 3_600), Color.secondary)
+                        )
+                    }
+                }
             }
-            actions
-                .padding(.top, 2)
+            if hasActions {
+                actions
+                    .padding(.top, 2)
+            }
         }
         .sheet(item: $sheet) { course in
             PracticeExamSheet(courseID: course.id, now: now)
@@ -236,11 +250,21 @@ private struct ProgressHero: View {
 
     private var openExam: StudySession? { exams.first { $0.state.isOpen } }
 
+    /// The course has questions to practise (a round's preview that found none counts as none).
+    private var hasQuestions: Bool {
+        !measures.rows.questions.isEmpty && roundPreview?.questions != 0
+    }
+
     // MARK: Actions
+
+    /// Nothing to ask yet (the questions come from the lectures): no Practice, no ↩.
+    private var hasActions: Bool {
+        coach != nil && (openExam != nil || hasQuestions)
+    }
 
     @ViewBuilder
     private var actions: some View {
-        if coach != nil {
+        if hasActions {
             HStack(spacing: 14) {
                 if let openExam {
                     Button {

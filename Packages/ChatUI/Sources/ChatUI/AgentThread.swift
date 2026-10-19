@@ -134,8 +134,12 @@ struct AgentThreadView: View {
     private let turnsQuery: FetchAll<AgentTurn>
     private let tasksQuery: FetchAll<AgentTask>
     @State private var transcript = ChatTranscript()
+    /// The turns parsed so far: a new turn parses only itself.
+    @State private var turnCache = ChatTurnCache()
     @State private var rows = CitationRows()
-    @State private var live: ChatLiveReply?
+    /// The answer streaming in (about 10 times a second): read only by the views that draw it
+    /// (`LiveAnswerText`), so this body (the exchanges, the items) is not worked out again for it.
+    @State private var live = LiveReplyBox()
     /// The compact thread's rows' height, for its faded top edge only (its own height is laid out
     /// with the rows, `UpToHeight`). Reported from the first layout on, so a thread that is too
     /// tall when it appears has the edge too.
@@ -151,22 +155,21 @@ struct AgentThreadView: View {
         let id = conversationID ?? UUID()
         conversationQuery = FetchOne(AgentConversation.find(id))
         turnsQuery = FetchAll(AgentTurn.where { $0.conversationID.eq(id) }.order(by: \.sequence))
-        let succeeded = AgentTaskState.succeeded
+        // Finished tasks: results, and the ones that failed or were cancelled (one line each).
+        let finished = [AgentTaskState.succeeded, .failed, .cancelled]
         tasksQuery = FetchAll(
-            AgentTask.where { $0.parentConversationID.eq(id) && $0.state.eq(succeeded) }.order { $0.finishedAt.asc() }
+            AgentTask.where { $0.parentConversationID.eq(id) && $0.state.in(finished) }.order { $0.finishedAt.asc() }
         )
     }
 
     private var conversation: AgentConversation? { conversationQuery.wrappedValue }
     private var isRunning: Bool { conversation?.state == .running }
 
-    /// The live text belongs after exactly the stored turns it follows: while the run lasts, and
-    /// after it finished until its stored turn lands (the answer never blinks out in between); a
-    /// stopped or failed run's text goes.
-    private var liveText: String? {
-        guard let live, live.afterTurns == transcript.turnCount, !live.text.isEmpty else { return nil }
-        guard isRunning || conversation?.state == .finished else { return nil }
-        return live.text
+    /// Whether the live text may show at all: while the run lasts, and after it finished until
+    /// its stored turn lands (the answer never blinks out in between); a stopped or failed run's
+    /// text goes. `LiveAnswerText` also checks it follows exactly the stored turns.
+    private var showsLive: Bool {
+        isRunning || conversation?.state == .finished
     }
 
     /// The run answers the last stored message. While a sent message is not stored yet, the run
@@ -187,7 +190,8 @@ struct AgentThreadView: View {
     var body: some View {
         let exchanges = PanelThread.exchanges(transcript)
         let items = PanelThread.items(
-            exchanges: exchanges, tasks: tasksQuery.wrappedValue.filter { ($0.result ?? "").isEmpty == false },
+            exchanges: exchanges,
+            tasks: tasksQuery.wrappedValue.filter { $0.state != .succeeded || ($0.result ?? "").isEmpty == false },
             window: style == .compact ? model.shown : nil, current: context
         )
         // ONE answer being written: the last exchange's (in `exchangeView`), or after the pending
@@ -196,7 +200,7 @@ struct AgentThreadView: View {
         let working = isRunning && pending == nil && exchanges.isEmpty
         let state = stateLine
         let isEmpty = items.isEmpty && pending == nil && !working && state == nil
-        Group {
+        observing(Group {
             if isEmpty {
                 // Always a view: the observers below must run while nothing shows (a new chat's
                 // compact panel is only its title row and composer).
@@ -205,31 +209,44 @@ struct AgentThreadView: View {
             } else {
                 scroll(items: items, working: working, state: state)
             }
-        }
-        .onChange(of: turnsQuery.wrappedValue, initial: true) { _, turns in
-            transcript = ChatTranscript(turns: turns)
-            model.turnCount = turns.count
-            if let sent = pending, transcript.turnCount > sent.afterTurns { model.pending = nil }
-        }
-        .onChange(of: conversation?.state, initial: true) { _, state in
-            model.isRunning = state == .running
-        }
-        .task(id: conversationID) {
-            guard let conversationID else { return }
-            for await reply in actions.liveReply(conversationID) {
-                live = reply
+        })
+    }
+
+    /// The thread's observers: the stored turns, the conversation's state, the live reply, the
+    /// citation rows.
+    private func observing(_ content: some View) -> some View {
+        content
+            .onChange(of: turnsQuery.wrappedValue, initial: true) { _, turns in
+                transcript = ChatTranscript(turns: turns, cache: turnCache)
+                model.turnCount = turns.count
+                if let sent = pending, transcript.turnCount > sent.afterTurns { model.pending = nil }
+                pinPickedWindow()
             }
-        }
-        .task(id: citesLectures) {
-            // The rows lecture markers are checked against, once an answer has one.
-            guard citesLectures >= 0 else { return }
-            do {
-                rows = try await CitationRows.load(database)
-            } catch {
-                ChatUILog.ui.error("Reading citation rows failed: \(String(describing: error), privacy: .public)")
+            .onChange(of: model.shown, initial: true) {
+                pinPickedWindow()
             }
-        }
-        .environment(\.openURL, OpenURLAction { url in open(url) })
+            .onChange(of: conversation?.state, initial: true) { _, state in
+                model.isRunning = state == .running
+            }
+            .task(id: conversationID) {
+                guard let conversationID else { return }
+                if live.sawMarker { live.sawMarker = false }
+                for await reply in actions.liveReply(conversationID) {
+                    live.reply = reply
+                    // Set once (each set re-renders the thread): the citation rows are read for it.
+                    if !live.sawMarker, reply?.text.contains("[[") == true { live.sawMarker = true }
+                }
+            }
+            .task(id: citesLectures) {
+                // The rows lecture markers are checked against, once an answer has one.
+                guard citesLectures >= 0 else { return }
+                do {
+                    rows = try await CitationRows.load(database)
+                } catch {
+                    ChatUILog.ui.error("Reading citation rows failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+            .environment(\.openURL, OpenURLAction { url in open(url) })
     }
 
     /// Compact: as tall as the thread up to `maxHeight` (sized in the same layout pass as its
@@ -276,15 +293,20 @@ struct AgentThreadView: View {
                 case .exchange(let exchange, let showsLine, let isLast):
                     exchangeView(exchange, showsLine: showsLine, isLast: isLast)
                 case .task(let task):
-                    TaskResultBlock(task: task, rows: rows, now: model.now)
+                    if task.state == .succeeded {
+                        TaskResultBlock(task: task, rows: rows, now: model.now)
+                    } else {
+                        TaskUnfinishedLine(task: task)
+                    }
                 }
             }
             if let pending {
                 PanelStudentMessage(text: pending.text, attachments: pending.attachments, maxWidth: bubbleWidth)
             }
             if pending != nil || working {
-                PanelAnswer(
-                    text: pending == nil ? liveText ?? "" : "", isWorking: false, isStreaming: true, check: check,
+                // After a pending message nothing streams yet (its run is not this one's).
+                LiveAnswerText(
+                    live: pending == nil ? liveSource : nil, stored: nil, running: true, check: check,
                     openLecture: context.lectureID, now: model.now
                 )
             }
@@ -303,23 +325,29 @@ struct AgentThreadView: View {
     @ViewBuilder
     private func exchangeView(_ exchange: PanelExchange, showsLine: Bool, isLast: Bool) -> some View {
         let running = isLast && answersLast
-        // The live text follows exactly the stored turns, so it is the last exchange's.
-        let streamed = isLast && pending == nil ? liveText : nil
-        let answer = Self.joined(exchange.answer, streamed)
         VStack(alignment: .leading, spacing: 12) {
             if showsLine, let label = exchange.context?.label {
                 FaintLine(glyph: exchange.context?.glyph ?? "bubble.left", label: label)
             }
             PanelStudentMessage(text: exchange.text, attachments: exchange.context?.attachments ?? [], maxWidth: bubbleWidth)
-            if let answer, !answer.isEmpty {
-                PanelAnswer(
-                    text: answer, isWorking: running && streamed == nil, isStreaming: running || streamed != nil, check: check,
-                    openLecture: exchange.context?.context?.lectureID ?? context.lectureID, now: model.now
-                )
-            } else if running {
-                PanelAnswer(text: "", isWorking: false, isStreaming: true, check: check, openLecture: nil, now: model.now)
-            }
+            // The live text follows exactly the stored turns, so it is the last exchange's.
+            LiveAnswerText(
+                live: isLast && pending == nil ? liveSource : nil, stored: exchange.answer, running: running, check: check,
+                openLecture: exchange.context?.context?.lectureID ?? context.lectureID, now: model.now
+            )
         }
+    }
+
+    /// The live reply as the last answer reads it.
+    private var liveSource: LiveSource {
+        LiveSource(box: live, afterTurns: transcript.turnCount, isShown: showsLive)
+    }
+
+    /// A conversation picked in the title menu opens on its last exchange; from then on the
+    /// compact panel shows that one and every follow-up (`.since` its time).
+    private func pinPickedWindow() {
+        guard model.shown == .last, let last = PanelThread.exchanges(transcript).last else { return }
+        model.shown = .since(last.sentAt)
     }
 
     static func joined(_ text: String?, _ live: String?) -> String? {
@@ -334,7 +362,7 @@ struct AgentThreadView: View {
         let hasMarker = transcript.entries.contains { entry in
             if case .answer(_, let text) = entry { return text.contains("[[") }
             return false
-        } || (liveText?.contains("[[") ?? false) || tasksQuery.wrappedValue.contains { ($0.result ?? "").contains("[[") }
+        } || live.sawMarker || tasksQuery.wrappedValue.contains { ($0.result ?? "").contains("[[") }
         return hasMarker ? transcript.turnCount : -1
     }
 
@@ -446,6 +474,7 @@ private struct TaskResultBlock: View {
 
     private let turnsQuery: FetchAll<AgentTurn>
     @State private var webPages: [String: URL] = [:]
+    @State private var turnCache = ChatTurnCache()
 
     init(task: AgentTask, rows: CitationRows, now: Date) {
         self.task = task
@@ -465,7 +494,76 @@ private struct TaskResultBlock: View {
         }
         .onChange(of: turnsQuery.wrappedValue.count, initial: true) {
             let turns = turnsQuery.wrappedValue
-            webPages = turns.isEmpty ? [:] : ChatTranscript(turns: turns).webPages
+            webPages = turns.isEmpty ? [:] : ChatTranscript(turns: turns, cache: turnCache).webPages
+        }
+    }
+}
+
+/// A sub-agent task that failed or was cancelled: one quiet line, "Research QEMU didn't finish:
+/// the usage limit was reached." (the whole reason on hover).
+private struct TaskUnfinishedLine: View {
+    let task: AgentTask
+
+    var body: some View {
+        let reason = (task.error ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let line = reason.isEmpty ? String(localized: "\(task.title) didn’t finish.") : String(localized: "\(task.title) didn’t finish: \(reason)")
+        Text(verbatim: line)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(Text(verbatim: line))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The answer streaming in, held apart from the thread's state: setting it re-renders only the
+/// views that read `reply` (`LiveAnswerText`).
+@MainActor
+@Observable
+final class LiveReplyBox {
+    var reply: ChatLiveReply?
+    /// Some live text had a marker: the thread reads its citation rows.
+    var sawMarker = false
+}
+
+/// The live reply as one answer may show it: after exactly `afterTurns` stored turns, while
+/// `isShown` (the run lasts, or finished until its stored turn lands).
+struct LiveSource {
+    let box: LiveReplyBox
+    let afterTurns: Int
+    let isShown: Bool
+
+    @MainActor
+    var text: String? {
+        guard isShown, let reply = box.reply, reply.afterTurns == afterTurns, !reply.text.isEmpty else { return nil }
+        return reply.text
+    }
+}
+
+/// An answer that may end in the live text (the only view reading it, so streaming at 10 Hz
+/// re-renders this answer alone): the stored text, then what streams in; a skeleton while the run
+/// answers and nothing came yet.
+private struct LiveAnswerText: View {
+    /// Nil: no live text goes here.
+    let live: LiveSource?
+    let stored: String?
+    /// The run answers this exchange.
+    let running: Bool
+    let check: CitationCheck
+    let openLecture: Lecture.ID?
+    let now: Date
+
+    var body: some View {
+        let streamed = live?.text
+        let answer = AgentThreadView.joined(stored, streamed)
+        if let answer, !answer.isEmpty {
+            PanelAnswer(
+                text: answer, isWorking: running && streamed == nil, isStreaming: running || streamed != nil, check: check,
+                openLecture: openLecture, now: now
+            )
+        } else if running {
+            PanelAnswer(text: "", isWorking: false, isStreaming: true, check: check, openLecture: nil, now: now)
         }
     }
 }

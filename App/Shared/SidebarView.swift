@@ -43,6 +43,10 @@ struct SidebarView: View {
     ) private var unreadMail = 0
     /// The courses that have notes (M6: the Notes row's children; one id per note, folded below).
     @FetchAll(Note.where { $0.courseID.isNot(nil) }.select(\.courseID)) private var noteCourseIDs: [Course.ID?]
+    /// The courses that have mail (Mail's course lists, DESIGN 6.2 "each course with mail").
+    @FetchAll(MailMessage.where { $0.courseID.isNot(nil) }.select(\.courseID).distinct()) private var mailCourseIDs: [Course.ID?]
+    /// Without a mail account Mail has no lists under it (the screen offers Set Up Mail…).
+    @FetchOne(MailAccount.count()) private var mailAccounts = 0
     /// The courses opened with their chevron, as comma-separated IDs (kept per window).
     @SceneStorage("sidebar.openCourses") private var openCourses = ""
     /// The Courses section, folded with its header's chevron (kept per window).
@@ -90,7 +94,7 @@ struct SidebarView: View {
         let showsDates = !isDragging
         List(selection: $selection) {
             ForEach(SidebarItem.destinations, id: \.self) { item in
-                let foldsMail = item == .mail && selection?.isMail == true
+                let foldsMail = item == .mail && selection?.isMail == true && mailAccounts > 0
                 NavigationLink(value: item) {
                     HStack(spacing: 0) {
                         SidebarRowLabel(item.title) {
@@ -171,7 +175,10 @@ struct SidebarView: View {
                             .contextMenu {
                                 if latestJobs[lecture.id]?.state == .failed {
                                     Button("Retry Processing") { model.retryProcessing(lectureID: lecture.id) }
+                                    Divider()
                                 }
+                                // The confirmation names what goes; Edit ▸ Undo brings it back.
+                                Button("Delete…", role: .destructive) { center.requestDelete(.lecture(lecture.id)) }
                             }
                         }
                         if let next = children.next {
@@ -201,9 +208,13 @@ struct SidebarView: View {
         // text) with each row's 13 pt content 21 pt high gives their 29 pt pitch (`.medium` is 32).
         .environment(\.sidebarRowSize, .small)
         #endif
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        // A bar, not an inset: long lists (Mail, a lecture's screen) scroll under it with the
+        // scroll-edge effect instead of drawing through the semester; the hard edge cuts them off
+        // at the footer's hairline.
+        .safeAreaBar(edge: .bottom, spacing: 0) {
             footer
         }
+        .scrollEdgeEffectStyle(.hard, for: .bottom)
         .navigationTitle("Study Portal")
         #if os(macOS)
         .navigationSplitViewColumnWidth(min: 200, ideal: Self.idealWidth, max: 320)
@@ -226,9 +237,14 @@ struct SidebarView: View {
         return courses.filter { ids.contains($0.id) }
     }
 
-    /// Mail's lists in mockup 05's order: Inbox; the courses; University, Newsletters; Drafts, Sent.
+    /// Mail's lists in mockup 05's order: Inbox; the courses with mail; University, Newsletters;
+    /// Drafts, Sent.
     private var mailScopes: [MailScope] {
-        [.inbox] + courses.map { .course($0.id) } + [.category(.university), .category(.newsletter), .drafts, .sent]
+        var withMail = Set(mailCourseIDs.compactMap(\.self))
+        // The open list keeps its row (its last mail may just have moved).
+        if case .mailScope(.course(let id))? = selection { withMail.insert(id) }
+        let courseScopes = courses.filter { withMail.contains($0.id) }.map { MailScope.course($0.id) }
+        return [.inbox] + courseScopes + [.category(.university), .category(.newsletter), .drafts, .sent]
     }
 
     // MARK: - Rows
@@ -314,10 +330,14 @@ struct SidebarView: View {
                         model.sheet = .newCourse
                     } label: {
                         Label("New Course", systemImage: "plus")
+                            .lineLimit(1)
+                            .fixedSize()
                     }
                     .buttonStyle(.borderless)
                     Spacer(minLength: 0)
+                    // The semester gives way first in a narrow sidebar.
                     semesterName
+                        .layoutPriority(-1)
                     // ma: the agent panel's one launcher, the same on every screen (absent
                     // without Claude Code).
                     AgentPanelLauncher()
@@ -352,6 +372,8 @@ struct SidebarView: View {
             .padding(.top, 8)
             .padding(.bottom, 12)
         }
+        // Rows scrolling under the bar never show through the semester or the launcher.
+        .background(.bar)
     }
 
     @ViewBuilder

@@ -1,6 +1,7 @@
 import Filing
 import Foundation
 import Observation
+import os
 import StudyCore
 
 /// The window's smart import state: the drag prediction the HUD shows, the toasts after a drop
@@ -429,6 +430,79 @@ public final class FilingCenter {
         importDestination = destination
         isImporterPresented = true
     }
+
+    // MARK: - Delete
+
+    /// Delete… on a deck, a lecture or a recording, waiting for the window's confirmation, with
+    /// what goes (`LibraryDeleteConfirmation`).
+    public struct PendingDeletion: Identifiable, Equatable {
+        public let id = UUID()
+        public var item: LibraryItem
+        public var summary: DeletionSummary
+    }
+
+    /// Set to ask for the confirmation; cleared by Delete or Cancel.
+    public var pendingDeletion: PendingDeletion?
+
+    /// Delete… (a row's menu, Review, the Edit menu): reads what goes, then asks.
+    public func requestDelete(_ item: LibraryItem) {
+        let service = service
+        Task {
+            do {
+                let summary = try await service.deletionSummary(item)
+                pendingDeletion = PendingDeletion(item: item, summary: summary)
+            } catch {
+                Self.log.error("Reading what a delete takes failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// The confirmation's Delete: deletes, then Edit ▸ Undo ("Undo Delete Slides") puts everything
+    /// back and Redo deletes it again. The files stay until the undo window has passed.
+    public func delete(_ pending: PendingDeletion, undoManager: UndoManager?) async throws {
+        if pendingDeletion?.id == pending.id { pendingDeletion = nil }
+        let deletion = try await service.delete(pending.item)
+        if let undoManager { registerUndo(deletion, undoManager: undoManager) }
+    }
+
+    private func registerUndo(_ deletion: Deletion, undoManager: UndoManager) {
+        let name = Self.undoName(deletion.item)
+        undoManager.registerUndo(withTarget: self) { center in
+            let service = center.service
+            let restoring = Task {
+                do {
+                    try await service.restore(deletion)
+                } catch {
+                    Self.log.error("Restoring a deleted item failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+            // Redo: deletes it again once it is back (and registers the next Undo then).
+            undoManager.registerUndo(withTarget: center) { center in
+                Task {
+                    await restoring.value
+                    do {
+                        let again = try await center.service.delete(deletion.item)
+                        center.registerUndo(again, undoManager: undoManager)
+                    } catch {
+                        Self.log.error("Deleting again failed: \(String(describing: error), privacy: .public)")
+                    }
+                }
+            }
+            undoManager.setActionName(name)
+        }
+        undoManager.setActionName(name)
+    }
+
+    /// "Delete Slides", "Delete Lecture", "Delete Recording" (Edit ▸ Undo …).
+    static func undoName(_ item: LibraryItem) -> String {
+        switch item {
+        case .deck: String(localized: "Delete Slides")
+        case .lecture: String(localized: "Delete Lecture")
+        case .recording: String(localized: "Delete Recording")
+        }
+    }
+
+    static let log = Log.logger(category: "filing-ui")
 
     // MARK: - Previews and snapshots
 

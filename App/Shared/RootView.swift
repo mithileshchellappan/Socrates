@@ -3,6 +3,7 @@ import CalendarUI
 import CaptureUI
 import ChatUI
 import CoursesUI
+import Filing
 import FilingUI
 import MailUI
 import Processing
@@ -99,6 +100,16 @@ struct RootView: View {
                 .smartImport(center)
                 .timetableImport(center: center)
                 .environment(\.openDestination, OpenDestinationAction(open))
+                // Empty Lectures, Slides, Progress, Study and Review's slides: Import… and drops
+                // go through smart import (filed to the screen's course or lecture).
+                .environment(\.importFiles, ImportFilesAction(
+                    open: { target in center.importFiles(to: target.map(FilingDestination.init)) },
+                    drop: { urls, target in Task { await center.file(urls, to: target.map(FilingDestination.init)) } }
+                ))
+                // Delete… on decks, lectures and recordings: one confirmation for the window
+                // naming what goes, then Edit ▸ Undo.
+                .environment(\.deleteFromLibrary, DeleteFromLibraryAction { item in center.requestDelete(item) })
+                .libraryDeleteConfirmation(center: center, willDelete: leave, failed: { model.failure = $0 })
                 .environment(\.studyServices, model.services)
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
@@ -327,6 +338,13 @@ struct RootView: View {
         guard !text.isEmpty, searchOwner == .library else { return }
         selection = .search
         searchSubmits += 1
+    }
+
+    /// A lecture about to be deleted while its review shows: its course's Lectures instead.
+    private func leave(_ item: StudyCore.LibraryItem) async {
+        guard case .lecture(let id) = item, selection == .lecture(id), let services = model.services else { return }
+        let courseID = try? await services.database.read { db in try Lecture.find(id).fetchOne(db)?.courseID }
+        selection = courseID.map { .courseLectures($0) } ?? .today
     }
 
     /// Back or Forward through the screens this window showed.
@@ -712,5 +730,15 @@ private extension NotesScope {
     var courseID: Course.ID? {
         if case .course(let id) = self { return id }
         return nil
+    }
+}
+
+private extension FilingDestination {
+    /// Where a screen's Import… or drop files go.
+    init(_ target: ImportTarget) {
+        switch target {
+        case .course(let id): self = .course(id)
+        case .lecture(let id): self = .lecture(id)
+        }
     }
 }
