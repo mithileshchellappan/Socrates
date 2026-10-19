@@ -10,12 +10,18 @@ import UIKit
 
 /// The transcript zone: the recording's lines grouped by slide visit, or, before the transcript
 /// exists, the transcription job's progress.
+///
+/// It observes only the recording's revision (its segment count and newest update): the segments
+/// (about 1,150 with their words for a lecture) are read, sectioned and lined off the main thread
+/// once per revision and timeline, not again for every segment written anywhere (a study pass
+/// correcting another lecture).
 struct TranscriptZone: View {
     let model: ReviewModel
     let timeline: SlideTimeline
 
-    private let segmentsQuery: FetchAll<TranscriptSegment>
-    private var segments: [TranscriptSegment] { segmentsQuery.wrappedValue }
+    @Fetch private var revision: TranscriptRevision
+    /// The lines of the revision and timeline last read.
+    @State private var loaded: LoadedTranscript?
     private let markersQuery: FetchAll<SlideEvent>
     private var markers: [SlideEvent] { markersQuery.wrappedValue }
     /// The study pass's rows: a line the professor is quoted from ends with their pin (M4).
@@ -25,10 +31,7 @@ struct TranscriptZone: View {
         self.model = model
         self.timeline = timeline
         let recordingID = model.recording?.id ?? UUID()
-        segmentsQuery = FetchAll(
-            TranscriptSegment.where { $0.recordingID.eq(recordingID) }.order(by: \.startTime),
-            database: model.services.database
-        )
+        _revision = Fetch(wrappedValue: TranscriptRevision(), TranscriptRevisionRequest(recordingID: recordingID), database: model.services.database)
         markersQuery = FetchAll(
             SlideEvent.where { $0.recordingID.eq(recordingID) && $0.kind.eq(SlideEventKind.manual) }.order(by: \.sampleTime),
             database: model.services.database
@@ -37,23 +40,85 @@ struct TranscriptZone: View {
     }
 
     var body: some View {
+        let key = LoadedTranscript.Key(revision: revision, timeline: timeline)
         Group {
-            if segments.isEmpty {
-                ProcessingProgress(recordingID: model.recording?.id, database: model.services.database)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
+            if let loaded, !loaded.sections.isEmpty {
                 TranscriptList(
                     model: model,
-                    sections: timeline.sections(of: segments),
+                    lined: loaded.sections,
+                    lineIDs: loaded.lineIDs,
                     markers: markers,
                     language: model.lecture.language,
                     items: StudyItems(annotationsQuery.wrappedValue)
                 )
+            } else if revision.count > 0 {
+                // Read in a few milliseconds (the first time only; later revisions keep the lines up).
+                Color.clear
+            } else {
+                ProcessingProgress(recordingID: model.recording?.id, database: model.services.database)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onChange(of: segments, initial: true) { _, segments in
-            model.player?.setCues(segments.map(LecturePlayer.Cue.init))
+        .task(id: key) {
+            guard let recordingID = model.recording?.id else { return }
+            guard key.revision.count > 0 else {
+                if loaded != nil { loaded = nil }
+                model.player?.setCues([])
+                return
+            }
+            guard let read = try? await LoadedTranscript.read(recordingID: recordingID, timeline: timeline, database: model.services.database),
+                  !Task.isCancelled
+            else { return }
+            if read.cues != loaded?.cues { model.player?.setCues(read.cues) }
+            loaded = read
         }
+    }
+}
+
+/// A recording's transcript as of its last write: changes when a segment is added, removed or
+/// updated.
+struct TranscriptRevision: Hashable, Sendable {
+    var count = 0
+    var latest: String = ""
+}
+
+struct TranscriptRevisionRequest: FetchKeyRequest {
+    let recordingID: Recording.ID
+
+    func fetch(_ db: Database) throws -> TranscriptRevision {
+        let id = recordingID
+        let segments = TranscriptSegment.where { $0.recordingID.eq(id) }
+        let count = try segments.fetchCount(db)
+        let latest = try segments.select { $0.updatedAt.max() }.fetchOne(db) ?? nil
+        return TranscriptRevision(count: count, latest: latest.map { "\($0.timeIntervalSinceReferenceDate)" } ?? "")
+    }
+}
+
+/// The transcript's lines by slide visit, read for one revision and timeline.
+struct LoadedTranscript: Sendable {
+    struct Key: Hashable {
+        var revision: TranscriptRevision
+        var timeline: SlideTimeline
+    }
+
+    var sections: [LinedSection]
+    /// Each segment's line.
+    var lineIDs: [UUID: UUID]
+    /// The player's cues (one per segment).
+    var cues: [LecturePlayer.Cue]
+
+    /// Reads the segments and works out the lines on the database's reader.
+    @concurrent
+    static func read(recordingID: Recording.ID, timeline: SlideTimeline, database: any DatabaseReader) async throws -> LoadedTranscript {
+        let segments = try await database.read { db in
+            try TranscriptSegment.where { $0.recordingID.eq(recordingID) }.order(by: \.startTime).fetchAll(db)
+        }
+        let sections = LinedSection.make(timeline.sections(of: segments))
+        return LoadedTranscript(
+            sections: sections,
+            lineIDs: TranscriptLines.lineIDs(sections.flatMap(\.lines)),
+            cues: segments.map(LecturePlayer.Cue.init)
+        )
     }
 }
 
@@ -73,7 +138,9 @@ struct LinedSection: Identifiable {
 /// scrolls to its first visit.
 private struct TranscriptList: View {
     let model: ReviewModel
-    let sections: [TranscriptSection]
+    /// The lines by slide visit (worked out once per transcript revision, `LoadedTranscript`).
+    let lined: [LinedSection]
+    let lineIDs: [UUID: UUID]
     let markers: [SlideEvent]
     let language: String
     let items: StudyItems
@@ -81,8 +148,6 @@ private struct TranscriptList: View {
     var body: some View {
         let rate = model.recording?.sampleRate ?? 48_000
         let recordingID = model.recording?.id
-        let lined = LinedSection.make(sections)
-        let lineIDs = TranscriptLines.lineIDs(lined.flatMap(\.lines))
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {

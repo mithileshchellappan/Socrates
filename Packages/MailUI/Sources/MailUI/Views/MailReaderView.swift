@@ -18,20 +18,32 @@ struct MailReaderView: View {
     let now: Date
     let dates: MailDateText
 
-    @Fetch private var data: MailReaderData
+    /// Empty until `.task` has read the rows and rendered the body on the database's reader (a
+    /// request given here would read the HTML blob and parse it on main, in the list's body).
+    @Fetch private var data = MailReaderData()
     private let database: (any DatabaseReader)?
+    private let blobRoot: URL?
     @Environment(\.mailTranslator) private var translator
     private let translations = MailTranslations.shared
 
     init(messageID: MailMessage.ID, blobRoot: URL?, now: Date, dates: MailDateText, database: (any DatabaseReader)?) {
         self.database = database
+        self.blobRoot = blobRoot
         self.messageID = messageID
         self.now = now
         self.dates = dates
-        _data = Fetch(wrappedValue: MailReaderData(), MailReaderRequest(messageID: messageID, blobRoot: blobRoot), database: database)
     }
 
     var body: some View {
+        content
+            .task(id: messageID) {
+                let request = MailReaderRequest(messageID: messageID, blobRoot: blobRoot)
+                _ = try? await $data.load(request, database: database, scheduler: OffMainScheduler())
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let message = data.message {
             let translated = translations.translation(for: message.id, subject: message.subject, body: data.body)
             let subject = translated?.subject ?? message.subject
