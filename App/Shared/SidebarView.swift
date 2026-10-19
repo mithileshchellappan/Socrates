@@ -18,11 +18,13 @@ import SwiftUI
 /// as screens change; opening a lecture opens its own course as its chevron would (the selected
 /// row shows, and the course stays open). On a course's screen that course shows its own screens
 /// instead: Lectures (count), Slides, Notes, Course Settings, with no chevron of its own (08).
-/// While files are dragged in, the predicted course opens with the predicted row lit (10,
-/// `filingDropTarget`), for the drag (after a drop, until the screen changes). Small disclosure
-/// chevrons show once any course is open. Recent searches on the Search screen (07). The semester,
-/// the agent panel's launcher and Settings at the bottom (New Course on a course's screen, 08).
-/// Files dropped on a course, lecture or session row are filed exactly there.
+/// Small disclosure chevrons show once any course is open. Recent searches on the Search screen
+/// (07). The semester, the agent panel's launcher and Settings at the bottom (New Course on a
+/// course's screen, 08). A file drag never moves the sidebar (no course opens or closes, no row
+/// changes height, nothing spring-loads): the row under the cursor lights and files dropped on a
+/// course, lecture or session row are filed exactly there; over the screen, the predicted lecture
+/// or session row lights if it shows (10, `filingDropTarget`). The whole sidebar is one drop area
+/// (`filingDropZone`), so the window's HUD stays away while the cursor is over it.
 struct SidebarView: View {
     @Binding var selection: SidebarItem?
     let center: FilingCenter
@@ -59,16 +61,6 @@ struct SidebarView: View {
     /// The open lecture's course was closed with its chevron while that lecture shows (until
     /// another lecture opens).
     @State private var lectureCourseClosed = false
-    /// The course files were just dropped into: open, showing where they went, until the screen
-    /// changes.
-    @State private var droppedCourseID: Course.ID?
-    /// The course files being dragged in would go to: open while they are dragged, and a little
-    /// longer, since moving from the window onto a sidebar row ends one drop target's drag a
-    /// moment before the row's begins.
-    @State private var dragCourseID: Course.ID?
-    @State private var dragEnding: Task<Void, Never>?
-    /// `center.dropCount` when the drag began: a drop keeps the course open.
-    @State private var dropsBeforeDrag = 0
 
     /// The mockups' 228 pt glass panel (a 236 pt column with its inset).
     static let idealWidth: CGFloat = 228
@@ -86,9 +78,8 @@ struct SidebarView: View {
     var body: some View {
         let latestJobs = Self.latestJobs(jobs)
         let now = Date()
-        let isDragging = center.drag != nil || dragCourseID != nil
-        // The course whose screen shows lists its screens (08), unless files are dragged onto it.
-        let screenCourseID = selection?.courseScreenID.flatMap { $0 == dragCourseID ? nil : $0 }
+        // The course whose screen shows lists its screens (08).
+        let screenCourseID = selection?.courseScreenID
         let childrenOf = Dictionary(uniqueKeysWithValues: courses.map { course in
             let courseLectures = lectures.filter { $0.courseID == course.id }.sorted(by: Self.inOrder)
             return (course.id, (lectures: courseLectures, next: nextSession(course.id, now: now)))
@@ -97,8 +88,6 @@ struct SidebarView: View {
             withChildren: Set(childrenOf.compactMap { !$1.lectures.isEmpty || $1.next != nil ? $0 : nil }),
             screenCourseID: screenCourseID
         )
-        // While files are dragged in, lecture rows are titles only (mockup 10).
-        let showsDates = !isDragging
         List(selection: $selection) {
             ForEach(SidebarItem.destinations, id: \.self) { item in
                 let foldsMail = item == .mail && selection?.isMail == true && mailAccounts > 0
@@ -154,8 +143,8 @@ struct SidebarView: View {
                 }
             }
 
-            // The header's chevron folds the courses; a drag of files opens them for their rows.
-            Section(isExpanded: Binding(get: { coursesExpanded || isDragging }, set: { coursesExpanded = $0 })) {
+            // The header's chevron folds the courses (a drag of files leaves them as they are).
+            Section(isExpanded: $coursesExpanded) {
                 ForEach(courses) { course in
                     let children = childrenOf[course.id] ?? ([], nil)
                     let isOpen = open.contains(course.id)
@@ -178,7 +167,7 @@ struct SidebarView: View {
                     } else if isOpen {
                         ForEach(children.lectures) { lecture in
                             NavigationLink(value: SidebarItem.lecture(lecture.id)) {
-                                LectureSidebarRow(lecture: lecture, job: latestJobs[lecture.id], showsDate: showsDates)
+                                LectureSidebarRow(lecture: lecture, job: latestJobs[lecture.id])
                             }
                             .filingDropTarget(.lecture(lecture.id), center: center)
                             .contextMenu {
@@ -191,7 +180,7 @@ struct SidebarView: View {
                             }
                         }
                         if let next = children.next {
-                            SessionSidebarRow(session: next, showsDate: showsDates)
+                            SessionSidebarRow(session: next)
                                 .filingDropTarget(.session(next.id), center: center)
                         }
                     }
@@ -217,6 +206,9 @@ struct SidebarView: View {
         // text) with each row's 13 pt content 21 pt high gives their 29 pt pitch (`.medium` is 32).
         .environment(\.sidebarRowSize, .small)
         #endif
+        // A file drag never opens a row's screen by hovering on it: the selection, and with it
+        // the rows, stay put until the drop.
+        .springLoadingBehavior(.disabled)
         // A bar, not an inset: long lists (Mail, a lecture's screen) scroll under it with the
         // scroll-edge effect instead of drawing through the semester; the hard edge cuts them off
         // at the footer's hairline.
@@ -224,23 +216,20 @@ struct SidebarView: View {
             footer
         }
         .scrollEdgeEffectStyle(.hard, for: .bottom)
+        // The whole sidebar is one drop area around its row targets: the window's HUD stays away
+        // while files are over it, so only the row under the cursor lights.
+        .filingDropZone(center)
         .navigationTitle("Study Portal")
         #if os(macOS)
         .navigationSplitViewColumnWidth(min: 200, ideal: Self.idealWidth, max: 320)
         #else
         .toolbar { SettingsToolbarItem() }
         #endif
-        .onChange(of: selection) {
-            droppedCourseID = nil
-        }
         .onChange(of: openedLecture, initial: true) { _, opened in
             // Opening a lecture opens its course, as its chevron would: the selected row shows,
             // and the course stays open on the next screens. No other course moves.
             lectureCourseClosed = false
             if let opened { setOpen(opened.courseID, true) }
-        }
-        .onChange(of: center.predictedCourseID) { _, courseID in
-            followDrag(to: courseID)
         }
     }
 
@@ -420,14 +409,11 @@ struct SidebarView: View {
 
     /// The courses that show their lectures: those opened with their chevron, the same on every
     /// screen, and the open lecture's (unless its chevron closed it), except the course whose
-    /// screens show (08); plus the course files being dragged in would go to (10) and the one they
-    /// were just dropped into. Only courses with rows to show.
+    /// screens show (08). A file drag or drop opens none. Only courses with rows to show.
     private func openCourseIDs(withChildren: Set<Course.ID>, screenCourseID: Course.ID?) -> Set<Course.ID> {
         var open = chevronOpenIDs
         // Kept open by `openCourses` too; this way it shows the moment the lecture opens.
         if let openedLecture, !lectureCourseClosed { open.insert(openedLecture.courseID) }
-        if let dragCourseID { open.insert(dragCourseID) }
-        if let droppedCourseID { open.insert(droppedCourseID) }
         if let screenCourseID { open.remove(screenCourseID) }
         return open.intersection(withChildren)
     }
@@ -444,27 +430,6 @@ struct SidebarView: View {
         if id == openedLecture?.courseID { lectureCourseClosed = !isOpen }
         let text = ids.map(\.uuidString).sorted().joined(separator: ",")
         if text != openCourses { openCourses = text }
-    }
-
-    /// Opens the course files being dragged in would go to, for that drag only: when it ends
-    /// without a drop, the course closes again (after a moment, see `dragCourseID`); a drop
-    /// leaves it open, showing where the files went.
-    private func followDrag(to courseID: Course.ID?) {
-        dragEnding?.cancel()
-        dragEnding = nil
-        if let courseID {
-            if dragCourseID == nil { dropsBeforeDrag = center.dropCount }
-            dragCourseID = courseID
-            return
-        }
-        guard dragCourseID != nil else { return }
-        dragEnding = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled else { return }
-            if let course = dragCourseID, center.dropCount != dropsBeforeDrag { droppedCourseID = course }
-            dragCourseID = nil
-            dragEnding = nil
-        }
     }
 
     /// The course's next lecture that has no lecture row yet (one in progress counts); for a
@@ -502,7 +467,6 @@ private let childIndent: CGFloat = 23
 struct LectureSidebarRow: View {
     let lecture: Lecture
     let job: Job?
-    var showsDate = true
 
     var body: some View {
         HStack(spacing: 6) {
@@ -510,7 +474,7 @@ struct LectureSidebarRow: View {
                 Text(Self.title(lecture))
                     .font(.body)
                     .lineLimit(1)
-                if showsDate, let heldAt = lecture.heldAt {
+                if let heldAt = lecture.heldAt {
                     Text(heldAt.formatted(DayText.style()))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -521,9 +485,8 @@ struct LectureSidebarRow: View {
             ProcessingMark(job: job)
         }
         .padding(.leading, childIndent)
-        // Two-line rows breathe; title-only rows (during a drag, mockup 10) keep the 29 pt pitch.
-        .padding(.vertical, showsDate ? 3 : 0)
-        .frame(minHeight: showsDate ? nil : SidebarRowLabel<EmptyView>.minHeight)
+        // Two-line rows breathe (the same while files are dragged: the sidebar never moves).
+        .padding(.vertical, 3)
     }
 
     /// "L2 · Virtualization & IaaS", "L2", "Virtualization & IaaS" or "Lecture".
@@ -543,7 +506,6 @@ struct LectureSidebarRow: View {
 /// are not SF Mono).
 struct SessionSidebarRow: View {
     let session: LectureSession
-    var showsDate = true
     /// Lit as the place files being dragged in go (mockup 10): the title then reads as primary.
     @Environment(\.isFilingTarget) private var isFilingTarget
 
@@ -552,19 +514,16 @@ struct SessionSidebarRow: View {
             Text(Self.title(session))
                 .font(.body)
                 .lineLimit(1)
-            if showsDate {
-                Text(verbatim: "\(DayText.day(session.startsAt)), \(SessionText().time(session.startsAt))")
-                    .font(.subheadline)
-                    .monospacedDigit()
-                    .lineLimit(1)
-            }
+            Text(verbatim: "\(DayText.day(session.startsAt)), \(SessionText().time(session.startsAt))")
+                .font(.subheadline)
+                .monospacedDigit()
+                .lineLimit(1)
         }
         .foregroundStyle(isFilingTarget ? .primary : .secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, childIndent)
-        // Two-line rows breathe; title-only rows (during a drag, mockup 10) keep the 29 pt pitch.
-        .padding(.vertical, showsDate ? 3 : 0)
-        .frame(minHeight: showsDate ? nil : SidebarRowLabel<EmptyView>.minHeight)
+        // Two-line rows breathe (the same while files are dragged: the sidebar never moves).
+        .padding(.vertical, 3)
     }
 
     static func title(_ session: LectureSession) -> String {

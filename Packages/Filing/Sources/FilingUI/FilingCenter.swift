@@ -21,7 +21,7 @@ public final class FilingCenter {
         public var predictions: [FilingPrediction]
         /// The HUD row under the cursor (drop there to file to that place), or the Change row.
         public var targeted: HUDTarget?
-        /// Over a sidebar lecture or session row: the row shows the destination instead.
+        /// Over a sidebar row: the row shows the destination instead.
         public var isOverRow: Bool
     }
 
@@ -86,14 +86,13 @@ public final class FilingCenter {
         }
     }
 
+    /// A drag over the window's screen. Nil while the cursor is over the sidebar
+    /// (`filingDropZone`), whose rows show where a drop goes themselves.
     public internal(set) var drag: Drag?
-    /// Where the dragged files would go while they are over the window (not over a sidebar row):
-    /// the HUD row under the cursor, else the HUD's first place. The sidebar lights its row
-    /// (mockup 10), so every lecture row shows itself as a place to drop instead.
+    /// Where the dragged files would go while they are over the window's screen: the HUD row
+    /// under the cursor, else the HUD's first place. The sidebar lights that lecture's or
+    /// session's row when it shows (mockup 10); it never opens a course for it.
     public private(set) var predictedPlace: FilingPlace?
-    /// The course the dragged files would go to, from the first prediction until the drag ends
-    /// (also while the cursor is on a sidebar row): the sidebar keeps it expanded meanwhile.
-    public private(set) var predictedCourseID: Course.ID?
     /// The sidebar row to light while dragging (`predictedPlace`'s destination).
     public var predictedDestination: FilingDestination? { predictedPlace?.destination }
     public internal(set) var toasts: [Toast] = []
@@ -128,9 +127,6 @@ public final class FilingCenter {
     @ObservationIgnored private var dismissTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var hovered: Set<UUID> = []
     @ObservationIgnored private var rowTargets = 0
-    /// Drops on the window or on a sidebar row so far: a drag that ended with one was not
-    /// cancelled.
-    @ObservationIgnored public private(set) var dropCount = 0
 
     public init(service: FilingService) {
         self.service = service
@@ -175,16 +171,18 @@ public final class FilingCenter {
 
     func dragExited() {
         predictTask?.cancel()
-        drag = nil
-        previewGhost = nil
+        // Only real changes reach observers (row drops and the sidebar's area end drags too).
+        if drag != nil { drag = nil }
+        if previewGhost != nil { previewGhost = nil }
         hudFrames = [:]
         syncPrediction()
     }
 
-    /// The files were dropped on the window (not on a sidebar row).
+    /// The files were dropped on the window or between the sidebar's rows (not on a row).
     func dropped(urls: [URL]) {
         let drag = self.drag
-        dropCount += 1
+        // A drop ends the drag everywhere: no row is targeted afterwards.
+        rowTargets = 0
         dragExited()
         // md: documents (not PDFs) go to the bank; smart import files the rest.
         let urls = documents?.take(urls) ?? urls
@@ -207,19 +205,22 @@ public final class FilingCenter {
     /// A sidebar row became (or stopped being) the drop target.
     func rowTargeted(_ isTargeted: Bool) {
         rowTargets = max(0, rowTargets + (isTargeted ? 1 : -1))
-        drag?.isOverRow = rowTargets > 0
+        if var drag, drag.isOverRow != (rowTargets > 0) {
+            drag.isOverRow = rowTargets > 0
+            self.drag = drag
+        }
         syncPrediction()
     }
 
     /// Files dropped on a sidebar row go exactly there.
     func dropped(_ urls: [URL], onRow destination: FilingDestination) async {
-        dropCount += 1
+        rowTargets = 0
         dragExited()
         await file(urls, to: destination)
     }
 
-    /// The place the dragged files would go and its course, set only when they change (each
-    /// sidebar row reads them, and the cursor moves many times a second).
+    /// The place the dragged files would go, set only when it changes (each sidebar row reads
+    /// it, and the cursor moves many times a second).
     private func syncPrediction() {
         var place: FilingPlace?
         if let drag, !drag.isOverRow, let prediction = drag.predictions.first {
@@ -230,9 +231,6 @@ public final class FilingCenter {
             }
         }
         if place != predictedPlace { predictedPlace = place }
-        let isDragging = drag != nil || rowTargets > 0
-        let course = isDragging ? place?.course.id ?? predictedCourseID : nil
-        if course != predictedCourseID { predictedCourseID = course }
     }
 
     /// The HUD follows the cursor while it shows one destination; with a choice it stays put so

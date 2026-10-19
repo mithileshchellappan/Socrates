@@ -12,10 +12,19 @@ extension View {
         modifier(SmartImportModifier(center: center))
     }
 
-    /// Makes a sidebar lecture or session row a drop target: files dropped on it go exactly
-    /// there (filed as the user's choice).
+    /// Makes a sidebar course, lecture or session row a drop target across its whole width and
+    /// height: files dropped on it go exactly there (filed as the user's choice; on a course,
+    /// smart import picks the lecture).
     public func filingDropTarget(_ destination: FilingDestination, center: FilingCenter) -> some View {
         modifier(FilingDropTargetModifier(destination: destination, center: center))
+    }
+
+    /// Makes the whole sidebar one drop area around its row targets: while files are dragged
+    /// over it the window's HUD and predicted row stand down (the window's drag ends at the
+    /// sidebar's edge), so only the row under the cursor lights; a drop between rows is filed as
+    /// on the window. It keeps no state: moving between rows changes nothing but the lit row.
+    public func filingDropZone(_ center: FilingCenter) -> some View {
+        onDrop(of: [.fileURL], delegate: SidebarDropZoneDelegate(center: center))
     }
 }
 
@@ -50,20 +59,8 @@ struct SmartImportModifier: ViewModifier {
         content
             .environment(\.overlayInsets, insets)
             .overlay(alignment: .topLeading) {
-                // A previewed drag's file (screenshots); a real drag's image is the system's.
-                if let ghost = center.previewGhost, let drag = center.drag {
-                    DropGhostPreview(ghost: ghost, location: drag.location)
-                }
-            }
-            .overlay(alignment: .topLeading) {
-                if let drag = center.drag, !drag.isOverRow, !drag.predictions.isEmpty {
-                    DropHUD(predictions: drag.predictions, targeted: drag.targeted) { target, frame in
-                        center.hudFrames[target] = frame
-                    }
-                    .offset(x: drag.anchor.x, y: drag.anchor.y)
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
-                }
+                // Its own view: a drag's moves redraw the HUD only, never the window under it.
+                DragLayer(center: center)
             }
             .overlay(alignment: .bottomTrailing) {
                 FilingToastStack(center: center)
@@ -71,7 +68,6 @@ struct SmartImportModifier: ViewModifier {
                     .padding(.bottom, insets.bottom > 0 ? insets.bottom - 8 : 0)
                     .animation(.smooth(duration: 0.2), value: insets.bottom)
             }
-            .animation(.smooth(duration: 0.18), value: center.drag?.predictions.isEmpty)
             .coordinateSpace(.named(DropHUD.space))
             .onGeometryChange(for: CGSize.self) { $0.size } action: { center.containerSize = $0 }
             .onDrop(of: [.fileURL], delegate: SmartDropDelegate(center: center))
@@ -88,6 +84,30 @@ struct SmartImportModifier: ViewModifier {
                 guard case .success(let urls) = result, !urls.isEmpty else { return }
                 Task { await center.file(urls, to: destination) }
             }
+    }
+}
+
+/// The drag's HUD and a previewed drag's file over the window. Only the HUD fades in and out:
+/// the sidebar and the screen below never animate with it.
+private struct DragLayer: View {
+    let center: FilingCenter
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            // A previewed drag's file (screenshots); a real drag's image is the system's.
+            if let ghost = center.previewGhost, let drag = center.drag {
+                DropGhostPreview(ghost: ghost, location: drag.location)
+            }
+            if let drag = center.drag, !drag.isOverRow, !drag.predictions.isEmpty {
+                DropHUD(predictions: drag.predictions, targeted: drag.targeted) { target, frame in
+                    center.hudFrames[target] = frame
+                }
+                .offset(x: drag.anchor.x, y: drag.anchor.y)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+        .animation(.smooth(duration: 0.18), value: center.drag?.predictions.isEmpty)
     }
 }
 
@@ -125,17 +145,49 @@ struct SmartDropDelegate: DropDelegate {
     }
 }
 
+/// Drops on the sidebar between its rows (`filingDropZone`): filed as on the window.
+@MainActor
+struct SidebarDropZoneDelegate: DropDelegate {
+    let center: FilingCenter
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.fileURL])
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .copy)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let providers = info.itemProviders(for: [.fileURL])
+        guard !providers.isEmpty else { return false }
+        Task { @MainActor in
+            center.dropped(urls: await FileURLs.load(providers))
+        }
+        return true
+    }
+}
+
 struct FilingDropTargetModifier: ViewModifier {
     let destination: FilingDestination
     let center: FilingCenter
     @State private var isTargeted = false
 
+    /// How far the drop area reaches past the row's content, up and down: half the space between
+    /// sidebar rows (the mockups' 29 pt pitch around 21 pt content), so the rows' areas meet and
+    /// the lit row never goes dark between two rows or at its own edge.
+    static let rowReach: CGFloat = 4
+
     func body(content: Content) -> some View {
-        // Lit under the cursor, and while files dragged over the window would go here.
+        // Lit under the cursor, and while files dragged over the window's screen would go here.
         let isLit = isTargeted || center.predictedPlace?.isShown(byRowOf: destination) == true
         content
             .environment(\.isFilingTarget, isLit)
             .listRowBackground(isLit ? FilingTargetHighlight() : nil)
+            // The whole row is the target, not only its text; the layout stays as it was.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, Self.rowReach)
+            .contentShape(Rectangle())
             .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
                 let destination = destination
                 Task { @MainActor in
@@ -143,8 +195,14 @@ struct FilingDropTargetModifier: ViewModifier {
                 }
                 return true
             }
+            .padding(.vertical, -Self.rowReach)
             .onChange(of: isTargeted) { _, targeted in
                 center.rowTargeted(targeted)
+            }
+            // A row that goes while targeted (its session's lecture was just filed) lets go, so
+            // the window's next drag shows its HUD.
+            .onDisappear {
+                if isTargeted { center.rowTargeted(false) }
             }
     }
 }
