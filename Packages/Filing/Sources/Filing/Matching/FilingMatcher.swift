@@ -172,8 +172,16 @@ public struct FilingMatcher: Sendable {
             }
         }
 
-        if let capture = evidence.capture, capture.courseID == course.id {
-            signals.append(FilingSignal(kind: .capturedCourse, evidence: course.name, weight: 1))
+        // The course chosen when it was captured: by id; an id this library does not have (an
+        // iPhone capture before sync) by the course's name or short name.
+        if let capture = evidence.capture {
+            if let id = capture.courseID, library.course(id) != nil {
+                if id == course.id {
+                    signals.append(FilingSignal(kind: .capturedCourse, evidence: course.name, weight: 1))
+                }
+            } else if Self.names(course, capture) {
+                signals.append(FilingSignal(kind: .capturedCourse, evidence: course.name, weight: 1))
+            }
         }
 
         if let start = evidence.startedAt {
@@ -189,6 +197,18 @@ public struct FilingMatcher: Sendable {
             }
         }
         return signals
+    }
+
+    /// The capture names `course`: its folded name, else its folded short name, is the course's.
+    static func names(_ course: Course, _ capture: FileEvidence.CaptureEvidence) -> Bool {
+        if let name = capture.courseName.map(TextMatch.normalize), !name.isEmpty, name == TextMatch.normalize(course.name) {
+            return true
+        }
+        if let short = capture.courseShortName.map(TextMatch.normalize), !short.isEmpty,
+           short == TextMatch.normalize(course.shortName) {
+            return true
+        }
+        return false
     }
 
     // MARK: - Lecture within a course
