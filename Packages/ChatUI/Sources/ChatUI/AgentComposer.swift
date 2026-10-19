@@ -55,7 +55,11 @@ struct AgentComposer: View {
                 .buttonStyle(.plain)
                 .disabled(!model.canAttach)
                 .help(Text("Attach"))
-                TextField("", text: $model.draft, prompt: prompt, axis: .vertical)
+                // An edit clears the notice line (why the last message or file did not go).
+                TextField("", text: Binding(get: { model.draft }, set: { text in
+                    model.draft = text
+                    if model.notice != nil { model.notice = nil }
+                }), prompt: prompt, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .lineLimit(1...6)

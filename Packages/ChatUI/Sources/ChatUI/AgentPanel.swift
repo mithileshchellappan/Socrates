@@ -98,6 +98,9 @@ final class AgentPanelModel {
     var composerFocused = false
     /// Bumped to put the caret in the composer.
     var focusRequests = 0
+    /// Why the last message or file did not go ("Couldn't send.", "Lecture3.pdf can't be read."):
+    /// one secondary line under the composer until the next edit.
+    var notice: String?
     var shown: ThreadWindow
     /// What the screen on display publishes (`.agentContext`).
     var source: AgentContextSource?
@@ -170,13 +173,15 @@ final class AgentPanelModel {
         focusRequests += 1
     }
 
-    /// A conversation from the title menu.
+    /// A conversation from the title menu: it opens on its last exchange, and follow-ups gather
+    /// under it (the thread pins `.last` to `.since` that exchange's time once it has read it).
     func pick(_ id: AgentConversation.ID) {
         startsNew = false
         selected = id
         pending = nil
         askedSinceOpen = false
         shown = .last
+        notice = nil
         focusRequests += 1
     }
 
@@ -196,18 +201,28 @@ final class AgentPanelModel {
     var canAttach: Bool { attachments.count + reading < AgentAttachment.maximumPerMessage }
     var hasFiles: Bool { !attachments.isEmpty }
 
-    /// Reads files into attachments off the main actor; anything the accept rule refuses (or past
-    /// five per message) is left out without a word.
+    /// Reads files into attachments off the main actor; a file the accept rule refuses (or past
+    /// five per message) is left out, and the notice line says so.
     func attach(urls: [URL], blobs: BlobStore) {
+        notice = nil
         let room = AgentAttachment.maximumPerMessage - attachments.count - reading
-        let picked = Array(urls.filter { AgentAttachment.kind(forFileName: $0.lastPathComponent) != nil }.prefix(max(0, room)))
+        let accepted = urls.filter { AgentAttachment.kind(forFileName: $0.lastPathComponent) != nil }
+        if let refused = urls.first(where: { AgentAttachment.kind(forFileName: $0.lastPathComponent) == nil }) {
+            notice = Self.refusal(AgentAttachment.Refusal.unsupportedType, fileName: refused.lastPathComponent)
+        } else if accepted.count > max(0, room) {
+            notice = String(localized: "At most \(AgentAttachment.maximumPerMessage) files go with one message.")
+        }
+        let picked = Array(accepted.prefix(max(0, room)))
         guard !picked.isEmpty else { return }
         reading += picked.count
         Task {
             for url in picked {
                 let made = await Self.make(url: url, blobs: blobs)
                 reading -= 1
-                if let made { add(made) }
+                switch made {
+                case .success(let attachment): add(attachment)
+                case .failure(let error): notice = Self.refusal(error, fileName: url.lastPathComponent)
+                }
             }
         }
     }
@@ -215,16 +230,34 @@ final class AgentPanelModel {
     /// Pasted or dropped bytes (a screenshot; TIFF becomes PNG).
     func attach(data: Data, type: UTType, fileName: String, blobs: BlobStore) {
         guard canAttach, AgentAttachment.kind(for: type) != nil || type.conforms(to: .tiff) else { return }
+        notice = nil
         reading += 1
         Task {
             let made = await Self.make(data: data, type: type, fileName: fileName, blobs: blobs)
             reading -= 1
-            if let made { add(made) }
+            switch made {
+            case .success(let attachment): add(attachment)
+            case .failure(let error): notice = Self.refusal(error, fileName: fileName)
+            }
         }
     }
 
     func remove(_ attachment: AgentAttachment) {
         attachments.removeAll { $0.id == attachment.id }
+        notice = nil
+    }
+
+    /// The notice for a file that was not attached: "Lecture3.pdf can't be read."
+    static func refusal(_ error: any Error, fileName: String) -> String {
+        guard let refusal = error as? AgentAttachment.Refusal else {
+            return String(localized: "\(fileName) can’t be read.")
+        }
+        switch refusal {
+        case .unsupportedType: return String(localized: "\(fileName) isn’t an image, a PDF or a text file.")
+        case .tooLarge: return String(localized: "\(fileName) is too large.")
+        case .unreadableText, .unreadablePDF: return String(localized: "\(fileName) can’t be read.")
+        default: return String(localized: "\(fileName) can’t be attached.")
+        }
     }
 
     private func add(_ attachment: AgentAttachment) {
@@ -233,34 +266,34 @@ final class AgentPanelModel {
     }
 
     @concurrent
-    nonisolated private static func make(url: URL, blobs: BlobStore) async -> AgentAttachment? {
+    nonisolated private static func make(url: URL, blobs: BlobStore) async -> Result<AgentAttachment, any Error> {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
-            return try AgentAttachment.make(fileAt: url, blobs: blobs)
+            return .success(try AgentAttachment.make(fileAt: url, blobs: blobs))
         } catch {
             ChatUILog.ui.notice("Attachment refused: \(String(describing: error), privacy: .public)")
-            return nil
+            return .failure(error)
         }
     }
 
     @concurrent
-    nonisolated private static func make(data: Data, type: UTType, fileName: String, blobs: BlobStore) async -> AgentAttachment? {
+    nonisolated private static func make(data: Data, type: UTType, fileName: String, blobs: BlobStore) async -> Result<AgentAttachment, any Error> {
         var data = data
         var type = type
         var fileName = fileName
         if type.conforms(to: .tiff) {
             // A screenshot on the pasteboard is TIFF; Claude reads PNG.
-            guard let png = AttachmentImages.png(fromImageData: data) else { return nil }
+            guard let png = AttachmentImages.png(fromImageData: data) else { return .failure(AgentAttachment.Refusal.unsupportedType) }
             data = png
             type = .png
             fileName = (fileName as NSString).deletingPathExtension + ".png"
         }
         do {
-            return try AgentAttachment.make(data: data, contentType: type, fileName: fileName, blobs: blobs)
+            return .success(try AgentAttachment.make(data: data, contentType: type, fileName: fileName, blobs: blobs))
         } catch {
             ChatUILog.ui.notice("Attachment refused: \(String(describing: error), privacy: .public)")
-            return nil
+            return .failure(error)
         }
     }
 }

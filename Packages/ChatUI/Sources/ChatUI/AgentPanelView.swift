@@ -111,7 +111,17 @@ struct AgentPanelView: View {
             }
             AgentComposer(model: model, prompt: prompt, conversationID: conversationID, send: { send(to: conversationID) })
                 .padding(.horizontal, style == .compact ? 8 : 12)
-                .padding(.bottom, style == .compact ? 8 : 12)
+                .padding(.bottom, model.notice == nil ? (style == .compact ? 8 : 12) : 4)
+            if let notice = model.notice {
+                // Why the message or a file did not go, until the next edit.
+                Text(verbatim: notice)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, style == .compact ? 14 : 16)
+                    .padding(.bottom, style == .compact ? 8 : 12)
+            }
         }
         .frame(maxHeight: style == .expanded ? .infinity : nil, alignment: .top)
     }
@@ -164,6 +174,7 @@ struct AgentPanelView: View {
         )
         model.draft = ""
         model.attachments = []
+        model.notice = nil
         model.isSending = true
         model.askedSinceOpen = true
         Task {
@@ -177,6 +188,13 @@ struct AgentPanelView: View {
                 if model.draft.isEmpty { model.draft = text }
                 if model.attachments.isEmpty { model.attachments = files }
                 model.pending = nil
+                // The message is back in the composer; one line says why (a readable reason
+                // only, never a raw error).
+                if let reason = (error as? any LocalizedError)?.errorDescription, !reason.isEmpty {
+                    model.notice = String(localized: "Couldn’t send: \(reason)")
+                } else {
+                    model.notice = String(localized: "Couldn’t send. Try again.")
+                }
             }
             model.isSending = false
         }
