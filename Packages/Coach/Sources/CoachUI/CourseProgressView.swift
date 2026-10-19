@@ -153,6 +153,8 @@ private struct ProgressHero: View {
     @State private var examPreview: StudyExamPreview?
     @State private var sheet: SheetCourse?
     @State private var isStarting = false
+    /// M7: practice exams stay on the Mac; the phone offers Practice only.
+    @PhoneLayout private var isPhone
 
     private var course: Course { measures.rows.course }
 
@@ -245,10 +247,10 @@ private struct ProgressHero: View {
     }
 
     private var isRunway: Bool {
-        !measures.isSeminar && measures.budget?.isRunway(CalendarDay(now, in: timeZone)) == true
+        !isPhone && !measures.isSeminar && measures.budget?.isRunway(CalendarDay(now, in: timeZone)) == true
     }
 
-    private var openExam: StudySession? { exams.first { $0.state.isOpen } }
+    private var openExam: StudySession? { isPhone ? nil : exams.first { $0.state.isOpen } }
 
     /// The course has questions to practise (a round's preview that found none counts as none).
     private var hasQuestions: Bool {

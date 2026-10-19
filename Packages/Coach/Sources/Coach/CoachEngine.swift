@@ -23,15 +23,21 @@ import StudyCore
 /// `AppAgent.specs(…, coach:)` and `AppAgent(…, coach:)`, install it in `\.studyCoach`, then
 /// `await coach.start()` in `startBackgroundWork`, `await coach.wake()` when study pass units
 /// finish or Claude Code turns available, `await coach.stop()` at `willTerminate`.
+///
+/// M7, the iPhone: `CoachEngine(services:)` has no Claude client. Rounds and Start work (choices
+/// and labels graded in code, the cards as on the Mac); a written answer stays `pending` for the
+/// Mac's grader (it arrives there through sync); it never plans (`start()` does nothing: the
+/// Mac's plan comes down), drafts or grades.
 public actor CoachEngine: StudyCoaching {
     let services: StudyServices
-    let client: ClaudeClient
+    /// Nil on the iPhone: no drafting, old exams, grading or planning there.
+    let client: ClaudeClient?
     let now: @Sendable () -> Date
-    /// Drafts a lecture's questions (the queue's `question_draft` runner).
-    public nonisolated let drafter: QuestionDrafter
-    /// Reads an old exam (the queue's `practice_exam` runner for an old exam).
-    public nonisolated let oldExams: OldExamReader
-    let grader: AnswerGrader
+    /// Drafts a lecture's questions (the queue's `question_draft` runner); nil without Claude.
+    public nonisolated let drafter: QuestionDrafter?
+    /// Reads an old exam (the queue's `practice_exam` runner for an old exam); nil without Claude.
+    public nonisolated let oldExams: OldExamReader?
+    let grader: AnswerGrader?
 
     private var started = false
     private var observation: AnyDatabaseCancellable?
@@ -52,13 +58,21 @@ public actor CoachEngine: StudyCoaching {
     static let debounce: Duration = .seconds(2)
     static let throttle: Duration = .seconds(15)
 
-    public init(services: StudyServices, client: ClaudeClient, now: @escaping @Sendable () -> Date = { Date() }) {
+    /// The Mac's coach (`client`: Claude Code); nil: as `init(services:)`.
+    public init(services: StudyServices, client: ClaudeClient?, now: @escaping @Sendable () -> Date = { Date() }) {
         self.services = services
         self.client = client
         self.now = now
-        drafter = QuestionDrafter(services: services, client: client, now: now)
-        oldExams = OldExamReader(services: services, client: client, now: now)
-        grader = AnswerGrader(services: services, client: client)
+        drafter = client.map { QuestionDrafter(services: services, client: $0, now: now) }
+        oldExams = client.map { OldExamReader(services: services, client: $0, now: now) }
+        grader = client.map { AnswerGrader(services: services, client: $0) }
+    }
+
+    /// M7, the iPhone's coach: no Claude. Rounds and `start(block:)` work, choices and labels are
+    /// graded in code, written answers stay `pending` for the Mac; no plan loop, no drafting, no
+    /// grading (`start()` does nothing).
+    public init(services: StudyServices, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.init(services: services, client: nil, now: now)
     }
 
     var store: RecordStore { services.records }
@@ -69,9 +83,10 @@ public actor CoachEngine: StudyCoaching {
 
     // MARK: - Lifecycle
 
-    /// Follows the rows, replans now and grades what waits (a quit or a usage pause left).
+    /// Follows the rows, replans now and grades what waits (a quit or a usage pause left). Without
+    /// Claude (the iPhone) nothing: the phone never plans.
     public func start() async {
-        guard !started else { return }
+        guard !started, client != nil else { return }
         started = true
         let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let tracked: [any DatabaseRegionConvertible] = [
@@ -324,9 +339,10 @@ public actor CoachEngine: StudyCoaching {
 
     // MARK: - Grading
 
-    /// Grades pending written answers in the background (one run at a time).
+    /// Grades pending written answers in the background (one run at a time). Without Claude (the
+    /// iPhone) they stay `pending` for the Mac.
     func grade() {
-        guard started else { return }
+        guard started, grader != nil else { return }
         if gradeTask != nil {
             gradeAgain = true
             return
@@ -335,6 +351,10 @@ public actor CoachEngine: StudyCoaching {
     }
 
     private func runGrading() async {
+        guard let grader else {
+            gradeTask = nil
+            return
+        }
         repeat {
             gradeAgain = false
             let report = await grader.run()
