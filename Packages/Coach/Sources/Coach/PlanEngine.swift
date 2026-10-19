@@ -101,6 +101,14 @@ struct Planner {
     let today: CalendarDay
     let days: ClosedRange<CalendarDay>
     let statuses: [Course.ID: CoachRows.CourseStatus]
+    /// `rows.statuses` in the courses' order, computed once (it builds every course's budget).
+    let orderedStatuses: [CoachRows.CourseStatus]
+    /// Courses with something to plan (lectures, questions or open items with a date): only
+    /// these count toward the week's remaining share. A course from the timetable without any
+    /// (unknown credits default to a large budget) would add room no block can fill.
+    let plannable: Set<Course.ID>
+    /// Misses per topic (for Read's "missed twice"), counted once.
+    let missedTopics: [TopicKey: Int]
     let rules: PlanRules
     /// Readings whose recall questions join the rounds (`PlanEngine.readReadings`).
     let readReadings: Set<StudyReading.ID>
@@ -126,7 +134,19 @@ struct Planner {
         zone = rows.timeZone
         today = rows.today
         days = rows.today...rows.today.adding(days: CoachRules.planDays)
-        statuses = Dictionary(rows.statuses.map { ($0.course.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let list = rows.statuses
+        orderedStatuses = list
+        statuses = Dictionary(list.map { ($0.course.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var plannable = Set(rows.lectures.map(\.courseID))
+        plannable.formUnion(rows.questions.map(\.courseID))
+        plannable.formUnion(rows.items.filter { $0.status == .open && $0.dueAt != nil }.compactMap(\.courseID))
+        self.plannable = plannable
+        let byID = Dictionary(rows.questions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var missed: [TopicKey: Int] = [:]
+        for answer in rows.misses {
+            if let key = byID[answer.questionID]?.topicKey { missed[key, default: 0] += 1 }
+        }
+        missedTopics = missed
         rules = rows.rules
         readReadings = PlanEngine.readReadings(rows)
     }
@@ -260,9 +280,11 @@ struct Planner {
         return share(status, on: day) - studied - planned
     }
 
-    /// The week's minutes left over every course (none below zero).
+    /// The week's minutes left over every course with something to plan (none below zero).
     func weekRemaining(_ day: CalendarDay) -> Double {
-        statuses.keys.reduce(0) { $0 + max(0, remaining($1, on: day)) }
+        statuses.keys.reduce(0) { total, course in
+            plannable.contains(course) ? total + max(0, remaining(course, on: day)) : total
+        }
     }
 
     /// What a day can hold: free time, a cap rule, the away cap.
@@ -665,7 +687,7 @@ struct Planner {
         var blocks: [StudyBlock] = []
         var room = room
         let week = StudyBudget.monday(of: day).rawValue
-        for status in rows.statuses where !status.isSeminar {
+        for status in orderedStatuses where !status.isSeminar {
             guard let exam = status.examDay, day < exam, status.budget.isRunway(day),
                   !practiceWeeks.contains("\(status.course.id)|\(week)"), !rules.skips(.practiceExam, of: status.course.id, on: day),
                   room >= status.examMinutes else { continue }
@@ -683,11 +705,7 @@ struct Planner {
     mutating func read(on day: CalendarDay, room: Int, away: Bool) -> StudyBlock? {
         guard room >= 10 else { return nil }
         let end = day.adding(days: 1).start(in: zone)
-        var missed: [TopicKey: Int] = [:]
-        let byID = Dictionary(rows.questions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for answer in rows.misses {
-            if let key = byID[answer.questionID]?.topicKey { missed[key, default: 0] += 1 }
-        }
+        let missed = missedTopics
         func reason(_ reading: StudyReading) -> Int? {
             if reading.reason == .gap { return 0 }
             if let key = reading.topicKey, (missed[key] ?? 0) >= 2 { return 1 }
@@ -728,7 +746,7 @@ struct Planner {
         var blocks: [StudyBlock] = []
         var room = room
         let week = StudyBudget.monday(of: day).rawValue
-        for status in rows.statuses where status.isSeminar {
+        for status in orderedStatuses where status.isSeminar {
             guard !seminarWeeks.contains("\(status.course.id)|\(week)"), !rules.skips(.seminarStep, of: status.course.id, on: day) else { continue }
             let next = rows.items
                 .filter { item in

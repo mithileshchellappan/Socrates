@@ -28,17 +28,36 @@ public actor SearchIndexer {
     private let database: any DatabaseWriter
     private let debounce: Duration
     private let now: @Sendable () -> Date
+    /// Where the `IndexState.textVersion` the library was last checked against is kept (nil: the
+    /// check runs at every start).
+    private let textStamp: URL?
     private let builder = ChunkBuilder()
     private let changes = ChangeCounter()
+    /// What changed since the last pass: notes only, or anything else too.
+    private let scope = PendingScope()
     private var observation: AnyDatabaseCancellable?
+    private var noteObservation: AnyDatabaseCancellable?
     private var loop: Task<Void, Never>?
     private var isCatchingUp = false
     private var catchUpAgain = false
+    private var catchUpAgainScope = Scope.notes
+
+    /// What a pass looks at: every source (launch, a lecture, deck or recording changed), or the
+    /// notes alone (the student typing: a save every half second).
+    enum Scope: Sendable {
+        case notes
+        case all
+
+        func union(_ other: Scope) -> Scope { self == .all || other == .all ? .all : .notes }
+    }
 
     /// Tables whose changes can make chunks stale (M5: `annotation`, for further reading).
+    /// `note` is watched on its own (`noteRegion`): its changes start a notes-only pass.
     static let observedTables = [
-        "transcript_segment", "deck_page", "note", "lecture_deck_span", "lecture", "deck", "recording", "annotation",
+        "transcript_segment", "deck_page", "lecture_deck_span", "lecture", "deck", "recording", "annotation",
     ]
+
+    static var noteRegion: any DatabaseRegionConvertible { SQLRequest<Row>(sql: "SELECT * FROM \"note\"") }
 
     /// What the indexer watches: every column of the tables above, except that of `lecture` and
     /// `annotation` only the columns chunks are built from (rows added or deleted always count).
@@ -60,12 +79,19 @@ public actor SearchIndexer {
     }
 
     public init(services: StudyServices, debounce: Duration = .seconds(1)) {
-        self.init(database: services.database, debounce: debounce)
+        self.init(
+            database: services.database, debounce: debounce,
+            textStamp: services.paths.caches.appending(path: "SearchTextVersion")
+        )
     }
 
-    public init(database: any DatabaseWriter, debounce: Duration = .seconds(1), now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(
+        database: any DatabaseWriter, debounce: Duration = .seconds(1), textStamp: URL? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.database = database
         self.debounce = debounce
+        self.textStamp = textStamp
         self.now = now
     }
 
@@ -75,12 +101,22 @@ public actor SearchIndexer {
         guard loop == nil else { return }
         let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let changes = changes
+        let scope = scope
+        let onError: @Sendable (any Error) -> Void = { error in
+            Log.search.error("Search index observation failed: \(String(describing: error), privacy: .public)")
+        }
         observation = DatabaseRegionObservation(tracking: Self.observedRegions).start(
-            in: database,
-            onError: { error in
-                Log.search.error("Search index observation failed: \(String(describing: error), privacy: .public)")
-            },
+            in: database, onError: onError,
             onChange: { _ in
+                scope.add(.all)
+                changes.bump()
+                continuation.yield()
+            }
+        )
+        noteObservation = DatabaseRegionObservation(tracking: Self.noteRegion).start(
+            in: database, onError: onError,
+            onChange: { _ in
+                scope.add(.notes)
                 changes.bump()
                 continuation.yield()
             }
@@ -96,18 +132,41 @@ public actor SearchIndexer {
                     if current == seen { break }
                     seen = current
                 }
-                await self?.catchUpLogged()
+                guard let pending = scope.take() else { continue }
+                await self?.catchUpLogged(pending)
             }
         }
-        await catchUpLogged(verifyingText: true)
+        await catchUpLogged(.all, verifyingText: textVersionChanged())
     }
 
     /// Stops watching the library.
     public func stop() {
         observation?.cancel()
         observation = nil
+        noteObservation?.cancel()
+        noteObservation = nil
         loop?.cancel()
         loop = nil
+    }
+
+    // MARK: - Text version
+
+    /// Whether the chunker's text changed since the library was last checked against it.
+    private func textVersionChanged() -> Bool {
+        guard let textStamp, let data = try? Data(contentsOf: textStamp),
+              let stored = Int(String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return true }
+        return stored != IndexState.textVersion
+    }
+
+    private func saveTextVersion() {
+        guard let textStamp else { return }
+        do {
+            try FileManager.default.createDirectory(at: textStamp.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("\(IndexState.textVersion)".utf8).write(to: textStamp, options: .atomic)
+        } catch {
+            Log.search.error("Saving the search text version failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
     }
 
     /// Drops every chunk and indexes the whole library again.
@@ -125,14 +184,20 @@ public actor SearchIndexer {
     }
 
     /// `verifyingText` also re-chunks sources an earlier build cut differently
-    /// (`IndexState.outdatedText`), as `start()` does once per launch.
+    /// (`IndexState.outdatedText`), as `start()` does when `IndexState.textVersion` changed.
     @discardableResult
     public func catchUp(verifyingText: Bool) async throws -> Report {
+        try await catchUp(.all, verifyingText: verifyingText)
+    }
+
+    func catchUp(_ scope: Scope, verifyingText: Bool) async throws -> Report {
         var report = Report()
-        var work = try await database.read { db in try IndexState.staleUnits(db) }
+        var work = try await database.read { db in
+            try scope == .all ? IndexState.staleUnits(db) : IndexState.staleNotes(db)
+        }
         if verifyingText {
-            let outdated = try await database.read { db in try IndexState.outdatedText(db) }
-            work.formUnion(outdated)
+            let rows = try await database.read { db in try IndexState.indexedText(db) }
+            work.formUnion(IndexState.outdatedText(rows))
         }
         for recordingID in work.recordings {
             report.chunks += try await indexRecording(recordingID)
@@ -151,26 +216,32 @@ public actor SearchIndexer {
             report.chunks += try await indexReading(annotationID)
             report.readings += 1
         }
-        report.removed = try await database.write { db in try IndexState.removeOrphans(db) }
+        report.removed = try await database.write { db in try IndexState.removeOrphans(db, notesOnly: scope == .notes) }
+        if verifyingText { saveTextVersion() }
         return report
     }
 
     /// Catches up, logging what it did. A change that arrives while a catch-up is suspended on
-    /// the database (the actor is reentrant) runs one more pass afterwards instead of a second
-    /// catch-up alongside.
-    private func catchUpLogged(verifyingText: Bool = false) async {
+    /// the database (the actor is reentrant) runs one more pass afterwards (of everything that
+    /// changed meanwhile) instead of a second catch-up alongside.
+    private func catchUpLogged(_ scope: Scope, verifyingText: Bool = false) async {
         guard !isCatchingUp else {
+            catchUpAgainScope = catchUpAgain ? catchUpAgainScope.union(scope) : scope
             catchUpAgain = true
             return
         }
         isCatchingUp = true
         defer { isCatchingUp = false }
         var verifies = verifyingText
+        var current = scope
         repeat {
-            catchUpAgain = false
+            if catchUpAgain {
+                current = catchUpAgainScope
+                catchUpAgain = false
+            }
             do {
                 let started = ContinuousClock.now
-                let report = try await catchUp(verifyingText: verifies)
+                let report = try await catchUp(current, verifyingText: verifies)
                 verifies = false
                 if !report.isEmpty {
                     let elapsed = ContinuousClock.now - started
@@ -317,4 +388,21 @@ private final class ChangeCounter: Sendable {
 
     func bump() { count.withLock { $0 &+= 1 } }
     var value: UInt64 { count.withLock { $0 } }
+}
+
+/// The scope of the changes since the last pass (written by the observations' callbacks).
+private final class PendingScope: Sendable {
+    private let pending = Mutex<SearchIndexer.Scope?>(nil)
+
+    func add(_ scope: SearchIndexer.Scope) {
+        pending.withLock { $0 = $0.map { $0.union(scope) } ?? scope }
+    }
+
+    /// What changed, and nothing pending from now on.
+    func take() -> SearchIndexer.Scope? {
+        pending.withLock { value in
+            defer { value = nil }
+            return value
+        }
+    }
 }

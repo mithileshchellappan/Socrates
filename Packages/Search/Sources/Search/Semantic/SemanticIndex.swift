@@ -51,7 +51,8 @@ public actor SemanticIndex: SemanticSearching {
     private var isReconciling = false
     private var reconcileAgain = false
     private var stopped = false
-    private var lastQuery: ContinuousClock.Instant?
+    /// The last query or batch: the model unloads 2 min after it.
+    private var lastUse: ContinuousClock.Instant?
 
     private var matrix: VectorMatrix?
     private var queryVectors: [String: [Float]] = [:]
@@ -122,7 +123,7 @@ public actor SemanticIndex: SemanticSearching {
     /// without queries. Nothing when the assets are missing.
     public func warm() {
         guard !stopped, hasAssets(), loadModel() else { return }
-        lastQuery = .now
+        lastUse = .now
         scheduleUnload()
     }
 
@@ -143,7 +144,7 @@ public actor SemanticIndex: SemanticSearching {
             reconcileAgain = false
             await reconcileOnce()
         } while reconcileAgain && !stopped && !Task.isCancelled
-        unloadAfterBatch()
+        idleAfterBatch()
     }
 
     private func reconcileOnce() async {
@@ -302,7 +303,7 @@ public actor SemanticIndex: SemanticSearching {
         // A search superseded while it waited for the actor.
         try Task.checkCancellation()
         guard limit > 0, !stopped, hasAssets(), loadModel() else { return [] }
-        lastQuery = .now
+        lastUse = .now
         scheduleUnload()
         let matrix = try await currentMatrix()
         guard matrix.rows > 0 else { return [] }
@@ -419,13 +420,12 @@ public actor SemanticIndex: SemanticSearching {
         queryOrder = []
     }
 
-    /// After a batch: unloaded unless a query came in the last 2 min (then when that expires).
-    private func unloadAfterBatch() {
-        if let lastQuery, ContinuousClock.now - lastQuery < Self.idleUnload {
-            scheduleUnload()
-        } else {
-            unload()
-        }
+    /// After a batch: the model stays loaded on the same 2-minute idle timer as after a query, so
+    /// a note saved every few seconds embeds without loading the model each time.
+    private func idleAfterBatch() {
+        guard isLoaded else { return }
+        lastUse = .now
+        scheduleUnload()
     }
 
     private func scheduleUnload() {
@@ -439,7 +439,7 @@ public actor SemanticIndex: SemanticSearching {
     private func unloadIfIdle() {
         unloadTimer = nil
         guard !isReconciling else { return }
-        if let lastQuery, ContinuousClock.now - lastQuery < Self.idleUnload {
+        if let lastUse, ContinuousClock.now - lastUse < Self.idleUnload {
             scheduleUnload()
             return
         }

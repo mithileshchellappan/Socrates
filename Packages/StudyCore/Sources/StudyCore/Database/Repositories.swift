@@ -373,12 +373,23 @@ public struct JobRepository: Sendable {
     }
 
     /// Records a running job's progress (of `phase`, or of the stage when nil). Ignored once the
-    /// job has finished.
+    /// job has finished. A column-only UPDATE (progress, phase, updated_at): observers of a job's
+    /// state or lecture (the study pass, the sidebar, Retry) are not woken twice a second during a
+    /// transcription, as a whole-row upsert would. Returns whether the job was running.
     @discardableResult
-    public func reportProgress(_ jobID: Job.ID, _ progress: Double, phase: JobPhase? = nil) async throws -> Job? {
-        try await update(jobID, from: [.running]) { job, _ in
-            job.progress = min(max(progress, 0), 1)
-            job.phase = phase
+    public func reportProgress(_ jobID: Job.ID, _ progress: Double, phase: JobPhase? = nil) async throws -> Bool {
+        let stamp = store.currentDate
+        let value = min(max(progress, 0), 1)
+        return try await store.database.write { db in
+            try Job
+                .where { $0.id.eq(jobID) && $0.state.eq(JobState.running) }
+                .update {
+                    $0.progress = value
+                    $0.phase = phase
+                    $0.updatedAt = stamp
+                }
+                .execute(db)
+            return db.changesCount > 0
         }
     }
 
