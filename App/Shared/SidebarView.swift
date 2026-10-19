@@ -12,15 +12,17 @@ import SwiftUI
 /// The main window's sidebar (mockups 01, 03, 05, 07, 08, 10): Today, Calendar, Mail (unread count;
 /// on Mail, its lists under it: Inbox, the courses, University, Newsletters, Drafts, Sent), Notes
 /// (M6; on Notes, All Notes and each course with notes under it, mockup 04), Search; then the courses as flat rows, on the mockups' 29 pt pitch. Courses start closed (01,
-/// 07). On a lecture's screen every course with lectures opens to them ("L2 · Virtualization &
-/// IaaS", Tue 13 Oct) and its next session in secondary text ("L3", "Mon 19 Oct, 12:15") (03); on a
-/// course's screen that course shows its own screens instead: Lectures (count), Slides, Notes,
-/// Course Settings, with no chevrons (08). While files are dragged in, the predicted course opens
-/// with the predicted row lit (10, `filingDropTarget`). Courses opened that way close again on the
-/// top-level screens; a course opened with its chevron stays open. Small disclosure chevrons show
-/// once any course is open. Recent searches on the Search screen (07). The semester, the agent
-/// panel's launcher and Settings at the bottom (New Course on a course's screen, 08). Files dropped on a course, lecture or
-/// session row are filed exactly there.
+/// 07). An open course lists its lectures ("L2 · Virtualization & IaaS", Tue 13 Oct) and its next
+/// session in secondary text ("L3", "Mon 19 Oct, 12:15") (03). Courses open and close only by their
+/// chevron (or the Courses section's fold), the same on every screen, so the sidebar never jumps
+/// as screens change; opening a lecture opens its own course as its chevron would (the selected
+/// row shows, and the course stays open). On a course's screen that course shows its own screens
+/// instead: Lectures (count), Slides, Notes, Course Settings, with no chevron of its own (08).
+/// While files are dragged in, the predicted course opens with the predicted row lit (10,
+/// `filingDropTarget`), for the drag (after a drop, until the screen changes). Small disclosure
+/// chevrons show once any course is open. Recent searches on the Search screen (07). The semester,
+/// the agent panel's launcher and Settings at the bottom (New Course on a course's screen, 08).
+/// Files dropped on a course, lecture or session row are filed exactly there.
 struct SidebarView: View {
     @Binding var selection: SidebarItem?
     let center: FilingCenter
@@ -47,14 +49,16 @@ struct SidebarView: View {
     @FetchAll(MailMessage.where { $0.courseID.isNot(nil) }.select(\.courseID).distinct()) private var mailCourseIDs: [Course.ID?]
     /// Without a mail account Mail has no lists under it (the screen offers Set Up Mail…).
     @FetchOne(MailAccount.count()) private var mailAccounts = 0
-    /// The courses opened with their chevron, as comma-separated IDs (kept per window).
+    /// The courses opened with their chevron (or by opening one of their lectures), as
+    /// comma-separated IDs (kept per window).
     @SceneStorage("sidebar.openCourses") private var openCourses = ""
     /// The Courses section, folded with its header's chevron (kept per window).
     @SceneStorage("sidebar.coursesExpanded") private var coursesExpanded = true
     /// Mail's lists under the Mail row, folded with the row's chevron (kept per window).
     @SceneStorage("sidebar.mailListsExpanded") private var mailListsExpanded = true
-    /// Courses the open screen opened that were closed with their chevron (until the screen changes).
-    @State private var closedCourses: Set<Course.ID> = []
+    /// The open lecture's course was closed with its chevron while that lecture shows (until
+    /// another lecture opens).
+    @State private var lectureCourseClosed = false
     /// The course files were just dropped into: open, showing where they went, until the screen
     /// changes.
     @State private var droppedCourseID: Course.ID?
@@ -89,7 +93,10 @@ struct SidebarView: View {
             let courseLectures = lectures.filter { $0.courseID == course.id }.sorted(by: Self.inOrder)
             return (course.id, (lectures: courseLectures, next: nextSession(course.id, now: now)))
         })
-        let open = openCourseIDs(withChildren: Set(childrenOf.compactMap { !$1.lectures.isEmpty || $1.next != nil ? $0 : nil }))
+        let open = openCourseIDs(
+            withChildren: Set(childrenOf.compactMap { !$1.lectures.isEmpty || $1.next != nil ? $0 : nil }),
+            screenCourseID: screenCourseID
+        )
         // While files are dragged in, lecture rows are titles only (mockup 10).
         let showsDates = !isDragging
         List(selection: $selection) {
@@ -153,12 +160,14 @@ struct SidebarView: View {
                     let children = childrenOf[course.id] ?? ([], nil)
                     let isOpen = open.contains(course.id)
                     let hasChildren = !children.lectures.isEmpty || children.next != nil
+                    // The course whose screens show has no chevron of its own (08).
+                    let isScreenCourse = course.id == screenCourseID
                     courseRow(
                         course,
-                        disclosure: screenCourseID != nil || open.isEmpty ? .none : (hasChildren ? .shown(isOpen: isOpen) : .hidden),
-                        canOpen: hasChildren && screenCourseID == nil
+                        disclosure: open.isEmpty ? .none : (hasChildren && !isScreenCourse ? .shown(isOpen: isOpen) : .hidden),
+                        canOpen: hasChildren && !isScreenCourse
                     )
-                    if course.id == screenCourseID {
+                    if isScreenCourse {
                         // Mockup 08: the course's own screens, its settings among them.
                         ForEach(SidebarItem.courseScreens(course.id), id: \.self) { item in
                             NavigationLink(value: item) {
@@ -222,9 +231,13 @@ struct SidebarView: View {
         .toolbar { SettingsToolbarItem() }
         #endif
         .onChange(of: selection) {
-            // A course closed with its chevron stays closed only on the screen that opened it.
-            closedCourses = []
             droppedCourseID = nil
+        }
+        .onChange(of: openedLecture, initial: true) { _, opened in
+            // Opening a lecture opens its course, as its chevron would: the selected row shows,
+            // and the course stays open on the next screens. No other course moves.
+            lectureCourseClosed = false
+            if let opened { setOpen(opened.courseID, true) }
         }
         .onChange(of: center.predictedCourseID) { _, courseID in
             followDrag(to: courseID)
@@ -386,40 +399,46 @@ struct SidebarView: View {
 
     // MARK: - State
 
-    /// The courses opened with their chevron (or by a drop).
+    /// The courses opened with their chevron (or by opening one of their lectures).
     private var chevronOpenIDs: Set<Course.ID> {
         Set(openCourses.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
     }
 
-    /// The courses that show their lectures: on a lecture's screen every course that has some
-    /// (03), on a course's screen none (08 lists that course's screens), and those opened with
-    /// their chevron; plus the course files being dragged in would go to (10).
-    private func openCourseIDs(withChildren: Set<Course.ID>) -> Set<Course.ID> {
-        var open: Set<Course.ID>
-        switch selection {
-        case .lecture?:
-            open = withChildren.union(chevronOpenIDs).subtracting(closedCourses)
-        case let item? where item.courseScreenID != nil:
-            open = []
-        default:
-            open = chevronOpenIDs
-        }
-        if let dragCourseID { open.insert(dragCourseID) }
-        if let droppedCourseID, selection?.courseScreenID == nil { open.insert(droppedCourseID) }
-        return open
+    /// The lecture whose screen shows, with its course (once its row is read).
+    private struct OpenedLecture: Equatable {
+        var lectureID: Lecture.ID
+        var courseID: Course.ID
     }
 
-    /// The chevron (or Show/Hide Lectures): open stays open on every screen (kept per window);
-    /// closing a course the screen opened lasts while that screen shows.
+    private var openedLecture: OpenedLecture? {
+        guard case .lecture(let id)? = selection, let lecture = lectures.first(where: { $0.id == id }) else { return nil }
+        return OpenedLecture(lectureID: id, courseID: lecture.courseID)
+    }
+
+    /// The courses that show their lectures: those opened with their chevron, the same on every
+    /// screen, and the open lecture's (unless its chevron closed it), except the course whose
+    /// screens show (08); plus the course files being dragged in would go to (10) and the one they
+    /// were just dropped into. Only courses with rows to show.
+    private func openCourseIDs(withChildren: Set<Course.ID>, screenCourseID: Course.ID?) -> Set<Course.ID> {
+        var open = chevronOpenIDs
+        // Kept open by `openCourses` too; this way it shows the moment the lecture opens.
+        if let openedLecture, !lectureCourseClosed { open.insert(openedLecture.courseID) }
+        if let dragCourseID { open.insert(dragCourseID) }
+        if let droppedCourseID { open.insert(droppedCourseID) }
+        if let screenCourseID { open.remove(screenCourseID) }
+        return open.intersection(withChildren)
+    }
+
+    /// The chevron (or Show/Hide Lectures, or opening a lecture): the course stays as set on every
+    /// screen (kept per window).
     private func setOpen(_ id: Course.ID, _ isOpen: Bool) {
         var ids = chevronOpenIDs
         if isOpen {
             ids.insert(id)
-            closedCourses.remove(id)
         } else {
             ids.remove(id)
-            closedCourses.insert(id)
         }
+        if id == openedLecture?.courseID { lectureCourseClosed = !isOpen }
         let text = ids.map(\.uuidString).sorted().joined(separator: ",")
         if text != openCourses { openCourses = text }
     }

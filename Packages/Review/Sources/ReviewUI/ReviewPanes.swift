@@ -138,9 +138,10 @@ struct ReviewContent: View {
     }
 }
 
-/// The edge between two of the review screen's panes. Nothing is drawn (mockup 03 has no line
-/// there): the pointer turns into the resize pointer, a drag moves the edge, a double-click
-/// collapses the pane or brings it back. The hit area reaches `slop` past either side.
+/// The edge between two of the review screen's panes. Nothing is drawn while both panes show
+/// (mockup 03 has no line there); a collapsed pane's edge shows a small grabber. The pointer turns
+/// into the resize pointer, a drag moves the edge, a double-click collapses the pane or brings it
+/// back. The hit area reaches `slop` past either side.
 struct PaneDivider: View {
     enum Axis {
         /// Between the slide and the transcript: dragged up and down.
@@ -150,6 +151,9 @@ struct PaneDivider: View {
     }
 
     static let slop: CGFloat = 2
+    /// The grabber a collapsed edge shows.
+    static let grabberLength: CGFloat = 36
+    static let grabberThickness: CGFloat = 4
 
     let axis: Axis
     let isCollapsed: Bool
@@ -162,6 +166,19 @@ struct PaneDivider: View {
 
     var body: some View {
         Color.clear
+            .overlay {
+                if isCollapsed {
+                    // A collapsed pane's edge shows where it comes back from (an invisible strip
+                    // left the student no way to find it): a small grabber across the edge.
+                    Capsule()
+                        .fill(.tertiary)
+                        .frame(
+                            width: axis == .horizontal ? Self.grabberLength : Self.grabberThickness,
+                            height: axis == .horizontal ? Self.grabberThickness : Self.grabberLength
+                        )
+                        .accessibilityHidden(true)
+                }
+            }
             .contentShape(Rectangle())
             #if os(macOS)
             .pointerStyle(pointer)

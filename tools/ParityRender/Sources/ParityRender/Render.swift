@@ -17,6 +17,11 @@ import SwiftUI
 //   tools/parity/render [--library DIR] [--out DIR] [--only 01-today,03-review]
 //                       [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
 //                       [--week 2026-10-19] [--m35-sample] [--mc] [--sweep] [--claude]
+//                       [--review-layout 0.5,1,0]
+//
+// `03-review-cl` (a library with Computational Linguistics L1, e.g. the M1 library): that review
+// where it left off. `--review-layout` sets Review's stored layout ("share,transcript,rail", 1 =
+// collapsed) in the registration domain (nothing is written to any defaults file).
 //
 // `--sweep` (any library, empty or full; no Data Centers lecture needed): `today`, `calendar`,
 // `mail`, `mail-selected`, `notes`, `notes-selected`, `study`, the agent panel (`panel-compact-new`,
@@ -85,6 +90,9 @@ struct RenderOptions {
     /// Every screen of any library, empty or full (`--sweep`), with Claude Code available (`--claude`).
     var sweep = false
     var claude = false
+    /// Review's stored layout ("0.5,1,0": slide share, transcript collapsed, rail collapsed), as
+    /// `@AppStorage("review.layout")` would have it (`--review-layout`).
+    var reviewLayout: String?
 
     init(arguments: [String]) throws {
         var index = 0
@@ -115,6 +123,7 @@ struct RenderOptions {
             case "--mc": mc = true
             case "--sweep": sweep = true
             case "--claude": claude = true
+            case "--review-layout": reviewLayout = try value()
             case "--appearance":
                 switch try value() {
                 case "light": schemes = [.light]
@@ -194,6 +203,8 @@ struct ParityRender {
         var recent = RecentSearches(storage: "")
         recent.record("paravirtualization")
         UserDefaults.standard.register(defaults: [RecentSearches.storageKey: recent.storage])
+        // Review's layout as a student left it (the transcript or the thumbnails collapsed).
+        if let layout = options.reviewLayout { UserDefaults.standard.register(defaults: ["review.layout": layout]) }
 
         let newestMail = try await services.database.read { db in
             try MailMessage
@@ -274,6 +285,11 @@ struct ParityRender {
                     try await ParityMode.importPreview(model: model, services: services, size: size)
                 }
             ]
+            // CL L1 (36 slides, a 44:42 recording, aligned) where review left off: the sidebar
+            // on a lecture's screen, and with `--review-layout` the student's collapsed panes.
+            if let (_, clLecture1) = try? ParityMode.lecture("Computational Linguistics", 1, services: services) {
+                shots.append(RenderShot(name: "03-review-cl", window: .main(ParityMode.Launch(selection: .lecture(clLecture1.id)))))
+            }
             if options.mc { shots = try mcShots(cc: cc, services: services) }
             if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
             if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
