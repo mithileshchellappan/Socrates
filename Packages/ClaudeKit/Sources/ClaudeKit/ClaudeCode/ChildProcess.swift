@@ -21,9 +21,11 @@ struct ChildProcessSpec: Sendable {
 
 /// When a child last showed life, for `ChildProcessSpec.idleTimeout`: a stdout chunk arrived, or
 /// the app is running one of its tool calls (the child waits for the app then, it is not hung).
+/// Measured on `SuspendingClock`, which stops while the Mac sleeps: the child is frozen then too,
+/// so a closed lid never counts as silence (ContinuousClock would end every run after a long sleep).
 final class ChildActivity: Sendable {
     private struct State {
-        var last = ContinuousClock.now
+        var last = SuspendingClock.now
         var toolCalls = 0
         var stalled = false
     }
@@ -32,27 +34,27 @@ final class ChildActivity: Sendable {
 
     /// Output arrived.
     func touch() {
-        state.withLock { $0.last = .now }
+        state.withLock { $0.last = SuspendingClock.now }
     }
 
     /// A tool call of the app starts; the idle clock stops until it ends.
     func toolCallStarted() {
         state.withLock {
             $0.toolCalls += 1
-            $0.last = .now
+            $0.last = SuspendingClock.now
         }
     }
 
     func toolCallEnded() {
         state.withLock {
             $0.toolCalls = max(0, $0.toolCalls - 1)
-            $0.last = .now
+            $0.last = SuspendingClock.now
         }
     }
 
     /// How long nothing happened (zero while a tool call runs).
     var idle: Duration {
-        state.withLock { $0.toolCalls > 0 ? .zero : .now - $0.last }
+        state.withLock { $0.toolCalls > 0 ? .zero : SuspendingClock.now - $0.last }
     }
 
     /// Set when the idle timeout ended the child.
@@ -134,7 +136,8 @@ enum ChildProcess {
         let standardOutput = chunks(of: stdoutPipe.fileHandleForReading, activity: activity)
         let standardErrorChunks = chunks(of: stderrPipe.fileHandleForReading, activity: nil)
         // The idle watchdog: ends a child that shows no life for `idleTimeout` (a run that keeps
-        // streaming is never cut). Its end closes stdout, so the read below finishes.
+        // streaming is never cut; time the Mac sleeps never counts: `.suspending`). Its end closes
+        // stdout, so the read below finishes.
         let watchdog = spec.idleTimeout.map { limit in
             Task.detached(priority: .utility) {
                 while !Task.isCancelled {
@@ -145,7 +148,8 @@ enum ChildProcess {
                         terminate(process)
                         return
                     }
-                    try? await Task.sleep(for: max(limit - idle, .seconds(1)))
+                    let wait: Duration = max(limit - idle, .seconds(1))
+                    try? await Task.sleep(for: wait, clock: .suspending)
                 }
             }
         }

@@ -41,8 +41,10 @@ public struct TutorChat: Sendable {
 
     /// The read-only lecture tools (list_lectures, search_lectures, read_slide,
     /// read_transcript_span, list_study_items), also the mail chat's (`MailChat.spec(…, lectureTools:)`).
-    public static func lectureTools(services: StudyServices, search: SearchEngine) -> [AgentTool] {
-        LectureTools(services: services, search: search).all
+    /// `includeNotes` false (a sub-agent task with web tools): search_lectures never finds the
+    /// student's notes and read_slide leaves them out.
+    public static func lectureTools(services: StudyServices, search: SearchEngine, includeNotes: Bool = true) -> [AgentTool] {
+        LectureTools(services: services, search: search, includeNotes: includeNotes).all
     }
 
     static func system(startedAt: Date, courses: CourseList) -> String {

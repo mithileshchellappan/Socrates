@@ -22,8 +22,9 @@ import Tutor
 ///   web goes through a research task), no send, no other calendars, no delete of notes or
 ///   recordings: those tools do not exist.
 /// - `task` (a sub-agent): the tool groups of its `agent_task` row, fixed at spawn; its model and
-///   effort; `.background`. `web` only beside `lectures` (`webCompanions`: spawn_task and
-///   `taskSpec` refuse anything else), and a web task's result is untrusted text for its parent.
+///   effort; `.background`. `web` only beside `lectures`, whose tools then leave out the
+///   student's notes (`webCompanions`: spawn_task and `taskSpec` refuse anything else), and a web
+///   task's result is untrusted text for its parent.
 public enum AppAgentChat {
     static let model: ClaudeModel = .opus55
     static let effort: Effort = .medium
@@ -173,7 +174,10 @@ public enum AppAgentChat {
         let query = QueryTools(services: deps.services, search: deps.lectureSearch)
         var tools: [AgentTool] = []
         var webTools: [Tool] = []
-        if groups.contains(.lectures) { tools += TutorChat.lectureTools(services: deps.services, search: deps.lectureSearch) }
+        if groups.contains(.lectures) {
+            // Beside web the lecture tools never hand out the student's notes (`webCompanions`).
+            tools += TutorChat.lectureTools(services: deps.services, search: deps.lectureSearch, includeNotes: !groups.contains(.web))
+        }
         if groups.contains(.mail) { tools += MailChat.mailTools(services: deps.services) }
         if groups.contains(.notes) { tools += [query.searchNotes, query.readNote] }
         if groups.contains(.items) { tools.append(query.queryItems) }
@@ -227,10 +231,12 @@ public enum AppAgentChat {
 
     // MARK: - The web rule
 
-    /// The only tool groups a task with `web` holds: the lectures beside the web. A fetched page
-    /// may carry instructions, so a web task never reads what is private (notes, memory, calendar,
-    /// items, sessions, the plan, mail, documents) and could leak it through a WebFetch URL, and
-    /// never writes (a web page is never the source of a change).
+    /// The only tool groups a task with `web` holds: the lectures beside the web, and those
+    /// without the student's notes (`taskSpec` passes `includeNotes: false`: search_lectures
+    /// never finds a note, read_slide leaves it out). A fetched page may carry instructions, so a
+    /// web task never reads what is private (notes, memory, calendar, items, sessions, the plan,
+    /// mail, documents) and could leak it through a WebFetch URL, and never writes (a web page is
+    /// never the source of a change).
     static let webCompanions: [AgentToolGroup] = [.web, .lectures]
 
     /// Why a task cannot hold `groups` (one readable sentence for the model), nil when it can.
@@ -262,7 +268,7 @@ struct DelegateTools: Sendable {
                 description: """
                     Queues a sub-agent task that runs in the background (at most 2 at once) in its own conversation \
                     with the tool groups you give it; its result comes back into this conversation. Web goes only \
-                    with lectures.
+                    with lectures (whose tools then leave out the student's notes).
                     """,
                 inputSchema: Schema.object([
                     "kind": Schema.stringEnum(["research", "mail_triage", "practice_exam", "timetable", "other"]),
@@ -286,8 +292,9 @@ struct DelegateTools: Sendable {
             let groups = call.strings("tools").map(AgentToolGroup.init(rawValue:))
             let known: [AgentToolGroup] = [.lectures, .mail, .notes, .items, .sessions, .calendar, .memory, .plan, .documents, .web, .apply]
             guard !groups.isEmpty, groups.allSatisfy(known.contains) else { return .error("tools must be a non-empty list of known groups.") }
-            // Web pages are untrusted: a web task holds the lectures beside the web and nothing
-            // private or writing (`AppAgentChat.webCompanions`; taskSpec refuses it too).
+            // Web pages are untrusted: a web task holds the lectures (without the student's notes)
+            // beside the web and nothing private or writing (`AppAgentChat.webCompanions`; taskSpec
+            // refuses it too).
             if let refusal = AppAgentChat.webRefusal(groups) { return .error(refusal) }
             guard let title = call.text("title"), var goal = call.text("goal") else { return .error("title and goal are needed.") }
             var input = call.text("input_summary") ?? ""

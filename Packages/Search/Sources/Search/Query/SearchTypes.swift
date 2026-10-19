@@ -14,6 +14,9 @@ public struct SearchQuery: Hashable, Sendable {
         /// M5: the student's study material for the tutor: transcripts, slides, notes and verified
         /// further reading. Never mail (the tutor has web tools; PRD: the web agent never sees mail).
         case material
+        /// Audit 2026-10-19: `material` without the student's notes, for a sub-agent task that
+        /// holds web tools beside the lecture tools (a fetched page must never reach their notes).
+        case materialWithoutNotes
         /// M5: the verified further reading the study pass found (Search's Web segment).
         case web
         /// md: the student's kept documents (the agent's `search_documents`; All's Documents group).
@@ -28,6 +31,7 @@ public struct SearchQuery: Hashable, Sendable {
             case .notes: [.note]
             case .mail: [.mail]
             case .material: [.transcript, .slide, .note, .furtherReading]
+            case .materialWithoutNotes: [.transcript, .slide, .furtherReading]
             case .web: [.furtherReading]
             case .documents: [.document]
             }

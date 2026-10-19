@@ -21,10 +21,10 @@ public struct DocumentSummarizer: Sendable {
     public static let promptVersion = 1
     public static let model: ClaudeModel = .haiku55
     public static let effort: Effort = .low
-    /// Room for the largest answer the schema allows (its `maxLength` / `maxItems`: title 60,
-    /// summary 400, 8 facts of 160, 12 dates of 100, 24 sections of 120: about 7,800 characters of
-    /// JSON, at most about 3,200 tokens) plus the low-effort thinking and the structured-output
-    /// tool call, with headroom: a long handbook's answer is never cut and asked again.
+    /// Room for the largest answer the prompt asks for (title 60, summary 400, 8 facts of 160,
+    /// 12 dates of 100, 24 sections of 120: about 7,800 characters of JSON, about 3,200 tokens)
+    /// plus the low-effort thinking and the structured-output tool call, with headroom: a long
+    /// handbook's answer is never cut and asked again.
     public static let maxTokens = 10_000
     /// The most document text one call carries.
     public static let inputCharacters = 40_000
@@ -343,42 +343,41 @@ public struct DocumentSummarizer: Sendable {
 
     // MARK: - Schema and prompt
 
-    /// The answer's shape with the prompt's limits as `maxLength` / `maxItems` (the CLI's
-    /// structured-output tool checks them), so the largest answer is bounded (`maxTokens`). Code
-    /// still clips every length (`checked`).
+    /// The answer's shape. The lengths and counts stay in the prompt and code clips them
+    /// (`checked`), never `maxLength` / `maxItems` here: the CLI's StructuredOutput check would
+    /// turn an overshoot (a handbook's 80-character own name) into another full call, up to 5,
+    /// then a failed summary, and its strict decoding takes no such keyword.
     static var schema: JSONValue {
-        func string(_ maxLength: Int) -> JSONValue { ["type": "string", "maxLength": .int(maxLength)] }
-        func nullableString(_ maxLength: Int) -> JSONValue { ["anyOf": [string(maxLength), ["type": "null"]]] }
-        func array(_ items: JSONValue, _ maxItems: Int) -> JSONValue { ["type": "array", "items": items, "maxItems": .int(maxItems)] }
+        let nullableString: JSONValue = ["anyOf": [["type": "string"], ["type": "null"]]]
         let nullableInteger: JSONValue = ["anyOf": [["type": "integer"], ["type": "null"]]]
         let fact: JSONValue = [
             "type": "object", "additionalProperties": false, "required": ["text", "page"],
-            "properties": ["text": string(160), "page": nullableInteger],
+            "properties": ["text": ["type": "string"], "page": nullableInteger],
         ]
         let date: JSONValue = [
             "type": "object", "additionalProperties": false, "required": ["date", "end_date", "time", "what", "page"],
             "properties": [
-                "date": string(10), "end_date": nullableString(10), "time": nullableString(5), "what": string(100),
+                "date": ["type": "string"], "end_date": nullableString, "time": nullableString, "what": ["type": "string"],
                 "page": nullableInteger,
             ],
         ]
         let section: JSONValue = [
             "type": "object", "additionalProperties": false, "required": ["title", "page", "level"],
-            "properties": ["title": string(120), "page": ["type": "integer"], "level": ["type": "integer"]],
+            "properties": ["title": ["type": "string"], "page": ["type": "integer"], "level": ["type": "integer"]],
         ]
         return [
             "type": "object",
             "additionalProperties": false,
             "required": ["title", "kind", "summary", "courses", "key_facts", "dates", "sections"],
             "properties": [
-                "title": string(60),
+                "title": ["type": "string"],
                 "kind": ["type": "string", "enum": .array(DocumentKind.all.map { .string($0.rawValue) })],
-                "summary": string(400),
+                "summary": ["type": "string"],
                 // Tokens of the student's courses: as many as it concerns (unknown ones are dropped).
                 "courses": ["type": "array", "items": ["type": "string"]],
-                "key_facts": array(fact, 8),
-                "dates": array(date, 12),
-                "sections": array(section, 24),
+                "key_facts": ["type": "array", "items": fact],
+                "dates": ["type": "array", "items": date],
+                "sections": ["type": "array", "items": section],
             ],
         ]
     }

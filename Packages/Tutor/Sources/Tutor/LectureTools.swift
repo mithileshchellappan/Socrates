@@ -12,6 +12,9 @@ struct LectureTools: Sendable {
     let services: StudyServices
     /// Keyword + semantic retrieval, no planner (the model writes German and English terms itself).
     let search: SearchEngine
+    /// False for a sub-agent task that holds web tools: search_lectures never finds the student's
+    /// notes and read_slide leaves them out (a fetched page must never reach them).
+    var includeNotes = true
 
     var database: any DatabaseWriter { services.database }
 
@@ -68,8 +71,8 @@ struct LectureTools: Sendable {
             tool: .custom(
                 name: "search_lectures",
                 description: """
-                    Searches the student's lectures (what was said, the slides, their notes, verified further \
-                    reading) by words and by meaning. Write the terms in the lecture's language and in English \
+                    Searches the student's lectures (what was said, the slides, \(includeNotes ? "their notes, " : "")verified \
+                    further reading) by words and by meaning. Write the terms in the lecture's language and in English \
                     ("Nachteil Paravirtualisierung paravirtualization drawback").
                     """,
                 inputSchema: TutorJSON.schema([
@@ -95,16 +98,18 @@ struct LectureTools: Sendable {
             }
             let limit = min(12, max(1, call.integer("limit") ?? 8))
             let engine = SearchEngine(database: search.database, planner: nil, semantic: search.semantic)
-            let results = try await engine.search(SearchQuery(text, scope: .material, courseID: courseID, lectureID: lectureID, limit: limit))
-            let rows: [JSONValue] = results.hits.prefix(limit).compactMap { hit in Self.row(hit, library: library) }
+            let scope: SearchQuery.Scope = includeNotes ? .material : .materialWithoutNotes
+            let results = try await engine.search(SearchQuery(text, scope: scope, courseID: courseID, lectureID: lectureID, limit: limit))
+            let rows: [JSONValue] = results.hits.prefix(limit).compactMap { hit in Self.row(hit, library: library, includeNotes: includeNotes) }
             return TutorJSON.fitted(["query": .string(text)], key: "hits", rows: rows)
         }
     }
 
     /// One hit as the model reads it: what it is, where (lecture, cite, the slide on screen for a
-    /// line) and its text. Mail never comes (scope `.material`).
-    static func row(_ hit: SearchHit, library: TutorLibrary) -> JSONValue? {
+    /// line) and its text. Mail never comes (scope `.material`); a note only with `includeNotes`.
+    static func row(_ hit: SearchHit, library: TutorLibrary, includeNotes: Bool) -> JSONValue? {
         guard let lectureID = hit.lectureID, let lecture = library.lecture(id: lectureID) else { return nil }
+        if hit.kind == .note, !includeNotes { return nil }
         var object: JSONObject = [
             "lecture": .string(library.name(lecture)),
             "text": .string(TutorJSON.clip(String(hit.snippet.characters), 300)),
@@ -139,7 +144,7 @@ struct LectureTools: Sendable {
         AgentTool(
             tool: .custom(
                 name: "read_slide",
-                description: "One slide: its text and title, when it was on screen, its summary and the student's note on it.",
+                description: "One slide: its text and title, when it was on screen, its summary\(includeNotes ? " and the student's note on it" : "").",
                 inputSchema: TutorJSON.schema([
                     "lecture": ["type": "string", "description": .string(Self.lectureDescription)],
                     "slide": ["type": "integer", "description": "Slide number (1-based page of the deck)."],
@@ -156,6 +161,7 @@ struct LectureTools: Sendable {
             }
             let lectureID = lecture.id
             let deckID = deck.id
+            let includeNotes = self.includeNotes
             let rows = try await database.read { db in
                 (
                     page: try DeckPage.where { $0.deckID.eq(deckID) && $0.pageNumber.eq(page) }.fetchOne(db),
@@ -166,7 +172,9 @@ struct LectureTools: Sendable {
                     summaries: try Annotation
                         .where { $0.lectureID.eq(lectureID) && $0.kind.eq(AnnotationKind.summary) && $0.pageNumber.eq(Int?.some(page)) && $0.hiddenAt.is(nil) }
                         .fetchAll(db),
-                    notes: try Note.where { $0.lectureID.eq(lectureID) && $0.pageNumber.eq(Int?.some(page)) }.order(by: \.createdAt).fetchAll(db)
+                    notes: try includeNotes
+                        ? Note.where { $0.lectureID.eq(lectureID) && $0.pageNumber.eq(Int?.some(page)) }.order(by: \.createdAt).fetchAll(db)
+                        : []
                 )
             }
             let text = rows.page?.text ?? ""
@@ -177,15 +185,16 @@ struct LectureTools: Sendable {
                 ]
             }
             let note = rows.notes.map(\.plainText).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            return TutorJSON.object([
+            var object: JSONObject = [
                 "lecture": .string(library.name(lecture)),
                 "cite": .string(library.slideCite(lectureID, page: page)),
                 "title": .string(DeckPage.title(fromPageText: text)),
                 "text": .string(TutorJSON.clip(text, 2_000)),
                 "visits": .array(visits),
                 "summary": TutorJSON.string(rows.summaries.first.map { TutorJSON.clip($0.body, 400) }),
-                "note": note.isEmpty ? .null : .string(TutorJSON.clip(note, 800)),
-            ])
+            ]
+            if includeNotes { object["note"] = note.isEmpty ? JSONValue.null : .string(TutorJSON.clip(note, 800)) }
+            return TutorJSON.object(object)
         }
     }
 
