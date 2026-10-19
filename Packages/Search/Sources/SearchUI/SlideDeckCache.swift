@@ -11,7 +11,9 @@ enum SlideDeckOpener {
         return try? SlideDeck(
             url: services.blobs.url(for: blob),
             sha256: deck.blobSHA256,
-            cacheDirectory: services.paths.caches.appending(path: "Slides", directoryHint: .isDirectory)
+            cacheDirectory: services.paths.caches.appending(path: "Slides", directoryHint: .isDirectory),
+            // Thumbnails only: a small budget, as Coach's and Notes' (the default is 128 MB).
+            memoryBudgetBytes: 8 << 20
         )
     }
 }

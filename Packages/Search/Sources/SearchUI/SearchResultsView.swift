@@ -174,9 +174,9 @@ public struct SearchResultsView: View {
         }
     }
 
-    /// "8 results".
+    /// "8 results"; nothing at 0 ("No Results for …" says it).
     private var subtitle: String {
-        guard !searchQuery.isEmpty, let results else { return "" }
+        guard !searchQuery.isEmpty, let results, results.count > 0 else { return "" }
         return String(AttributedString(localized: "^[\(results.count) result](inflect: true)").characters)
     }
 
