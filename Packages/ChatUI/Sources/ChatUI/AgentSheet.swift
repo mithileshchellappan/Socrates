@@ -27,15 +27,22 @@ public struct AgentSheetLaunch: Hashable, Sendable {
     public var conversationID: AgentConversation.ID?
     /// An empty New Chat instead of a conversation.
     public var newChat: Bool
+    /// The small detent's exchanges (0-based; mockup §7 draws the first one); nil: as a sheet
+    /// just opened (the newest exchange).
+    public var exchanges: Range<Int>?
     /// Text in the composer.
     public var draft: String
     /// A fixed "now" (the history menu's days); nil follows the clock.
     public var now: Date?
 
-    public init(detent: Detent = .small, conversationID: AgentConversation.ID? = nil, newChat: Bool = false, draft: String = "", now: Date? = nil) {
+    public init(
+        detent: Detent = .small, conversationID: AgentConversation.ID? = nil, newChat: Bool = false, exchanges: Range<Int>? = nil,
+        draft: String = "", now: Date? = nil
+    ) {
         self.detent = detent
         self.conversationID = conversationID
         self.newChat = newChat
+        self.exchanges = exchanges
         self.draft = draft
         self.now = now
     }
@@ -67,7 +74,8 @@ public struct AgentSheet: View {
     public init(context: AgentContext, launch: AgentSheetLaunch = AgentSheetLaunch()) {
         self.context = context
         _model = State(initialValue: AgentPanelModel(launch: AgentPanelLaunch(
-            mode: .compact, conversationID: launch.conversationID, newChat: launch.newChat, draft: launch.draft, now: launch.now
+            mode: .compact, conversationID: launch.conversationID, newChat: launch.newChat, exchanges: launch.exchanges, draft: launch.draft,
+            now: launch.now
         )))
         _detent = State(initialValue: launch.detent == .large ? .large : .height(Self.smallHeight))
         historyQuery = FetchAll(
