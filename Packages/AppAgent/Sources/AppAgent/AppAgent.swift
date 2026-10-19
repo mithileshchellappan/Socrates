@@ -94,7 +94,7 @@ public actor AppAgent {
         self.advisor = advisor
         self.documents = documents
         self.now = now
-        let changeLog = ChangeLog(services: services, memory: memory, filing: filing, now: now)
+        let changeLog = ChangeLog(services: services, memory: memory, filing: filing, documents: documents, now: now)
         self.changeLog = changeLog
         let quit = QuitSignal()
         self.quit = quit
@@ -175,18 +175,17 @@ public actor AppAgent {
         if AgentContextBlock.lastRevision(in: texts) != block.revision { blocks.append(.text(block.text)) }
         blocks += try await reminderBlocks(for: conversation, history: history).map { .text($0) }
         var reported: [AgentTask.ID] = []
-        // Whether a mail-group task's result is in this conversation (carried now or by an
-        // earlier turn): mail text reached it, so a web task it spawns gets no input summary.
-        var mailResults = false
+        // Whether untrusted text is in this conversation (carried now or by an earlier turn): a
+        // mail- or (md) documents-group task's result, or (md) a file sent as its text (Word, RTF,
+        // Pages, a long PDF's first pages). A web task it spawns then gets no input summary.
+        var untrusted = (history.compactMap(\.context).flatMap(\.attachments) + whole).contains(where: AttachmentBlocks.sentAsText)
         if let conversation {
             let repository = AgentTaskRepository(store: services.records)
             for task in try await repository.unreported(parent: conversation) {
                 blocks.append(.text(Self.taskResult(task)))
                 reported.append(task.id)
             }
-            mailResults = try await repository.tasks(parent: conversation).contains { task in
-                task.finishedAt != nil && task.tools.contains(.mail) && !(task.result ?? "").isEmpty
-            }
+            if try await repository.tasks(parent: conversation).contains(where: Self.carriesUntrustedResult) { untrusted = true }
         }
         // The thread's faint line: only when the screen changed since the last message.
         let previous = history.last { $0.role == .user && $0.context?.context != nil }?.context?.context
@@ -196,12 +195,13 @@ public actor AppAgent {
         )
         let id: AgentConversation.ID
         if let conversation {
-            try await runtime.send(trimmed, context: blocks, turnContext: turnContext, readUntrustedContent: mailResults, to: conversation)
+            try await runtime.send(trimmed, context: blocks, turnContext: turnContext, readUntrustedContent: untrusted, to: conversation)
             id = conversation
         } else {
             let title = trimmed.isEmpty ? (attachments.first?.fileName ?? "Files") : trimmed
             id = try await runtime.start(
-                .app, text: trimmed, context: blocks, courseID: context.courseID, turnContext: turnContext, title: title
+                .app, text: trimmed, context: blocks, courseID: context.courseID, turnContext: turnContext, title: title,
+                readUntrustedContent: untrusted
             )
         }
         // The message is with the runtime: nothing may bounce it now (a result carried twice is
@@ -469,6 +469,11 @@ public actor AppAgent {
             if let item = reminder.trackedItemID { head += " item=\"\(item.uuidString.lowercased())\"" }
             return head + ">" + AgentXML.escape(reminder.title + (reminder.body.isEmpty ? "" : " · " + reminder.body)) + "</reminder>"
         }
+    }
+
+    /// Whether a finished task's result is untrusted text: it had mail or (md) documents to read.
+    static func carriesUntrustedResult(_ task: AgentTask) -> Bool {
+        task.finishedAt != nil && (task.tools.contains(.mail) || task.tools.contains(.documents)) && !(task.result ?? "").isEmpty
     }
 
     /// `<task_result task="…" title="…" state="succeeded">result</task_result>` (data).

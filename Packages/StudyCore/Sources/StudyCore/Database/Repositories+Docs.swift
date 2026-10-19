@@ -176,6 +176,35 @@ public struct DocumentRepository: Sendable {
         }
     }
 
+    /// A summary task ended without writing a summary (the student cancelled it, or it was
+    /// interrupted too often): the summary fails with `error`, so Read Again offers it and the next
+    /// launch does not queue it again. Nothing when the document is gone, its summary is no longer
+    /// pending, or another `document` task for it is open (Undo, Read Again queued one). One
+    /// transaction; whether it closed it.
+    @discardableResult
+    public func closeSummary(_ id: StudyDocument.ID, error: String) async throws -> Bool {
+        let stamp = store.currentDate
+        let reference = StudyDocument.ID?.some(id)
+        return try await store.database.write { db in
+            guard var document = try StudyDocument.find(id).fetchOne(db), document.summaryState == .pending else { return false }
+            let open = try AgentTask.where { $0.documentID.eq(reference) && $0.state.in(AgentTaskState.open) }.fetchCount(db)
+            guard open == 0 else { return false }
+            document.summaryState = .failed
+            document.error = error
+            document.updatedAt = stamp
+            try StudyDocument.upsert { document }.execute(db)
+            return true
+        }
+    }
+
+    /// The newest `document` task of a document (any state; nil: none).
+    public func latestTask(of id: StudyDocument.ID) async throws -> AgentTask? {
+        let reference = StudyDocument.ID?.some(id)
+        return try await store.database.read { db in
+            try AgentTask.where { $0.documentID.eq(reference) }.order { $0.createdAt.desc() }.fetchOne(db)
+        }
+    }
+
     /// Read Again: the text is read again when it failed, else the summary waits to be written again.
     public func resetSummary(_ id: StudyDocument.ID) async throws {
         try await update(id) { document in

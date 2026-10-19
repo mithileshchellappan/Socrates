@@ -58,8 +58,7 @@ enum AttachmentBlocks {
             switch attachment.kind {
             case .document:
                 result.append(try await documentText(attachment, blobs: blobs))
-            case .pdf where attachment.byteCount > AgentAttachment.maximumPDFBytes
-                || (attachment.pageCount ?? 0) > AgentAttachment.maximumPDFPages:
+            case .pdf where sentAsText(attachment):
                 guard blobs.contains(attachment.blob),
                       let leading = await DocumentExtractor.leadingText(ofPDFAt: blobs.url(for: attachment.blob), characters: attachedFileCharacters)
                 else { throw Failure.unreadable(attachment.fileName) }
@@ -70,6 +69,14 @@ enum AttachmentBlocks {
             }
         }
         return result
+    }
+
+    /// Whether `contentBlocks` sends the attachment as its extracted text (a `.document`, or a PDF
+    /// over the send limits as `<attached_file>`): document text, untrusted (`AppAgent.send`).
+    static func sentAsText(_ attachment: AgentAttachment) -> Bool {
+        attachment.kind == .document
+            || (attachment.kind == .pdf
+                && (attachment.byteCount > AgentAttachment.maximumPDFBytes || (attachment.pageCount ?? 0) > AgentAttachment.maximumPDFPages))
     }
 
     /// The most text of a Word, RTF or Pages attachment sent, and of a long PDF's first pages.

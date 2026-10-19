@@ -32,8 +32,9 @@ public struct DocumentSummarizer: Sendable {
     static let pageCharacters = 6_000
     /// The outline's text at most.
     static let outlineCharacters = 5_000
-    /// The sentence a failed, cut or unreadable answer leaves on the row.
-    static let failure = "The summary could not be written."
+    /// The sentence a failed, cut or unreadable answer (or a summary task cancelled or interrupted
+    /// too often) leaves on the row.
+    public static let failure = "The summary could not be written."
 
     /// What one run did (the queue finishes, pauses or fails the task with it).
     public enum Outcome: Sendable, Hashable {

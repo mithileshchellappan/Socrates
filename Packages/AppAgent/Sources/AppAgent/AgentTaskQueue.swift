@@ -144,6 +144,10 @@ actor AgentTaskQueue {
             try? await tasks.cancel(id)
             // A task run in code stops between its calls.
             running[id]?.work.cancel()
+            // md: a document's summary that never started fails at once (a running one when it stops).
+            if running[id] == nil, let task = try? await services.records.fetch(AgentTask.self, id: id) {
+                await Self.closeSummary(of: task, services: services)
+            }
         }
     }
 

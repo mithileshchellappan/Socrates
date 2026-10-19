@@ -1,5 +1,6 @@
 import Courses
 import Deadlines
+import Documents
 import Filing
 import Foundation
 import StudyCore
@@ -139,17 +140,23 @@ public struct ChangeLog: Sendable {
     let onChange: @Sendable () async -> Void
     /// Smart import, for Undo of the filing advisor's changes (nil: a service of its own).
     let filing: FilingService?
+    /// md: the app's document bank, for Undo of `keep_document` (it stops reading the document;
+    /// nil: a bank of its own).
+    let documents: DocumentBank?
     let now: @Sendable () -> Date
 
     /// `memory`: the app's deadline memory, whose `onChange` syncs the calendar after each write.
     /// `filing`: the app's smart import (its Undo wakes the processor for re-alignment).
+    /// `documents` (md): the app's document bank.
     public init(
-        services: StudyServices, memory: DeadlineMemory? = nil, filing: FilingService? = nil, now: @escaping @Sendable () -> Date = { Date() }
+        services: StudyServices, memory: DeadlineMemory? = nil, filing: FilingService? = nil, documents: DocumentBank? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
         let memory = memory
         onChange = { await memory?.didChange() }
         self.filing = filing
+        self.documents = documents
         self.now = now
     }
 

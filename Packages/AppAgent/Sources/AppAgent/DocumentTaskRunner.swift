@@ -1,3 +1,4 @@
+import ClaudeKit
 import Documents
 import Foundation
 import StudyCore
@@ -15,8 +16,12 @@ extension AgentTaskQueue {
             return
         }
         let outcome = await DocumentSummarizer(services: services, client: client, now: now).run(documentID: documentID)
-        // Its row was cancelled (the queue cancelled this work) or the app quits: nothing more.
-        if Task.isCancelled { return }
+        // Its row was cancelled (the queue cancelled this work) or the app quits: nothing more,
+        // except that a cancelled summary fails (Read Again offers it; a launch does not queue it).
+        if Task.isCancelled {
+            if await stillOpen(task) { await Self.closeSummary(of: task, services: services) }
+            return
+        }
         switch outcome {
         case .done(let title):
             guard await stillOpen(task) else { return }
@@ -26,6 +31,18 @@ extension AgentTaskQueue {
         case .failed(let message):
             guard await stillOpen(task) else { return }
             try? await tasks.finish(task.id, .failed, error: message)
+        }
+    }
+
+    /// A `document` task cancelled (the panel, `cancel_task`, a running one stopped): its document's
+    /// summary fails unless another task for it is open or the document is gone
+    /// (`DocumentRepository.closeSummary`).
+    static func closeSummary(of task: AgentTask, services: StudyServices) async {
+        guard task.kind == .document, let documentID = task.documentID else { return }
+        do {
+            try await DocumentRepository(store: services.records).closeSummary(documentID, error: DocumentSummarizer.failure)
+        } catch {
+            AppAgentModule.log.error("Closing a document's summary failed: \(ReadableError.kind(of: error), privacy: .public)")
         }
     }
 }

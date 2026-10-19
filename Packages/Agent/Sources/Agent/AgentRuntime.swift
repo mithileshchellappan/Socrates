@@ -138,9 +138,12 @@ public actor AgentRuntime {
     /// (files only). `spec`, when given, is used instead of the kind's provider: a `task`
     /// conversation's spec comes from its `agent_task` row, which cannot be found by
     /// `conversation_id` before the conversation exists (later `send`s find it that way).
+    /// `readUntrustedContent` (md): the context blocks carry untrusted text (a document's), so a
+    /// web task this run spawns gets no input summary.
     public func start(
         _ kind: ConversationKind, text: String, context: [ContentBlock] = [], courseID: Course.ID? = nil, lectureID: Lecture.ID? = nil,
-        turnContext: AgentTurnContext? = nil, id: AgentConversation.ID? = nil, title: String? = nil, spec given: ConversationSpec? = nil
+        turnContext: AgentTurnContext? = nil, id: AgentConversation.ID? = nil, title: String? = nil, spec given: ConversationSpec? = nil,
+        readUntrustedContent: Bool = false
     ) async throws -> AgentConversation.ID {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !context.isEmpty else { throw RuntimeError.emptyText }
@@ -160,7 +163,7 @@ public actor AgentRuntime {
         ))
         let turn = Self.userTurn(memory + context, text: trimmed)
         try await conversations.append(to: conversation.id, role: .user, message: try Self.encode(turn), context: turnContext)
-        launch(conversation, spec: spec, history: [turn], studentText: trimmed, turnContext: turnContext)
+        launch(conversation, spec: spec, history: [turn], studentText: trimmed, turnContext: turnContext, readUntrusted: readUntrustedContent)
         return conversation.id
     }
 

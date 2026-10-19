@@ -58,7 +58,7 @@ public enum AppAgentChat {
             self.now = now
         }
 
-        var changeLog: ChangeLog { ChangeLog(services: services, memory: memory, now: now) }
+        var changeLog: ChangeLog { ChangeLog(services: services, memory: memory, documents: documents, now: now) }
         /// md: the document bank's tools (`DocumentTools.swift`).
         var documentTools: DocumentTools { DocumentTools(services: services, search: lectureSearch, bank: documents, changeLog: changeLog) }
         /// The search engine without its planner (the model writes German and English terms).
@@ -269,11 +269,11 @@ struct DelegateTools: Sendable {
             guard let title = call.text("title"), var goal = call.text("goal") else { return .error("title and goal are needed.") }
             var input = call.text("input_summary") ?? ""
             if groups.contains(.web), context.trace.hasReadUntrustedContent {
-                // This run read mail: the web task gets the student's own words only.
+                // This run read mail or (md) a document: the web task gets the student's own words only.
                 guard let quote = call.text("quote"), let span = AgentToolSupport.span(of: quote, in: context.studentText),
                       TextFolding.words(span).count >= 3
                 else {
-                    return .error("This conversation read mail, so a web task needs quote = the student's own words asking for it (at least 3 words); only those go to it.")
+                    return .error("This conversation read mail or a document, so a web task needs quote = the student's own words asking for it (at least 3 words); only those go to it.")
                 }
                 goal = "The student asked: \"\(span)\""
                 input = ""
@@ -306,6 +306,8 @@ struct DelegateTools: Sendable {
             }
             guard task.state.isOpen else { return .json(["task": .string(id.uuidString.lowercased()), "state": .string(task.state.rawValue)]) }
             try await tasks.cancel(id)
+            // md: a queued document summary fails at once (a running one when the queue stops it).
+            if task.state != .running { await AgentTaskQueue.closeSummary(of: task, services: services) }
             return .json(["task": .string(id.uuidString.lowercased()), "state": "cancelled"])
         }
     }

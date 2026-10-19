@@ -39,6 +39,9 @@ public actor DocumentBank {
     /// Documents waiting for the reader, in order.
     private var readQueue: [StudyDocument.ID] = []
     private var reader: Task<Void, Never>?
+    /// The document being read now and its extraction (`delete` cancels it: a scan deleted while
+    /// it is OCR'd stops between pages, and the reader goes on with the next document).
+    private var currentRead: (id: StudyDocument.ID, work: Task<ExtractedDocument, any Error>)?
     private var resumeWork: Task<Void, Never>?
     private var cleanupWork: Task<Void, Never>?
     private var started = false
@@ -87,6 +90,12 @@ public actor DocumentBank {
         do {
             for document in try await documents.waitingForText() { enqueueRead(document.id) }
             for document in try await documents.waitingForSummary() {
+                // A summary whose task the student cancelled, or that failed (interrupted too
+                // often), is not queued again by a launch: it fails, and Read Again offers it.
+                if let task = try await documents.latestTask(of: document.id), task.state == .cancelled || task.state == .failed {
+                    try await documents.closeSummary(document.id, error: DocumentSummarizer.failure)
+                    continue
+                }
                 try await documents.queueSummary(document.id, model: Self.summaryModel, effort: Self.summaryEffort, by: document.createdBy)
             }
         } catch {
@@ -237,17 +246,20 @@ public actor DocumentBank {
             let url = services.blobs.url(for: blob)
             let type = UTType(document.fileType) ?? UTType(filenameExtension: url.pathExtension) ?? .data
             let started = ContinuousClock.now
+            let work = Task(priority: .utility) { try await DocumentExtractor.extract(fileAt: url, type: type) }
+            currentRead = (id, work)
+            defer { currentRead = nil }
             let extracted: ExtractedDocument
             do {
-                extracted = try await DocumentExtractor.extract(fileAt: url, type: type)
+                extracted = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
             } catch is CancellationError {
                 return
             } catch let error as DocumentReadError {
-                if Task.isCancelled { return }
+                if Task.isCancelled || work.isCancelled { return }
                 try await documents.setTextFailed(id, error: error.sentence)
                 return
             }
-            if Task.isCancelled { return }
+            if Task.isCancelled || work.isCancelled { return }
             let pages = extracted.pages.map { page in
                 StudyDocumentPage(
                     documentID: id, pageNumber: page.pageNumber, label: page.label, heading: page.heading, text: page.text, isOCR: page.isOCR
@@ -269,18 +281,25 @@ public actor DocumentBank {
 
     // MARK: - Deleting
 
-    /// Deletes a document: its open `document` task is cancelled first through
-    /// `AgentTaskRepository.cancel` (AppAgent's queue stops a running summary when its row turns
-    /// `cancelled`), then the rows go (`DocumentRepository.delete`: pages and chunks cascade). Its
+    /// Deletes a document: the rows go (`DocumentRepository.delete`: pages and chunks cascade),
+    /// then its open `document` task is cancelled through `AgentTaskRepository.cancel` (AppAgent's
+    /// queue stops a running summary when its row turns `cancelled`; the row is gone first, so the
+    /// stopped run closes no summary state that Undo would bring back) and reading it stops. Its
     /// file joins the pending-removal list (removed at a later launch when unused, never in this
     /// session: Undo). Nil when it is gone already.
     public func delete(_ id: StudyDocument.ID) async throws -> DocumentDeletion? {
-        let tasks = AgentTaskRepository(store: services.records)
-        for task in try await documents.openTasks(of: id) {
-            try await tasks.cancel(task.id)
-        }
+        let open = try await documents.openTasks(of: id)
         guard let deletion = try await documents.delete(id) else { return nil }
+        let tasks = AgentTaskRepository(store: services.records)
+        for task in open {
+            do {
+                try await tasks.cancel(task.id)
+            } catch {
+                DocumentsModule.log.error("Cancelling a deleted document's summary failed: \(String(describing: error), privacy: .public)")
+            }
+        }
         readQueue.removeAll { $0 == id }
+        if currentRead?.id == id { currentRead?.work.cancel() }
         if let blob = deletion.document.blob {
             PendingRemovals.add(blob, deletedAt: now(), at: pendingFile)
         }

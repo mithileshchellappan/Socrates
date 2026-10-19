@@ -307,9 +307,9 @@ struct QueryTools: Sendable {
             let open = try await repository.open()
             let own = try await repository.tasks(parent: context.conversationID).filter { !$0.state.isOpen }
             let shown = open + own.suffix(6)
-            // A mail task's result is mail-derived text: this run has read untrusted content now
-            // (a web task it spawns gets no input summary).
-            if shown.contains(where: { $0.tools.contains(.mail) && !($0.result ?? "").isEmpty }) { context.trace.noteUntrustedRead() }
+            // A mail or (md) documents task's result is mail- or document-derived text: this run
+            // has read untrusted content now (a web task it spawns gets no input summary).
+            if shown.contains(where: AppAgent.carriesUntrustedResult) { context.trace.noteUntrustedRead() }
             let rows: [JSONValue] = shown.map { task in
                 var object: JSONObject = [
                     "task": .string(task.id.uuidString.lowercased()), "title": .string(task.title), "state": .string(task.state.rawValue),
