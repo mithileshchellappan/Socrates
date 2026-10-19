@@ -12,7 +12,7 @@ import StudyCore
 extension AgentTaskQueue {
     func runDocument(_ task: AgentTask) async {
         guard let documentID = task.documentID else {
-            try? await tasks.finish(task.id, .failed, error: "This task names no document.")
+            await finishRow(task.id, .failed, error: "This task names no document.")
             return
         }
         let outcome = await DocumentSummarizer(services: services, client: client, now: now).run(documentID: documentID)
@@ -25,12 +25,12 @@ extension AgentTaskQueue {
         switch outcome {
         case .done(let title):
             guard await stillOpen(task) else { return }
-            try? await tasks.finish(task.id, .succeeded, result: title.isEmpty ? "Read." : "Read \u{201C}\(title)\u{201D}.")
+            await finishRow(task.id, .succeeded, result: title.isEmpty ? "Read." : "Read \u{201C}\(title)\u{201D}.")
         case .waiting(let until):
             await wait(task, until: until)
         case .failed(let message):
             guard await stillOpen(task) else { return }
-            try? await tasks.finish(task.id, .failed, error: message)
+            await finishRow(task.id, .failed, error: message)
         }
     }
 

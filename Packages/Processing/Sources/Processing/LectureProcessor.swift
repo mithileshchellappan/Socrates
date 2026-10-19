@@ -191,7 +191,7 @@ public actor LectureProcessor {
         var didWork = false
         while needsAnotherPass {
             needsAnotherPass = false
-            while !Task.isCancelled, let job = try? await nextJob() {
+            while !Task.isCancelled, let job = await pickNextJob() {
                 guard await run(job) else {
                     // The job could not be marked running (e.g. the disk is full). Picking it
                     // again at once would spin; the next `wake()` tries again.
@@ -218,6 +218,12 @@ public actor LectureProcessor {
         try await jobs.active().first { $0.state == .queued && Self.stages.contains($0.stage) }
     }
 
+    /// `nextJob()`, a failed read logged and tried once more; nil when there is none or the queue
+    /// could not be read (the next `wake()` tries again).
+    private func pickNextJob() async -> Job? {
+        await Log.retryingOnce("Reading the job queue", logger: Log.jobs) { try await nextJob() } ?? nil
+    }
+
     /// Runs one queued job. Returns false when it could not be marked running.
     private func run(_ queued: Job) async -> Bool {
         let started = ContinuousClock.now
@@ -231,7 +237,7 @@ public actor LectureProcessor {
             return false
         }
         if pendingCancels.remove(job.id) != nil {
-            _ = try? await jobs.finish(job.id, .cancelled)
+            await Log.retryingOnce("Cancelling job \(job.id)", logger: Log.jobs) { try await jobs.finish(job.id, .cancelled) }
             return true
         }
         observer(.started(job))
@@ -258,7 +264,7 @@ public actor LectureProcessor {
         currentJob = nil
         // Transcribe and align finish their job inside their result transaction on success.
         if outcome != .succeeded {
-            _ = try? await jobs.finish(job.id, outcome)
+            await Log.retryingOnce("Finishing job \(job.id)", logger: Log.jobs) { try await jobs.finish(job.id, outcome) }
         }
         let elapsed = (ContinuousClock.now - started).components
         let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) * 1e-18

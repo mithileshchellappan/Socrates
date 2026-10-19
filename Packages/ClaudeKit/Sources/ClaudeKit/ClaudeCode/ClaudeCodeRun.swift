@@ -46,6 +46,10 @@ struct ClaudeCodeCall: Sendable {
 
     static let toolPrefix = ClaudeCodeConfiguration.toolNamePrefix
 
+    /// How long the child may show no life before it is ended (`ClaudeError.stalled`): the call's
+    /// own limit, else the engine's.
+    var idleTimeout: Duration { context.idleTimeout ?? configuration.idleTimeout }
+
     // MARK: Arguments
 
     /// Flags shared by one-shot calls and tool loops (no built-in tool).
@@ -453,7 +457,7 @@ enum ClaudeCodeRun {
         try FileManager.default.createDirectory(at: call.configuration.workspace, withIntermediateDirectories: true)
         let spec = ChildProcessSpec(
             executable: call.binary, arguments: arguments, environment: call.environment(),
-            directory: call.configuration.workspace, input: input)
+            directory: call.configuration.workspace, input: input, idleTimeout: call.idleTimeout)
 
         let structured = request.outputFormat != nil
         let runStarted = Date()
@@ -618,7 +622,11 @@ enum ClaudeCodeRun {
         let runClock = ContinuousClock.now
         let matcher = ToolUseMatcher()
         let toolTurns = ClaudeCodeQueue()
+        // The child's idle clock stops while one of the app's tools runs (the CLI waits for it).
+        let activity = ChildActivity()
         let server = MCPToolServer(tools: tools) { name, arguments in
+            activity.toolCallStarted()
+            defer { activity.toolCallEnded() }
             let id = await matcher.claim(name: ClaudeCodeCall.toolPrefix + name, input: arguments)
             let use = ToolUseBlock(id: id ?? "toolu_studyportal_\(UUID().uuidString.lowercased())", name: name, input: arguments)
             do {
@@ -666,7 +674,8 @@ enum ClaudeCodeRun {
         let spec = ChildProcessSpec(
             executable: call.binary, arguments: arguments,
             environment: call.environment(["MCP_CONNECTION_NONBLOCKING": "false"]),
-            directory: call.configuration.workspace, input: try ClaudeCodeCall.inputLine(prompt))
+            directory: call.configuration.workspace, input: try ClaudeCodeCall.inputLine(prompt),
+            idleTimeout: call.idleTimeout, activity: activity)
 
         var tracker = MessageTracker()
         var output = CLIOutput()

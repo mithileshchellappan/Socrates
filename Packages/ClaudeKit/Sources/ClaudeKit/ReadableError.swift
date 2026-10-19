@@ -29,6 +29,9 @@ public enum ReadableError {
             return paused(until: resetsAt, now: now, calendar: calendar)
         case .claudeCodeProcess:
             return String(localized: "Claude Code stopped unexpectedly.")
+        case .stalled(let idle):
+            let minutes = max(1, Int(idle.components.seconds / 60))
+            return String(localized: "Claude Code sent nothing for \(minutes) minutes and was stopped.")
         case .transport, .overloaded, .rateLimited, .server, .streamEndedUnexpectedly:
             return String(localized: "Claude is busy; trying again later.")
         case .refused:

@@ -21,9 +21,11 @@ public struct DocumentSummarizer: Sendable {
     public static let promptVersion = 1
     public static let model: ClaudeModel = .haiku55
     public static let effort: Effort = .low
-    /// Room for the largest answer the schema allows (summary 400, 8 facts of 160, 12 dates of
-    /// 100, 24 sections) with margin.
-    public static let maxTokens = 4_000
+    /// Room for the largest answer the schema allows (its `maxLength` / `maxItems`: title 60,
+    /// summary 400, 8 facts of 160, 12 dates of 100, 24 sections of 120: about 7,800 characters of
+    /// JSON, at most about 3,200 tokens) plus the low-effort thinking and the structured-output
+    /// tool call, with headroom: a long handbook's answer is never cut and asked again.
+    public static let maxTokens = 10_000
     /// The most document text one call carries.
     public static let inputCharacters = 40_000
     /// A long document's first pages, always sent.
@@ -341,36 +343,42 @@ public struct DocumentSummarizer: Sendable {
 
     // MARK: - Schema and prompt
 
+    /// The answer's shape with the prompt's limits as `maxLength` / `maxItems` (the CLI's
+    /// structured-output tool checks them), so the largest answer is bounded (`maxTokens`). Code
+    /// still clips every length (`checked`).
     static var schema: JSONValue {
-        let nullableString: JSONValue = ["anyOf": [["type": "string"], ["type": "null"]]]
+        func string(_ maxLength: Int) -> JSONValue { ["type": "string", "maxLength": .int(maxLength)] }
+        func nullableString(_ maxLength: Int) -> JSONValue { ["anyOf": [string(maxLength), ["type": "null"]]] }
+        func array(_ items: JSONValue, _ maxItems: Int) -> JSONValue { ["type": "array", "items": items, "maxItems": .int(maxItems)] }
         let nullableInteger: JSONValue = ["anyOf": [["type": "integer"], ["type": "null"]]]
         let fact: JSONValue = [
             "type": "object", "additionalProperties": false, "required": ["text", "page"],
-            "properties": ["text": ["type": "string"], "page": nullableInteger],
+            "properties": ["text": string(160), "page": nullableInteger],
         ]
         let date: JSONValue = [
             "type": "object", "additionalProperties": false, "required": ["date", "end_date", "time", "what", "page"],
             "properties": [
-                "date": ["type": "string"], "end_date": nullableString, "time": nullableString, "what": ["type": "string"],
+                "date": string(10), "end_date": nullableString(10), "time": nullableString(5), "what": string(100),
                 "page": nullableInteger,
             ],
         ]
         let section: JSONValue = [
             "type": "object", "additionalProperties": false, "required": ["title", "page", "level"],
-            "properties": ["title": ["type": "string"], "page": ["type": "integer"], "level": ["type": "integer"]],
+            "properties": ["title": string(120), "page": ["type": "integer"], "level": ["type": "integer"]],
         ]
         return [
             "type": "object",
             "additionalProperties": false,
             "required": ["title", "kind", "summary", "courses", "key_facts", "dates", "sections"],
             "properties": [
-                "title": ["type": "string"],
+                "title": string(60),
                 "kind": ["type": "string", "enum": .array(DocumentKind.all.map { .string($0.rawValue) })],
-                "summary": ["type": "string"],
+                "summary": string(400),
+                // Tokens of the student's courses: as many as it concerns (unknown ones are dropped).
                 "courses": ["type": "array", "items": ["type": "string"]],
-                "key_facts": ["type": "array", "items": fact],
-                "dates": ["type": "array", "items": date],
-                "sections": ["type": "array", "items": section],
+                "key_facts": array(fact, 8),
+                "dates": array(date, 12),
+                "sections": array(section, 24),
             ],
         ]
     }

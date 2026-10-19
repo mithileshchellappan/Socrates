@@ -116,6 +116,10 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
     /// the service: asking again the same way ends the same way (not retryable, not service
     /// trouble). A tool loop reports this as `ToolLoopStop.iterationLimit` instead.
     case turnLimit(String)
+    /// A `claude` run showed no life for `idle` (no output, no tool call of the app running) and
+    /// was ended (`ClaudeCodeConfiguration.idleTimeout`, `CallContext.idleTimeout`). Service
+    /// trouble: the work waits and runs again later.
+    case stalled(idle: Duration)
 
     /// The API error details, when this is an API error.
     public var apiError: APIErrorInfo? {
@@ -155,7 +159,7 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
     /// everything retryable.
     public var isServiceTrouble: Bool {
         switch self {
-        case .missingAPIKey, .authentication, .permissionDenied, .billing, .unavailable, .usageLimited, .claudeCodeProcess: true
+        case .missingAPIKey, .authentication, .permissionDenied, .billing, .unavailable, .usageLimited, .claudeCodeProcess, .stalled: true
         default: isRetryable
         }
     }
@@ -219,6 +223,7 @@ public enum ClaudeError: Error, Sendable, CustomStringConvertible {
         case .usageLimited(let resetsAt):
             "Usage limit reached" + (resetsAt.map { " until \($0.formatted(.iso8601))" } ?? "")
         case .claudeCode(let reason), .claudeCodeProcess(let reason), .turnLimit(let reason): "Claude Code: \(reason)"
+        case .stalled(let idle): "Claude Code: no output for \(idle); the process was ended"
         }
     }
 }

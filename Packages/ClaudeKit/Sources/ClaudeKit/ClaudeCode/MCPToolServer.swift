@@ -161,31 +161,47 @@ final class MCPToolServer: Sendable {
             headers[line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()] =
                 line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
+        let target = String(requestLine[1])
+        let path = target.split(separator: "?", maxSplits: 1).first.map(String.init) ?? target
+        // The path and the token before any body byte is read: a stranger's request is answered
+        // from its headers alone and the connection closed (its body is never parsed).
+        guard path == "/mcp" else { return .invalid(.empty(404, "Not Found")) }
+        guard authorized(headers["authorization"]) else { return .invalid(.empty(401, "Unauthorized")) }
         let bodyStart = headEnd.upperBound
         let body: Data
         if headers["transfer-encoding"]?.lowercased().contains("chunked") == true {
-            while true {
-                if let (decoded, end) = Self.chunkedBody(buffer, from: bodyStart) {
+            reading: while true {
+                switch Self.chunkedBody(buffer, from: bodyStart, limit: Self.maximumBodyBytes) {
+                case .complete(let decoded, let end):
                     body = decoded
                     buffer = Data(buffer[end...])
-                    break
+                    break reading
+                case .incomplete:
+                    // The encoded bytes too (chunk lines), so a stream of tiny chunks is bounded.
+                    if buffer.endIndex - bodyStart > Self.maximumBodyBytes + Self.maximumHeadBytes {
+                        return .invalid(.empty(413, "Content Too Large"))
+                    }
+                    guard try await receive(connection, into: &buffer) else { return .closed }
+                case .invalid(let response):
+                    return .invalid(response)
                 }
-                if buffer.count - (bodyStart - buffer.startIndex) > Self.maximumBodyBytes {
-                    return .invalid(.empty(413, "Content Too Large"))
-                }
-                guard try await receive(connection, into: &buffer) else { return .closed }
             }
         } else {
-            let length = headers["content-length"].flatMap { Int($0) } ?? 0
-            guard length >= 0, length <= Self.maximumBodyBytes else { return .invalid(.empty(413, "Content Too Large")) }
+            var length = 0
+            if let text = headers["content-length"] {
+                // Digits only (no sign, no overflow: at most 9 of them).
+                guard !text.isEmpty, text.count <= 9, text.utf8.allSatisfy({ (0x30...0x39).contains($0) }), let value = Int(text) else {
+                    return .invalid(.empty(400, "Bad Request"))
+                }
+                length = value
+            }
+            guard length <= Self.maximumBodyBytes else { return .invalid(.empty(413, "Content Too Large")) }
             while buffer.endIndex - bodyStart < length {
                 guard try await receive(connection, into: &buffer) else { return .closed }
             }
             body = Data(buffer[bodyStart..<(bodyStart + length)])
             buffer = Data(buffer[(bodyStart + length)...])
         }
-        let target = String(requestLine[1])
-        let path = target.split(separator: "?", maxSplits: 1).first.map(String.init) ?? target
         return .request(Request(method: String(requestLine[0]).uppercased(), path: path, headers: headers, body: body))
     }
 
@@ -196,33 +212,49 @@ final class MCPToolServer: Sendable {
         return !(content.isEmpty && metadata.endOfStream)
     }
 
-    /// A complete chunked body starting at `start`, and the index after it; nil while incomplete.
-    private static func chunkedBody(_ data: Data, from start: Data.Index) -> (Data, Data.Index)? {
+    private enum ChunkedBody {
+        /// The decoded body and the index after its last line.
+        case complete(Data, Data.Index)
+        /// More bytes are needed.
+        case incomplete
+        /// A malformed chunk (400) or a body over the limit (413): answered, then closed.
+        case invalid(Response)
+    }
+
+    /// The chunked body starting at `start`. Hostile input never traps: a chunk size must be 1–8
+    /// hex digits (no sign, no overflow) and the decoded body at most `limit` bytes.
+    private static func chunkedBody(_ data: Data, from start: Data.Index, limit: Int) -> ChunkedBody {
         let crlf = Data("\r\n".utf8)
         var body = Data()
         var index = start
         while true {
-            guard let lineEnd = data.range(of: crlf, in: index..<data.endIndex) else { return nil }
+            guard let lineEnd = data.range(of: crlf, in: index..<data.endIndex) else { return .incomplete }
             let sizeText = String(decoding: data[index..<lineEnd.lowerBound], as: UTF8.self)
-                .split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-            guard let size = Int(sizeText, radix: 16), size >= 0 else { return nil }
+                .split(separator: ";", omittingEmptySubsequences: false).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+            guard !sizeText.isEmpty, sizeText.count <= 8, sizeText.allSatisfy(\.isHexDigit), let size = Int(sizeText, radix: 16) else {
+                return .invalid(.empty(400, "Bad Request"))
+            }
+            guard size <= limit - body.count else { return .invalid(.empty(413, "Content Too Large")) }
             let chunkStart = lineEnd.upperBound
             if size == 0 {
                 // Trailers (none expected) end with an empty line.
-                guard let end = data.range(of: Data("\r\n".utf8), in: chunkStart..<data.endIndex) else { return nil }
-                if end.lowerBound == chunkStart { return (body, end.upperBound) }
-                guard let trailerEnd = data.range(of: Data("\r\n\r\n".utf8), in: chunkStart..<data.endIndex) else { return nil }
-                return (body, trailerEnd.upperBound)
+                guard let end = data.range(of: crlf, in: chunkStart..<data.endIndex) else { return .incomplete }
+                if end.lowerBound == chunkStart { return .complete(body, end.upperBound) }
+                guard let trailerEnd = data.range(of: Data("\r\n\r\n".utf8), in: chunkStart..<data.endIndex) else { return .incomplete }
+                return .complete(body, trailerEnd.upperBound)
             }
-            guard data.endIndex - chunkStart >= size + 2 else { return nil }
-            body.append(data[chunkStart..<(chunkStart + size)])
-            index = chunkStart + size + 2
+            // `size` is at most `limit` here, so these sums cannot overflow.
+            guard data.endIndex - chunkStart >= size + 2 else { return .incomplete }
+            let dataEnd = chunkStart + size
+            guard data[dataEnd..<(dataEnd + 2)].elementsEqual(crlf) else { return .invalid(.empty(400, "Bad Request")) }
+            body.append(data[chunkStart..<dataEnd])
+            index = dataEnd + 2
         }
     }
 
+    /// A request `read` passed: its path is /mcp and its token is right (checked from the headers,
+    /// before its body was read).
     private func respond(to request: Request) async -> Response {
-        guard request.path == "/mcp" else { return .empty(404, "Not Found") }
-        guard authorized(request.headers["authorization"]) else { return .empty(401, "Unauthorized") }
         guard request.method == "POST" else { return .empty(405, "Method Not Allowed", headers: [("Allow", "POST")]) }
         let message: JSONValue
         do {

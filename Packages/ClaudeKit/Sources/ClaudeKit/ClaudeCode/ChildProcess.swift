@@ -11,6 +11,56 @@ struct ChildProcessSpec: Sendable {
     var directory: URL?
     /// Written to stdin, which is then closed; nil: stdin is /dev/null.
     var input: Data?
+    /// The child is ended (SIGTERM, then SIGKILL) when it shows no life for this long
+    /// (`activity`: no stdout output and no tool call of the app running); `run` then throws
+    /// `ClaudeError.stalled`. Nil: no limit (the probes have their own `timeout`).
+    var idleTimeout: Duration?
+    /// When the child last showed life; a tool loop's server marks its tool calls on it.
+    var activity = ChildActivity()
+}
+
+/// When a child last showed life, for `ChildProcessSpec.idleTimeout`: a stdout chunk arrived, or
+/// the app is running one of its tool calls (the child waits for the app then, it is not hung).
+final class ChildActivity: Sendable {
+    private struct State {
+        var last = ContinuousClock.now
+        var toolCalls = 0
+        var stalled = false
+    }
+
+    private let state = Mutex(State())
+
+    /// Output arrived.
+    func touch() {
+        state.withLock { $0.last = .now }
+    }
+
+    /// A tool call of the app starts; the idle clock stops until it ends.
+    func toolCallStarted() {
+        state.withLock {
+            $0.toolCalls += 1
+            $0.last = .now
+        }
+    }
+
+    func toolCallEnded() {
+        state.withLock {
+            $0.toolCalls = max(0, $0.toolCalls - 1)
+            $0.last = .now
+        }
+    }
+
+    /// How long nothing happened (zero while a tool call runs).
+    var idle: Duration {
+        state.withLock { $0.toolCalls > 0 ? .zero : .now - $0.last }
+    }
+
+    /// Set when the idle timeout ended the child.
+    var stalled: Bool { state.withLock { $0.stalled } }
+
+    func markStalled() {
+        state.withLock { $0.stalled = true }
+    }
 }
 
 struct ChildProcessResult: Sendable {
@@ -79,8 +129,27 @@ enum ChildProcess {
             if process.isRunning { pids.insert(pid) }
         }
 
-        let standardOutput = chunks(of: stdoutPipe.fileHandleForReading)
-        let standardErrorChunks = chunks(of: stderrPipe.fileHandleForReading)
+        let activity = spec.activity
+        activity.touch()
+        let standardOutput = chunks(of: stdoutPipe.fileHandleForReading, activity: activity)
+        let standardErrorChunks = chunks(of: stderrPipe.fileHandleForReading, activity: nil)
+        // The idle watchdog: ends a child that shows no life for `idleTimeout` (a run that keeps
+        // streaming is never cut). Its end closes stdout, so the read below finishes.
+        let watchdog = spec.idleTimeout.map { limit in
+            Task.detached(priority: .utility) {
+                while !Task.isCancelled {
+                    let idle = activity.idle
+                    if idle >= limit {
+                        activity.markStalled()
+                        ClaudeClient.logger.notice("\(spec.executable.lastPathComponent, privacy: .public) showed no life for \(String(describing: limit), privacy: .public); ending it")
+                        terminate(process)
+                        return
+                    }
+                    try? await Task.sleep(for: max(limit - idle, .seconds(1)))
+                }
+            }
+        }
+        defer { watchdog?.cancel() }
         return try await withTaskCancellationHandler {
             async let standardError = collect(standardErrorChunks, limit: standardErrorLimit)
             async let wroteInput: Void = write(spec.input, to: stdinPipe.fileHandleForWriting)
@@ -119,6 +188,7 @@ enum ChildProcess {
             let errorText = await standardError
             if let failure { throw failure }
             try Task.checkCancellation()
+            if let limit = spec.idleTimeout, activity.stalled { throw ClaudeError.stalled(idle: limit) }
             return ChildProcessResult(status: status, reason: reason, standardError: errorText)
         } onCancel: {
             terminate(process)
@@ -172,8 +242,9 @@ enum ChildProcess {
     }
 
     /// What `handle` reads, as it arrives, until end of file. Each handle has its own readability
-    /// source, so one pipe never waits for another.
-    private static func chunks(of handle: FileHandle) -> AsyncStream<Data> {
+    /// source, so one pipe never waits for another. Each chunk touches `activity` as it arrives
+    /// (not when it is consumed: a slow reader is not an idle child).
+    private static func chunks(of handle: FileHandle, activity: ChildActivity?) -> AsyncStream<Data> {
         AsyncStream { continuation in
             handle.readabilityHandler = { handle in
                 let data = handle.availableData
@@ -181,6 +252,7 @@ enum ChildProcess {
                     handle.readabilityHandler = nil
                     continuation.finish()
                 } else {
+                    activity?.touch()
                     continuation.yield(data)
                 }
             }

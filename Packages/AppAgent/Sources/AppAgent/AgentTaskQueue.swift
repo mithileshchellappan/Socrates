@@ -138,10 +138,10 @@ actor AgentTaskQueue {
     /// Cancels a task: a running one's process is ended first.
     func cancel(_ id: AgentTask.ID) async {
         if let entry = running[id], let conversation = entry.conversation {
-            try? await tasks.cancel(id)
+            await cancelRow(id)
             await runtime.stop(conversation)
         } else {
-            try? await tasks.cancel(id)
+            await cancelRow(id)
             // A task run in code stops between its calls.
             running[id]?.work.cancel()
             // md: a document's summary that never started fails at once (a running one when it stops).
@@ -207,51 +207,53 @@ actor AgentTaskQueue {
 
     private func runStudyPass(_ task: AgentTask) async {
         guard let lectureID = task.lectureID, let studyPass else {
-            try? await tasks.finish(task.id, .failed, error: "The study pass does not run on this device.")
+            await finishRow(task.id, .failed, error: "The study pass does not run on this device.")
             return
         }
+        let units: Int
         do {
-            let units = try await studyPass.rerun(lectureID: lectureID)
-            try await tasks.finish(task.id, .succeeded, result: "The study pass runs again (\(units) parts); its notes update as they are done.")
+            units = try await studyPass.rerun(lectureID: lectureID)
         } catch {
-            try? await tasks.finish(task.id, .failed, error: "The study pass could not be started.")
+            await finishRow(task.id, .failed, error: "The study pass could not be started.")
+            return
         }
+        await finishRow(task.id, .succeeded, result: "The study pass runs again (\(units) parts); its notes update as they are done.")
     }
 
     // MARK: The study coach's tasks (mc)
 
     private func runDrafting(_ task: AgentTask) async {
         guard let lectureID = task.lectureID, let drafter = coach?.drafter else {
-            try? await tasks.finish(task.id, .failed, error: "The study coach does not run on this device.")
+            await finishRow(task.id, .failed, error: "The study coach does not run on this device.")
             return
         }
         switch await drafter.run(lectureID: lectureID) {
         case .done(let questions, let readings):
             guard await stillOpen(task) else { return }
             let text = readings > 0 ? "\(questions) questions and \(readings) readings drafted." : "\(questions) questions drafted."
-            try? await tasks.finish(task.id, .succeeded, result: text)
+            await finishRow(task.id, .succeeded, result: text)
         case .waiting(let until):
             await wait(task, until: until)
         case .failed(let message):
             guard await stillOpen(task) else { return }
-            try? await tasks.finish(task.id, .failed, error: message)
+            await finishRow(task.id, .failed, error: message)
         }
     }
 
     private func runOldExam(_ task: AgentTask) async {
         guard let oldExams = coach?.oldExams else {
-            try? await tasks.finish(task.id, .failed, error: "The study coach does not run on this device.")
+            await finishRow(task.id, .failed, error: "The study coach does not run on this device.")
             return
         }
         switch await oldExams.read(task: task) {
         case .done(let questions, let title):
             guard await stillOpen(task) else { return }
-            try? await tasks.finish(task.id, .succeeded, result: "\(questions) questions of \(title) are ready for practice exams.")
+            await finishRow(task.id, .succeeded, result: "\(questions) questions of \(title) are ready for practice exams.")
         case .waiting(let until):
             await wait(task, until: until)
         case .failed(let message):
             guard await stillOpen(task) else { return }
-            try? await tasks.finish(task.id, .failed, error: message)
+            await finishRow(task.id, .failed, error: message)
         }
     }
 
@@ -267,7 +269,7 @@ actor AgentTaskQueue {
     func wait(_ task: AgentTask, until: Date?) async {
         guard await stillOpen(task) else { return }
         let date = until ?? now().addingTimeInterval(15 * 60)
-        try? await tasks.pause(task.id, until: date)
+        await pauseRow(task.id, until: date)
         schedulePauseWake(at: date)
     }
 
@@ -310,7 +312,7 @@ actor AgentTaskQueue {
             if service.waits {
                 await wait(task, until: service.until)
             } else {
-                try? await tasks.finish(task.id, .failed, error: Self.readable(error))
+                await finishRow(task.id, .failed, error: Self.readable(error))
             }
             return
         }
@@ -321,7 +323,7 @@ actor AgentTaskQueue {
         if stopping || quit.isSet { return }
         if ended?.state == .finished {
             let result = (try? await lastAnswer(conversation)) ?? ""
-            try? await tasks.finish(task.id, .succeeded, result: result.isEmpty ? "Done." : result)
+            await finishRow(task.id, .succeeded, result: result.isEmpty ? "Done." : result)
             return
         }
         if await isCancelled(task.id) { return }
@@ -330,7 +332,34 @@ actor AgentTaskQueue {
             await wait(task, until: service.until)
             return
         }
-        try? await tasks.finish(task.id, .failed, error: ended?.error ?? "The task stopped.")
+        await finishRow(task.id, .failed, error: ended?.error ?? "The task stopped.")
+    }
+
+    // MARK: - State writes
+
+    // The row's state machine never fails silently: a failed write is logged and tried once more
+    // (`Log.retryingOnce`). A row left `running` would hold a background slot (`claim` counts it)
+    // until the next launch re-queues it (`requeueInterrupted`).
+
+    /// Ends the task's row (`AgentTaskRepository.finish`; a row cancelled meanwhile keeps its state).
+    func finishRow(_ id: AgentTask.ID, _ state: AgentTaskState, result: String? = nil, error: String? = nil) async {
+        await Log.retryingOnce("Finishing task \(id.uuidString.prefix(8)) as \(state.rawValue)", logger: AppAgentModule.log) {
+            try await tasks.finish(id, state, result: result, error: error)
+        }
+    }
+
+    /// Pauses the task's row until `until` (`AgentTaskRepository.pause`).
+    func pauseRow(_ id: AgentTask.ID, until: Date) async {
+        await Log.retryingOnce("Pausing task \(id.uuidString.prefix(8))", logger: AppAgentModule.log) {
+            try await tasks.pause(id, until: until)
+        }
+    }
+
+    /// Cancels the task's row (`AgentTaskRepository.cancel`).
+    func cancelRow(_ id: AgentTask.ID) async {
+        await Log.retryingOnce("Cancelling task \(id.uuidString.prefix(8))", logger: AppAgentModule.log) {
+            try await tasks.cancel(id)
+        }
     }
 
     private func isCancelled(_ id: AgentTask.ID) async -> Bool {
@@ -449,7 +478,7 @@ actor AgentTaskQueue {
     /// What `agent_task.error` says (the panel shows it, the parent's next turn carries it): one
     /// readable sentence, never SQLite, CLI or Swift text (that goes to the log).
     static func readable(_ error: any Error) -> String {
-        if error is ToolSetError { return "The task's tools cannot be used together." }
+        if error is ToolSetError || error is TaskToolsError { return "The task's tools cannot be used together." }
         return ReadableError.sentence(for: error)
     }
 }

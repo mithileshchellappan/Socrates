@@ -28,6 +28,10 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
     /// beside the one interactive slot (docs/plan-agent.md §1). The app lowers it at run time
     /// under memory pressure (`ClaudeClient.setBackgroundSlotLimit`).
     public var backgroundSlots: Int
+    /// A run (one-shot or tool loop) whose `claude` shows no life this long (no output, no tool
+    /// call of the app running) is ended with `ClaudeError.stalled`; a run that keeps streaming is
+    /// never cut. `CallContext.idleTimeout` overrides it per call.
+    public var idleTimeout: Duration
 
     public init(
         directory: URL,
@@ -35,7 +39,8 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
         pricing: PricingTable = .standard,
         availabilityLifetime: Duration = .seconds(60),
         readyLifetime: Duration = .seconds(20 * 60),
-        backgroundSlots: Int = ClaudeCodeConfiguration.defaultBackgroundSlots
+        backgroundSlots: Int = ClaudeCodeConfiguration.defaultBackgroundSlots,
+        idleTimeout: Duration = ClaudeCodeConfiguration.defaultIdleTimeout
     ) {
         self.directory = directory
         self.candidates = candidates
@@ -43,7 +48,12 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
         self.availabilityLifetime = availabilityLifetime
         self.readyLifetime = readyLifetime
         self.backgroundSlots = max(1, backgroundSlots)
+        self.idleTimeout = idleTimeout
     }
+
+    /// 10 minutes: far beyond a long thinking pause or a slow web fetch, short enough that a hung
+    /// CLI frees its process slot the same session.
+    public static let defaultIdleTimeout: Duration = .seconds(10 * 60)
 
     /// Background processes at once by default (PRD "Sub-agents": two at once).
     public static let defaultBackgroundSlots = 2

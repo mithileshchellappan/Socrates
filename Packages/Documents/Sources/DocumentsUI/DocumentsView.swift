@@ -86,8 +86,9 @@ public struct DocumentsView: View {
     private var content: some View {
         if documents.isEmpty {
             // PRD "Empty screens invite the next action": one line and Import…, the whole detail a
-            // drop target (EmptyDropPrompt's, routed to the bank; other files to smart import).
-            EmptyDropPrompt(systemImage: "doc.on.doc", line: "Drop your documents here.", target: nil)
+            // drop target (EmptyDropPrompt's, routed to the bank; other files to smart import). It
+            // rings only while a document is among the dragged files.
+            EmptyDropPrompt(systemImage: "doc.on.doc", line: "Drop your documents here.", target: nil, accepts: DocumentFileTypes.isAccepted)
                 .environment(\.importFiles, emptyImport)
         } else {
             HStack(spacing: 0) {
@@ -176,9 +177,11 @@ public struct DocumentsView: View {
 
     // MARK: Toolbar
 
+    /// Import… in the toolbar once there is a list; an empty bank's own Import… is the prompt's
+    /// (one button, not two).
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        if actions.isEditable {
+        if actions.isEditable, !documents.isEmpty {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     showsImporter = true

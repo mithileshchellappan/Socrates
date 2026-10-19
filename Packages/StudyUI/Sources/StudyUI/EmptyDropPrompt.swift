@@ -1,5 +1,8 @@
 import StudyCore
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// Where imported or dropped files go: a course (smart import picks the lecture) or one lecture.
 public enum ImportTarget: Hashable, Sendable {
@@ -42,18 +45,23 @@ extension EnvironmentValues {
 
 /// An empty screen that invites the next step (PRD "Empty screens invite the next action"): the
 /// screen's glyph, one short line and Import…, over the whole detail; files dropped anywhere on it
-/// are filed to `target` (an accent ring while they are over it).
+/// are filed to `target` (an accent ring while they are over it; with `accepts`, only while a
+/// file it takes is among them).
 public struct EmptyDropPrompt: View {
     private let systemImage: String
     private let line: LocalizedStringKey
     private let target: ImportTarget?
+    private let accepts: (@Sendable (URL) -> Bool)?
 
     @Environment(\.importFiles) private var importFiles
 
-    public init(systemImage: String, line: LocalizedStringKey, target: ImportTarget?) {
+    /// - Parameter accepts: the files this screen takes (the ring shows only while one of them is
+    ///   dragged over it); nil: any file. Drops still go to `\.importFiles` whole.
+    public init(systemImage: String, line: LocalizedStringKey, target: ImportTarget?, accepts: (@Sendable (URL) -> Bool)? = nil) {
         self.systemImage = systemImage
         self.line = line
         self.target = target
+        self.accepts = accepts
     }
 
     public var body: some View {
@@ -68,20 +76,22 @@ public struct EmptyDropPrompt: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .importDropTarget(target)
+        .importDropTarget(target, accepts: accepts)
     }
 }
 
 extension View {
     /// Files dropped anywhere on this view are filed to `target` through the app's smart import
-    /// (`\.importFiles`), with an accent ring while they are over it.
-    public func importDropTarget(_ target: ImportTarget?) -> some View {
-        modifier(ImportDropTargetModifier(target: target))
+    /// (`\.importFiles`), with an accent ring while they are over it (with `accepts`: only while a
+    /// file it takes is among them).
+    public func importDropTarget(_ target: ImportTarget?, accepts: (@Sendable (URL) -> Bool)? = nil) -> some View {
+        modifier(ImportDropTargetModifier(target: target, accepts: accepts))
     }
 }
 
 private struct ImportDropTargetModifier: ViewModifier {
     let target: ImportTarget?
+    let accepts: (@Sendable (URL) -> Bool)?
     @Environment(\.importFiles) private var importFiles
     @Environment(\.colorScheme) private var colorScheme
     @State private var isTargeted = false
@@ -103,8 +113,20 @@ private struct ImportDropTargetModifier: ViewModifier {
                 guard let importFiles, !urls.isEmpty else { return false }
                 importFiles.drop(urls, to: target)
                 return true
-            } isTargeted: {
-                isTargeted = $0
+            } isTargeted: { targeted in
+                isTargeted = targeted && draggedFilesAccepted
             }
+    }
+
+    /// Whether the drag over the view holds a file `accepts` takes (always without `accepts`).
+    /// The Mac reads the drag pasteboard's file URLs; elsewhere every drag counts.
+    private var draggedFilesAccepted: Bool {
+        guard let accepts else { return true }
+        #if os(macOS)
+        let urls = NSPasteboard(name: .drag).readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.contains(where: accepts)
+        #else
+        return true
+        #endif
     }
 }

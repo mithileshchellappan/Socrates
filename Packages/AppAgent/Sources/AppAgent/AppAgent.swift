@@ -176,8 +176,8 @@ public actor AppAgent {
         blocks += try await reminderBlocks(for: conversation, history: history).map { .text($0) }
         var reported: [AgentTask.ID] = []
         // Whether untrusted text is in this conversation (carried now or by an earlier turn): a
-        // mail- or (md) documents-group task's result, or (md) a file sent as its text (Word, RTF,
-        // Pages, a long PDF's first pages). A web task it spawns then gets no input summary.
+        // mail-, (md) documents- or web-group task's result, or (md) a file sent as its text (Word,
+        // RTF, Pages, a long PDF's first pages). A web task it spawns then gets no input summary.
         var untrusted = (history.compactMap(\.context).flatMap(\.attachments) + whole).contains(where: AttachmentBlocks.sentAsText)
         if let conversation {
             let repository = AgentTaskRepository(store: services.records)
@@ -471,9 +471,11 @@ public actor AppAgent {
         }
     }
 
-    /// Whether a finished task's result is untrusted text: it had mail or (md) documents to read.
+    /// Whether a finished task's result is untrusted text: it had mail, (md) documents or web pages
+    /// to read (a fetched page can steer what a web task answers).
     static func carriesUntrustedResult(_ task: AgentTask) -> Bool {
-        task.finishedAt != nil && (task.tools.contains(.mail) || task.tools.contains(.documents)) && !(task.result ?? "").isEmpty
+        let untrusted: [AgentToolGroup] = [.mail, .documents, .web]
+        return task.finishedAt != nil && task.tools.contains(where: untrusted.contains) && !(task.result ?? "").isEmpty
     }
 
     /// `<task_result task="…" title="…" state="succeeded">result</task_result>` (data).

@@ -13,17 +13,23 @@ public struct CallContext: Sendable, Hashable {
     /// The conversation a tool loop continues (M3.5). A backend that keeps conversations itself
     /// (Claude Code: one CLI session per conversation) uses it; the Messages API ignores it.
     public var session: ConversationSession?
+    /// Claude Code: how long the call's `claude` may show no life (no output, no tool call
+    /// running) before it is ended with `ClaudeError.stalled`; nil: the engine's
+    /// `ClaudeCodeConfiguration.idleTimeout` (10 minutes). The Messages API ignores it.
+    public var idleTimeout: Duration?
 
     public init(
         purpose: String = "unspecified",
         lectureID: UUID? = nil,
         priority: CallPriority = .interactive,
-        session: ConversationSession? = nil
+        session: ConversationSession? = nil,
+        idleTimeout: Duration? = nil
     ) {
         self.purpose = purpose
         self.lectureID = lectureID
         self.priority = priority
         self.session = session
+        self.idleTimeout = idleTimeout
     }
 }
 
