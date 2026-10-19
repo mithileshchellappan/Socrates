@@ -149,7 +149,7 @@ public struct CourseSchedule: Sendable {
         let planner = planner
         let store = store
         try await services.database.write { db in
-            try Self.deleteSlot(slotID, now: now, planner: planner, store: store, db: db)
+            _ = try Self.deleteSlot(slotID, now: now, planner: planner, store: store, db: db)
         }
     }
 
