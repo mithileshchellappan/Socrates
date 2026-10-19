@@ -22,6 +22,11 @@ struct StudyPortalApp: App {
         if let database = model.services?.database {
             prepareDependencies { $0.defaultDatabase = database }
         }
+        #if os(iOS)
+        // M7: before the first scene, so a Live Activity button that launched the app (Next
+        // Slide, Stop Recording) finds the recorder's handler.
+        model.phoneRecorder?.activate()
+        #endif
         _model = State(initialValue: model)
     }
 
@@ -36,6 +41,18 @@ struct StudyPortalApp: App {
                 RootView()
                     .environment(model)
             }
+            #elseif os(iOS)
+            // M7: the iPhone's own shell (tab bar, recorder, Today's phone layout); the iPad keeps
+            // the split view.
+            #if DEBUG
+            if PhoneParity.route != nil {
+                PhoneParityView(model: model)
+            } else {
+                phoneOrSplitView
+            }
+            #else
+            phoneOrSplitView
+            #endif
             #else
             RootView()
                 .environment(model)
@@ -76,4 +93,17 @@ struct StudyPortalApp: App {
         SettingsScene(model: model)
         #endif
     }
+
+    #if os(iOS)
+    @ViewBuilder
+    private var phoneOrSplitView: some View {
+        if AppModel.isPhone {
+            PhoneRootView()
+                .environment(model)
+        } else {
+            RootView()
+                .environment(model)
+        }
+    }
+    #endif
 }

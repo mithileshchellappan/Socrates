@@ -20,11 +20,16 @@ import Search
 import StudyCore
 import StudyPass
 import StudyUI
+import Sync
 import Transcription
 #if os(macOS)
 import AppKit
 import Darwin
 import EventKit
+#endif
+#if os(iOS)
+import Recorder
+import UIKit
 #endif
 
 /// App-wide state and the services wired up at launch. Views read it from the environment.
@@ -33,7 +38,8 @@ final class AppModel {
     /// Nil only if the library could not be opened; `launchError` then says why.
     let services: StudyServices?
     let launchError: String?
-    /// Runs lecture jobs (transcribe → align) in the background; state lives in `job` rows.
+    /// Runs lecture jobs (transcribe → align) in the background; state lives in `job` rows. Never
+    /// on the iPhone (M7: the Mac transcribes what the phone records).
     let processor: LectureProcessor?
     /// Smart import: files dropped files to their course and lecture (Undo, Change).
     let filing: FilingService?
@@ -90,9 +96,21 @@ final class AppModel {
     let studyPass: StudyPassPipeline?
     /// The study coach (mc): the plan (`study_block` rows from today to 14 days ahead), rounds and
     /// practice exams with the FSRS scheduler, Opus grading of written answers; its Haiku question
-    /// drafting and old exams run in the app agent's task queue. `\.studyCoach` on the window. Mac
-    /// only, and only where background work runs (renders draw the coach's rows, nothing is sent).
+    /// drafting and old exams run in the app agent's task queue. `\.studyCoach` on the window. On
+    /// the Mac only where background work runs (renders draw the coach's rows, nothing is sent); on
+    /// iOS (M7) `CoachEngine(services:)` without Claude, never started: rounds graded in code.
     let coach: CoachEngine?
+    /// M7: iCloud sync of the library (SQLiteData's `SyncEngine`), on the Mac and the iPhone. Nil
+    /// unless this build is signed for CloudKit and names its container
+    /// (`CloudSyncConfiguration.containerIdentifier()`): nothing about sync runs otherwise.
+    let cloudSync: CloudSync?
+    #if os(iOS)
+    /// M7, the iPhone: the recorder (mockup 09) and its Live Activity, owned for the app's life so
+    /// a recording outlives its screen; `activate()` runs in the App's `init`, before the first
+    /// scene, so a Live Activity button that launched the app finds its handler. Its captures stay
+    /// in the outbox (never imported on the phone) until shared to the Mac.
+    let phoneRecorder: PhoneRecorder?
+    #endif
     #if DEBUG
     /// Renders and parity shots (mc): a coach that is never started, so the coach's screens offer
     /// their actions as the mockups draw them (Start, Practice, the sheet's "8 questions · 90
@@ -162,7 +180,8 @@ final class AppModel {
         self.processed = processed
         runsBackgroundWork = startsProcessing
         var processor: LectureProcessor?
-        if startsProcessing, let services, let store = try? WhisperModelStore.shared() {
+        // M7: no transcription on the iPhone (the Mac processes what the phone records).
+        if startsProcessing, !Self.isPhone, let services, let store = try? WhisperModelStore.shared() {
             let engine = WhisperKitEngine(store: store)
             processor = LectureProcessor(
                 services: services, engine: engine,
@@ -225,7 +244,9 @@ final class AppModel {
             #if os(macOS)
             let coach = startsProcessing ? CoachEngine(services: services, client: claude) : nil
             #else
-            let coach: CoachEngine? = nil
+            // M7: the phone's coach without Claude (rounds graded in code, written answers left
+            // for the Mac); never started: the Mac plans.
+            let coach: CoachEngine? = CoachEngine(services: services)
             #endif
             self.coach = coach
             // ma: the `app` conversation (every domain's tools) and the sub-agents' `task`
@@ -238,6 +259,10 @@ final class AppModel {
             self.agent = agent
             transcriptItems = TranscriptItemPipeline(services: services, client: claude, memory: memory)
             self.owner = owner
+            cloudSync = startsProcessing ? CloudSync(services: services) : nil
+            #if os(iOS)
+            phoneRecorder = Self.isPhone ? PhoneRecorder(services: services) : nil
+            #endif
             #if os(macOS)
             let studyPass = startsProcessing ? StudyPassPipeline(services: services, client: claude) : nil
             self.studyPass = studyPass
@@ -276,9 +301,12 @@ final class AppModel {
             studyPass = nil
             coach = nil
             owner = ModelReference()
+            cloudSync = nil
             #if os(macOS)
             mailEngine = nil
             mailSender = nil
+            #else
+            phoneRecorder = nil
             #endif
         }
         filingCenter?.didFile = { [weak self] outcomes in
@@ -312,8 +340,20 @@ final class AppModel {
             }
         }
         #endif
+        #if DEBUG && os(iOS)
+        // Parity screenshots on the iPhone (`PhoneParity`): a library copy, nothing is started.
+        if PhoneParity.route != nil {
+            do {
+                return AppModel(services: try PhoneParity.services(), startsProcessing: false)
+            } catch {
+                return AppModel(services: nil, launchError: error.localizedDescription, startsProcessing: false)
+            }
+        }
+        #endif
         do {
-            let model = AppModel(services: try StudyServices.live())
+            // M7: a build signed for CloudKit opens the library with SQLiteData's sync metadata
+            // (nil today: the database opens exactly as before).
+            let model = AppModel(services: try StudyServices.live(syncContainer: CloudSyncConfiguration.containerIdentifier()))
             // App-lifetime work belongs to the app, not to a window: it runs even when the window
             // closes during launch, and a view's cancelled task never stops it halfway. It starts
             // after the first frame (DESIGN: cold launch < 1 s), so its library-wide passes never
@@ -339,14 +379,20 @@ final class AppModel {
     func startBackgroundWork() async {
         guard runsBackgroundWork, !didStartBackgroundWork, let services else { return }
         didStartBackgroundWork = true
+        // M7: iCloud sync first (only in a build configured for it), so the other device's rows
+        // come down before anything is created here.
+        if let cloudSync { Task { await cloudSync.start() } }
         observeClaudeAvailability()
         // Conversations a quit left running end as failed.
         await agent?.recoverInterrupted()
-        do {
-            let seeded = try await StudentCourses.seedIfEmpty(services: services)
-            if !seeded.isEmpty { Log.app.notice("Created \(seeded.count) courses") }
-        } catch {
-            Log.app.error("Creating the courses failed: \(error.localizedDescription, privacy: .public)")
+        // A phone that syncs gets the Mac's courses; it never creates its own.
+        if !(Self.isPhone && cloudSync != nil) {
+            do {
+                let seeded = try await StudentCourses.seedIfEmpty(services: services)
+                if !seeded.isEmpty { Log.app.notice("Created \(seeded.count) courses") }
+            } catch {
+                Log.app.error("Creating the courses failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
 
         if let searchIndexer {
@@ -422,8 +468,20 @@ final class AppModel {
             observeMemoryPressure(appAgent)
         }
         // mc: after the agent (the coach queues `question_draft` tasks its queue runs): follows the
-        // rows it plans from, replans now and grades the written answers that wait.
+        // rows it plans from, replans now and grades the written answers that wait. Mac only (the
+        // phone's coach is never started).
+        #if os(macOS)
         await coach?.start()
+        #endif
+    }
+
+    /// M7: the iPhone idiom (its own shell, recorder, no transcription); false on the Mac and iPad.
+    static var isPhone: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        false
+        #endif
     }
 
     /// The agent's background claude processes (sub-agents, triage): 1 while the system has less
@@ -820,7 +878,10 @@ final class AppModel {
             undoChange: { id in try await appAgent.undo(id) }
         )
         #else
-        return AgentPanelActions()
+        // M7: the phone never runs Claude: a question becomes an `agent_request` row the Mac
+        // answers once iCloud sync carries it. Hidden (nothing disabled) while sync is off.
+        guard let services else { return AgentPanelActions() }
+        return .relay(services: services, isAvailable: cloudSync?.isRunning ?? false)
         #endif
     }
 }

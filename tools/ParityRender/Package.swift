@@ -33,7 +33,9 @@ let package = Package(
         .package(path: "../../Packages/Tutor"),
         .package(path: "../../Packages/Notes"),
         .package(path: "../../Packages/AppAgent"),
-        .package(path: "../../Packages/Coach")
+        .package(path: "../../Packages/Coach"),
+        // M7: AppModel owns the (gated) iCloud sync.
+        .package(path: "../../Packages/Sync")
     ],
     targets: [
         .executableTarget(
@@ -69,7 +71,8 @@ let package = Package(
                 .product(name: "NotesUI", package: "Notes"),
                 .product(name: "AppAgent", package: "AppAgent"),
                 .product(name: "Coach", package: "Coach"),
-                .product(name: "CoachUI", package: "Coach")
+                .product(name: "CoachUI", package: "Coach"),
+                .product(name: "Sync", package: "Sync")
             ],
             exclude: [
                 "App/Info.plist",

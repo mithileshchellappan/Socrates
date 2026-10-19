@@ -25,8 +25,11 @@ struct RecorderWaveform: View {
         let stampTimes = (session?.stamps ?? [])
             .filter { $0.kind.showsSlide && $0.kind != .start }
             .compactMap { session?.time(of: $0) }
+        // Read here, not only inside the Canvas: a new bar must redraw it (the preview's bars,
+        // and the live ones while the session's own state stays the same).
+        let bars = levels
         Canvas { context, size in
-            draw(in: &context, size: size, elapsed: elapsed, stampTimes: stampTimes)
+            draw(in: &context, size: size, levels: bars, elapsed: elapsed, stampTimes: stampTimes)
         }
         .accessibilityHidden(true)
         .task(id: Sampling(isOn: isSampling)) {
@@ -52,7 +55,7 @@ struct RecorderWaveform: View {
         if levels.count > Self.capacity { levels.removeFirst(levels.count - Self.capacity) }
     }
 
-    private func draw(in context: inout GraphicsContext, size: CGSize, elapsed: TimeInterval, stampTimes: [TimeInterval]) {
+    private func draw(in context: inout GraphicsContext, size: CGSize, levels: [Float], elapsed: TimeInterval, stampTimes: [TimeInterval]) {
         // The playhead sits where 52 bars end on a 358 pt wide phone (312 pt), proportionally.
         let playhead = (size.width * 312 / 358).rounded()
         let baseline = size.height - 24

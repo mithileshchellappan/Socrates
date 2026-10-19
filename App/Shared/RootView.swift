@@ -126,6 +126,10 @@ struct RootView: View {
                 .environment(\.foreignCalendars, model.calendarMirror.map { $0 as any ForeignCalendarSource })
                 .environment(\.calendarVisibility, model.calendarVisibility)
                 .onOpenURL(perform: openURL)
+                #if os(macOS)
+                // Links and opened captures go to the library window already open (not a new one).
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+                #endif
                 .sheet(item: $model.sheet) { sheet in
                     switch sheet {
                     case .newCapture:
@@ -557,8 +561,21 @@ struct RootView: View {
     }
 
     /// `studyportal://` links from the Study Portal calendar: a session opens its lecture (else its
-    /// course), a deadline the mail it was read from (else its course).
+    /// course), a deadline the mail it was read from (else its course). M7, the Mac: an opened
+    /// capture (a `.lecturebundle` AirDropped from the iPhone, or a `.lecture` package) is filed by
+    /// smart import like a drop (a bundle is unpacked, never changed; one already in the library is
+    /// "known").
     private func openURL(_ url: URL) {
+        #if os(macOS)
+        if url.isFileURL, ["lecture", "lecturebundle"].contains(url.pathExtension.lowercased()), let center = model.filingCenter {
+            Task {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                await center.file([url])
+            }
+            return
+        }
+        #endif
         guard let services = model.services else { return }
         if let sessionID = CalendarMirror.sessionID(from: url) {
             Task {

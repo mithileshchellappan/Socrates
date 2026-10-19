@@ -102,6 +102,8 @@ targets:
         LSApplicationCategoryType: public.app-category.education
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Records lectures you choose to record.
+        # M7: the iPhone's agent sheet (Take Photo of the board).
+        NSCameraUsageDescription: Takes a photo to ask about.
         NSSpeechRecognitionUsageDescription: Shows live captions while a lecture is recorded.
         NSCalendarsFullAccessUsageDescription: Shows your classes and deadlines and keeps the Study Portal calendar up to date.
         # studyportal://session/<id> and studyportal://item/<id>: links on the Study Portal
