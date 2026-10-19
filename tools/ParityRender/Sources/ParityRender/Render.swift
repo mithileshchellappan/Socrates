@@ -16,7 +16,12 @@ import SwiftUI
 //
 //   tools/parity/render [--library DIR] [--out DIR] [--only 01-today,03-review]
 //                       [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
-//                       [--week 2026-10-19] [--m35-sample] [--mc]
+//                       [--week 2026-10-19] [--m35-sample] [--mc] [--sweep] [--claude]
+//
+// `--sweep` (any library, empty or full; no Data Centers lecture needed): `today`, `calendar`,
+// `mail`, `mail-selected`, `notes`, `notes-selected`, `study`, the agent panel (`panel-compact-new`,
+// `panel-compact-latest`, `panel-expanded-latest`) and every course's `c<i>-lectures`, `-slides`,
+// `-notes`, `-progress`. `--claude` draws with Claude Code available (the launcher and panel show).
 //
 // `--mc` (mc, the study coach; a copy seeded with `tools/parity/seed --mc-sample` / `--mc-runway`,
 // e.g. .data/parity/mc/<state>/library): only the coach's shots the library has, with a coach that
@@ -77,6 +82,9 @@ struct RenderOptions {
     var calendarSample = false
     /// Only the study coach's shots (`--mc`).
     var mc = false
+    /// Every screen of any library, empty or full (`--sweep`), with Claude Code available (`--claude`).
+    var sweep = false
+    var claude = false
 
     init(arguments: [String]) throws {
         var index = 0
@@ -105,6 +113,8 @@ struct RenderOptions {
             case "--m35-sample": m35Sample = true
             case "--calendar-sample": calendarSample = true
             case "--mc": mc = true
+            case "--sweep": sweep = true
+            case "--claude": claude = true
             case "--appearance":
                 switch try value() {
                 case "light": schemes = [.light]
@@ -196,70 +206,78 @@ struct ParityRender {
             model.claudeAvailability = .ready(ClaudeBackendStatus(kind: .claudeCode, version: "2.1.268", subscription: "team"))
         }
         if options.calendarSample { try await seedCalendar(services: services) }
-        let cc = try ParityMode.course("Data Centers", services: services)
-        let (_, dcLecture2) = try ParityMode.lecture("Data Centers", 2, services: services)
-        // M6 (`--m6-sample`): mockup 04's open note, the DC L2 note (titled in its first block).
-        let dcL2Note = try await services.database.read { db in
-            try Note
-                .where { $0.lectureID.eq(dcLecture2.id) && $0.pageNumber.is(nil) && $0.blocksJSON.like("%Virtualization generations%") }
-                .fetchOne(db)?.id
+        if options.claude {
+            model.claudeAvailability = .ready(ClaudeBackendStatus(kind: .claudeCode, version: "2.1.268", subscription: "max"))
         }
-        // ma (`--ma-sample` seed): the agent panel's two sample conversations.
-        func appConversation(_ title: String) async throws -> AgentConversation.ID? {
-            try await services.database.read { db in
-                try AgentConversation.where { $0.kind.eq(ConversationKind.app) && $0.title.eq(title) }.fetchOne(db)?.id
+        var shots: [RenderShot]
+        if options.sweep {
+            shots = try await sweepShots(services: services, newestMail: newestMail, now: options.now)
+        } else {
+            let cc = try ParityMode.course("Data Centers", services: services)
+            let (_, dcLecture2) = try ParityMode.lecture("Data Centers", 2, services: services)
+            // M6 (`--m6-sample`): mockup 04's open note, the DC L2 note (titled in its first block).
+            let dcL2Note = try await services.database.read { db in
+                try Note
+                    .where { $0.lectureID.eq(dcLecture2.id) && $0.pageNumber.is(nil) && $0.blocksJSON.like("%Virtualization generations%") }
+                    .fetchOne(db)?.id
             }
-        }
-        let weekendPlan = try await appConversation("Weekend plan")
-        let qemu = try await appConversation("QEMU on the M3")
-        func panel(_ mode: AgentPanelLaunch.Mode, _ conversation: AgentConversation.ID?, exchanges: Range<Int>? = nil) -> AgentPanelLaunch {
-            AgentPanelLaunch(mode: mode, conversationID: conversation, exchanges: exchanges, now: options.now)
-        }
-        var shots: [RenderShot] = [
-            RenderShot(name: "01-today", window: .main(ParityMode.Launch(selection: .today))),
-            RenderShot(name: "02-live", window: .live),
-            // 37:27, the mockup's moment: slide 16 holds the playhead, so Follow is on.
-            RenderShot(name: "03-review", window: .main(ParityMode.Launch(
-                selection: .lecture(dcLecture2.id),
-                reviewTarget: (dcLecture2.id, ReviewTarget(page: 16, time: 2247, request: UUID()))
-            ))),
-            RenderShot(name: "06-calendar", window: .main(ParityMode.Launch(selection: .calendar))),
-            // `--calendar-sample`: a detail popover drawn inline (off-screen windows draw none).
-            RenderShot(name: "06-calendar-session", window: .main(ParityMode.Launch(selection: .calendar)), calendarDetail: .session),
-            RenderShot(name: "06-calendar-exam", window: .main(ParityMode.Launch(selection: .calendar)), calendarDetail: .exam),
-            RenderShot(name: "07-search", window: .main(ParityMode.Launch(selection: .search, query: "paravirtualization"))),
-            // Mockup 05: the Inbox, its newest message selected.
-            RenderShot(name: "05-mail", window: .main(ParityMode.Launch(selection: .mailScope(.inbox), mailSelection: newestMail))),
-            // ma (with `--m35-sample` on a copy seeded by `tools/parity/seed --ma-sample`): the agent
-            // panel, mockup agent-panel-mockups.html §1 (Review), §2–3 (Calendar), §4 (Today's files).
-            RenderShot(name: "ma-review", window: .main(ParityMode.Launch(
-                selection: .lecture(dcLecture2.id),
-                reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
-                panel: panel(.compact, weekendPlan, exchanges: 0..<1)
-            ))),
-            // Opened again (no exchange range): the conversation's latest exchange, never only the
-            // title row and the composer.
-            RenderShot(name: "ma-review-reopened", window: .main(ParityMode.Launch(
-                selection: .lecture(dcLecture2.id),
-                reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
-                panel: panel(.compact, weekendPlan)
-            ))),
-            // §2: the same conversation after Go ▸ Calendar (its context line "DC Lecture 2").
-            RenderShot(name: "ma-calendar", window: .main(ParityMode.Launch(selection: .calendar, panel: panel(.compact, weekendPlan, exchanges: 0..<1)))),
-            RenderShot(name: "ma-calendar-expanded", window: .main(ParityMode.Launch(selection: .calendar, panel: panel(.expanded, weekendPlan)))),
-            RenderShot(name: "ma-today-files", window: .main(ParityMode.Launch(selection: .today, panel: panel(.compact, qemu, exchanges: 0..<1)))),
-            RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id)))),
-            RenderShot(name: "08-course-lectures", window: .main(ParityMode.Launch(selection: .courseLectures(cc.id)))),
-            // M6 (on a copy seeded by `tools/parity/seed --m6-sample`): mockup 04, the Notes row's
-            // All Notes with the DC L2 note selected. Review's ink on slide 16 shows in `03-review`.
-            RenderShot(name: "04-notes", window: .main(ParityMode.Launch(selection: .notes(.all), noteSelection: dcL2Note))),
-            RenderShot(name: "10-import", window: .main(ParityMode.Launch(selection: .today))) { model, size in
-                try await ParityMode.importPreview(model: model, services: services, size: size)
+            // ma (`--ma-sample` seed): the agent panel's two sample conversations.
+            func appConversation(_ title: String) async throws -> AgentConversation.ID? {
+                try await services.database.read { db in
+                    try AgentConversation.where { $0.kind.eq(ConversationKind.app) && $0.title.eq(title) }.fetchOne(db)?.id
+                }
             }
-        ]
-        if options.mc { shots = try mcShots(cc: cc, services: services) }
-        if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
-        if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
+            let weekendPlan = try await appConversation("Weekend plan")
+            let qemu = try await appConversation("QEMU on the M3")
+            func panel(_ mode: AgentPanelLaunch.Mode, _ conversation: AgentConversation.ID?, exchanges: Range<Int>? = nil) -> AgentPanelLaunch {
+                AgentPanelLaunch(mode: mode, conversationID: conversation, exchanges: exchanges, now: options.now)
+            }
+            shots = [
+                RenderShot(name: "01-today", window: .main(ParityMode.Launch(selection: .today))),
+                RenderShot(name: "02-live", window: .live),
+                // 37:27, the mockup's moment: slide 16 holds the playhead, so Follow is on.
+                RenderShot(name: "03-review", window: .main(ParityMode.Launch(
+                    selection: .lecture(dcLecture2.id),
+                    reviewTarget: (dcLecture2.id, ReviewTarget(page: 16, time: 2247, request: UUID()))
+                ))),
+                RenderShot(name: "06-calendar", window: .main(ParityMode.Launch(selection: .calendar))),
+                // `--calendar-sample`: a detail popover drawn inline (off-screen windows draw none).
+                RenderShot(name: "06-calendar-session", window: .main(ParityMode.Launch(selection: .calendar)), calendarDetail: .session),
+                RenderShot(name: "06-calendar-exam", window: .main(ParityMode.Launch(selection: .calendar)), calendarDetail: .exam),
+                RenderShot(name: "07-search", window: .main(ParityMode.Launch(selection: .search, query: "paravirtualization"))),
+                // Mockup 05: the Inbox, its newest message selected.
+                RenderShot(name: "05-mail", window: .main(ParityMode.Launch(selection: .mailScope(.inbox), mailSelection: newestMail))),
+                // ma (with `--m35-sample` on a copy seeded by `tools/parity/seed --ma-sample`): the agent
+                // panel, mockup agent-panel-mockups.html §1 (Review), §2–3 (Calendar), §4 (Today's files).
+                RenderShot(name: "ma-review", window: .main(ParityMode.Launch(
+                    selection: .lecture(dcLecture2.id),
+                    reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
+                    panel: panel(.compact, weekendPlan, exchanges: 0..<1)
+                ))),
+                // Opened again (no exchange range): the conversation's latest exchange, never only the
+                // title row and the composer.
+                RenderShot(name: "ma-review-reopened", window: .main(ParityMode.Launch(
+                    selection: .lecture(dcLecture2.id),
+                    reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
+                    panel: panel(.compact, weekendPlan)
+                ))),
+                // §2: the same conversation after Go ▸ Calendar (its context line "DC Lecture 2").
+                RenderShot(name: "ma-calendar", window: .main(ParityMode.Launch(selection: .calendar, panel: panel(.compact, weekendPlan, exchanges: 0..<1)))),
+                RenderShot(name: "ma-calendar-expanded", window: .main(ParityMode.Launch(selection: .calendar, panel: panel(.expanded, weekendPlan)))),
+                RenderShot(name: "ma-today-files", window: .main(ParityMode.Launch(selection: .today, panel: panel(.compact, qemu, exchanges: 0..<1)))),
+                RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id)))),
+                RenderShot(name: "08-course-lectures", window: .main(ParityMode.Launch(selection: .courseLectures(cc.id)))),
+                // M6 (on a copy seeded by `tools/parity/seed --m6-sample`): mockup 04, the Notes row's
+                // All Notes with the DC L2 note selected. Review's ink on slide 16 shows in `03-review`.
+                RenderShot(name: "04-notes", window: .main(ParityMode.Launch(selection: .notes(.all), noteSelection: dcL2Note))),
+                RenderShot(name: "10-import", window: .main(ParityMode.Launch(selection: .today))) { model, size in
+                    try await ParityMode.importPreview(model: model, services: services, size: size)
+                }
+            ]
+            if options.mc { shots = try mcShots(cc: cc, services: services) }
+            if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
+            if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
+        }
         if let only = options.only { shots = shots.filter { only.contains($0.name) } }
         // The live screen last: its preview session keeps "recording", and a running recording
         // shows in every main window's toolbar.
@@ -279,6 +297,44 @@ struct ParityRender {
             model.filingCenter?.endPreviewDrag()
             model.filingCenter?.toasts.map(\.id).forEach { model.filingCenter?.dismiss($0) }
         }
+    }
+
+    /// `--sweep`: the screens of any library, empty or full, with no sample rows needed (empty
+    /// states, the agent panel on its latest conversation and as a New Chat, every course's
+    /// Lectures, Slides, Notes and Progress as c0, c1, … in sidebar order).
+    static func sweepShots(services: StudyServices, newestMail: MailMessage.ID?, now: Date?) async throws -> [RenderShot] {
+        let courses = try await services.database.read { db in try Course.order(by: \.sortOrder).fetchAll(db) }
+        let newestNote = try await services.database.read { db in try Note.order { $0.updatedAt.desc() }.fetchOne(db)?.id }
+        let newestConversation = try await services.database.read { db in
+            try AgentConversation.where { $0.kind.eq(ConversationKind.app) }.order { $0.updatedAt.desc() }.fetchOne(db)?.id
+        }
+        func screen(_ item: SidebarItem, panel: AgentPanelLaunch = AgentPanelLaunch()) -> RenderShot.Window {
+            .main(ParityMode.Launch(selection: item, panel: panel))
+        }
+        func panel(_ mode: AgentPanelLaunch.Mode, _ conversation: AgentConversation.ID?) -> AgentPanelLaunch {
+            AgentPanelLaunch(mode: mode, conversationID: conversation, newChat: conversation == nil, now: now)
+        }
+        var shots = [
+            RenderShot(name: "today", window: screen(.today)),
+            RenderShot(name: "calendar", window: screen(.calendar)),
+            RenderShot(name: "mail", window: screen(.mailScope(.inbox))),
+            RenderShot(name: "mail-selected", window: .main(ParityMode.Launch(selection: .mailScope(.inbox), mailSelection: newestMail))),
+            RenderShot(name: "notes", window: screen(.notes(.all))),
+            RenderShot(name: "notes-selected", window: .main(ParityMode.Launch(selection: .notes(.all), noteSelection: newestNote))),
+            RenderShot(name: "study", window: screen(.study)),
+            RenderShot(name: "panel-compact-new", window: screen(.today, panel: panel(.compact, nil))),
+            RenderShot(name: "panel-compact-latest", window: screen(.mailScope(.inbox), panel: panel(.compact, newestConversation))),
+            RenderShot(name: "panel-expanded-latest", window: screen(.calendar, panel: panel(.expanded, newestConversation)))
+        ]
+        for (index, course) in courses.enumerated() {
+            shots += [
+                RenderShot(name: "c\(index)-lectures", window: screen(.courseLectures(course.id))),
+                RenderShot(name: "c\(index)-slides", window: screen(.courseSlides(course.id))),
+                RenderShot(name: "c\(index)-notes", window: screen(.courseNotes(course.id))),
+                RenderShot(name: "c\(index)-progress", window: screen(.courseProgress(course.id)))
+            ]
+        }
+        return shots
     }
 
     /// mc: the study coach's screens (mockups 11–19, 16 is M7's iPhone) the library has.
