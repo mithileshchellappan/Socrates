@@ -23,8 +23,13 @@ extension View {
     ///   - launch: how the panel starts (renders); closed by default.
     ///   - floatingLauncher: draws the launcher's floating form at the window's bottom-left corner
     ///     (while the sidebar, whose footer holds `AgentPanelLauncher`, is collapsed).
-    public func agentPanel(context: AgentContext, launch: AgentPanelLaunch = AgentPanelLaunch(), floatingLauncher: Bool = false) -> some View {
-        modifier(AgentPanelModifier(context: context, launch: launch, floatingLauncher: floatingLauncher))
+    ///   - minContentWidth: the narrowest the window's columns may get; while the panel is the
+    ///     right sidebar, the window's minimum adds its narrowest width, so resizing never
+    ///     squeezes a column under its own minimum (the window grows when the sidebar opens).
+    public func agentPanel(
+        context: AgentContext, launch: AgentPanelLaunch = AgentPanelLaunch(), floatingLauncher: Bool = false, minContentWidth: CGFloat? = nil
+    ) -> some View {
+        modifier(AgentPanelModifier(context: context, launch: launch, floatingLauncher: floatingLauncher, minContentWidth: minContentWidth))
     }
 
     /// Reads what the screen in this column publishes (`.agentContext`) for the window's panel.
@@ -331,6 +336,7 @@ extension FocusedValues {
 struct AgentPanelModifier: ViewModifier {
     let context: AgentContext
     let floatingLauncher: Bool
+    let minContentWidth: CGFloat?
 
     @Environment(\.agentPanelActions) private var actions
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
@@ -340,9 +346,10 @@ struct AgentPanelModifier: ViewModifier {
     @SceneStorage("agent.panel.position") private var position = ""
     @AppStorage("agent.panel.width") private var width = AgentPanelMetrics.idealWidth
 
-    init(context: AgentContext, launch: AgentPanelLaunch, floatingLauncher: Bool) {
+    init(context: AgentContext, launch: AgentPanelLaunch, floatingLauncher: Bool, minContentWidth: CGFloat?) {
         self.context = context
         self.floatingLauncher = floatingLauncher
+        self.minContentWidth = minContentWidth
         _model = State(initialValue: AgentPanelModel(launch: launch))
     }
 
@@ -391,6 +398,7 @@ struct AgentPanelModifier: ViewModifier {
                 }
                 .inspectorColumnWidth(min: AgentPanelMetrics.minWidth, ideal: width, max: AgentPanelMetrics.maxWidth)
             }
+            .frame(minWidth: minContentWidth.map { $0 + (available && model.mode == .expanded ? AgentPanelMetrics.minWidth : 0) })
             .focusedSceneValue(\.agentPanel, available ? AgentPanelFocus(
                 isOpen: model.isOpen, isExpanded: model.mode == .expanded,
                 toggle: { model.toggle() }, toggleExpanded: { model.toggleExpanded() }

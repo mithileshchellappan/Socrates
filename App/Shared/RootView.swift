@@ -86,7 +86,7 @@ struct RootView: View {
                 // ma: ONE agent panel for the window (compact and movable, or the full-height right
                 // sidebar), inside the search field's focus value (the panel folds its composer's
                 // focus into it, so every screen's plain keys stand down while the student types).
-                .agentPanel(context: agentContext, launch: panel, floatingLauncher: columns == .detailOnly)
+                .agentPanel(context: agentContext, launch: panel, floatingLauncher: columns == .detailOnly, minContentWidth: minContentWidth)
                 .environment(\.isSearchFieldFocused, searchFocused)
                 .focusedSceneValue(\.sidebarSelection, $selection)
                 // ⌘F would leave a practice exam being written: not while one is.
@@ -169,6 +169,16 @@ struct RootView: View {
                 .background { MainWindowReader() }
                 #endif
         }
+    }
+
+    /// The narrowest the sidebar (its minimum) and a screen may get together: the window's minimum
+    /// width without the agent's sidebar. Only the Mac's window is resized.
+    private var minContentWidth: CGFloat? {
+        #if os(macOS)
+        columns == .detailOnly ? 480 : 680
+        #else
+        nil
+        #endif
     }
 
     /// The sidebar and the screen, with the window's search field.

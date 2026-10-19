@@ -856,7 +856,7 @@ private struct LiveAnswerText: View {
 
 // MARK: - Answers
 
-/// An answer in the panel: grey 13 pt text with ONE sparkle at its start, inline Markdown, checked
+/// An answer in the panel: grey 13 pt text with ONE sparkle at its start, Markdown (`AnswerMarkdownView`), checked
 /// chips (slides, moments, web pages), and the activity log's change rows where it cites them
 /// (`[[change …]]`, one row each, a list per run of markers). `isWorking`: a skeleton line follows.
 struct PanelAnswer: View {
@@ -868,11 +868,15 @@ struct PanelAnswer: View {
     let openLecture: Lecture.ID?
     let now: Date
 
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.agentThreadMetrics) private var metrics
 
     var body: some View {
-        let blocks = PanelAnswerBlock.split(isStreaming ? AnswerText.withoutOpenMarker(text) : text)
+        let shown = isStreaming ? AnswerText.withoutOpenMarker(text) : text
+        let blocks = PanelAnswerBlock.split(shown)
+        // One rule for the whole answer: its chips are drawn in many parts.
+        let prefixes = shown.contains("[[") && AnswerText.prefixes(
+            lectures: Set(AnswerText(shown, check: check, logs: false).chips.compactMap(\.citation.lectureID)), openLecture: openLecture
+        )
         VStack(alignment: .leading, spacing: 8) {
             if blocks.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -883,14 +887,9 @@ struct PanelAnswer: View {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 switch block {
                 case .text(let paragraph):
-                    let answer = AnswerText(
-                        paragraph, check: paragraph.contains("[[") ? check : nil, logs: !isStreaming, openLecture: openLecture
+                    AnswerMarkdownView(
+                        text: paragraph, sparkle: index == 0, check: check, logs: !isStreaming, openLecture: openLecture, prefixes: prefixes
                     )
-                    answerText(answer, sparkle: index == 0)
-                        .font(.system(size: metrics.text))
-                        .lineSpacing(metrics.answerLineSpacing)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 case .changes(let keys):
                     AgentChangeList(keys: keys, showsSparkle: index == 0, now: now)
                         .id(keys)
@@ -903,17 +902,6 @@ struct PanelAnswer: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
-    private func answerText(_ answer: AnswerText, sparkle: Bool) -> some View {
-        if answer.hasChips {
-            answer.text(sparkle: sparkle)
-                .textRenderer(AnswerChipRenderer(colorScheme: colorScheme))
-        } else {
-            answer.text(sparkle: sparkle)
-                .textSelection(.enabled)
-        }
-    }
-
     /// The line's final size, redacted, no shimmer.
     private var skeleton: some View {
         Text(verbatim: "The answer is being written for you now")
@@ -924,7 +912,9 @@ struct PanelAnswer: View {
     }
 }
 
-/// An answer cut into its text and its runs of change markers.
+/// An answer cut into its text and its runs of change markers. A marker's rows follow the end of
+/// its line, so a sentence stays whole (no gap where the marker was); in a table row or a code
+/// block they follow the end of the table or the code, which is never cut.
 enum PanelAnswerBlock: Hashable {
     case text(String)
     /// Change keys in order: one list.
@@ -937,28 +927,69 @@ enum PanelAnswerBlock: Hashable {
         }
         var blocks: [PanelAnswerBlock] = []
         var buffer = ""
+        /// Change keys waiting for the end of their line.
+        var pending: [String] = []
+        var afterMarker = false
         func flush() {
             let trimmed = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { blocks.append(.text(trimmed)) }
             buffer = ""
         }
+        func emit() {
+            guard !pending.isEmpty else { return }
+            flush()
+            if case .changes(let keys)? = blocks.last {
+                blocks[blocks.count - 1] = .changes(keys + pending.filter { !keys.contains($0) })
+            } else {
+                blocks.append(.changes(pending))
+            }
+            pending = []
+        }
         for piece in ChatCitation.pieces(of: text) {
             switch piece {
             case .text(let words):
-                buffer += words
-            case .citation(.change(let key)):
-                flush()
-                if case .changes(let keys)? = blocks.last {
-                    if !keys.contains(key) { blocks[blocks.count - 1] = .changes(keys + [key]) }
-                } else {
-                    blocks.append(.changes([key]))
+                var rest = Substring(words)
+                if afterMarker, let first = rest.first, first == " " || ".,;:!?)".contains(first) {
+                    // The marker's gap: no space before punctuation, no double space.
+                    while buffer.last == " " { buffer.removeLast() }
+                    if first == " ", buffer.isEmpty || buffer.last?.isNewline == true { rest = rest.drop { $0 == " " } }
                 }
+                afterMarker = false
+                // At each line's end: the waiting rows go out unless the line was a table row or
+                // a code block is open.
+                while !pending.isEmpty, let newline = rest.firstIndex(of: "\n") {
+                    buffer += rest[..<newline]
+                    rest = rest[newline...]
+                    if !Self.holdsRows(buffer) {
+                        emit()
+                    } else {
+                        buffer += "\n"
+                        rest = rest.dropFirst()
+                    }
+                }
+                buffer += rest
+            case .citation(.change(let key)):
+                if !pending.contains(key) { pending.append(key) }
+                afterMarker = true
             case .citation(let citation):
                 buffer += citation.marker
             }
         }
+        emit()
         flush()
         return blocks
+    }
+
+    /// The text so far ends inside a table (its last line is a row) or an open code fence.
+    private static func holdsRows(_ text: String) -> Bool {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let fences = lines.filter {
+            let trimmed = $0.drop { $0 == " " }
+            return trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~")
+        }
+        if fences.count % 2 == 1 { return true }
+        let last = lines.last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return last.contains("|") && (last.hasPrefix("|") || text.contains("-|") || text.contains("|-"))
     }
 }
 
