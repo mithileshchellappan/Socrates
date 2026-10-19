@@ -176,6 +176,7 @@ public struct ChangeLog: Sendable {
         if let change = try await store.fetch(AgentChange.self, id: id) {
             if change.targetTable == .filing { return try await undoFiling(change, at: date) }
             if change.kind == .courseRemove { return try await undoCourseRemoval(change, at: date) }
+            if change.kind == .documentAdd { return try await undoDocumentAdd(change, at: date) }
         }
         let undone = try await services.database.write { db in try Self.undo(id, db: db, store: store, now: date) }
         if undone { await onChange() }

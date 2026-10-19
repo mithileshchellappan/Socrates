@@ -37,6 +37,7 @@ public struct AgentContextBlock: Sendable, Hashable {
                 note: try context.noteID.flatMap { try Note.find($0).fetchOne(db) },
                 item: try context.itemID.flatMap { try TrackedItem.find($0).fetchOne(db) },
                 session: try context.sessionID.flatMap { try LectureSession.find($0).fetchOne(db) },
+                document: try context.documentID.flatMap { try StudyDocument.find($0).fetchOne(db) },
                 firstRecording: try context.lectureID.flatMap { id in
                     try Recording.where { $0.lectureID.eq(Lecture.ID?.some(id)) }.order(by: \.startedAt).fetchOne(db)
                 }
@@ -115,6 +116,13 @@ public struct AgentContextBlock: Sendable, Hashable {
                 label = "Course"
             }
             glyph = "books.vertical"
+        case .documents:
+            // md: the selected kept document by its key (read_document for the rest).
+            var line = "screen: Documents"
+            if let document = rows.document { line += " · doc \(document.key) \"\(AgentXML.escape(ToolJSON.clip(document.title, 80)))\"" }
+            lines.append(line)
+            label = "Documents"
+            glyph = "doc.on.doc"
         case .today:
             lines.append("screen: Today")
         default:

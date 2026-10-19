@@ -31,6 +31,10 @@ let package = Package(
         // Smart slide filing: the Haiku filing advisor, slides dropped on the panel filed (not
         // sent whole), and Undo of the advisor's filings.
         .package(path: "../Filing"),
+        // md: the document bank (`Documents` only): the catalog's document lines, search_documents,
+        // read_document, keep_document, the queue's `document` runner (`DocumentSummarizer`), Word,
+        // RTF and Pages attachments sent as their text.
+        .package(path: "../Documents"),
         // Already in the graph through SQLiteData (same pin as Agent); used directly for raw
         // aggregate reads (the catalog) and `DatabaseRegionObservation` (the task queue).
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0")
@@ -50,6 +54,7 @@ let package = Package(
                 .product(name: "StudyPass", package: "StudyPass"),
                 .product(name: "Coach", package: "Coach"),
                 .product(name: "Filing", package: "Filing"),
+                .product(name: "Documents", package: "Documents"),
                 .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),

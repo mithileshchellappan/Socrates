@@ -29,6 +29,8 @@ final class QuitSignal: Sendable {
 ///   resumable by its `study_unit` rows); a `practice_exam` task holding an old exam
 ///   (`OldExamReader.Input`) runs in code: `OldExamReader.read(task:)`. Both need Claude Code (not
 ///   claimed without it); a usage pause or no Claude Code → `paused` (queued again later).
+/// - md: a `document` task runs in code: `DocumentSummarizer.run(documentID:)` (one Haiku call),
+///   one at a time, only with Claude Code, quiet (`DocumentTaskRunner.swift`).
 /// - Result ≤ 4,000 characters into `result` (the task's last answer); the panel shows it at once;
 ///   the parent's next user turn carries it as `<task_result>` (`AppAgent.send`).
 /// - A usage limit → `paused` until the reset (it queues again then); cancel → its process is
@@ -119,7 +121,8 @@ actor AgentTaskQueue {
         let kinds: [AgentTaskKind]? = availability.isReady ? nil : [.studyPass]
         let claimed: [AgentTask]
         do {
-            claimed = try await tasks.claim(slots: limit, now: now(), kinds: kinds).filter { running[$0.id] == nil }
+            // md: one document summary at a time (ten dropped files are read one after another).
+            claimed = try await tasks.claim(slots: limit, now: now(), kinds: kinds, oneAtATime: [.document]).filter { running[$0.id] == nil }
         } catch {
             AppAgentModule.log.error("Claiming tasks failed: \(String(describing: error), privacy: .public)")
             return
@@ -167,9 +170,10 @@ actor AgentTaskQueue {
     // MARK: - Running
 
     /// Tasks that run in code, not as a conversation: a study pass, (mc) question drafting, an
-    /// old exam to read.
+    /// old exam to read, (md) a kept document to summarise.
     static func runsInCode(_ task: AgentTask) -> Bool {
-        task.kind == .studyPass || task.kind == .questionDraft || (task.kind == .practiceExam && OldExamReader.input(of: task) != nil)
+        task.kind == .studyPass || task.kind == .questionDraft || task.kind == .document
+            || (task.kind == .practiceExam && OldExamReader.input(of: task) != nil)
     }
 
     private func run(_ task: AgentTask) {
@@ -180,6 +184,8 @@ actor AgentTaskQueue {
                 await self.runStudyPass(task)
             } else if task.kind == .questionDraft {
                 await self.runDrafting(task)
+            } else if task.kind == .document {
+                await self.runDocument(task)
             } else if inCode {
                 await self.runOldExam(task)
             } else {
@@ -248,13 +254,13 @@ actor AgentTaskQueue {
     /// False when the app quits: the row stays `running`, re-queued at the next launch, so nothing
     /// more is written. (A cancel meanwhile is kept by the repository: `finish` and `pause` only
     /// change an open row.)
-    private func stillOpen(_ task: AgentTask) async -> Bool {
+    func stillOpen(_ task: AgentTask) async -> Bool {
         !(stopping || quit.isSet)
     }
 
     /// A task that waits for Claude Code (a usage pause, signed out, the CLI or the network in
     /// trouble): paused until the reset (or a quarter of an hour), then queued again.
-    private func wait(_ task: AgentTask, until: Date?) async {
+    func wait(_ task: AgentTask, until: Date?) async {
         guard await stillOpen(task) else { return }
         let date = until ?? now().addingTimeInterval(15 * 60)
         try? await tasks.pause(task.id, until: date)
@@ -344,8 +350,9 @@ actor AgentTaskQueue {
                 let newest = try AgentConversation.where { $0.kind.eq(app) }.order { $0.createdAt.desc() }.fetchOne(db)
                 if let newest {
                     let parent = AgentConversation.ID?.some(newest.id)
-                    // The coach's own bookkeeping (drafting, a study pass) is no news for the thread.
-                    let quiet: [AgentTaskKind] = [.questionDraft, .studyPass]
+                    // The coach's own bookkeeping (drafting, a study pass) and (md) a document's
+                    // summary are no news for the thread.
+                    let quiet: [AgentTaskKind] = [.questionDraft, .studyPass, .document]
                     try AgentTask
                         .where {
                             $0.parentConversationID.is(nil) && $0.reportedAt.is(nil) && $0.finishedAt.gte(Date?.some(since))
@@ -411,7 +418,13 @@ actor AgentTaskQueue {
             try AgentTask.where { $0.id.in(ids) && $0.state.eq(AgentTaskState.cancelled) }.select(\.id).fetchAll(db)
         }) ?? []
         for id in cancelled {
-            if let conversation = running[id]?.conversation { await runtime.stop(conversation) }
+            if let conversation = running[id]?.conversation {
+                await runtime.stop(conversation)
+            } else {
+                // md: a task run in code (a document's summary deleted with its document, drafting
+                // cancelled from the panel) stops too, whoever cancelled its row.
+                running[id]?.work.cancel()
+            }
         }
     }
 
