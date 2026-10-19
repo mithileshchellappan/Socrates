@@ -3,8 +3,9 @@ import GRDB
 import StudyCore
 
 /// A delete that can be taken back (Edit > Undo): the rows it removed or unlinked, the jobs it
-/// stopped and the files it left for `removeDeletedBlobs()`.
-public struct Deletion: Sendable {
+/// stopped and the files it left for `removeDeletedBlobs()`. Codable, so a change the agent made
+/// (`remove_course`) keeps it in its log row for Undo later (`encoded()`, `init(encoded:)`).
+public struct Deletion: Sendable, Codable {
     public let item: LibraryItem
     public let summary: DeletionSummary
     let rows: DeletedRows
@@ -12,6 +13,18 @@ public struct Deletion: Sendable {
     let jobs: [Job.ID]
     /// Files the deleted rows used, removed once the undo window passes.
     let blobs: [BlobRef]
+
+    /// The deletion as JSON (`agent_change.before.deletion`).
+    public func encoded() throws -> String {
+        String(decoding: try JSONEncoder().encode(self), as: UTF8.self)
+    }
+}
+
+extension Deletion {
+    /// A deletion `encoded()` kept.
+    public init(encoded: String) throws {
+        self = try JSONDecoder().decode(Deletion.self, from: Data(encoded.utf8))
+    }
 }
 
 extension FilingService {
@@ -26,7 +39,8 @@ extension FilingService {
         }
     }
 
-    /// Deletes a deck, a lecture or a recording in one transaction and returns what Undo needs.
+    /// Deletes a deck, a lecture, a recording or a course in one transaction and returns what Undo
+    /// needs.
     ///
     /// - A deck goes with its pages, its ink and the notes pinned to its pages; the lectures it
     ///   was linked to re-align their remaining decks.
@@ -34,11 +48,15 @@ extension FilingService {
     ///   practice questions and their answers; its decks go too unless another lecture links them.
     /// - A recording goes with its transcript, slide stamps and timed spans (its running job is
     ///   stopped first); notes and flags on it stay on the lecture.
+    /// - A course goes with its lectures (as above), its decks (unless a lecture of another course
+    ///   links them), recordings, sessions and weekly slots, items, mail rules, plan blocks,
+    ///   practice and search chunks. The student's notes stay, unlinked from it and its lectures.
     ///
     /// Every row an `ON DELETE CASCADE` removes is kept in the result, and every `SET NULL` it
     /// clears is noted, so `restore(_:)` puts the library back exactly. Files are never removed
-    /// here: they wait in the pending list until `removeDeletedBlobs()` (next session).
-    public func delete(_ item: LibraryItem) async throws -> Deletion {
+    /// here: they wait in the pending list until `removeDeletedBlobs()` (next session), or, with
+    /// `keepsFiles` (a deletion whose Undo outlives the session), stay.
+    public func delete(_ item: LibraryItem, keepsFiles: Bool = false) async throws -> Deletion {
         let recordings = try await services.database.read { db in
             try Self.deletionPlan(item, in: db).recordings
         }
@@ -55,7 +73,10 @@ extension FilingService {
         let store = store
         let deletion = try await services.database.write { db -> Deletion in
             let plan = try Self.deletionPlan(item, in: db)
-            let rows = try DeletedRows.collect(plan.selectors, in: db)
+            // The student's notes on a deleted course's lectures stay: unlinked before the cascade.
+            let kept = try DeletedRows.unlinkNotes(of: plan.keptNotesOf, in: db)
+            var rows = try DeletedRows.collect(plan.selectors, in: db)
+            rows.cleared += kept
             let summary = try Self.summary(item, rows: rows, in: db)
             var blobs: [BlobRef] = []
             for deckID in plan.decks {
@@ -70,7 +91,7 @@ extension FilingService {
             try rows.deleteRoots(in: db)
             return Deletion(item: item, summary: summary, rows: rows, jobs: unfinished.map(\.id), blobs: blobs)
         }
-        addPendingBlobs(deletion.blobs)
+        if !keepsFiles { addPendingBlobs(deletion.blobs) }
         Log.importer.info("Deleted \(String(describing: item), privacy: .public): \(deletion.rows.count, privacy: .public) row(s)")
         await afterImport()
         return deletion
@@ -84,6 +105,14 @@ extension FilingService {
         let jobs = deletion.jobs
         try await services.database.write { db in
             try deletion.rows.restore(in: db)
+            // Notes linked again (a course's): their chunks are written again with the links.
+            let notes = deletion.rows.cleared.filter { $0.table == "note" }.compactMap(\.keyValues.first)
+            for chunk in notes.chunked(400) {
+                try db.execute(
+                    sql: #"DELETE FROM "search_chunk" WHERE "note_id" IN (\#(DeletedRows.placeholders(chunk.count)))"#,
+                    arguments: StatementArguments(Array(chunk))
+                )
+            }
             let queued = JobState.queued
             try Job.where { $0.id.in(jobs) && $0.state.neq(JobState.succeeded) }
                 .update { $0.state = queued; $0.updatedAt = now }
@@ -145,6 +174,8 @@ extension FilingService {
         var recordings: [Recording.ID] = []
         /// Lecture links of a deleted deck (unlinked first so the lecture re-aligns).
         var unlinks: [(Deck.ID, Lecture.ID)] = []
+        /// A deleted course's lectures: the student's notes on them stay, unlinked first.
+        var keptNotesOf: [Lecture.ID] = []
     }
 
     static func deletionPlan(_ item: LibraryItem, in db: Database) throws -> DeletionPlan {
@@ -175,11 +206,40 @@ extension FilingService {
                     .fetchCount(db)
                 if built > 0 { plan.selectors.append(.init(table: "study_unit", column: "lecture_id", values: [lectureID])) }
             }
+        case .course(let courseID):
+            guard try Course.find(courseID).fetchCount(db) > 0 else { throw FilingError.missing }
+            let id = courseID.uuidString.lowercased()
+            // The course: its slots, sessions, lectures, filings, mail rules, memory, plan blocks,
+            // readings and practice go through the cascade.
+            plan.selectors.append(.init(table: "course", column: "id", values: [courseID]))
+            // Its items (deadlines, exercises, exams, tasks), which would only lose their course.
+            plan.selectors.append(.init(table: "tracked_item", column: "course_id", values: [courseID]))
+            plan.keptNotesOf = try String.fetchAll(db, sql: #"SELECT "id" FROM "lecture" WHERE "course_id" = ?"#, arguments: [id])
+                .compactMap(UUID.init(uuidString:))
+            plan.recordings = try String.fetchAll(db, sql: """
+                SELECT "id" FROM "recording"
+                WHERE "course_id" = ?1 OR "lecture_id" IN (SELECT "id" FROM "lecture" WHERE "course_id" = ?1)
+                ORDER BY "started_at"
+                """, arguments: [id]).compactMap(UUID.init(uuidString:))
+            // Its decks and those only its lectures use; a deck a lecture of another course links stays.
+            plan.decks = try String.fetchAll(db, sql: """
+                SELECT d."id" FROM "deck" d
+                WHERE (d."course_id" = ?1 OR EXISTS (
+                    SELECT 1 FROM "lecture_deck_span" s JOIN "lecture" l ON l."id" = s."lecture_id"
+                    WHERE s."deck_id" = d."id" AND l."course_id" = ?1))
+                  AND NOT EXISTS (
+                    SELECT 1 FROM "lecture_deck_span" s JOIN "lecture" l ON l."id" = s."lecture_id"
+                    WHERE s."deck_id" = d."id" AND l."course_id" <> ?1)
+                ORDER BY d."imported_at"
+                """, arguments: [id]).compactMap(UUID.init(uuidString:))
         }
         if !plan.decks.isEmpty {
             plan.selectors.append(.init(table: "deck", column: "id", values: plan.decks))
-            // The student's notes on the deck's pages go with it (the confirmation says so).
-            plan.selectors.append(.init(table: "note", column: "deck_id", values: plan.decks))
+            // The student's notes on the deck's pages go with it (the confirmation says so); a
+            // course's stay.
+            if !item.isCourse {
+                plan.selectors.append(.init(table: "note", column: "deck_id", values: plan.decks))
+            }
         }
         if !plan.recordings.isEmpty {
             plan.selectors.append(.init(table: "recording", column: "id", values: plan.recordings))
@@ -203,15 +263,20 @@ extension FilingService {
             let started = try Recording.find(id).fetchOne(db)?.startedAt
             title = started.map { String(localized: "Recording of \($0.formatted(date: .abbreviated, time: .shortened))") }
                 ?? String(localized: "Recording")
+        case .course(let id):
+            let name = try Course.find(id).fetchOne(db)?.name ?? ""
+            title = name.isEmpty ? String(localized: "Course") : name
         }
         let answered = Set(rows.values(of: "study_answer", column: "question_id"))
         let questions = rows.values(of: "study_question", column: "id").filter { answered.contains($0) }.count
         let slides = rows.values(of: "deck", column: "page_count").compactMap { Int.fromDatabaseValue($0) }.reduce(0, +)
         return DeletionSummary(
             title: title,
+            lectures: rows.count(of: "lecture"),
             slides: slides,
             recordings: rows.count(of: "recording"),
-            notes: rows.count(of: "note"),
+            // A course's notes stay (the read-only summary's cascade still reaches its lectures').
+            notes: item.isCourse ? 0 : rows.count(of: "note"),
             inkPages: rows.count(of: "slide_ink"),
             practisedQuestions: questions
         )
@@ -261,7 +326,7 @@ extension FilingService {
 /// The rows a delete removes, found generically from the schema: the selected roots and,
 /// through every `ON DELETE CASCADE` foreign key (`PRAGMA foreign_key_list`), everything that
 /// goes with them; plus every `ON DELETE SET NULL` reference from a row that stays.
-struct DeletedRows: Sendable {
+struct DeletedRows: Sendable, Codable {
     /// Rows of `table` whose `column` is one of `values`.
     struct Selector: Sendable {
         var table: String
@@ -464,6 +529,135 @@ struct DeletedRows: Sendable {
 
     static func placeholders(_ count: Int) -> String {
         Array(repeating: "?", count: count).joined(separator: ", ")
+    }
+
+    /// Clears the lecture link of the student's notes on `lectures` (a course being deleted keeps
+    /// them) and returns the links, for restore.
+    static func unlinkNotes(of lectures: [Lecture.ID], in db: Database) throws -> [Cleared] {
+        var cleared: [Cleared] = []
+        for chunk in lectures.map({ $0.uuidString.lowercased().databaseValue }).chunked(400) {
+            let arguments = StatementArguments(Array(chunk))
+            for row in try Row.fetchAll(
+                db, sql: #"SELECT "id", "lecture_id" FROM "note" WHERE "lecture_id" IN (\#(placeholders(chunk.count)))"#, arguments: arguments
+            ) {
+                let id: DatabaseValue = row["id"]
+                let lecture: DatabaseValue = row["lecture_id"]
+                cleared.append(Cleared(table: "note", key: ["id"], keyValues: [id], column: "lecture_id", value: lecture))
+            }
+            try db.execute(sql: #"UPDATE "note" SET "lecture_id" = NULL WHERE "lecture_id" IN (\#(placeholders(chunk.count)))"#, arguments: arguments)
+        }
+        return cleared
+    }
+}
+
+// MARK: - Kept deletions
+
+/// A database value in a kept deletion: `{"i": 1}`, `{"r": 1.5}`, `{"s": "…"}`, `{"b": "<base64>"}`,
+/// `{}` for NULL (the storage class survives, as STRICT tables need).
+private struct StoredValue: Codable {
+    var value: DatabaseValue
+
+    init(_ value: DatabaseValue) { self.value = value }
+
+    private enum Key: String, CodingKey { case i, r, s, b }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: Key.self)
+        if let int = try container.decodeIfPresent(Int64.self, forKey: .i) {
+            value = int.databaseValue
+        } else if let real = try container.decodeIfPresent(Double.self, forKey: .r) {
+            value = real.databaseValue
+        } else if let text = try container.decodeIfPresent(String.self, forKey: .s) {
+            value = text.databaseValue
+        } else if let data = try container.decodeIfPresent(Data.self, forKey: .b) {
+            value = data.databaseValue
+        } else {
+            value = .null
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: Key.self)
+        switch value.storage {
+        case .null: break
+        case .int64(let int): try container.encode(int, forKey: .i)
+        case .double(let real): try container.encode(real, forKey: .r)
+        case .string(let text): try container.encode(text, forKey: .s)
+        case .blob(let data): try container.encode(data, forKey: .b)
+        }
+    }
+}
+
+extension DeletedRows.Selector: Codable {
+    private enum CodingKeys: String, CodingKey { case table, column, values }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            table: try container.decode(String.self, forKey: .table),
+            column: try container.decode(String.self, forKey: .column),
+            databaseValues: try container.decode([StoredValue].self, forKey: .values).map(\.value)
+        )
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(table, forKey: .table)
+        try container.encode(column, forKey: .column)
+        try container.encode(values.map(StoredValue.init), forKey: .values)
+    }
+}
+
+extension DeletedRows.Rows: Codable {
+    private enum CodingKeys: String, CodingKey { case table, columns, key, rows }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            table: try container.decode(String.self, forKey: .table),
+            columns: try container.decode([String].self, forKey: .columns),
+            key: try container.decode([String].self, forKey: .key),
+            rows: try container.decode([[StoredValue]].self, forKey: .rows).map { $0.map(\.value) }
+        )
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(table, forKey: .table)
+        try container.encode(columns, forKey: .columns)
+        try container.encode(key, forKey: .key)
+        try container.encode(rows.map { $0.map(StoredValue.init) }, forKey: .rows)
+    }
+}
+
+extension DeletedRows.Cleared: Codable {
+    private enum CodingKeys: String, CodingKey { case table, key, keyValues, column, value }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            table: try container.decode(String.self, forKey: .table),
+            key: try container.decode([String].self, forKey: .key),
+            keyValues: try container.decode([StoredValue].self, forKey: .keyValues).map(\.value),
+            column: try container.decode(String.self, forKey: .column),
+            value: try container.decode(StoredValue.self, forKey: .value).value
+        )
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(table, forKey: .table)
+        try container.encode(key, forKey: .key)
+        try container.encode(keyValues.map(StoredValue.init), forKey: .keyValues)
+        try container.encode(column, forKey: .column)
+        try container.encode(StoredValue(value), forKey: .value)
+    }
+}
+
+extension LibraryItem {
+    var isCourse: Bool {
+        if case .course = self { return true }
+        return false
     }
 }
 

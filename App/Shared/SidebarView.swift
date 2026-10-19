@@ -289,7 +289,10 @@ struct SidebarView: View {
             if canOpen {
                 let isOpen = disclosure == .shown(isOpen: true)
                 Button(isOpen ? LocalizedStringKey("Hide Lectures") : "Show Lectures") { setOpen(course.id, !isOpen) }
+                Divider()
             }
+            // The confirmation names what goes; Edit ▸ Undo brings it back.
+            Button("Delete Course…", role: .destructive) { center.requestDelete(.course(course.id)) }
         }
     }
 

@@ -1,7 +1,7 @@
 import StudyCore
 import SwiftUI
 
-/// Delete… on a deck, a lecture or a recording: the window asks first (its confirmation names
+/// Delete… on a deck, a lecture, a recording or a course: the window asks first (its confirmation names
 /// what goes, the student's notes, ink and practice among it), then deletes with Edit ▸ Undo. The
 /// app installs it (`.environment(\.deleteFromLibrary, …)`); nil: no Delete… items.
 public struct DeleteFromLibraryAction: Sendable {

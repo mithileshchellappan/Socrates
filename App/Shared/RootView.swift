@@ -109,7 +109,10 @@ struct RootView: View {
                 // Delete… on decks, lectures and recordings: one confirmation for the window
                 // naming what goes, then Edit ▸ Undo.
                 .environment(\.deleteFromLibrary, DeleteFromLibraryAction { item in center.requestDelete(item) })
-                .libraryDeleteConfirmation(center: center, willDelete: leave, failed: { model.failure = $0 })
+                .libraryDeleteConfirmation(center: center, willDelete: leave, didDelete: { item in
+                    // A course's sessions and items leave the "Study Portal" calendar.
+                    if case .course = item { await model.syncCalendar() }
+                }, failed: { model.failure = $0 })
                 .environment(\.studyServices, model.services)
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
@@ -354,11 +357,30 @@ struct RootView: View {
         searchSubmits += 1
     }
 
-    /// A lecture about to be deleted while its review shows: its course's Lectures instead.
+    /// A lecture about to be deleted while its review shows: its course's Lectures instead. A
+    /// course about to be deleted while one of its screens, lectures, notes or mail shows: Today.
     private func leave(_ item: StudyCore.LibraryItem) async {
-        guard case .lecture(let id) = item, selection == .lecture(id), let services = model.services else { return }
-        let courseID = try? await services.database.read { db in try Lecture.find(id).fetchOne(db)?.courseID }
-        selection = courseID.map { .courseLectures($0) } ?? .today
+        guard let services = model.services else { return }
+        switch item {
+        case .lecture(let id):
+            guard selection == .lecture(id) else { return }
+            let courseID = try? await services.database.read { db in try Lecture.find(id).fetchOne(db)?.courseID }
+            selection = courseID.map { .courseLectures($0) } ?? .today
+        case .course(let id):
+            switch selection {
+            case let screen? where screen.courseScreenID == id:
+                selection = .today
+            case .notes(.course(id))?, .mailScope(.course(id))?:
+                selection = .today
+            case .lecture(let lectureID)?:
+                let courseID = try? await services.database.read { db in try Lecture.find(lectureID).fetchOne(db)?.courseID }
+                if courseID == id { selection = .today }
+            default:
+                break
+            }
+        case .deck, .recording:
+            break
+        }
     }
 
     /// Back or Forward through the screens this window showed.

@@ -13,7 +13,8 @@ import StudyCore
 /// - `lecture`: an exact span of the lecture's transcript, with its first word's time;
 /// - `event`: the source of a triage event (an escalation task's).
 /// Dates must be in the quote (`DateMentions`). All are `.verifiedWrite`, so they may sit beside
-/// the mail tools (`ToolSet` refuses plain `.write`). No send, no delete, no other calendars.
+/// the mail tools (`ToolSet` refuses plain `.write`). No send, no other calendars; the one delete
+/// is `remove_course`, never of a course with the student's recordings or notes.
 /// Why a write was refused (the model sees the message).
 struct Refusal: Error, ExpressibleByStringLiteral, ExpressibleByStringInterpolation {
     var message: String
@@ -386,6 +387,63 @@ struct WriteTools: Sendable {
             switch outcome {
             case .applied(let change): return .json(["applied": true, "cite": .string(change.citation.marker), "note": ToolJSON.id(change.targetID)])
             default: return .error(outcome.message)
+            }
+        }
+    }
+
+    /// Removes a course the student is not taking, only when they ask in chat. A course with the
+    /// student's recordings or notes is never removed here (PRD: never delete their notes or
+    /// recordings without confirmation): the app's Delete Course… asks first.
+    var removeCourse: AgentTool {
+        AgentTool(
+            tool: .custom(
+                name: "remove_course",
+                description: """
+                    Removes a course with its lectures, slides, sessions, weekly slots, items, mail rules and study plan, ONLY \
+                    when the student's message asks you to (quote: their words asking). Undo puts it all back. A course with \
+                    recordings or notes is not removed: say they can delete it from the course's menu in the sidebar.
+                    """,
+                inputSchema: Schema.object([
+                    "course": Schema.string("Course token."),
+                    "quote": Schema.string("The student's words in the message you are answering that ask for it (at least 3 words)."),
+                ])
+            ),
+            effect: .verifiedWrite
+        ) { call, context in
+            guard chatSource else { return .error("Only the student can remove a course.") }
+            guard let quote = call.text("quote"),
+                  let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.now))
+            else { return .error("quote must be the student's words asking for it (at least 3 words), copied exactly.") }
+            guard let course = try await CourseList.load(services.database).course(call.text("course")) else {
+                return .error("No course has that token.")
+            }
+            let id = course.id.uuidString.lowercased()
+            let keeps = try await services.database.read { db in
+                try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS (SELECT 1 FROM "recording" WHERE "course_id" = ?1
+                                     OR "lecture_id" IN (SELECT "id" FROM "lecture" WHERE "course_id" = ?1))
+                        OR EXISTS (SELECT 1 FROM "note" WHERE "course_id" = ?1
+                                     OR "lecture_id" IN (SELECT "id" FROM "lecture" WHERE "course_id" = ?1)
+                                     OR "deck_id" IN (SELECT "id" FROM "deck" WHERE "course_id" = ?1))
+                    """, arguments: [id]) ?? true
+            }
+            if keeps {
+                return .json([
+                    "removed": false,
+                    "note": "It has the student's recordings or notes. They can delete it with Delete Course… in the course's menu in the sidebar, where the app asks first.",
+                ])
+            }
+            let taskID = try await AgentTaskRepository(store: services.records).taskID(conversation: context.conversationID)
+            let origin = ChangeLog.Origin(
+                source: checked.source, sourceDate: context.now, model: ClaudeModel.opus55.rawValue, taskID: taskID,
+                conversationID: context.conversationID
+            )
+            let outcome = try await changeLog.removeCourse(course.id, quote: checked.quote, origin: origin)
+            switch outcome {
+            case .applied(let change):
+                return .json(["removed": true, "cite": .string(change.citation.marker), "title": .string(change.title), "summary": .string(change.summary)])
+            default:
+                return .error(outcome.message)
             }
         }
     }
