@@ -270,8 +270,9 @@ struct AnswerText: Equatable {
 
     /// Checks every marker of `text`. "L2 · " goes before lecture chips only when the answer cites
     /// more than one lecture, or (Review) a lecture other than `openLecture`, the one on screen.
-    /// `logs`: dropped markers are logged (once per marker and rule).
-    init(_ text: String, check: CitationCheck?, logs: Bool, openLecture: Lecture.ID? = nil) {
+    /// `logs`: dropped markers are logged (once per marker and rule). `prefixes`: decided for the
+    /// whole answer when its text is drawn in parts (`AnswerMarkdownView`).
+    init(_ text: String, check: CitationCheck?, logs: Bool, openLecture: Lecture.ID? = nil, prefixes forced: Bool? = nil) {
         let raw = ChatCitation.pieces(of: text)
         var checked: [Int: CheckedCitation] = [:]
         if let check {
@@ -285,7 +286,7 @@ struct AnswerText: Equatable {
             }
         }
         let lectures = Set(checked.values.compactMap(\.lectureID))
-        let prefixes = lectures.count > 1 || openLecture.map { open in lectures.contains { $0 != open } } ?? false
+        let prefixes = forced ?? Self.prefixes(lectures: lectures, openLecture: openLecture)
         var pieces: [Piece] = []
         for (index, piece) in raw.enumerated() {
             switch piece {
@@ -315,6 +316,12 @@ struct AnswerText: Equatable {
             }
         }
         self.pieces = pieces
+    }
+
+    /// "L2 · " goes before lecture chips when they cite more than one lecture, or one other than
+    /// the lecture on screen.
+    static func prefixes(lectures: Set<Lecture.ID>, openLecture: Lecture.ID?) -> Bool {
+        lectures.count > 1 || openLecture.map { open in lectures.contains { $0 != open } } ?? false
     }
 
     static func label(_ citation: CheckedCitation, prefixes: Bool) -> String {

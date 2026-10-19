@@ -31,6 +31,7 @@ public struct CourseSettingsView: View {
     @Environment(\.calendarMirror) private var mirror
     @Environment(\.importTimetable) private var importTimetable
     @Environment(\.openDestination) private var openDestination
+    @Environment(\.deleteFromLibrary) private var deleteFromLibrary
     @Environment(\.undoManager) private var undoManager
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
@@ -290,6 +291,11 @@ public struct CourseSettingsView: View {
                 if let newCourse {
                     Divider()
                     Button("New Course…", action: newCourse)
+                }
+                if let deleteFromLibrary {
+                    // The window asks first, naming what goes; Edit ▸ Undo brings it back.
+                    Divider()
+                    Button("Delete Course…", role: .destructive) { deleteFromLibrary(.course(courseID)) }
                 }
             } label: {
                 Label("More", systemImage: "ellipsis")

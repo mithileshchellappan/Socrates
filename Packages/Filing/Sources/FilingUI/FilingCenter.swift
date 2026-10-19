@@ -493,12 +493,13 @@ public final class FilingCenter {
         undoManager.setActionName(name)
     }
 
-    /// "Delete Slides", "Delete Lecture", "Delete Recording" (Edit ▸ Undo …).
+    /// "Delete Slides", "Delete Lecture", "Delete Recording", "Delete Course" (Edit ▸ Undo …).
     static func undoName(_ item: LibraryItem) -> String {
         switch item {
         case .deck: String(localized: "Delete Slides")
         case .lecture: String(localized: "Delete Lecture")
         case .recording: String(localized: "Delete Recording")
+        case .course: String(localized: "Delete Course")
         }
     }
 

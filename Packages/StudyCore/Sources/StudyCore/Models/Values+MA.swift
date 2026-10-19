@@ -164,6 +164,9 @@ public struct AgentChangeTarget: StringKind {
 extension AgentChangeKind {
     /// A deck filed (or moved) by the filing advisor (a Haiku call), with its reason.
     public static let filing: Self = "filing"
+    /// A course removed at the student's request in chat (`remove_course`), with everything that
+    /// belonged to it; `before.deletion` holds the rows for Undo.
+    public static let courseRemove: Self = "course_remove"
 }
 
 /// The fields of the target an automatic change touched, before or after it (`agent_change.before`
@@ -206,6 +209,8 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     public var lectureID: Lecture.ID?
     public var lectureSessionID: LectureSession.ID?
     public var reason: String?
+    // course (`course_remove`): the removed course's rows (Filing's `Deletion`, JSON), for Undo
+    public var deletion: String?
 
     public init(
         exists: Bool? = nil,
@@ -232,7 +237,8 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         courseID: Course.ID? = nil,
         lectureID: Lecture.ID? = nil,
         lectureSessionID: LectureSession.ID? = nil,
-        reason: String? = nil
+        reason: String? = nil,
+        deletion: String? = nil
     ) {
         self.exists = exists
         self.startsAt = startsAt
@@ -259,6 +265,7 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         self.lectureID = lectureID
         self.lectureSessionID = lectureSessionID
         self.reason = reason
+        self.deletion = deletion
     }
 
     /// The values of a session's changeable columns.
