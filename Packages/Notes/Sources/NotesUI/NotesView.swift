@@ -9,7 +9,9 @@ import UniformTypeIdentifiers
 /// `StudyDestination.notes(_, note:)`) and the toolbar search field's text, which filters the list
 /// in place ("Search notes").
 ///
-/// Toolbar: leading New Note; trailing [Aa ⌄, checklist, image, sketch] [Slide, Quote]. Like
+/// Toolbar: the title "Notes" (a course's: over its name), New Note in its own glass; while a note
+/// is open [Aa ⌄, checklist, image, sketch] [Slide, Quote]. A scope without notes shows one line
+/// and New Note. Like
 /// Apple Notes the screen opens on its newest note when nothing is selected; New Note starts an
 /// empty note in Title that becomes a row on its first keystroke. Delete Note (⌫ in the list, the
 /// row's menu) has Undo; Move To files a note under another course or lecture.
@@ -71,7 +73,7 @@ public struct NotesView: View {
         return items
     }
 
-    private var sections: [NoteListSection] {
+    private func sections(_ items: [NoteListItem]) -> [NoteListSection] {
         switch scope {
         case .all: NoteList.sections(items, courses: courses)
         case .course: [NoteListSection(course: nil, items: items)]
@@ -86,6 +88,11 @@ public struct NotesView: View {
     private var scopeCourseID: Course.ID? {
         if case .course(let id) = scope { return id }
         return nil
+    }
+
+    /// A course's Notes screen names its course in the title.
+    private var scopeCourse: Course? {
+        scopeCourseID.flatMap { id in courses.first { $0.id == id } }
     }
 
     /// The open note's course (a new one: the course it is made in).
@@ -104,15 +111,29 @@ public struct NotesView: View {
     // MARK: Body
 
     public var body: some View {
+        // Decoded once per body: every note's blocks give its name and preview.
+        let items = self.items
         Group {
             if notes.isEmpty, pending == nil {
-                ContentUnavailableView {
-                    Image(systemName: "doc.text")
+                if trimmedQuery.isEmpty {
+                    // An empty scope invites the next action (PRD "Empty screens invite the next
+                    // action"): one line and New Note.
+                    ContentUnavailableView {
+                        Image(systemName: "doc.text")
+                    } description: {
+                        Text("No notes yet.")
+                    } actions: {
+                        Button("New Note", action: newNote)
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ContentUnavailableView.search(text: trimmedQuery)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 HStack(spacing: 0) {
-                    listColumn
+                    listColumn(items)
                         .frame(width: Self.listWidth)
                     Divider()
                     editor
@@ -122,6 +143,8 @@ public struct NotesView: View {
         }
         .background(Color.contentBackground)
         .toolbar { toolbar }
+        // "Notes", on a course's Notes "Notes" over the course (as its Lectures and Slides).
+        .screenTitle(String(localized: "Notes"), subtitle: scopeCourse?.name)
         .fileImporter(isPresented: $showsImageImporter, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result, !urls.isEmpty { controller.insertImages(at: urls) }
         }
@@ -143,10 +166,10 @@ public struct NotesView: View {
 
     // MARK: List
 
-    private var listColumn: some View {
+    private func listColumn(_ items: [NoteListItem]) -> some View {
         ScrollViewReader { proxy in
             List(selection: $selection) {
-                ForEach(sections) { section in
+                ForEach(sections(items)) { section in
                     if let course = section.course, case .all = scope {
                         Section {
                             rows(section.items)
@@ -170,8 +193,8 @@ public struct NotesView: View {
                 delete(selection)
                 return .handled
             }
-            .onAppear { scrollTo(selection, proxy: proxy) }
-            .onChange(of: selection) { _, id in scrollTo(id, proxy: proxy) }
+            .onAppear { scrollTo(selection, in: items, proxy: proxy) }
+            .onChange(of: selection) { _, id in scrollTo(id, in: items, proxy: proxy) }
             .overlay {
                 if !trimmedQuery.isEmpty, items.isEmpty {
                     ContentUnavailableView.search(text: trimmedQuery)
@@ -191,7 +214,7 @@ public struct NotesView: View {
         }
     }
 
-    private func scrollTo(_ id: Note.ID?, proxy: ScrollViewProxy) {
+    private func scrollTo(_ id: Note.ID?, in items: [NoteListItem], proxy: ScrollViewProxy) {
         guard let id, items.contains(where: { $0.id == id }) else { return }
         proxy.scrollTo(id)
     }
@@ -249,15 +272,25 @@ public struct NotesView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        // Its own glass, apart from a course screen's ‹ › group.
+        ToolbarSpacer(.fixed, placement: .navigation)
         ToolbarItem(placement: .navigation) {
             Button(action: newNote) {
                 Label("New Note", systemImage: "square.and.pencil")
             }
             .help(Text("New Note"))
         }
-        // The editing groups in the toolbar's middle (mockup 04): the window's search field takes the
-        // trailing end, and items of the app's outer toolbar come before a screen's own primary
-        // actions, so these could not follow it there.
+        // The editing groups only while a note is open.
+        if session != nil || pending != nil {
+            editingGroups
+        }
+    }
+
+    /// The editing groups in the toolbar's middle (mockup 04): the window's search field takes the
+    /// trailing end, and items of the app's outer toolbar come before a screen's own primary
+    /// actions, so these could not follow it there.
+    @ToolbarContentBuilder
+    private var editingGroups: some ToolbarContent {
         ToolbarItemGroup(placement: .principal) {
             // Aa ⌄: a popover of the paragraph styles, as in Notes (a toolbar Menu would leave the
             // group's glass).
@@ -339,7 +372,7 @@ public struct NotesView: View {
 
     /// Like Apple Notes: with nothing selected (or a note of another course), the newest note is open.
     private func selectFirstIfNeeded() {
-        guard trimmedQuery.isEmpty, let first = sections.first?.items.first else { return }
+        guard trimmedQuery.isEmpty, let first = sections(items).first?.items.first else { return }
         if let selection {
             // The open note stays open even while it has no row (emptied out, deleted on save).
             guard !notes.contains(where: { $0.id == selection }), pending?.id != selection, session?.id != selection else { return }
@@ -384,7 +417,7 @@ public struct NotesView: View {
             session = nil
         }
         if selection == id {
-            let ordered = sections.flatMap(\.items).map(\.id)
+            let ordered = sections(items).flatMap(\.items).map(\.id)
             let index = ordered.firstIndex(of: id)
             let next = index.flatMap { ordered.indices.contains($0 + 1) ? ordered[$0 + 1] : ($0 > 0 ? ordered[$0 - 1] : nil) }
             selection = next
