@@ -15,6 +15,8 @@ struct ComingUpSection: View {
     let courses: [Course.ID: Course]
     let now: Date
     let text: SessionText
+    /// M7: the iPhone's card of rows (mockup 16).
+    var isPhone = false
 
     @Environment(\.deadlineActions) private var deadlineActions
     @Environment(\.studyServices) private var services
@@ -23,6 +25,79 @@ struct ComingUpSection: View {
     @State private var hoveredID: ComingUpEntry.ID?
 
     var body: some View {
+        if isPhone {
+            phoneBody
+        } else {
+            macBody
+        }
+    }
+
+    /// The iPhone (mockup 16 `.t-sect`, `.card`, `.r`): "Coming up" (17 semibold) over one card
+    /// (radius 20, the card surface, a 0.5 pt ring) of rows [10 pt marker | title 15 semibold over
+    /// the gloss | the day (15) over the time (SF Mono 12.5)], hairlines from the title's edge.
+    /// A tap opens a source popover or a reply's mail; a long press the row's menu.
+    private var phoneBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Coming up")
+                .font(.headline)
+                .tracking(-0.2)
+                .padding(.horizontal, 4)
+                .accessibilityAddTraits(.isHeader)
+            VStack(spacing: 0) {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                    if index > 0 {
+                        Hairline()
+                            .padding(.leading, 36)
+                    }
+                    phoneRow(entry)
+                        .contextMenu { menu(entry) }
+                }
+            }
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(.separator, lineWidth: 0.5)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private func phoneRow(_ entry: ComingUpEntry) -> some View {
+        let course = entry.courseID.flatMap { courses[$0] }
+        if let reply = entry.reply {
+            PhoneComingUpRow(color: .course(course), isRing: true, title: entry.title, gloss: entry.gloss, day: "") {
+                SourceGlyph(kinds: [.mail], highlighted: false)
+            }
+            .onTapGesture { open(reply) }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text(accessibilityLabel(entry, course: course)))
+            .accessibilityAddTraits(.isButton)
+        } else {
+            PhoneComingUpRow(
+                color: .course(course),
+                isRing: entry.marker == .ring,
+                title: entry.title,
+                gloss: entry.gloss,
+                examStar: entry.isExamAdmission,
+                day: entry.date.map(text.day) ?? "",
+                time: time(entry),
+                dayNote: dayNote(entry),
+                isStruck: entry.isCancelled
+            ) {
+                SourceTrailButton(
+                    entries: entry.trail, now: now, inCalendar: entry.inCalendar, highlighted: false,
+                    undo: entry.undoSourceID.map { sourceID in
+                        { @MainActor in run("Undo") { actions in try await actions.undo(sourceID) } }
+                    }
+                )
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text(accessibilityLabel(entry, course: course)))
+        }
+    }
+
+    private var macBody: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Coming up")
                 .font(.title3.weight(.semibold))
@@ -182,19 +257,132 @@ struct ComingUpSection: View {
     }
 }
 
+/// One row of Coming up on the iPhone (mockup 16 `.r`): [the 4 pt course bar or the 10 pt ring |
+/// the title (15 semibold) over at most one 13 pt grey gloss (the amber star first for exam
+/// admission), the source glyph after the last line | the day (15) over the time (SF Mono 12.5,
+/// secondary) or "and Fri 13 Nov"]. Cancelled: struck through in tertiary.
+private struct PhoneComingUpRow<Accessory: View>: View {
+    let color: Color
+    let isRing: Bool
+    let title: String
+    let gloss: String?
+    let examStar: Bool
+    let day: String
+    let time: String?
+    let dayNote: String?
+    let isStruck: Bool
+    let accessory: Accessory
+
+    init(
+        color: Color, isRing: Bool, title: String, gloss: String?, examStar: Bool = false, day: String, time: String? = nil,
+        dayNote: String? = nil, isStruck: Bool = false, @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.color = color
+        self.isRing = isRing
+        self.title = title
+        self.gloss = gloss.flatMap { $0.isEmpty ? nil : $0 }
+        self.examStar = examStar
+        self.day = day
+        self.time = time
+        self.dayNote = dayNote
+        self.isStruck = isStruck
+        self.accessory = accessory()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            marker
+                .frame(width: 10)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .strikethrough(isStruck)
+                        .foregroundStyle(isStruck ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+                        .lineLimit(1)
+                        .frame(minHeight: 20)
+                    if gloss == nil { accessory }
+                }
+                if let gloss {
+                    HStack(spacing: 5) {
+                        if examStar {
+                            Image(systemName: "star")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Color.professor)
+                                .accessibilityLabel(Text("Exam admission"))
+                        }
+                        Text(gloss)
+                            .lineLimit(1)
+                        accessory
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: 18)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 0) {
+                if !day.isEmpty {
+                    Text(day)
+                        .font(.subheadline)
+                        .frame(minHeight: 20)
+                }
+                if let time {
+                    Text(time)
+                        .font(.mono(12.5))
+                        .monospacedDigit()
+                        .foregroundStyle(isStruck ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
+                        .frame(minHeight: 18)
+                }
+                if let dayNote {
+                    Text(dayNote)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(minHeight: 18)
+                }
+            }
+            .strikethrough(isStruck)
+            .foregroundStyle(isStruck ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+            .lineLimit(1)
+            .fixedSize()
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var marker: some View {
+        if isRing {
+            DueRing(color: color)
+                .padding(.top, 5)
+        } else {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(color)
+                .frame(width: 4)
+                .frame(maxHeight: .infinity)
+                .padding(.vertical, 2)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 /// The mail line (mockup 01): 42 pt over a hairline, 8 pt closer to Coming up. It only counts:
-/// what the course mail said is already in the rows.
+/// what the course mail said is already in the rows. On the iPhone (M7) 15 pt, 48 pt tall.
 struct TodayMailLine: View {
     let line: MailLine
     let courses: [Course.ID: Course]
+    var isPhone = false
 
     @Environment(\.openDestination) private var openDestination
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "envelope")
-                .font(.system(size: 13))
-                .frame(width: 15, height: 15)
+                .font(.system(size: isPhone ? 15 : 13))
+                .frame(width: isPhone ? 18 : 15, height: 15)
                 .foregroundStyle(.tertiary)
                 .accessibilityHidden(true)
             HStack(spacing: 7) {
@@ -225,7 +413,7 @@ struct TodayMailLine: View {
                 openDestination(.mail(.inbox, message: nil))
             } label: {
                 Text("Open Mail")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(isPhone ? .subheadline.weight(.medium) : .system(size: 12, weight: .medium))
                     .foregroundStyle(.tint)
                     .padding(.horizontal, 6)
                     .frame(height: 22)
@@ -233,13 +421,14 @@ struct TodayMailLine: View {
             }
             .buttonStyle(.plain)
         }
-        .font(.system(size: 12.5))
+        .font(isPhone ? .subheadline : .system(size: 12.5))
         .foregroundStyle(.secondary)
-        .frame(minHeight: 42)
+        .frame(minHeight: isPhone ? 48 : 42)
+        .padding(.horizontal, isPhone ? 4 : 0)
         .overlay(alignment: .top) {
             Hairline()
         }
-        .padding(.top, -8)
+        .padding(.top, isPhone ? 0 : -8)
     }
 
     private var newsletters: String {

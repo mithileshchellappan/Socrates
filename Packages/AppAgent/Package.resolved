@@ -1,6 +1,15 @@
 {
-  "originHash" : "05b3b759823ed8cd12e66311e7bf6a8e1dc1a3f5c5bd43aebea964fede528bff",
+  "originHash" : "8729cec9ea57e59bb83f7dbba2957499e06d49b96824dcfa68764f6a28398a8a",
   "pins" : [
+    {
+      "identity" : "argmax-oss-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/argmaxinc/argmax-oss-swift",
+      "state" : {
+        "revision" : "1bbc57cb7fe6410248a685b1c5a3c6d56adc2ed4",
+        "version" : "1.1.1"
+      }
+    },
     {
       "identity" : "combine-schedulers",
       "kind" : "remoteSourceControl",
@@ -26,6 +35,15 @@
       "state" : {
         "revision" : "aa613accbe882b561f26e37a348a8f42e92cd398",
         "version" : "1.12.1"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
       }
     },
     {

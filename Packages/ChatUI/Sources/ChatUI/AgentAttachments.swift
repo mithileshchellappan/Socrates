@@ -33,6 +33,25 @@ enum AttachmentImages {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
+    /// The same from bytes (a phone question's file, kept in its row).
+    @concurrent
+    static func thumbnail(data: Data, maxPixel: Int) async -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    /// A PDF's pages from its bytes.
+    static func pageCount(pdf data: Data) -> Int? {
+        guard let provider = CGDataProvider(data: data as CFData), let document = CGPDFDocument(provider) else { return nil }
+        return document.numberOfPages
+    }
+
     /// PNG bytes of any image ImageIO reads (a TIFF screenshot on the pasteboard).
     static func png(fromImageData data: Data) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
@@ -55,7 +74,11 @@ struct AttachmentThumbnail: View {
 
     @Environment(\.studyServices) private var services
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.agentThreadMetrics) private var metrics
     @State private var image: CGImage?
+
+    /// The long edge it is drawn at (the sheet's 72 pt photos need more than 48).
+    private var maxPoints: CGFloat { max(metrics.imageTile.width, metrics.imageTile.height) }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -74,7 +97,7 @@ struct AttachmentThumbnail: View {
         .task(id: attachment.blob.sha256) {
             guard let services else { return }
             let url = services.blobs.url(for: attachment.blob)
-            image = await AttachmentImages.thumbnail(at: url, maxPixel: Int(48 * max(1, displayScale)))
+            image = await AttachmentImages.thumbnail(at: url, maxPixel: Int(max(48, maxPoints) * max(1, displayScale)))
         }
     }
 }
@@ -110,10 +133,19 @@ struct ComposerAttachmentTile: View {
 
     @State private var isHovered = false
 
+    /// No hover on the phone: × always shows there.
+    private var showsRemove: Bool {
+        #if os(iOS)
+        true
+        #else
+        isHovered
+        #endif
+    }
+
     var body: some View {
         tile
             .overlay(alignment: .topLeading) {
-                if isHovered {
+                if showsRemove {
                     Button(action: remove) {
                         Image(systemName: "xmark")
                             .font(.system(size: 7.5, weight: .bold))
@@ -175,11 +207,13 @@ struct ComposerAttachmentTile: View {
 struct SentAttachmentTile: View {
     let attachment: AgentAttachment
 
+    @Environment(\.agentThreadMetrics) private var metrics
+
     var body: some View {
         switch attachment.kind {
         case .image:
-            AttachmentThumbnail(attachment: attachment, radius: 8)
-                .frame(width: 44, height: 28)
+            AttachmentThumbnail(attachment: attachment, radius: metrics.imageRadius)
+                .frame(width: metrics.imageTile.width, height: metrics.imageTile.height)
                 .help(Text(verbatim: attachment.fileName))
         case .pdf, .text:
             HStack(spacing: 5) {
@@ -197,11 +231,11 @@ struct SentAttachmentTile: View {
                         .fixedSize()
                 }
             }
-            .font(.system(size: 11.5))
+            .font(.system(size: metrics.fileTileText))
             .foregroundStyle(.secondary)
             .padding(.leading, 6)
             .padding(.trailing, 9)
-            .frame(height: 28)
+            .frame(height: metrics.fileTileHeight)
             .frame(maxWidth: 220, alignment: .leading)
             .background(Color.contentBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {

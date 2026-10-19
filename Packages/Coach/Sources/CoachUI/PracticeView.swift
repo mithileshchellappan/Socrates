@@ -117,10 +117,14 @@ private struct PracticeContent: View {
     @State private var draft = ""
     @State private var player = SentencePlayer()
     @FocusState private var isEditing: Bool
+    /// M7: one question per screen at a compact width (mockup 16, right).
+    @PhoneLayout private var isPhone
 
     var body: some View {
         Group {
-            if let session = data.session, let question = currentQuestion {
+            if let session = data.session, let question = currentQuestion, isPhone {
+                phoneScreen(question, session: session)
+            } else if let session = data.session, let question = currentQuestion {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         questionZone(question, session: session)
@@ -272,6 +276,146 @@ private struct PracticeContent: View {
             if coach != nil {
                 Button("Submit") { submitDraft() }
                     .heroSecondaryButtonStyle()
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .onAppear { isEditing = true }
+    }
+
+    // MARK: The iPhone
+
+    /// One question per screen (mockup 16, right): "Practice" over "6 / 12" in the navigation bar
+    /// with End (`xmark`) leading; the course dot, "CL Lecture 1 · ELIZA" and the topic's dots;
+    /// the question (24 bold); 52 pt answer rows; after a tap the green check, the professor's
+    /// sentence with its moment and the explanation; Next under the thumb. No slide on the phone.
+    private func phoneScreen(_ question: StudyQuestion, session: StudySession) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                phoneEyebrow(question)
+                    .padding(.top, 18)
+                Text(question.prompt)
+                    .font(.system(size: 24, weight: .bold))
+                    .tracking(-0.4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.top, 6)
+                    .padding(.bottom, 16)
+                if question.format == .choice {
+                    phoneChoices(question)
+                } else if let response, case .text(let text) = response {
+                    Text(text)
+                        .font(.subheadline)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(QuietFill(), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .textSelection(.enabled)
+                } else if response == nil {
+                    phoneAnswerField
+                }
+                if let response {
+                    PhoneWhy(question: question, answer: data.answer(at: position), response: response, data: data, play: { play(question) })
+                        .padding(.top, 16)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
+        }
+        .safeAreaBar(edge: .bottom) {
+            if response != nil {
+                HStack(spacing: 10) {
+                    if let countAsWrong {
+                        Button("Count as wrong", action: countAsWrong)
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.large)
+                    }
+                    let isLast = position + 1 >= session.questionIDs.count
+                    PhoneHeroButton(
+                        title: isLast ? String(localized: "End") : String(localized: "Next"),
+                        trailingImage: isLast ? nil : "chevron.right",
+                        action: next
+                    )
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+        }
+        .navigationTitle(String(localized: "Practice"))
+        #if os(iOS)
+        .navigationSubtitle(Text(verbatim: "\(position + 1) / \(session.questionIDs.count)").monospacedDigit())
+        .toolbarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("End", systemImage: "xmark") { end() }
+            }
+        }
+        #endif
+    }
+
+    /// "CL Lecture 1 · ELIZA" (the course's short name: the bar does not name it) and the dots.
+    private func phoneEyebrow(_ question: StudyQuestion) -> some View {
+        let lecture = question.lectureID.flatMap { data.lectures[$0] }
+        let course = data.courses[question.courseID]
+        let place: String = {
+            if let number = lecture?.number { return String(localized: "\(CoachText.shortName(course)) Lecture \(number)") }
+            return question.sourceTitle
+        }()
+        let topic = question.topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        let line = [place, topic].filter { !$0.isEmpty }.joined(separator: " · ")
+        return HStack(spacing: 6) {
+            CourseDot(course: course, size: 8)
+            Text(line)
+                .lineLimit(1)
+            if question.topicKey != nil {
+                MasteryDots(data.mastery(of: question, at: fixedNow ?? Date()))
+                    .fixedSize()
+                    .padding(.leading, 6)
+            }
+        }
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(.secondary)
+    }
+
+    private func phoneChoices(_ question: StudyQuestion) -> some View {
+        let picked: Int? = if case .choice(let index)? = response { index } else { nil }
+        return VStack(spacing: 8) {
+            ForEach(Array(question.choices.enumerated()), id: \.offset) { index, choice in
+                PhoneChoiceRow(
+                    text: choice,
+                    state: picked == nil ? .open : (index == question.correctChoice ? .right : (index == picked ? .wrong : .dim)),
+                    isPicked: index == picked
+                ) {
+                    if picked == nil, coach != nil { answer(.choice(index)) }
+                }
+                .allowsHitTesting(picked == nil && coach != nil)
+            }
+        }
+    }
+
+    private var phoneAnswerField: some View {
+        VStack(alignment: .trailing, spacing: 10) {
+            TextEditor(text: $draft)
+                .font(.subheadline)
+                .scrollContentBackground(.hidden)
+                .focused($isEditing)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(minHeight: 120)
+                .background(QuietFill(), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(.tint, lineWidth: 1)
+                        .opacity(isEditing ? 1 : 0)
+                }
+            if coach != nil {
+                Button("Submit") { submitDraft() }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
@@ -446,6 +590,103 @@ struct ChoiceRow: View {
     }
 }
 
+/// A choice on the iPhone (mockup 16 `.opt`): at least 52 pt, radius 16, the quiet fill; the pick
+/// on Fill 2 (a grey cross when it is wrong), the right one semibold with the green check, the
+/// rest dim. No key caps (no keyboard).
+struct PhoneChoiceRow: View {
+    let text: String
+    let state: ChoiceRow.Mark
+    let isPicked: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text(text)
+                    .font(.subheadline)
+                    .fontWeight(state == .right ? .semibold : .regular)
+                    .foregroundStyle(state == .dim || state == .wrong ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                    .multilineTextAlignment(.leading)
+                    .lineSpacing(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                switch state {
+                case .right:
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.green)
+                        .accessibilityLabel(Text("Right"))
+                case .wrong:
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(Text("Wrong"))
+                default:
+                    EmptyView()
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .frame(minHeight: 52)
+            .background(isPicked ? AnyShapeStyle(Fill2()) : AnyShapeStyle(QuietFill()), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Why, on the iPhone (mockup 16 `.qex`): the professor's pin, name and moment, the quote (15 pt)
+/// under the amber bar, the explanation (13 pt, one sparkle); for a written answer Claude's grade
+/// (or the model answer while the Mac has not graded it) first.
+private struct PhoneWhy: View {
+    let question: StudyQuestion
+    let answer: StudyAnswer?
+    let response: StudyResponse
+    let data: PracticeData
+    let play: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if question.format.isWritten {
+                verdict
+                professor
+            } else {
+                professor
+                let explanation = question.explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !explanation.isEmpty {
+                    AIBlock(text: explanation, size: 13)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var verdict: some View {
+        if let answer, answer.grading == .done, !answer.note.isEmpty {
+            let parts = AIBlock.verdict(answer.note)
+            AIBlock(text: parts.rest, lead: parts.lead, size: 13)
+        } else {
+            let model = question.modelAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !model.isEmpty {
+                AIBlock(text: model, size: 13)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var professor: some View {
+        let quote = question.quote.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !quote.isEmpty {
+            ProfessorLine(
+                question: question, lecture: question.lectureID.flatMap { data.lectures[$0] }, course: data.courses[question.courseID],
+                font: .footnote
+            )
+            QuoteView(quote: quote, segment: question.transcriptSegmentID.flatMap { data.segments[$0] }, size: 15, inset: 11)
+                .onTapGesture(perform: play)
+        }
+    }
+}
+
 // MARK: - Zone 2
 
 /// Why: the slide beside the professor's words and the explanation (or Claude's grade).
@@ -534,6 +775,8 @@ struct ProfessorLine: View {
     let question: StudyQuestion
     let lecture: Lecture?
     let course: Course?
+    /// 12 pt on the Mac; 13 on the iPhone.
+    var font: Font = .callout
 
     @Environment(\.openDestination) private var openDestination
 
@@ -550,7 +793,7 @@ struct ProfessorLine: View {
                 .padding(.leading, 4)
             }
         }
-        .font(.callout)
+        .font(font)
         .foregroundStyle(.secondary)
     }
 }
@@ -560,16 +803,19 @@ struct ProfessorLine: View {
 struct QuoteView: View {
     let quote: String
     let segment: TranscriptSegment?
+    /// 14 pt, 14 in from the bar on the Mac; 15 and 11 on the iPhone (mockup 16 `.quote`).
+    var size: CGFloat = 14
+    var inset: CGFloat = 14
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Text(QuoteView.attributed(quote, segment: segment, colorScheme: colorScheme))
-            .font(.system(size: 14))
+            .font(.system(size: size))
             .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, 14)
+            .padding(.leading, inset)
             .padding(.vertical, 1)
             .overlay(alignment: .leading) {
                 Rectangle()

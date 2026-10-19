@@ -8,12 +8,14 @@ import SwiftUI
 // MARK: - Hero card
 
 /// The one emphasized card of a screen (mockups 01, 11–14, 19): the canvas card surface, radius
-/// 14, a 0.5 pt separator ring.
+/// 14, a 0.5 pt separator ring. On the iPhone (mockup 16 `.hero`): padding 16/16/14, radius 22,
+/// 4 pt between its lines.
 public struct HeroCard<Content: View>: View {
     private let spacing: CGFloat
     private let top: CGFloat
     private let bottom: CGFloat
     private let content: Content
+    @PhoneLayout private var isPhone
 
     public init(spacing: CGFloat = 3, top: CGFloat = 20, bottom: CGFloat = 20, @ViewBuilder content: () -> Content) {
         self.spacing = spacing
@@ -23,18 +25,79 @@ public struct HeroCard<Content: View>: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: spacing) {
+        let radius: CGFloat = isPhone ? 22 : 14
+        VStack(alignment: .leading, spacing: isPhone ? 4 : spacing) {
             content
         }
-        .padding(.top, top)
-        .padding(.bottom, bottom)
-        .padding(.horizontal, 22)
+        .padding(.top, isPhone ? 16 : top)
+        .padding(.bottom, isPhone ? 14 : bottom)
+        .padding(.horizontal, isPhone ? 16 : 22)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .strokeBorder(.separator, lineWidth: 0.5)
         }
+    }
+}
+
+// MARK: - The iPhone
+
+/// Whether a screen is laid out for the iPhone (M7, mockup 16): a compact width on iOS. Always
+/// false on the Mac, whose layouts stay as they are.
+@propertyWrapper
+public struct PhoneLayout: DynamicProperty {
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
+
+    public init() {}
+
+    public var wrappedValue: Bool {
+        #if os(iOS)
+        sizeClass == .compact
+        #else
+        false
+        #endif
+    }
+}
+
+/// The one filled button on the iPhone (mockup 16 `.go`, `.next`): the whole width under the
+/// thumb, a capsule, 17 pt semibold, the glyph before the title (or after it: Next's chevron).
+public struct PhoneHeroButton: View {
+    private let title: String
+    private let systemImage: String?
+    private let trailingImage: String?
+    private let action: () -> Void
+
+    public init(title: String, systemImage: String? = nil, trailingImage: String? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.systemImage = systemImage
+        self.trailingImage = trailingImage
+        self.action = action
+    }
+
+    public var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 15, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+                Text(title)
+                    .font(.headline)
+                if let trailingImage {
+                    Image(systemName: trailingImage)
+                        .font(.system(size: 16, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 36)
+        }
+        .buttonStyle(.borderedProminent)
+        .buttonBorderShape(.capsule)
+        .controlSize(.large)
     }
 }
 
@@ -170,10 +233,12 @@ struct KeyCap: View {
 struct AIBlock: View {
     let text: String
     var lead: String?
+    /// 12.5 pt on the Mac; 13 on the iPhone (mockup 16 `.qai`).
+    var size: CGFloat = 12.5
 
     var body: some View {
-        Text("\(Text(Image(systemName: "sparkle")).foregroundStyle(Color.ai).font(.system(size: 10.5)))\(Text(verbatim: " "))\(leadText)\(Text(verbatim: text))")
-            .font(.system(size: 12.5))
+        Text("\(Text(Image(systemName: "sparkle")).foregroundStyle(Color.ai).font(.system(size: size - 2)))\(Text(verbatim: " "))\(leadText)\(Text(verbatim: text))")
+            .font(.system(size: size))
             .foregroundStyle(.secondary)
             .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)

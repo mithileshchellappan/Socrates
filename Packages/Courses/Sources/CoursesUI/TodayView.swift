@@ -20,6 +20,8 @@ public struct TodayView: View {
     @Environment(\.timeZone) private var timeZone
     @Environment(\.locale) private var locale
     @Environment(\.openDestination) private var openDestination
+    /// M7: the iPhone's layout (mockup 16) at a compact width; the Mac's is unchanged.
+    @PhoneLayout private var isPhone
 
     /// - Parameters:
     ///   - now: a fixed "now" (previews, snapshots); nil follows the clock.
@@ -50,26 +52,26 @@ public struct TodayView: View {
         let today = CalendarDay(now, in: timeZone)
         let plan = TodayPlan(data: data, now: now, timeZone: timeZone)
         let text = SessionText(locale: locale, timeZone: timeZone)
-        return ScrollView {
+        return Group {
+            if isPhone {
+                phoneLayout(now: now, plan: plan, text: text)
+            } else {
+                macLayout(now: now, plan: plan, text: text)
+            }
+        }
+        .task(id: TodayRequest(day: today, timeZone: timeZone)) {
+            // A new day (or another time zone) needs a new window of sessions.
+            let request = TodayRequest(day: today, timeZone: timeZone)
+            guard request != (loaded ?? initialRequest) else { return }
+            loaded = request
+            _ = try? await $data.load(request, database: database)
+        }
+    }
+
+    private func macLayout(now: Date, plan: TodayPlan, text: SessionText) -> some View {
+        ScrollView {
             VStack(alignment: .leading, spacing: 30) {
-                switch plan.hero {
-                case .review(let review):
-                    ReviewHero(review: review, course: data.courses[review.lecture.courseID], next: plan.nextLecture, now: now, text: text) {
-                        openDestination(.lecture(review.lecture.id, ReviewTarget(time: review.lecture.reviewPosition)))
-                    }
-                case .session(let session):
-                    SessionHero(
-                        session: session, course: data.courses[session.courseID], now: now, text: text,
-                        record: plan.canRecord(session, courses: data.courses, now: now) ? record : nil
-                    )
-                case .plan:
-                    // mc: the plan's first open block (mockups 11–12), the card Study shares.
-                    if let day = data.plan {
-                        PlanHero(plan: day, courses: data.courses, now: now)
-                    }
-                case nil:
-                    EmptyView()
-                }
+                hero(now: now, plan: plan, text: text)
 
                 if !plan.comingUp.isEmpty {
                     ComingUpSection(entries: plan.comingUp, courses: data.courses, now: now, text: text)
@@ -93,13 +95,81 @@ public struct TodayView: View {
             }
         }
         .screenTitle(String(localized: "Today"), subtitle: subtitle(now: now, plan: plan, text: text))
-        .task(id: TodayRequest(day: today, timeZone: timeZone)) {
-            // A new day (or another time zone) needs a new window of sessions.
-            let request = TodayRequest(day: today, timeZone: timeZone)
-            guard request != (loaded ?? initialRequest) else { return }
-            loaded = request
-            _ = try? await $data.load(request, database: database)
+    }
+
+    /// M7, the iPhone (mockup 16 with DESIGN 8.1 and section 4): the date line over the large
+    /// title "Today" (the navigation bar's large title; "Today" inline once scrolled), the hero
+    /// card with Start under the thumb, Coming up as a card of phone rows, the mail line.
+    private func phoneLayout(now: Date, plan: TodayPlan, text: SessionText) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                hero(now: now, plan: plan, text: text)
+
+                if !plan.comingUp.isEmpty {
+                    ComingUpSection(entries: plan.comingUp, courses: data.courses, now: now, text: text, isPhone: true)
+                        .padding(.top, plan.hero == nil ? 0 : 18)
+                }
+
+                if let mail = plan.mail {
+                    TodayMailLine(line: mail, courses: data.courses, isPhone: true)
+                        .padding(.top, 18)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 14)
+            .padding(.bottom, 24)
+            .padding(.horizontal, 16)
         }
+        .overlay {
+            if plan.isEmpty {
+                ContentUnavailableView {
+                    Image(systemName: "sun.max")
+                }
+            }
+        }
+        .navigationTitle(String(localized: "Today"))
+        #if os(iOS)
+        .toolbar {
+            ToolbarItem(placement: .largeTitle) {
+                PhoneTodayTitle(line: phoneDateLine(now: now, plan: plan))
+            }
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private func hero(now: Date, plan: TodayPlan, text: SessionText) -> some View {
+        switch plan.hero {
+        case .review(let review):
+            ReviewHero(review: review, course: data.courses[review.lecture.courseID], next: plan.nextLecture, now: now, text: text) {
+                openDestination(.lecture(review.lecture.id, ReviewTarget(time: review.lecture.reviewPosition)))
+            }
+        case .session(let session):
+            SessionHero(
+                session: session, course: data.courses[session.courseID], now: now, text: text,
+                record: plan.canRecord(session, courses: data.courses, now: now) ? record : nil
+            )
+        case .plan:
+            // mc: the plan's first open block (mockups 11–12, 16), the card Study shares.
+            if let day = data.plan {
+                PlanHero(plan: day, courses: data.courses, now: now)
+            }
+        case nil:
+            EmptyView()
+        }
+    }
+
+    /// The iPhone's date line: "Friday 23 October · 25 min planned" (the digits in SF Mono), or
+    /// "· no classes" as the Mac's subtitle says it.
+    private func phoneDateLine(now: Date, plan: TodayPlan) -> Text {
+        let date = Text(verbatim: now.formatted(Date.VerbatimFormatStyle(
+            format: "\(weekday: .wide) \(day: .defaultDigits) \(month: .wide)",
+            locale: locale, timeZone: timeZone, calendar: Calendar(identifier: .gregorian)
+        )))
+        if let planned = plan.plannedMinutes {
+            return Text("\(date) · \(DurationText.text(minutes: planned)) planned")
+        }
+        return plan.hasClassesToday ? date : Text("\(date) · no classes")
     }
 
     private func subtitle(now: Date, plan: TodayPlan, text: SessionText) -> String {
@@ -117,13 +187,38 @@ public struct TodayView: View {
 // The hero card, its button label and style are CoachUI's (`HeroCard`, `HeroButtonLabel`,
 // `heroButtonStyle()`), shared with the coach's screens.
 
+/// The iPhone's large title (mockup 16 `.t-top`): the date line (13 semibold, secondary, in
+/// capitals) over "Today" (34 bold).
+private struct PhoneTodayTitle: View {
+    let line: Text
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            line
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .tracking(0.26)
+                .lineLimit(1)
+            Text("Today")
+                .font(.largeTitle.bold())
+                .tracking(-0.6)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
 private struct Eyebrow: View {
     let course: Course?
     var detail: String?
+    var isPhone = false
 
     var body: some View {
         HStack(spacing: 6) {
-            CourseDot(course: course, size: 7)
+            CourseDot(course: course, size: isPhone ? 8 : 7)
             Text(course?.name ?? "")
                 .foregroundStyle(.secondary)
             if let detail {
@@ -132,8 +227,31 @@ private struct Eyebrow: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .font(.subheadline.weight(.semibold))
+        .font(isPhone ? .footnote.weight(.semibold) : .subheadline.weight(.semibold))
         .lineLimit(1)
+    }
+}
+
+/// The hero's title: 22 semibold on the Mac, 26 bold on the iPhone (mockup 16 `.hero h3`).
+private struct HeroTitle: View {
+    let title: String
+    let isPhone: Bool
+
+    var body: some View {
+        if isPhone {
+            Text(title)
+                .font(.system(size: 26, weight: .bold))
+                .tracking(-0.5)
+                .padding(.top, 2)
+                .padding(.bottom, 1)
+        } else {
+            Text(title)
+                .font(.title.weight(.semibold))
+                .tracking(-0.3)
+                // The mockup's rhythm: eyebrow, title and meta 27 pt apart.
+                .padding(.top, 3)
+                .padding(.bottom, 4)
+        }
     }
 }
 
@@ -146,42 +264,53 @@ private struct ReviewHero: View {
     let text: SessionText
     let start: () -> Void
 
+    @PhoneLayout private var isPhone
+
     var body: some View {
         HeroCard {
-            Eyebrow(course: course, detail: review.recordedAt.map { String(localized: "recorded \(text.day($0))") })
-            Text(title)
-                .font(.title.weight(.semibold))
-                .tracking(-0.3)
-                // The mockup's rhythm: eyebrow, title and meta 27 pt apart.
-                .padding(.top, 3)
-                .padding(.bottom, 4)
+            Eyebrow(course: course, detail: review.recordedAt.map { String(localized: "recorded \(text.day($0))") }, isPhone: isPhone)
+            HeroTitle(title: title, isPhone: isPhone)
             meta
-                .font(.callout)
+                .font(isPhone ? .subheadline : .callout)
                 .foregroundStyle(.secondary)
             if let studyLine {
                 // M4: the study pass's one line, with the screen's only sparkle.
-                Text("\(Text(Image(systemName: "sparkle")).font(.system(size: 10.5)).foregroundStyle(Color.ai)) \(studyLine)")
-                    .font(.callout)
+                Text("\(Text(Image(systemName: "sparkle")).font(.system(size: isPhone ? 12 : 10.5)).foregroundStyle(Color.ai)) \(studyLine)")
+                    .font(isPhone ? .subheadline : .callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     // The mockup's rhythm: meta and this line about 20 pt apart.
-                    .padding(.top, 3)
+                    .padding(.top, isPhone ? 0 : 3)
                     .accessibilityLabel(Text(studyLine))
             }
-            HStack(spacing: 14) {
-                Button(action: start) {
-                    HeroButtonLabel(title: String(localized: "Start review"), systemImage: "play.fill")
-                }
-                .heroButtonStyle()
-                .keyboardShortcut(.defaultAction)
+            if isPhone {
+                // M7: Start under the thumb, the next lecture centred under it.
+                PhoneHeroButton(title: String(localized: "Start review"), systemImage: "play.fill", action: start)
+                    .padding(.top, 8)
                 if let aside {
                     aside
-                        .font(.callout)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 4)
                 }
+            } else {
+                HStack(spacing: 14) {
+                    Button(action: start) {
+                        HeroButtonLabel(title: String(localized: "Start review"), systemImage: "play.fill")
+                    }
+                    .heroButtonStyle()
+                    .keyboardShortcut(.defaultAction)
+                    if let aside {
+                        aside
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.top, 14)
             }
-            .padding(.top, 14)
         }
     }
 
@@ -256,25 +385,27 @@ private struct SessionHero: View {
     let text: SessionText
     let record: (() -> Void)?
 
+    @PhoneLayout private var isPhone
+
     var body: some View {
         HeroCard {
-            Eyebrow(course: course)
-            Text(title)
-                .font(.title.weight(.semibold))
-                .tracking(-0.3)
-                // The mockup's rhythm: eyebrow, title and meta 27 pt apart.
-                .padding(.top, 3)
-                .padding(.bottom, 4)
+            Eyebrow(course: course, isPhone: isPhone)
+            HeroTitle(title: title, isPhone: isPhone)
             meta
-                .font(.callout)
+                .font(isPhone ? .subheadline : .callout)
                 .foregroundStyle(.secondary)
             if let record {
-                Button(action: record) {
-                    HeroButtonLabel(title: String(localized: "Record"), systemImage: "circle.fill")
+                if isPhone {
+                    PhoneHeroButton(title: String(localized: "Record"), systemImage: "circle.fill", action: record)
+                        .padding(.top, 8)
+                } else {
+                    Button(action: record) {
+                        HeroButtonLabel(title: String(localized: "Record"), systemImage: "circle.fill")
+                    }
+                    .heroButtonStyle()
+                    .keyboardShortcut(.defaultAction)
+                    .padding(.top, 14)
                 }
-                .heroButtonStyle()
-                .keyboardShortcut(.defaultAction)
-                .padding(.top, 14)
             }
         }
     }

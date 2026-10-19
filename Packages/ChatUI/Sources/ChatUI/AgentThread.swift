@@ -1,6 +1,7 @@
 import StudyCore
 import StudyUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// One exchange of the panel's thread: the student's message (words and files, with the context
 /// it was sent in) and the agent's answer to it.
@@ -114,6 +115,56 @@ enum PanelThread {
         lhs.screen == rhs.screen && lhs.courseID == rhs.courseID && lhs.lectureID == rhs.lectureID
             && lhs.mailMessageID == rhs.mailMessageID && lhs.noteID == rhs.noteID
     }
+
+    /// M7, the iPhone's sheet: the questions asked on the phone that the thread still shows after
+    /// the stored exchanges, oldest first. A request whose message is stored (the Mac took it:
+    /// the same words, sent after it was asked; clocks may differ by minutes) is the exchange's;
+    /// every other one is open: waiting (pending, running, or answered before its turns arrived)
+    /// or failed before its message was stored.
+    static func openRequests(_ requests: [AgentRequest], exchanges: [PanelExchange]) -> [AgentRequest] {
+        var used: Set<AgentTurn.ID> = []
+        var open: [AgentRequest] = []
+        for request in requests.sorted(by: { $0.createdAt < $1.createdAt }) {
+            let earliest = request.createdAt.addingTimeInterval(-300)
+            if let match = exchanges.first(where: { !used.contains($0.id) && $0.text == request.text && $0.sentAt >= earliest }) {
+                used.insert(match.id)
+                continue
+            }
+            open.append(request)
+        }
+        return open
+    }
+}
+
+/// The thread's sizes: the Mac's panel, or the iPhone's sheet (agent panel mockup §7: 15 pt
+/// words, bubbles radius 18/18/5/18, 72×54 photos, 14 between entries).
+struct AgentThreadMetrics: Equatable, Sendable {
+    var text: CGFloat
+    var answerLineSpacing: CGFloat
+    var bubbleVertical: CGFloat
+    var bubbleHorizontal: CGFloat
+    var bubbleRadius: CGFloat
+    var bubbleTail: CGFloat
+    var contextLine: CGFloat
+    var contextGlyph: CGFloat
+    var imageTile: CGSize
+    var imageRadius: CGFloat
+    var fileTileHeight: CGFloat
+    var fileTileText: CGFloat
+    var spacing: CGFloat
+
+    static let panel = AgentThreadMetrics(
+        text: 13, answerLineSpacing: 3, bubbleVertical: 6, bubbleHorizontal: 11, bubbleRadius: 14, bubbleTail: 4, contextLine: 11,
+        contextGlyph: 10.5, imageTile: CGSize(width: 44, height: 28), imageRadius: 8, fileTileHeight: 28, fileTileText: 11.5, spacing: 12
+    )
+    static let sheet = AgentThreadMetrics(
+        text: 15, answerLineSpacing: 4, bubbleVertical: 7, bubbleHorizontal: 13, bubbleRadius: 18, bubbleTail: 5, contextLine: 12,
+        contextGlyph: 12, imageTile: CGSize(width: 72, height: 54), imageRadius: 12, fileTileHeight: 34, fileTileText: 13, spacing: 14
+    )
+}
+
+extension EnvironmentValues {
+    @Entry var agentThreadMetrics = AgentThreadMetrics.panel
 }
 
 /// The thread of one conversation (or of an empty new one): context lines, the student's messages
@@ -126,13 +177,19 @@ struct AgentThreadView: View {
     let model: AgentPanelModel
     let context: AgentContext
     let maxHeight: CGFloat
+    /// The window's exchanges only (`model.shown`): the compact panel, the sheet's small height.
+    let isWindowed: Bool
 
     @Environment(\.agentPanelActions) private var actions
     @Environment(\.openDestination) private var openDestination
+    @Environment(\.agentThreadMetrics) private var metrics
     @Dependency(\.defaultDatabase) private var database
     private let conversationQuery: FetchOne<AgentConversation?>
     private let turnsQuery: FetchAll<AgentTurn>
     private let tasksQuery: FetchAll<AgentTask>
+    /// M7, the sheet: the questions asked on the phone in this conversation (none elsewhere).
+    private let requestsQuery: FetchAll<AgentRequest>
+    @State private var requestFiles: [AgentRequest.ID: [RequestFile]] = [:]
     @State private var transcript = ChatTranscript()
     /// The turns parsed so far: a new turn parses only itself.
     @State private var turnCache = ChatTurnCache()
@@ -145,12 +202,16 @@ struct AgentThreadView: View {
     /// tall when it appears has the edge too.
     @State private var contentHeight: CGFloat = 0
 
-    init(style: AgentPanelView.Style, conversationID: AgentConversation.ID?, model: AgentPanelModel, context: AgentContext, maxHeight: CGFloat) {
+    init(
+        style: AgentPanelView.Style, conversationID: AgentConversation.ID?, model: AgentPanelModel, context: AgentContext, maxHeight: CGFloat,
+        isWindowed: Bool? = nil
+    ) {
         self.style = style
         self.conversationID = conversationID
         self.model = model
         self.context = context
         self.maxHeight = maxHeight
+        self.isWindowed = isWindowed ?? (style == .compact)
         // A new chat reads nothing (an id no row has).
         let id = conversationID ?? UUID()
         conversationQuery = FetchOne(AgentConversation.find(id))
@@ -160,7 +221,14 @@ struct AgentThreadView: View {
         tasksQuery = FetchAll(
             AgentTask.where { $0.parentConversationID.eq(id) && $0.state.in(finished) }.order { $0.finishedAt.asc() }
         )
+        // The Mac's panel reads no requests (a fixed id no row has, so the query stays the same
+        // across renders): its own messages go directly.
+        let requests = AgentConversation.ID?.some(style == .sheet ? id : Self.noRequests)
+        requestsQuery = FetchAll(AgentRequest.where { $0.conversationID.eq(requests) }.order { $0.createdAt.asc() })
     }
+
+    /// The nil UUID: the request query of a thread that shows none.
+    private static let noRequests = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 
     private var conversation: AgentConversation? { conversationQuery.wrappedValue }
     private var isRunning: Bool { conversation?.state == .running }
@@ -192,24 +260,35 @@ struct AgentThreadView: View {
         let items = PanelThread.items(
             exchanges: exchanges,
             tasks: tasksQuery.wrappedValue.filter { $0.state != .succeeded || ($0.result ?? "").isEmpty == false },
-            window: style == .compact ? model.shown : nil, current: context
+            window: isWindowed ? model.shown : nil, current: context
         )
+        let requests = PanelThread.openRequests(requestsQuery.wrappedValue, exchanges: exchanges)
         // ONE answer being written: the last exchange's (in `exchangeView`), or after the pending
         // bubble, or here alone for a run with no exchange to answer. (Before, the last exchange
         // and the thread's end both drew it: two skeletons for one message, the answer twice.)
-        let working = isRunning && pending == nil && exchanges.isEmpty
+        let working = isRunning && pending == nil && exchanges.isEmpty && requests.isEmpty
         let state = stateLine
-        let isEmpty = items.isEmpty && pending == nil && !working && state == nil
+        let isEmpty = items.isEmpty && requests.isEmpty && pending == nil && !working && state == nil
         observing(Group {
             if isEmpty {
                 // Always a view: the observers below must run while nothing shows (a new chat's
                 // compact panel is only its title row and composer).
                 Color.clear
-                    .frame(maxWidth: .infinity, maxHeight: style == .expanded ? .infinity : 0)
+                    .frame(maxWidth: .infinity, maxHeight: style == .compact ? 0 : .infinity)
             } else {
-                scroll(items: items, working: working, state: state)
+                scroll(items: items, requests: requests, working: working, state: state)
             }
         })
+        .task(id: requests.map(\.id)) {
+            // The open requests' files (names, kinds, sizes; their bytes only when a tile draws).
+            let ids = requests.map(\.id)
+            guard !ids.isEmpty else { return }
+            do {
+                requestFiles = try await RequestFile.load(requests: ids, database: database)
+            } catch {
+                ChatUILog.ui.error("Reading a request's files failed: \(String(describing: error), privacy: .public)")
+            }
+        }
     }
 
     /// The thread's observers: the stored turns, the conversation's state, the live reply, the
@@ -224,6 +303,13 @@ struct AgentThreadView: View {
             }
             .onChange(of: model.shown, initial: true) {
                 pinPickedWindow()
+            }
+            .onChange(of: requestsQuery.wrappedValue, initial: true) { _, requests in
+                // M7, the sheet: the message just sent is stored as its request, whose bubble
+                // takes over from the pending one.
+                if let sent = pending, requests.contains(where: { $0.text == sent.text && $0.createdAt >= sent.sentAt.addingTimeInterval(-5) }) {
+                    model.pending = nil
+                }
             }
             .onChange(of: conversation?.state, initial: true) { _, state in
                 model.isRunning = state == .running
@@ -253,12 +339,12 @@ struct AgentThreadView: View {
     /// rows, so it grows and shrinks with them without a frame's lag), then it scrolls under a
     /// faded top edge. Expanded: the whole column, anchored to the bottom.
     @ViewBuilder
-    private func scroll(items: [PanelThreadItem], working: Bool, state: AnyView?) -> some View {
+    private func scroll(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
         if style == .compact {
             let overflows = contentHeight > maxHeight + 0.5
             UpToHeight(maxHeight: maxHeight) {
                 ScrollView {
-                    threadContent(items: items, working: working, state: state)
+                    threadContent(items: items, requests: requests, working: working, state: state)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded() } action: { contentHeight = $0 }
                 }
                 .defaultScrollAnchor(.bottom)
@@ -276,7 +362,7 @@ struct AgentThreadView: View {
             }
         } else {
             ScrollView {
-                threadContent(items: items, working: working, state: state)
+                threadContent(items: items, requests: requests, working: working, state: state)
             }
             .defaultScrollAnchor(.bottom)
             .defaultScrollAnchor(.bottom, for: .sizeChanges)
@@ -285,9 +371,8 @@ struct AgentThreadView: View {
         }
     }
 
-    private func threadContent(items: [PanelThreadItem], working: Bool, state: AnyView?) -> some View {
-        let isCompact = style == .compact
-        return VStack(alignment: .leading, spacing: 12) {
+    private func threadContent(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
+        VStack(alignment: .leading, spacing: metrics.spacing) {
             ForEach(items) { item in
                 switch item {
                 case .exchange(let exchange, let showsLine, let isLast):
@@ -300,6 +385,16 @@ struct AgentThreadView: View {
                     }
                 }
             }
+            if style == .sheet {
+                // The last stored exchange's state, then the phone's questions the Mac has not
+                // answered yet (the student's bubble and the skeleton line, or "Not answered").
+                if let state {
+                    state
+                }
+                ForEach(requests) { request in
+                    RequestEntry(request: request, files: requestFiles[request.id] ?? [], maxWidth: bubbleWidth, now: model.now)
+                }
+            }
             if let pending {
                 PanelStudentMessage(text: pending.text, attachments: pending.attachments, maxWidth: bubbleWidth)
             }
@@ -310,22 +405,28 @@ struct AgentThreadView: View {
                     openLecture: context.lectureID, now: model.now
                 )
             }
-            if let state {
+            if style != .sheet, let state {
                 state
             }
         }
-        .padding(.horizontal, isCompact ? 14 : 16)
-        .padding(.top, isCompact ? 2 : 14)
-        .padding(.bottom, isCompact ? 12 : 14)
+        .padding(.horizontal, style == .sheet ? 18 : (style == .compact ? 14 : 16))
+        .padding(.top, style == .expanded ? 14 : 2)
+        .padding(.bottom, style == .expanded ? 14 : 12)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var bubbleWidth: CGFloat { style == .compact ? 250 : 264 }
+    private var bubbleWidth: CGFloat {
+        switch style {
+        case .compact: 250
+        case .expanded: 264
+        case .sheet: 280
+        }
+    }
 
     @ViewBuilder
     private func exchangeView(_ exchange: PanelExchange, showsLine: Bool, isLast: Bool) -> some View {
         let running = isLast && answersLast
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: metrics.spacing) {
             if showsLine, let label = exchange.context?.label {
                 FaintLine(glyph: exchange.context?.glyph ?? "bubble.left", label: label)
             }
@@ -392,6 +493,10 @@ struct AgentThreadView: View {
                     .monospacedDigit()
             )
         }
+        if style == .sheet {
+            // No hover on the phone: the reason under the line.
+            return AnyView(NotAnsweredLine(reason: error))
+        }
         return AnyView(
             Label("Not answered", systemImage: "exclamationmark.triangle")
                 .font(.system(size: 12))
@@ -401,16 +506,185 @@ struct AgentThreadView: View {
     }
 }
 
+/// "Not answered" (a secondary warning triangle) with the reason under it: the sheet (no hover).
+struct NotAnsweredLine: View {
+    let reason: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label("Not answered", systemImage: "exclamationmark.triangle")
+                .font(.footnote)
+            if !reason.isEmpty {
+                Text(verbatim: reason)
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - The phone's questions (M7)
+
+/// A question asked on the phone that the Mac has not answered (yet): the student's bubble with
+/// its files, then the skeleton line while it waits, or "Not answered" with the reason.
+private struct RequestEntry: View {
+    let request: AgentRequest
+    let files: [RequestFile]
+    let maxWidth: CGFloat
+    let now: Date
+
+    @Environment(\.agentThreadMetrics) private var metrics
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: metrics.spacing) {
+            VStack(alignment: .trailing, spacing: 6) {
+                if !files.isEmpty {
+                    TileFlow(spacing: 6, alignment: .trailing) {
+                        ForEach(files) { file in
+                            RequestFileTile(file: file)
+                        }
+                    }
+                }
+                if !request.text.isEmpty {
+                    StudentBubble(text: request.text)
+                }
+            }
+            .frame(maxWidth: maxWidth, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            if request.state == .failed {
+                NotAnsweredLine(reason: request.error ?? "")
+            } else {
+                PanelAnswer(text: "", isWorking: false, isStreaming: true, check: CitationCheck(rows: CitationRows(), webPages: [:]), openLecture: nil, now: now)
+            }
+        }
+    }
+}
+
+/// A file of a phone question as its tile shows it (no bytes: those load only for a thumbnail).
+struct RequestFile: Identifiable, Hashable, Sendable {
+    var id: AgentRequestFile.ID
+    var requestID: AgentRequest.ID
+    var fileName: String
+    var contentType: String
+    var byteCount: Int
+
+    var kind: AgentAttachment.Kind? { UTType(contentType).flatMap(AgentAttachment.kind(for:)) }
+
+    static func load(requests: [AgentRequest.ID], database: any DatabaseReader) async throws -> [AgentRequest.ID: [RequestFile]] {
+        let rows = try await database.read { db in
+            try AgentRequestFile
+                .where { $0.requestID.in(requests) }
+                .order { ($0.requestID, $0.sortOrder) }
+                .select { ($0.id, $0.requestID, $0.fileName, $0.contentType, $0.byteCount) }
+                .fetchAll(db)
+        }
+        let files = rows.map { RequestFile(id: $0.0, requestID: $0.1, fileName: $0.2, contentType: $0.3, byteCount: $0.4) }
+        return Dictionary(grouping: files, by: \.requestID)
+    }
+}
+
+/// A phone question's file: an image as its thumbnail (from the row's bytes, downsampled off the
+/// main actor), a PDF with its pages, a text file with its size, as the sent tiles.
+private struct RequestFileTile: View {
+    let file: RequestFile
+
+    @Environment(\.agentThreadMetrics) private var metrics
+    @Environment(\.displayScale) private var displayScale
+    @Dependency(\.defaultDatabase) private var database
+    @State private var image: CGImage?
+    @State private var pages: Int?
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: metrics.imageRadius, style: .continuous)
+        Group {
+            if file.kind == .image {
+                ZStack {
+                    Rectangle().fill(QuietFill())
+                    if let image {
+                        Image(decorative: image, scale: displayScale)
+                            .resizable()
+                            .scaledToFill()
+                    }
+                }
+                .frame(width: metrics.imageTile.width, height: metrics.imageTile.height)
+                .clipShape(shape)
+                .overlay { shape.strokeBorder(.primary.opacity(0.14), lineWidth: 0.5) }
+            } else {
+                HStack(spacing: 5) {
+                    Image(systemName: file.kind == .pdf ? "doc.richtext" : "doc.plaintext")
+                        .accessibilityHidden(true)
+                    Text(verbatim: file.fileName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let detail {
+                        Text(verbatim: detail)
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
+                }
+                .font(.system(size: metrics.fileTileText))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 6)
+                .padding(.trailing, 9)
+                .frame(height: metrics.fileTileHeight)
+                .frame(maxWidth: 240, alignment: .leading)
+                .background(Color.contentBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.separator, lineWidth: 0.5)
+                }
+            }
+        }
+        .accessibilityLabel(Text(verbatim: file.fileName))
+        .task(id: file.id) {
+            guard file.kind == .image || file.kind == .pdf else { return }
+            let id = file.id
+            do {
+                let data = try await database.read { db in
+                    try AgentRequestFile.find(id).select { $0.data }.fetchOne(db)
+                }
+                guard let data else { return }
+                if file.kind == .image {
+                    image = await AttachmentImages.thumbnail(data: data, maxPixel: Int(80 * max(1, displayScale)))
+                } else {
+                    pages = AttachmentImages.pageCount(pdf: data)
+                }
+            } catch {
+                ChatUILog.ui.error("Reading a request's file failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    private var detail: String? {
+        switch file.kind {
+        case .pdf:
+            guard let pages else { return nil }
+            return pages == 1 ? String(localized: "1 page") : String(localized: "\(pages) pages")
+        case .text:
+            return ByteCountFormatter.string(fromByteCount: Int64(file.byteCount), countStyle: .file)
+        default:
+            return nil
+        }
+    }
+}
+
 /// The faint line before an exchange asked on another screen (11 pt tertiary: the screen's glyph
 /// and label, then a hairline), or before a task's result (`checklist` + its title).
 struct FaintLine: View {
     let glyph: String
     let label: String
 
+    @Environment(\.agentThreadMetrics) private var metrics
+
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: glyph)
-                .font(.system(size: 10.5))
+                .font(.system(size: metrics.contextGlyph))
                 .accessibilityHidden(true)
             Text(verbatim: label)
                 .lineLimit(1)
@@ -420,7 +694,7 @@ struct FaintLine: View {
                 .frame(height: 0.5)
                 .padding(.leading, 4)
         }
-        .font(.system(size: 11))
+        .font(.system(size: metrics.contextLine))
         .foregroundStyle(.tertiary)
         .accessibilityElement(children: .combine)
     }
@@ -443,25 +717,37 @@ struct PanelStudentMessage: View {
                 }
             }
             if !text.isEmpty {
-                Text(text)
-                    .font(.system(size: 13))
-                    .lineSpacing(2)
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 11)
-                    .background(
-                        Fill2(),
-                        in: UnevenRoundedRectangle(
-                            topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 4, topTrailingRadius: 14,
-                            style: .continuous
-                        )
-                    )
+                StudentBubble(text: text)
             }
         }
         .frame(maxWidth: maxWidth, alignment: .trailing)
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+/// The student's words on Fill 2 (radius 14/14/4/14; the sheet 18/18/5/18), 13 pt primary (15).
+struct StudentBubble: View {
+    let text: String
+
+    @Environment(\.agentThreadMetrics) private var metrics
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: metrics.text))
+            .lineSpacing(2)
+            .foregroundStyle(.primary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, metrics.bubbleVertical)
+            .padding(.horizontal, metrics.bubbleHorizontal)
+            .background(
+                Fill2(),
+                in: UnevenRoundedRectangle(
+                    topLeadingRadius: metrics.bubbleRadius, bottomLeadingRadius: metrics.bubbleRadius,
+                    bottomTrailingRadius: metrics.bubbleTail, topTrailingRadius: metrics.bubbleRadius,
+                    style: .continuous
+                )
+            )
     }
 }
 
@@ -583,6 +869,7 @@ struct PanelAnswer: View {
     let now: Date
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.agentThreadMetrics) private var metrics
 
     var body: some View {
         let blocks = PanelAnswerBlock.split(isStreaming ? AnswerText.withoutOpenMarker(text) : text)
@@ -600,8 +887,8 @@ struct PanelAnswer: View {
                         paragraph, check: paragraph.contains("[[") ? check : nil, logs: !isStreaming, openLecture: openLecture
                     )
                     answerText(answer, sparkle: index == 0)
-                        .font(.system(size: 13))
-                        .lineSpacing(3)
+                        .font(.system(size: metrics.text))
+                        .lineSpacing(metrics.answerLineSpacing)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 case .changes(let keys):
@@ -630,7 +917,7 @@ struct PanelAnswer: View {
     /// The line's final size, redacted, no shimmer.
     private var skeleton: some View {
         Text(verbatim: "The answer is being written for you now")
-            .font(.system(size: 13))
+            .font(.system(size: metrics.text))
             .foregroundStyle(.secondary)
             .redacted(reason: .placeholder)
             .accessibilityHidden(true)

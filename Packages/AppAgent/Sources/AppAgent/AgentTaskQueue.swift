@@ -211,11 +211,11 @@ actor AgentTaskQueue {
     // MARK: The study coach's tasks (mc)
 
     private func runDrafting(_ task: AgentTask) async {
-        guard let lectureID = task.lectureID, let coach else {
+        guard let lectureID = task.lectureID, let drafter = coach?.drafter else {
             try? await tasks.finish(task.id, .failed, error: "The study coach does not run on this device.")
             return
         }
-        switch await coach.drafter.run(lectureID: lectureID) {
+        switch await drafter.run(lectureID: lectureID) {
         case .done(let questions, let readings):
             guard await stillOpen(task) else { return }
             let text = readings > 0 ? "\(questions) questions and \(readings) readings drafted." : "\(questions) questions drafted."
@@ -229,11 +229,11 @@ actor AgentTaskQueue {
     }
 
     private func runOldExam(_ task: AgentTask) async {
-        guard let coach else {
+        guard let oldExams = coach?.oldExams else {
             try? await tasks.finish(task.id, .failed, error: "The study coach does not run on this device.")
             return
         }
-        switch await coach.oldExams.read(task: task) {
+        switch await oldExams.read(task: task) {
         case .done(let questions, let title):
             guard await stillOpen(task) else { return }
             try? await tasks.finish(task.id, .succeeded, result: "\(questions) questions of \(title) are ready for practice exams.")
