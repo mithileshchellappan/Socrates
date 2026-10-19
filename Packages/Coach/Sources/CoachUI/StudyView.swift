@@ -104,38 +104,41 @@ private struct StudyContent: View {
         let semester = CoachRows.semester(for: nil, day: today, in: data.semesters)
         let week = semester.flatMap { TermWeek(day: today, semester: $0) }
         let courses = data.courseMap
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                if data.plan.current != nil {
-                    PlanHero(plan: data.plan, courses: courses, now: now)
-                }
-                if !lines.isEmpty {
-                    StudyCoursesZone(lines: lines, now: now)
-                }
-                if !weakest.isEmpty {
-                    WeakestTopicsZone(topics: weakest)
-                }
-            }
-            .frame(maxWidth: 680, alignment: .leading)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 22)
-            .padding(.bottom, 16)
-            .padding(.horizontal, 20)
-        }
-        .overlay {
+        Group {
             if data.plan.current == nil && lines.isEmpty {
-                ContentUnavailableView {
-                    Image(systemName: "brain")
+                // Nothing studied or to study yet: what feeds the screen (smart import, no course).
+                EmptyDropPrompt(systemImage: "brain", line: "Study starts with your lectures' slides and recordings.", target: nil)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 28) {
+                        if data.plan.current != nil {
+                            PlanHero(plan: data.plan, courses: courses, now: now)
+                        }
+                        if !lines.isEmpty {
+                            StudyCoursesZone(lines: lines, now: now)
+                        }
+                        if !weakest.isEmpty {
+                            WeakestTopicsZone(topics: weakest)
+                        }
+                    }
+                    .frame(maxWidth: 680, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 22)
+                    .padding(.bottom, 16)
+                    .padding(.horizontal, 20)
                 }
             }
         }
         .screenTitle(String(localized: "Study"), subtitle: week.map { String(localized: "Week \($0.number) of \($0.count)") })
     }
 
+    /// The courses with something to study: lectures, questions or due items (a timetable's course
+    /// without any is left out).
     private func courseLines(today: CalendarDay) -> [StudyCourseLine] {
         let week = StudyTime.week(containing: today, in: timeZone)
         let studied = StudyTime.studied(answers: data.answers, blocks: data.blocks, in: week.range, days: week.days)
-        return data.courses.map { rows in
+        let active = data.courses.filter { !$0.lectures.isEmpty || !$0.questions.isEmpty || !$0.dueItems.isEmpty }
+        return active.map { rows in
             let semester = CoachRows.semester(for: rows.course, day: today, in: data.semesters)
             let measures = CourseMeasures(rows: rows, semester: semester, rules: data.rules, now: now)
             let share = measures.plansHours ? (measures.budget?.weeklyShare(containing: today) ?? 0) : 0
@@ -181,6 +184,13 @@ struct StudyCourseLine: Identifiable {
 
     var id: Course.ID { measures.rows.course.id }
     var course: Course { measures.rows.course }
+
+    /// Ready once a question of the course was answered (never for a seminar): "0%" for a course
+    /// never practised says nothing.
+    var ready: Double? {
+        guard !measures.isSeminar, measures.mastery.values.contains(where: \.seen) else { return nil }
+        return measures.ready
+    }
 }
 
 struct WeakTopic: Identifiable {
@@ -209,10 +219,13 @@ private struct StudyCoursesZone: View {
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                // A column's label only while some row has a value in it (the column keeps its room).
                 Text("Ready")
                     .frame(width: 128, alignment: .trailing)
+                    .opacity(lines.contains { $0.ready != nil } ? 1 : 0)
                 Text("This week")
                     .frame(width: 150, alignment: .trailing)
+                    .opacity(lines.contains { $0.share > 0 } ? 1 : 0)
             }
             .font(.subheadline)
             .foregroundStyle(.tertiary)
@@ -291,7 +304,7 @@ private struct StudyCourseRow: View {
 
     @ViewBuilder
     private var ready: some View {
-        if !line.measures.isSeminar, let share = line.measures.ready {
+        if let share = line.ready {
             HStack(spacing: 8) {
                 Text(verbatim: "\(Int((share * 100).rounded()))%")
                     .font(.mono(12.5))
