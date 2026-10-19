@@ -2,6 +2,7 @@
 import ActivityKit
 import Foundation
 import RecorderActivity
+import os
 
 /// Starts, updates and ends the recording's Live Activity. `Activity` is not Sendable, so it is
 /// never stored: each call finds the activity of its recording among the app's activities.
