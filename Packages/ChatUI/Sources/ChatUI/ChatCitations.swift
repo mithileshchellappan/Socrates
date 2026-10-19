@@ -100,12 +100,17 @@ struct CitationCheck: Sendable {
         /// ma: a change row marker reaching an answer's text: the agent panel draws these as
         /// change rows before the text is checked; elsewhere (the old chat) they are not shown.
         case changeMarker = "change_marker"
+        /// md: a kept document's marker (`[[doc 3f2a9c1e p12]]`); not drawn until B checks it
+        /// against the `document` rows (docs/plan-docs.md §5.2).
+        case documentMarker = "document_marker"
     }
 
     func check(_ citation: ChatCitation) -> Result<CheckedCitation, DropError> {
         switch citation {
         case .change:
             return .failure(DropError(.changeMarker))
+        case .document:
+            return .failure(DropError(.documentMarker))
         case .web(let url):
             guard let key = Self.normalized(url), let found = webPages[key] else { return .failure(DropError(.pageNotInResults)) }
             return .success(.web(found))

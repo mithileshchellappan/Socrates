@@ -16,6 +16,10 @@ public struct SearchQuery: Hashable, Sendable {
         case material
         /// M5: the verified further reading the study pass found (Search's Web segment).
         case web
+        /// md: the student's kept documents (the agent's `search_documents`; the Documents group of
+        /// All once the engine handles them). Never part of `material`: documents hold personal
+        /// data and untrusted text, and the tutor's material reaches web tools.
+        case documents
 
         public var kinds: [SearchChunkKind] {
             switch self {
@@ -25,6 +29,7 @@ public struct SearchQuery: Hashable, Sendable {
             case .mail: [.mail]
             case .material: [.transcript, .slide, .note, .furtherReading]
             case .web: [.furtherReading]
+            case .documents: [.document]
             }
         }
     }
@@ -75,6 +80,8 @@ public enum SearchTarget: Hashable, Sendable {
     /// M6: a note that is not on a slide (a lecture's or a course's): the Notes screen with it
     /// selected, scoped to its course (all notes when it has none).
     case note(Note.ID, course: Course.ID?)
+    /// md: a kept document at a page (the Documents screen with it selected).
+    case document(StudyDocument.ID, page: Int?)
 }
 
 /// Marks the matched words in a `SearchHit.snippet`; SearchUI highlights these runs.
@@ -113,6 +120,8 @@ public struct SearchHit: Identifiable, Hashable, Sendable {
     public var byline: String? = nil
     public var url: URL? = nil
     public var annotationID: Annotation.ID? = nil
+    /// md: a document hit's document (`kind == .document`; `title` its title, `page` its page).
+    public var documentID: StudyDocument.ID? = nil
     /// M5: the chunk's whole text (the line, the slide's text, the note, "title · byline"), for
     /// the tutor's sources (`snippet` may be a window of it).
     public var text: String = ""
@@ -129,6 +138,8 @@ public struct SearchGroup: Identifiable, Hashable, Sendable {
         case web
         /// Mail, one hit per message.
         case mail
+        /// md: "Documents", the kept documents (after the notes, before Web).
+        case documents
     }
 
     public var kind: Kind

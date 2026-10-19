@@ -2,14 +2,15 @@ import Foundation
 import StudyCore
 
 /// The tables iCloud sync carries: every library table of `Schema.tableNames` except `job`
-/// (device-local processing state: each device runs its own jobs). The search index
+/// (device-local processing state: each device runs its own jobs) and the document bank
+/// (`Schema.macOnlyTableNames`, md: documents never leave the Mac). The search index
 /// (`Schema.localTableNames`, `Schema.virtualTableNames`) is rebuilt on each device and never
 /// syncs. Blobs (decks, audio, images) are files, not rows, and do not sync in M7.
 ///
 /// The record types appear twice, as a list (checked against the schema) and in the engine's
 /// parameter pack; a new table goes into both.
 enum SyncedTables {
-    static let excluded: Set<String> = ["job"]
+    static let excluded = Set(["job"] + Schema.macOnlyTableNames)
 
     static var types: [any StudyRecord.Type] { [
         Course.self, WeeklySlot.self, LectureSession.self, Deck.self, DeckPage.self, Lecture.self,

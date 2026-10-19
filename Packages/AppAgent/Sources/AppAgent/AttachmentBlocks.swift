@@ -63,6 +63,9 @@ enum AttachmentBlocks {
             case .text:
                 guard let text = String(data: data, encoding: .utf8) else { throw Failure.unreadable(attachment.fileName) }
                 return .document(DocumentBlock(source: .text(text), title: attachment.fileName))
+            case .document:
+                // md contract stub: A sends the extracted text (docs/plan-docs.md §4 "The agent").
+                throw Failure.unreadable(attachment.fileName)
             }
         }
     }

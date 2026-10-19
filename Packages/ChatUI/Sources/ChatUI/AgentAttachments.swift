@@ -109,7 +109,7 @@ enum AttachmentText {
         case .pdf:
             guard let pages = attachment.pageCount else { return nil }
             return pages == 1 ? String(localized: "1 page") : String(localized: "\(pages) pages")
-        case .text:
+        case .text, .document:
             return ByteCountFormatter.string(fromByteCount: Int64(attachment.byteCount), countStyle: .file)
         case .image:
             return nil
@@ -120,6 +120,8 @@ enum AttachmentText {
         switch attachment.kind {
         case .pdf: "doc.richtext"
         case .text: "doc.plaintext"
+        // md: Word, RTF, Pages (never notes' doc.text; a kept document is doc.on.doc).
+        case .document: "doc.richtext"
         case .image: "photo"
         }
     }
@@ -169,7 +171,7 @@ struct ComposerAttachmentTile: View {
         case .image:
             AttachmentThumbnail(attachment: attachment, radius: 10)
                 .frame(width: 40, height: 40)
-        case .pdf, .text:
+        case .pdf, .text, .document:
             HStack(spacing: 6) {
                 Image(systemName: AttachmentText.glyph(attachment))
                     .font(.system(size: 17, weight: .light))
@@ -215,7 +217,7 @@ struct SentAttachmentTile: View {
             AttachmentThumbnail(attachment: attachment, radius: metrics.imageRadius)
                 .frame(width: metrics.imageTile.width, height: metrics.imageTile.height)
                 .help(Text(verbatim: attachment.fileName))
-        case .pdf, .text:
+        case .pdf, .text, .document:
             HStack(spacing: 5) {
                 Image(systemName: AttachmentText.glyph(attachment))
                     .font(.system(size: 12.5))

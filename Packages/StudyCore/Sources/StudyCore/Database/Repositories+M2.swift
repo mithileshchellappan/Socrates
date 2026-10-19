@@ -552,6 +552,8 @@ public struct SearchChunkInput: Hashable, Sendable {
     public var recordingID: Recording.ID?
     public var noteID: Note.ID?
     public var mailMessageID: MailMessage.ID?
+    /// v14: a `document` chunk's document.
+    public var documentID: StudyDocument.ID?
     public var startTime: Double?
     public var endTime: Double?
     public var lang: String
@@ -569,6 +571,7 @@ public struct SearchChunkInput: Hashable, Sendable {
         recordingID: Recording.ID? = nil,
         noteID: Note.ID? = nil,
         mailMessageID: MailMessage.ID? = nil,
+        documentID: StudyDocument.ID? = nil,
         startTime: Double? = nil,
         endTime: Double? = nil,
         lang: String = "",
@@ -585,6 +588,7 @@ public struct SearchChunkInput: Hashable, Sendable {
         self.recordingID = recordingID
         self.noteID = noteID
         self.mailMessageID = mailMessageID
+        self.documentID = documentID
         self.startTime = startTime
         self.endTime = endTime
         self.lang = lang
@@ -614,7 +618,7 @@ public struct SearchIndexRepository: Sendable {
                     SearchChunk.Draft(
                         kind: chunk.kind, sourceID: chunk.sourceID, courseID: chunk.courseID, lectureID: chunk.lectureID,
                         deckID: chunk.deckID, pageNumber: chunk.pageNumber, recordingID: chunk.recordingID,
-                        noteID: chunk.noteID, mailMessageID: chunk.mailMessageID, startTime: chunk.startTime,
+                        noteID: chunk.noteID, mailMessageID: chunk.mailMessageID, documentID: chunk.documentID, startTime: chunk.startTime,
                         endTime: chunk.endTime, lang: chunk.lang, text: chunk.text, lemmaText: chunk.lemmaText,
                         sourceUpdatedAt: chunk.sourceUpdatedAt, updatedAt: stamp
                     )

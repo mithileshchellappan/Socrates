@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -61,10 +61,15 @@ public enum Schema {
         migrator.registerMigration("v13") { db in
             try db.execute(sql: v13)
         }
+        // md, additive only (new tables and nullable columns): the document bank.
+        migrator.registerMigration("v14") { db in
+            try db.execute(sql: v14)
+        }
         return migrator
     }
 
-    /// Every library table created by the migrations, in creation order: UUID keys, synced in M7.
+    /// Every library table created by the migrations, in creation order: UUID keys, synced in M7
+    /// (except `job` and, md, `macOnlyTableNames`).
     public static let tableNames = [
         "course", "weekly_slot", "lecture_session", "deck", "deck_page", "lecture", "recording",
         "lecture_deck_span", "recording_segment", "slide_event", "transcript_segment", "api_call",
@@ -79,7 +84,14 @@ public enum Schema {
         "agent_task", "agent_change", "agent_event", "agent_reminder",
         "study_reading", "study_question", "study_session", "study_answer", "study_block",
         "agent_request", "agent_request_file",
+        "document", "document_page",
     ]
+
+    /// md: library tables that stay on the Mac and never sync (PRD "Document bank": documents never
+    /// leave the Mac except as delimited context in the student's own agent calls). They exist on
+    /// every device (one schema) but only the Mac writes them. A synced table never has a foreign
+    /// key into these (SQLiteData's SyncEngine refuses one): `agent_task.document_id` is plain.
+    public static let macOnlyTableNames = ["document", "document_page"]
 
     /// Derived, device-local tables (rebuilt from the library, never synced): the search index.
     /// `search_chunk` has an INTEGER key (the FTS5 content rowid); M5 adds the semantic vectors
@@ -1204,6 +1216,68 @@ public enum Schema {
           "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
         ) STRICT;
         CREATE INDEX "agent_request_file_request" ON "agent_request_file"("request_id", "sort_order");
+        """
+
+    /// v14 (md, docs/plan-docs.md §3–4): the document bank.
+    ///
+    /// - `document`: one file the student keeps (CV, handbook, regulations, transcript, certificate,
+    ///   letter): the original in the BlobStore, how far reading it got (`text_state`), the Haiku
+    ///   summary, kind, related courses, key facts and dates (JSON), its outline;
+    /// - `document_page`: its text per page (a PDF's pages, an image's one page, or parts of
+    ///   ≤ 4,000 characters of flowing text);
+    /// - `search_chunk.document_id` (CASCADE) for `document` chunks, `agent_task.document_id`
+    ///   for the task that reads it: no foreign key (agent_task syncs, document never does:
+    ///   `macOnlyTableNames`); the bank cancels a deleted document's open task in code.
+    static let v14 = """
+        CREATE TABLE "document" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "title" TEXT NOT NULL DEFAULT '',
+          "file_name" TEXT NOT NULL DEFAULT '',
+          "file_type" TEXT NOT NULL DEFAULT '',
+          "kind" TEXT NOT NULL DEFAULT 'other',
+          "blob_sha256" TEXT NOT NULL DEFAULT '',
+          "blob_path" TEXT NOT NULL DEFAULT '',
+          "byte_count" INTEGER NOT NULL DEFAULT 0,
+          "page_count" INTEGER NOT NULL DEFAULT 0,
+          "language" TEXT NOT NULL DEFAULT '',
+          "text_state" TEXT NOT NULL DEFAULT 'pending',
+          "text_sha256" TEXT,
+          "summary_state" TEXT NOT NULL DEFAULT 'pending',
+          "summary" TEXT NOT NULL DEFAULT '',
+          "key_facts" TEXT NOT NULL DEFAULT '[]',
+          "dates" TEXT NOT NULL DEFAULT '[]',
+          "course_ids" TEXT NOT NULL DEFAULT '[]',
+          "outline" TEXT NOT NULL DEFAULT '[]',
+          "summary_hash" TEXT,
+          "model" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "summarized_at" TEXT,
+          "error" TEXT,
+          "created_by" TEXT NOT NULL DEFAULT 'user',
+          "added_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "document_added" ON "document"("added_at");
+        CREATE INDEX "document_blob" ON "document"("blob_sha256");
+        CREATE INDEX "document_api_call" ON "document"("api_call_id");
+
+        CREATE TABLE "document_page" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "document_id" TEXT NOT NULL REFERENCES "document"("id") ON DELETE CASCADE,
+          "page_number" INTEGER NOT NULL DEFAULT 1,
+          "label" TEXT NOT NULL DEFAULT '',
+          "heading" TEXT,
+          "text" TEXT NOT NULL DEFAULT '',
+          "is_ocr" INTEGER NOT NULL DEFAULT 0,
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "document_page_document" ON "document_page"("document_id", "page_number");
+
+        ALTER TABLE "search_chunk" ADD COLUMN "document_id" TEXT REFERENCES "document"("id") ON DELETE CASCADE;
+        CREATE INDEX "search_chunk_document" ON "search_chunk"("document_id");
+
+        ALTER TABLE "agent_task" ADD COLUMN "document_id" TEXT;
+        CREATE INDEX "agent_task_document" ON "agent_task"("document_id");
         """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row

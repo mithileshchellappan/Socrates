@@ -557,6 +557,9 @@ struct RootView: View {
                 let course = try? await services.database.read { db in try StudySession.find(id).fetchOne(db)?.courseID }
                 if let course { selection = .practiceResults(id, course: course) }
             }
+        // md (docs/plan-docs.md §7.2): the Documents row; the integrator replaces this stub.
+        case .documents:
+            break
         }
     }
 

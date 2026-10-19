@@ -10,6 +10,7 @@ import Foundation
 /// | `[[9a7d94d1/b680d175 37:59]]` | that moment on another recording of the lecture |
 /// | `[[web https://…]]` | a web page |
 /// | `[[change 1a2b3c4d]]` | an automatic change (ma: `agent_change` whose id starts with it), drawn as a change row |
+/// | `[[doc 3f2a9c1e p12]]` | page 12 of a kept document (md: `document` whose id starts with it); `[[doc 3f2a9c1e]]` the document |
 ///
 /// Parsing is pure; whether a marker may show is decided from the rows (ChatUI): the key must
 /// name exactly one lecture, the slide be a page of its deck, the moment lie in the recording, a
@@ -25,6 +26,14 @@ public enum ChatCitation: Hashable, Sendable {
     /// ma: an automatic change of the activity log, by the first 8 hex of its `agent_change` id
     /// (the panel draws a change row: the item's name, what happened, the time, Undo on hover).
     case change(key: String)
+    /// md: a kept document (the document bank), by the first 8 hex of its id, at a 1-based page
+    /// (`document_page.page_number`; nil: the document as a whole).
+    case document(key: String, page: Int?)
+
+    /// The citation of a kept document, at a page.
+    public static func document(_ id: StudyDocument.ID, page: Int? = nil) -> ChatCitation {
+        .document(key: key(id), page: page)
+    }
 
     /// The key of a lecture or recording id: its first 8 hex digits, lower case ("9a7d94d1").
     public static func key(_ id: UUID) -> String {
@@ -46,7 +55,7 @@ public enum ChatCitation: Hashable, Sendable {
     public var lectureKey: String? {
         switch self {
         case .slide(let lecture, _), .moment(let lecture, _, _): lecture
-        case .web, .change: nil
+        case .web, .change, .document: nil
         }
     }
 
@@ -63,6 +72,7 @@ public enum ChatCitation: Hashable, Sendable {
             "[[\(lecture)\(recording.map { "/" + $0 } ?? "") \(Self.clock(seconds))]]"
         case .web(let url): "[[web \(url.absoluteString)]]"
         case .change(let key): "[[change \(key)]]"
+        case .document(let key, let page): "[[doc \(key)\(page.map { " p\($0)" } ?? "")]]"
         }
     }
 
@@ -93,6 +103,20 @@ public enum ChatCitation: Hashable, Sendable {
             guard !text.contains(where: \.isWhitespace), let url = URL(string: text),
                   let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http", url.host != nil else { return nil }
             self = .web(url)
+            return
+        }
+        if body.hasPrefix("doc ") {
+            let parts = body.dropFirst(4).split(separator: " ")
+            guard (1...2).contains(parts.count), Self.isKey(parts[0]) else { return nil }
+            var page: Int?
+            if parts.count == 2 {
+                let target = parts[1]
+                guard target.first == "p" || target.first == "P", let number = Int(target.dropFirst()), number >= 1, number <= 99_999 else {
+                    return nil
+                }
+                page = number
+            }
+            self = .document(key: String(parts[0]), page: page)
             return
         }
         if body.hasPrefix("change ") {

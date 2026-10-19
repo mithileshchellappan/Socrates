@@ -141,6 +141,9 @@ struct PhoneRootView: View {
         case .course, .courseProgress, .notes, .practiceResults:
             cover = nil
             tab = .courses
+        // md: documents stay on the Mac (never synced): the phone has no Documents screen.
+        case .documents:
+            break
         case .search:
             cover = .search
         case .lecture(let id, var target):

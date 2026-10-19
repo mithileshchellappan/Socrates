@@ -61,6 +61,8 @@ public struct AgentContext: Hashable, Sendable, Codable {
     public var itemID: TrackedItem.ID?
     /// A selected session.
     public var sessionID: LectureSession.ID?
+    /// md: the selected kept document (the Documents screen).
+    public var documentID: StudyDocument.ID?
 
     public init(
         screen: Screen,
@@ -78,7 +80,8 @@ public struct AgentContext: Hashable, Sendable, Codable {
         query: String? = nil,
         selection: [ChatSource] = [],
         itemID: TrackedItem.ID? = nil,
-        sessionID: LectureSession.ID? = nil
+        sessionID: LectureSession.ID? = nil,
+        documentID: StudyDocument.ID? = nil
     ) {
         self.screen = screen
         self.courseID = courseID
@@ -96,6 +99,7 @@ public struct AgentContext: Hashable, Sendable, Codable {
         self.selection = selection
         self.itemID = itemID
         self.sessionID = sessionID
+        self.documentID = documentID
     }
 
     /// Today, nothing selected.
@@ -128,6 +132,7 @@ public struct AgentContext: Hashable, Sendable, Codable {
         merged.selection = other.selection.isEmpty ? selection : other.selection
         merged.itemID = other.itemID ?? itemID
         merged.sessionID = other.sessionID ?? sessionID
+        merged.documentID = other.documentID ?? documentID
         return merged
     }
 }
@@ -164,6 +169,10 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
         case image
         case pdf
         case text
+        /// md: Word (.docx, .doc), OpenDocument text, RTF or Pages: Claude cannot read these as
+        /// they are; the agent sends their extracted text (Documents' extractor) and can keep them
+        /// in the document bank (`keep_document`).
+        case document
     }
 
     public var kind: Kind
@@ -217,6 +226,8 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
     public static let maximumStoredPDFBytes = 500 * 1_024 * 1_024
     /// Text and code files (UTF-8).
     public static let maximumTextBytes = 512 * 1_024
+    /// md: Word, OpenDocument, RTF and Pages files.
+    public static let maximumDocumentBytes = 100 * 1_024 * 1_024
     /// The long edge of an image as the agent sends it.
     public static let imageLongEdge = 1_568
 
@@ -238,11 +249,16 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
         case unreadablePDF
     }
 
-    /// The accept rule: images (PNG, JPEG, GIF, WebP, HEIC), PDFs, and text or code (anything that
-    /// conforms to `public.text`: plain text, source code, scripts, JSON, XML, YAML, CSV, Markdown).
-    /// Everything else is refused (nil): a drop of it gets no ring.
+    /// The accept rule: images (PNG, JPEG, GIF, WebP, HEIC), PDFs, documents (md: Word, OpenDocument
+    /// text, RTF, Pages; checked before text, as RTF conforms to `public.text`) and text or code
+    /// (anything that conforms to `public.text`: plain text, source code, scripts, JSON, XML, YAML,
+    /// CSV, Markdown). Everything else is refused (nil): a drop of it gets no ring.
     public static func kind(for type: UTType) -> Kind? {
         if type.conforms(to: .pdf) { return .pdf }
+        switch StudyDocument.fileKind(for: type) {
+        case .word?, .richText?, .pages?: return .document
+        default: break
+        }
         let images: [UTType] = [.png, .jpeg, .gif, .webP, .heic]
         if images.contains(where: { type.conforms(to: $0) }) { return .image }
         if type.conforms(to: .text) || type.conforms(to: .sourceCode) || type.conforms(to: .json) { return .text }
@@ -289,6 +305,9 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
         case .text:
             guard data.count <= maximumTextBytes else { throw Refusal.tooLarge }
             guard String(data: data, encoding: .utf8) != nil else { throw Refusal.unreadableText }
+        case .document:
+            // Read when it is sent (its text) or kept (the bank); only the size is checked here.
+            guard data.count <= maximumDocumentBytes else { throw Refusal.tooLarge }
         }
         let ext = contentType.preferredFilenameExtension ?? (fileName as NSString).pathExtension
         let blob = try blobs.put(data, fileExtension: ext)

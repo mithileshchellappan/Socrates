@@ -37,8 +37,12 @@ public struct AgentTaskRepository: Sendable {
     /// agent's), in one transaction: they are `running`. A paused task whose time has come is
     /// queued again first. Claiming a queued or paused row counts no attempt (only a run a quit
     /// or crash interrupted does: `requeueInterrupted`). `kinds`: only tasks of these kinds are
-    /// started (the others stay queued untouched; nil: every kind).
-    public func claim(slots: Int, now: Date, kinds: [AgentTaskKind]? = nil) async throws -> [AgentTask] {
+    /// started (the others stay queued untouched; nil: every kind). `oneAtATime` (md): kinds of
+    /// which at most one runs at once, counting the running ones (`document`: one Haiku reading at
+    /// a time); a second waits queued.
+    public func claim(
+        slots: Int, now: Date, kinds: [AgentTaskKind]? = nil, oneAtATime: [AgentTaskKind] = []
+    ) async throws -> [AgentTask] {
         let stamp = store.currentDate
         return try await store.database.write { db in
             let due = try AgentTask
@@ -53,15 +57,24 @@ public struct AgentTaskRepository: Sendable {
                 }
                 .execute(db)
             }
-            let running = try AgentTask.where { $0.state.eq(AgentTaskState.running) }.fetchCount(db)
-            let free = max(0, slots - running)
+            let runningTasks = try AgentTask.where { $0.state.eq(AgentTaskState.running) }.fetchAll(db)
+            let free = max(0, slots - runningTasks.count)
             guard free > 0 else { return [] }
             let queued = try AgentTask.where { $0.state.eq(AgentTaskState.queued) }.order { $0.createdAt.asc() }.fetchAll(db)
                 .filter { task in kinds.map { $0.contains(task.kind) } ?? true }
-            let picked = Array(queued.sorted { first, second in
+            var busy = Set(runningTasks.map(\.kind).filter { oneAtATime.contains($0) })
+            var picked: [AgentTask] = []
+            for task in queued.sorted(by: { first, second in
                 if first.createdBy != second.createdBy { return first.createdBy == .user }
                 return first.createdAt < second.createdAt
-            }.prefix(free))
+            }) {
+                guard picked.count < free else { break }
+                if oneAtATime.contains(task.kind) {
+                    guard !busy.contains(task.kind) else { continue }
+                    busy.insert(task.kind)
+                }
+                picked.append(task)
+            }
             var started: [AgentTask] = []
             for var task in picked {
                 task.state = .running

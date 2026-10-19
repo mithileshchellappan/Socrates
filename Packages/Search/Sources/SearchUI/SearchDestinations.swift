@@ -17,6 +17,8 @@ extension SearchHit {
             .mail(id)
         case .note(let id, let course):
             .notes(course.map { .course($0) } ?? .all, note: id)
+        case .document(let id, let page):
+            .documents(id, page: page)
         case nil:
             nil
         }

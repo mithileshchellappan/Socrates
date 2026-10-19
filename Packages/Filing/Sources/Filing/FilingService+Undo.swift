@@ -173,25 +173,14 @@ extension FilingService {
         try Recording.find(recordingID).delete().execute(db)
     }
 
-    /// The blobs among `blobs` that no recording segment, deck or agent attachment (a PDF the
-    /// student gave the panel, which the agent filed) refers to any more.
+    /// The blobs among `blobs` that no row uses any more (`BlobUsage`: a deck, a recording
+    /// segment, a chat attachment the agent filed, md: a kept document of the same file, …).
     static func unreferenced(_ blobs: [BlobRef], in db: Database) throws -> [BlobRef] {
         var seen = Set<String>()
         return try blobs.filter { blob in
             guard seen.insert(blob.sha256).inserted else { return false }
-            let sha = blob.sha256
-            let segments = try RecordingSegment.where { $0.blobSHA256.eq(sha) }.fetchCount(db)
-            let decks = try Deck.where { $0.blobSHA256.eq(sha) }.fetchCount(db)
-            return try segments + decks == 0 && !isAttachment(sha, in: db)
+            return try !BlobUsage.isUsed(blob.sha256, in: db)
         }
-    }
-
-    /// A chat turn keeps the file as an attachment (`agent_turn.context`, JSON with its hash).
-    static func isAttachment(_ sha256: String, in db: Database) throws -> Bool {
-        guard !sha256.isEmpty else { return false }
-        return try Bool.fetchOne(
-            db, sql: #"SELECT EXISTS (SELECT 1 FROM "agent_turn" WHERE "context" LIKE ?)"#, arguments: ["%" + sha256 + "%"]
-        ) ?? true
     }
 
     /// True when a deck is part of something besides this filing's lecture: another lecture's

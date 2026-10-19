@@ -164,6 +164,8 @@ public struct SearchChunk: Hashable, Sendable {
     @Column("note_id") public var noteID: Note.ID?
     /// v5: the mail message a `mail` chunk was cut from.
     @Column("mail_message_id") public var mailMessageID: MailMessage.ID?
+    /// v14: the kept document a `document` chunk was cut from (CASCADE).
+    @Column("document_id") public var documentID: StudyDocument.ID?
     /// Seconds on the recording clock.
     @Column("start_time") public var startTime: Double?
     @Column("end_time") public var endTime: Double?

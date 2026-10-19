@@ -36,6 +36,9 @@ public struct AgentTask: StudyRecord {
     @Column("event_id") public var eventID: AgentEvent.ID?
     @Column("course_id") public var courseID: Course.ID?
     @Column("lecture_id") public var lectureID: Lecture.ID?
+    /// v14 (md): the kept document a `document` task reads. No foreign key (this table syncs, the
+    /// document never does): a deleted document's open task is cancelled by the bank.
+    @Column("document_id") public var documentID: StudyDocument.ID?
     /// The task's answer, ≤ `resultLimit` characters.
     public var result: String?
     /// Why it failed (readable, no secrets).
@@ -69,6 +72,7 @@ public struct AgentTask: StudyRecord {
         eventID: AgentEvent.ID? = nil,
         courseID: Course.ID? = nil,
         lectureID: Lecture.ID? = nil,
+        documentID: StudyDocument.ID? = nil,
         result: String? = nil,
         error: String? = nil,
         attempts: Int = 0,
@@ -94,6 +98,7 @@ public struct AgentTask: StudyRecord {
         self.eventID = eventID
         self.courseID = courseID
         self.lectureID = lectureID
+        self.documentID = documentID
         self.result = result.map { String($0.prefix(Self.resultLimit)) }
         self.error = error
         self.attempts = attempts

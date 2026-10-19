@@ -122,18 +122,10 @@ extension FilingService {
         Log.importer.info("Removed \(pending.count - kept.count, privacy: .public) deleted file(s)")
     }
 
-    /// No deck, recording segment, mail attachment, reading or question source refers to the
-    /// file with this hash.
+    /// No row uses the file with this hash (`BlobUsage`: decks, recording segments, mail
+    /// attachments, readings, question sources, kept documents, note and chat attachments).
     static func blobIsUnused(_ sha256: String, in db: Database) throws -> Bool {
-        guard !sha256.isEmpty else { return false }
-        let used = try Bool.fetchOne(db, sql: """
-            SELECT EXISTS (SELECT 1 FROM "deck" WHERE "blob_sha256" = ?1)
-                OR EXISTS (SELECT 1 FROM "recording_segment" WHERE "blob_sha256" = ?1)
-                OR EXISTS (SELECT 1 FROM "mail_attachment" WHERE "blob_sha256" = ?1)
-                OR EXISTS (SELECT 1 FROM "study_reading" WHERE "blob_sha256" = ?1)
-                OR EXISTS (SELECT 1 FROM "study_question" WHERE "source_blob_sha256" = ?1)
-            """, arguments: [sha256]) ?? true
-        return try !used && !isAttachment(sha256, in: db)
+        try !BlobUsage.isUsed(sha256, in: db)
     }
 
     // MARK: - What a delete removes

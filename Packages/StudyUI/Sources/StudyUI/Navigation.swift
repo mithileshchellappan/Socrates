@@ -30,6 +30,10 @@ public enum StudyDestination: Hashable, Sendable {
     case practice(StudySession.ID)
     /// mc: a submitted practice exam's results, pushed on its course's Progress with the sidebar back.
     case practiceResults(StudySession.ID)
+    /// md: the Documents screen (the sidebar row after Notes) with `document` selected (nil: the
+    /// newest), from a search hit, a `[[doc …]]` chip or a course's related documents. `page`: the
+    /// page a hit or chip names (the reader shows the document; Quick Look opens at its start).
+    case documents(StudyDocument.ID?, page: Int?)
 
     public static func lecture(_ id: Lecture.ID) -> StudyDestination { .lecture(id, ReviewTarget()) }
 
