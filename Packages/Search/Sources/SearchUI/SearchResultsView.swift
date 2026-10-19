@@ -280,7 +280,7 @@ public struct SearchResultsView: View {
         return visibleHits(results).first { selection.contains($0.id) }
     }
 
-    /// The selected hits as the tutor's sources, in screen order; never mail.
+    /// The selected hits as the tutor's sources, in screen order; never mail or documents.
     private var sources: [ChatSource] {
         guard let results else { return [] }
         return visibleHits(results).filter { selection.contains($0.id) }.compactMap(\.chatSource)
@@ -445,7 +445,8 @@ public struct SearchResultsView: View {
         }
         selectionIsDefault = true
         let firstGroup = found.groups.first { group in !found.collapses(group, expanded: expanded) }
-        let leading = firstGroup?.hits.filter { $0.kind != .mail }.prefix(Self.defaultSelectionLimit) ?? []
+        // Never mail or (md) documents: they are not the agent's sources.
+        let leading = firstGroup?.hits.filter { $0.kind != .mail && $0.kind != .document }.prefix(Self.defaultSelectionLimit) ?? []
         let chosen = leading.isEmpty ? Array(visible.prefix(1)) : Array(leading)
         selection = Set(chosen.map(\.id))
         cursor = chosen.first?.id
@@ -528,7 +529,8 @@ public struct SearchResultsView: View {
 }
 
 extension SearchHit {
-    /// The hit as one of the tutor's sources (M5); nil for mail (never a source).
+    /// The hit as one of the tutor's sources (M5); nil for mail and (md) documents (never a source:
+    /// a kept document is personal, untrusted text the agent reads only with its own tools).
     public var chatSource: ChatSource? {
         let kind: ChatSource.Kind
         switch self.kind {
