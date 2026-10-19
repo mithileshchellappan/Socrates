@@ -375,6 +375,8 @@ struct AnswerMarkdownView: View {
         .lineSpacing(metrics.answerLineSpacing)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
+        // md: a document chip's help is its title.
+        .documentChipHelp(answer)
     }
 
     private static func alignment(_ align: AnswerMarkdownBlock.Table.Align) -> HorizontalAlignment {

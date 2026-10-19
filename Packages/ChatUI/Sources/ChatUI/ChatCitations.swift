@@ -28,6 +28,8 @@ struct CitationRows: Equatable, Sendable {
 
     /// Lectures by key (`ChatCitation.key`); a key two lectures share names neither.
     var lectures: [String: [LectureRow]] = [:]
+    /// md: kept documents by key, the same way (`DocumentCitations`).
+    var documents: [String: [DocumentCitationRow]] = [:]
     var isLoaded = false
 
     static func load(_ database: any DatabaseReader) async throws -> CitationRows {
@@ -57,6 +59,7 @@ struct CitationRows: Equatable, Sendable {
                     id: lecture.id, number: lecture.number, pageCount: decks[lecture.id], recordings: recordings[lecture.id] ?? []
                 ))
             }
+            rows.documents = try DocumentCitations.rows(db)
             return rows
         }
     }
@@ -68,11 +71,13 @@ enum CheckedCitation: Hashable, Sendable {
     /// `recording` nil: the lecture's first.
     case moment(lecture: Lecture.ID, number: Int?, recording: Recording.ID?, seconds: Int)
     case web(URL)
+    /// md: a kept document at a page (nil: the document); its title is the chip's help.
+    case document(id: StudyDocument.ID, page: Int?, title: String)
 
     var lectureID: Lecture.ID? {
         switch self {
         case .slide(let id, _, _), .moment(let id, _, _, _): id
-        case .web: nil
+        case .web, .document: nil
         }
     }
 }
@@ -100,17 +105,19 @@ struct CitationCheck: Sendable {
         /// ma: a change row marker reaching an answer's text: the agent panel draws these as
         /// change rows before the text is checked; elsewhere (the old chat) they are not shown.
         case changeMarker = "change_marker"
-        /// md: a kept document's marker (`[[doc 3f2a9c1e p12]]`); not drawn until B checks it
-        /// against the `document` rows (docs/plan-docs.md §5.2).
-        case documentMarker = "document_marker"
+        /// md: a document marker whose key names no kept document, or two (`DocumentCitations`).
+        case unknownDocument = "document_unknown"
+        case ambiguousDocument = "document_ambiguous"
+        /// md: its page is not one of the document's pages.
+        case pageOutsideDocument = "document_page_outside"
     }
 
     func check(_ citation: ChatCitation) -> Result<CheckedCitation, DropError> {
         switch citation {
         case .change:
             return .failure(DropError(.changeMarker))
-        case .document:
-            return .failure(DropError(.documentMarker))
+        case .document(let key, let page):
+            return DocumentCitations.check(key: key, page: page, rows: rows)
         case .web(let url):
             guard let key = Self.normalized(url), let found = webPages[key] else { return .failure(DropError(.pageNotInResults)) }
             return .success(.web(found))
@@ -237,6 +244,8 @@ struct AnswerText: Equatable {
         case slide
         /// `globe` + the domain, secondary on the quiet fill; opens the page in the browser.
         case web
+        /// md: `doc.on.doc` + "p. 12" (or the clipped title), as web's; opens the Documents screen.
+        case document
     }
 
     struct Chip: Equatable {
@@ -339,6 +348,8 @@ struct AnswerText: Equatable {
             var host = url.host()?.lowercased() ?? url.absoluteString
             if host.hasPrefix("www.") { host.removeFirst(4) }
             return host
+        case .document(_, let page, let title):
+            return DocumentCitations.label(page: page, title: title)
         }
     }
 
@@ -347,6 +358,7 @@ struct AnswerText: Equatable {
         case .slide: .slide
         case .moment: .time
         case .web: .web
+        case .document: .document
         }
     }
 
@@ -357,6 +369,7 @@ struct AnswerText: Equatable {
         case .moment(let id, _, let recording, let seconds):
             .lecture(id, ReviewTarget(time: Double(seconds), plays: true, recordingID: recording))
         case .web: nil
+        case .document(let id, let page, _): .documents(id, page: page)
         }
     }
 
@@ -380,6 +393,8 @@ struct AnswerText: Equatable {
             URL(string: "\(linkScheme)://moment/\(id.uuidString.lowercased())/\(recording?.uuidString.lowercased() ?? "-")/\(seconds)")
         case .web(let url):
             url
+        case .document(let id, let page, _):
+            DocumentCitations.link(id: id, page: page)
         }
     }
 
@@ -394,6 +409,8 @@ struct AnswerText: Equatable {
         case "moment":
             guard parts.count == 3, let id = UUID(uuidString: parts[0]), let seconds = Int(parts[2]) else { return nil }
             return destination(.moment(lecture: id, number: nil, recording: UUID(uuidString: parts[1]), seconds: seconds))
+        case "doc":
+            return DocumentCitations.destination(linkParts: parts)
         default:
             return nil
         }
@@ -421,10 +438,11 @@ struct AnswerText: Equatable {
         label.link = link(chip.citation)
         let run = ChipRun(index: chip.index, style: chip.style)
         switch chip.style {
-        case .web:
+        case .web, .document:
             var glyph = AttributedString(nbsp)
             glyph.link = label.link
-            return Text("\(Text(glyph))\(Text(Image(systemName: "globe")))\(Text(label))")
+            let symbol = chip.style == .web ? "globe" : DocumentCitations.glyph
+            return Text("\(Text(glyph))\(Text(Image(systemName: symbol)))\(Text(label))")
                 .font(.system(size: 10.5))
                 .baselineOffset(1)
                 .customAttribute(run)
@@ -491,14 +509,14 @@ struct AnswerChipRenderer: TextRenderer {
     private func background(_ style: AnswerText.Style) -> GraphicsContext.Shading {
         switch style {
         case .time: .color(Color.accentSoft(colorScheme))
-        case .slide, .web: .color(Color(red: 120 / 255, green: 120 / 255, blue: 128 / 255).opacity(colorScheme == .dark ? 0.20 : 0.10))
+        case .slide, .web, .document: .color(Color(red: 120 / 255, green: 120 / 255, blue: 128 / 255).opacity(colorScheme == .dark ? 0.20 : 0.10))
         }
     }
 
     private func foreground(_ style: AnswerText.Style) -> GraphicsContext.Shading {
         switch style {
         case .time: .color(.accentColor)
-        case .slide, .web: .color(.secondary)
+        case .slide, .web, .document: .color(.secondary)
         }
     }
 }
