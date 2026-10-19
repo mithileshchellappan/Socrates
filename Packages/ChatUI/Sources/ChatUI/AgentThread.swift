@@ -221,10 +221,14 @@ struct AgentThreadView: View {
         tasksQuery = FetchAll(
             AgentTask.where { $0.parentConversationID.eq(id) && $0.state.in(finished) }.order { $0.finishedAt.asc() }
         )
-        // The Mac's panel reads no requests (an id no row has): its own messages go directly.
-        let requests = AgentConversation.ID?.some(style == .sheet ? id : UUID())
+        // The Mac's panel reads no requests (a fixed id no row has, so the query stays the same
+        // across renders): its own messages go directly.
+        let requests = AgentConversation.ID?.some(style == .sheet ? id : Self.noRequests)
         requestsQuery = FetchAll(AgentRequest.where { $0.conversationID.eq(requests) }.order { $0.createdAt.asc() })
     }
+
+    /// The nil UUID: the request query of a thread that shows none.
+    private static let noRequests = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 
     private var conversation: AgentConversation? { conversationQuery.wrappedValue }
     private var isRunning: Bool { conversation?.state == .running }
