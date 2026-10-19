@@ -73,12 +73,9 @@ public struct CourseSchedule: Sendable {
     public func save(_ slot: WeeklySlot, now: Date = Date()) async throws -> WeeklySlot {
         let planner = planner
         let store = store
-        let stamped = store.stamp(slot)
-        try await services.database.write { db in
-            try WeeklySlot.upsert { stamped }.execute(db)
-            try Self.replan(courseID: stamped.courseID, now: now, planner: planner, store: store, db: db)
+        return try await services.database.write { db in
+            try Self.saveSlot(slot, now: now, planner: planner, store: store, db: db)
         }
-        return stamped
     }
 
     /// Saves several slots (an .ics import) and replans their courses, in one transaction.
@@ -152,9 +149,7 @@ public struct CourseSchedule: Sendable {
         let planner = planner
         let store = store
         try await services.database.write { db in
-            guard let slot = try WeeklySlot.find(slotID).fetchOne(db) else { return }
-            try WeeklySlot.find(slotID).delete().execute(db)
-            try Self.replan(courseID: slot.courseID, now: now, planner: planner, store: store, db: db)
+            try Self.deleteSlot(slotID, now: now, planner: planner, store: store, db: db)
         }
     }
 
@@ -268,6 +263,40 @@ public struct CourseSchedule: Sendable {
         try replan(courseID: session.courseID, now: now, planner: planner, store: store, db: db)
         let after = try LectureSession.find(sessionID).fetchOne(db) ?? stamped
         return (before, after)
+    }
+
+    /// Saves a weekly slot (new or changed) and replans its course inside the caller's
+    /// transaction: Course Settings' Add Slot and slot edits (`save(_:)`) and AppAgent's slot
+    /// changes. The slot as written.
+    @discardableResult
+    public static func saveSlot(
+        _ slot: WeeklySlot,
+        now: Date,
+        planner: SessionPlanner = SessionPlanner(),
+        store: RecordStore,
+        db: Database
+    ) throws -> WeeklySlot {
+        let stamped = store.stamp(slot)
+        try WeeklySlot.upsert { stamped }.execute(db)
+        try replan(courseID: stamped.courseID, now: now, planner: planner, store: store, db: db)
+        return stamped
+    }
+
+    /// Deletes a weekly slot and replans its course inside the caller's transaction (Course
+    /// Settings' delete, AppAgent's slot changes): its future sessions go, past ones and ones with
+    /// a lecture stay. The slot deleted; nil when it is unknown.
+    @discardableResult
+    public static func deleteSlot(
+        _ slotID: WeeklySlot.ID,
+        now: Date,
+        planner: SessionPlanner = SessionPlanner(),
+        store: RecordStore,
+        db: Database
+    ) throws -> WeeklySlot? {
+        guard let slot = try WeeklySlot.find(slotID).fetchOne(db) else { return nil }
+        try WeeklySlot.find(slotID).delete().execute(db)
+        try replan(courseID: slot.courseID, now: now, planner: planner, store: store, db: db)
+        return slot
     }
 
     /// Adds a one-off session (no weekly slot, `edited_at` set) inside the caller's transaction
