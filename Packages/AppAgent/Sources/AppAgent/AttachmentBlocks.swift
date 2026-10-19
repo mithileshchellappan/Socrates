@@ -1,5 +1,7 @@
+import Agent
 import ClaudeKit
 import CoreGraphics
+import Filing
 import Foundation
 import ImageIO
 import StudyCore
@@ -11,21 +13,41 @@ import UniformTypeIdentifiers
 /// JPEG at that size), PDFs as document blocks (titled with the file name), text and code as a
 /// `text`-source document titled with the file name. At most `AgentAttachment.maximumPerMessage`.
 enum AttachmentBlocks {
-    enum Failure: Error, CustomStringConvertible {
+    enum Failure: Error, CustomStringConvertible, LocalizedError {
         case unreadable(String)
         case tooMany
+        /// A PDF sent whole over the document limits (slides are filed instead).
+        case pdfTooLarge(String)
 
         var description: String {
             switch self {
             case .unreadable(let name): "\(name) could not be read."
             case .tooMany: "At most \(AgentAttachment.maximumPerMessage) files per message."
+            case .pdfTooLarge(let name):
+                "\(name) is too long to read whole (at most \(AgentAttachment.maximumPDFPages) pages and \(AgentAttachment.maximumPDFBytes / 1_048_576) MB)."
             }
         }
+
+        var errorDescription: String? { description }
+    }
+
+    /// `<filed filing="…" change="1a2b3c4d" file="Lecture3.pdf" placed="DC · L3 · Virtualization">reason</filed>`:
+    /// stands in the user turn for slides the agent filed instead of sending them (data).
+    static func filed(_ filed: AdvisedFiling, fileName: String, reason: String) -> ContentBlock {
+        var head = AgentAttachment.filedBlockOpening
+        if let filing = filed.outcome.filing { head += " filing=\"\(filing.id.uuidString.lowercased())\"" }
+        if let change = filed.change { head += " change=\"\(change.id.uuidString.lowercased().prefix(8))\"" }
+        head += " file=\"\(AgentXML.escape(fileName))\" placed=\"\(AgentXML.escape(filed.placed))\""
+        return .text(TextBlock(text: head + ">" + AgentXML.escape(reason) + "</filed>"))
     }
 
     static func blocks(_ attachments: [AgentAttachment], blobs: BlobStore) throws -> [ContentBlock] {
         guard attachments.count <= AgentAttachment.maximumPerMessage else { throw Failure.tooMany }
         return try attachments.map { attachment in
+            if attachment.kind == .pdf,
+               attachment.byteCount > AgentAttachment.maximumPDFBytes || (attachment.pageCount ?? 0) > AgentAttachment.maximumPDFPages {
+                throw Failure.pdfTooLarge(attachment.fileName)
+            }
             let data: Data
             do {
                 data = try blobs.data(for: attachment.blob)

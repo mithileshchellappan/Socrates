@@ -157,6 +157,13 @@ public struct AgentChangeTarget: StringKind {
     public static let memory: Self = "agent_memory"
     public static let note: Self = "note"
     public static let reminder: Self = "agent_reminder"
+    /// A `filing` row: a deck the filing advisor filed or moved (Undo puts it back).
+    public static let filing: Self = "filing"
+}
+
+extension AgentChangeKind {
+    /// A deck filed (or moved) by the filing advisor (a Haiku call), with its reason.
+    public static let filing: Self = "filing"
 }
 
 /// The fields of the target an automatic change touched, before or after it (`agent_change.before`
@@ -194,6 +201,11 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     public var sortOrder: Int?
     public var createdBy: Author?
     public var isAway: Bool?
+    // filing (a deck the filing advisor filed or moved): where it is, and why (after)
+    public var courseID: Course.ID?
+    public var lectureID: Lecture.ID?
+    public var lectureSessionID: LectureSession.ID?
+    public var reason: String?
 
     public init(
         exists: Bool? = nil,
@@ -216,7 +228,11 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         day: CalendarDay? = nil,
         sortOrder: Int? = nil,
         createdBy: Author? = nil,
-        isAway: Bool? = nil
+        isAway: Bool? = nil,
+        courseID: Course.ID? = nil,
+        lectureID: Lecture.ID? = nil,
+        lectureSessionID: LectureSession.ID? = nil,
+        reason: String? = nil
     ) {
         self.exists = exists
         self.startsAt = startsAt
@@ -239,6 +255,10 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         self.sortOrder = sortOrder
         self.createdBy = createdBy
         self.isAway = isAway
+        self.courseID = courseID
+        self.lectureID = lectureID
+        self.lectureSessionID = lectureSessionID
+        self.reason = reason
     }
 
     /// The values of a session's changeable columns.

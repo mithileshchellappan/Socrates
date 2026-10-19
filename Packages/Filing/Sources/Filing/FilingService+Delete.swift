@@ -102,6 +102,11 @@ extension FilingService {
         var kept: [BlobRef] = []
         for blob in pending {
             let sha = blob.sha256
+            // Deleted in this session: Edit > Undo can still bring it back.
+            if deletedThisSession.contains(sha) {
+                kept.append(blob)
+                continue
+            }
             let unused = (try? await services.database.read { db in try Self.blobIsUnused(sha, in: db) }) ?? false
             guard unused else { continue }
             do {
@@ -111,7 +116,9 @@ extension FilingService {
                 kept.append(blob)
             }
         }
-        savePendingBlobs(kept)
+        // A delete during this pass (the actor is reentrant at each read) added to the list.
+        let processed = Set(pending.map(\.sha256))
+        savePendingBlobs(kept + pendingBlobs().filter { !processed.contains($0.sha256) })
         Log.importer.info("Removed \(pending.count - kept.count, privacy: .public) deleted file(s)")
     }
 
@@ -126,7 +133,7 @@ extension FilingService {
                 OR EXISTS (SELECT 1 FROM "study_reading" WHERE "blob_sha256" = ?1)
                 OR EXISTS (SELECT 1 FROM "study_question" WHERE "source_blob_sha256" = ?1)
             """, arguments: [sha256]) ?? true
-        return !used
+        return try !used && !isAttachment(sha256, in: db)
     }
 
     // MARK: - What a delete removes
@@ -235,6 +242,7 @@ extension FilingService {
 
     private func addPendingBlobs(_ blobs: [BlobRef]) {
         guard !blobs.isEmpty else { return }
+        deletedThisSession.formUnion(blobs.map(\.sha256))
         var pending = pendingBlobs()
         let known = Set(pending.map(\.sha256))
         pending += blobs.filter { !known.contains($0.sha256) }

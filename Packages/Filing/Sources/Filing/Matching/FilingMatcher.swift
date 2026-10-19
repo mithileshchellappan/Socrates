@@ -25,6 +25,11 @@ public struct FilingMatcher: Sendable {
     public static let sessionSlack: TimeInterval = 15 * 60
     /// Share of a recording that must fall in a session (widened by the slack).
     public static let minimumOverlap = 0.5
+    /// The lecture fit of a deck placed without a number or date (always below `fileThreshold`:
+    /// reviewed, and the filing advisor decides).
+    static let guessFit = 0.6
+    /// Signals that say which lecture a deck is (a number, a date, a title), not only its course.
+    static let lectureEvidence: Set<FilingSignal.Kind> = [.fileNumber, .slideNumber, .titleDate, .deckTitle, .knownFile]
 
     let library: FilingLibrary
 
@@ -98,10 +103,18 @@ public struct FilingMatcher: Sendable {
         }
         guard var choice else { return FilingDecision(verdict: .needsCourse, best: nil, alternatives: []) }
         let name = choice.place.course.name
+        // A deck dropped on a course whose lecture nothing names (no number, date or title):
+        // the course is the student's, the lecture a guess, for review.
+        let guessed: Bool
+        if case .course = destination {
+            guessed = evidence.kind == .deck && !choice.signals.contains { Self.lectureEvidence.contains($0.kind) }
+        } else {
+            guessed = false
+        }
         choice.signals.insert(FilingSignal(kind: .user, evidence: name, weight: 1), at: 0)
         choice.courseScore = 1
         if case .course = destination {} else { choice.place.confidence = 1 }
-        return FilingDecision(verdict: .file, best: choice, alternatives: [])
+        return FilingDecision(verdict: guessed ? .review : .file, best: choice, alternatives: [])
     }
 
     /// 1 − Π(1 − wᵢ)
@@ -264,13 +277,20 @@ public struct FilingMatcher: Sendable {
         if choices.isEmpty {
             switch evidence.kind {
             case .deck:
+                // No number, no date: a guess, always for review (the filing advisor looks again).
+                // The earliest numbered session without slides that has begun (catching up a
+                // course files L1, L2 in order), else the next one within 2 days; never a later
+                // session without evidence.
                 let open = numbered.filter { library.lecture(sessionID: $0.id)?.hasDeck != true }
-                let recent = library.now.addingTimeInterval(-2 * 86_400)
-                if let session = open.first(where: { $0.startsAt >= recent }) ?? open.last {
-                    let signal = FilingSignal(kind: .weeklySlot, evidence: Self.stamp(session.startsAt, zone: library.zone), weight: 0.85)
-                    choices.append(sessionChoice(session, course: course, fit: 0.85, signals: [signal]))
+                let soon = library.now.addingTimeInterval(2 * 86_400)
+                let session = open.first { $0.startsAt <= library.now } ?? open.first { $0.startsAt > library.now && $0.startsAt <= soon }
+                if let session {
+                    let signal = FilingSignal(kind: .weeklySlot, evidence: Self.stamp(session.startsAt, zone: library.zone), weight: Self.guessFit)
+                    choices.append(sessionChoice(session, course: course, fit: Self.guessFit, signals: [signal]))
                 } else {
-                    choices.append(newChoice(course: course, number: nil, heldAt: nil, wholeDay: false, title: evidence.lectureTitle, fit: 0.8, signals: []))
+                    choices.append(newChoice(
+                        course: course, number: nil, heldAt: nil, wholeDay: false, title: evidence.lectureTitle, fit: Self.guessFit, signals: []
+                    ))
                 }
             case .capture:
                 if let id = evidence.capture?.lectureID, let info = library.lecture(id), info.lecture.courseID == course.id {

@@ -4,6 +4,7 @@ import Coach
 import Courses
 import Deadlines
 import Foundation
+import Filing
 import GRDB
 import MailIntelligence
 import Search
@@ -21,7 +22,8 @@ import StudyPass
 ///                                conversationSpecs: specs.perConversation)
 ///     let agent = AppAgent(services: s, client: client, runtime: runtime, memory: memory,
 ///                          schedule: CourseSchedule(services: s), studyPass: studyPassPipeline,
-///                          coach: coach)   // mc: the CoachEngine (queue runners); also AppAgent.specs(…, coach:)
+///                          coach: coach,   // mc: the CoachEngine (queue runners); also AppAgent.specs(…, coach:)
+///                          specs: specs)   // the queue starts `task` conversations with `specs.task`
 ///     await agent.start()           // startBackgroundWork, after the pipelines
 ///     await agent.wake()            // new mail, finished transcriptions, study pass units, imports,
 ///                                   // calendar changes, Claude Code turning available
@@ -37,6 +39,10 @@ public actor AppAgent {
     let studyPass: StudyPassPipeline?
     /// mc: the study coach (question drafting and old exams run in the task queue; nil on iOS).
     let coach: CoachEngine?
+    /// Smart slide filing: slides dropped on the panel are filed where the advisor says (an
+    /// automatic change with Undo) instead of being sent whole.
+    let filing: FilingService?
+    let advisor: (any FilingAdvisor)?
     let now: @Sendable () -> Date
 
     /// The activity log and write path of every automatic change.
@@ -63,6 +69,9 @@ public actor AppAgent {
         schedule: CourseSchedule,
         studyPass: StudyPassPipeline?,
         coach: CoachEngine? = nil,
+        specs: Specs,
+        filing: FilingService? = nil,
+        advisor: (any FilingAdvisor)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
@@ -72,12 +81,17 @@ public actor AppAgent {
         self.schedule = schedule
         self.studyPass = studyPass
         self.coach = coach
+        self.filing = filing
+        self.advisor = advisor
         self.now = now
-        let changeLog = ChangeLog(services: services, memory: memory, now: now)
+        let changeLog = ChangeLog(services: services, memory: memory, filing: filing, now: now)
         self.changeLog = changeLog
         let quit = QuitSignal()
         self.quit = quit
-        queue = AgentTaskQueue(services: services, client: client, runtime: runtime, studyPass: studyPass, coach: coach, quit: quit, now: now)
+        queue = AgentTaskQueue(
+            services: services, client: client, runtime: runtime, studyPass: studyPass, coach: coach, taskSpec: specs.task, quit: quit,
+            now: now
+        )
         triage = FactTriage(services: services, client: client, changeLog: changeLog, quit: quit, now: now)
         reminders = ReminderCenter(services: services, changeLog: changeLog, now: now)
     }
@@ -89,6 +103,9 @@ public actor AppAgent {
     public struct Specs: Sendable {
         public var additional: [ConversationKind: AgentRuntime.SpecProvider]
         public var perConversation: [ConversationKind: AgentRuntime.ConversationSpecProvider]
+        /// A sub-agent task's spec from its row (the queue starts its conversation with it: the
+        /// row is linked to the conversation only after the conversation row exists).
+        public var task: @Sendable (AgentTask) async throws -> ConversationSpec
     }
 
     /// `search`: the app's engine (with its semantic index; its planner is not used). `drafter`:
@@ -102,7 +119,8 @@ public actor AppAgent {
         let deps = AppAgentChat.Services(services: services, search: search, drafter: drafter, memory: memory, coach: coach, now: now)
         return Specs(
             additional: [.app: { try AppAgentChat.spec(deps) }],
-            perConversation: [.task: { conversationID in try await AppAgentChat.taskSpec(deps, conversationID: conversationID) }]
+            perConversation: [.task: { conversationID in try await AppAgentChat.taskSpec(deps, conversationID: conversationID) }],
+            task: { task in try AppAgentChat.taskSpec(deps, task: task) }
         )
     }
 
@@ -125,7 +143,18 @@ public actor AppAgent {
         var history: [AgentTurn] = []
         if let conversation { history = try await ConversationRepository(store: services.records).turns(conversation) }
         let texts = Self.userTexts(history)
-        var blocks = try AttachmentBlocks.blocks(attachments, blobs: services.blobs)
+        // Slides are filed where the advisor says (a `<filed>` block in the turn); every other
+        // file goes as it is (a PDF whole within the document limits).
+        var whole: [AgentAttachment] = []
+        var filed: [ContentBlock] = []
+        for attachment in attachments {
+            if attachment.kind == .pdf, let block = await fileSlides(attachment, words: trimmed, conversation: conversation) {
+                filed.append(block)
+            } else {
+                whole.append(attachment)
+            }
+        }
+        var blocks = try AttachmentBlocks.blocks(whole, blobs: services.blobs) + filed
         let catalog = try await AgentCatalog.build(services: services, now: now())
         if AgentCatalog.lastRevision(in: texts) != catalog.revision { blocks.append(.text(catalog.text)) }
         let block = try await AgentContextBlock.build(context, services: services)
@@ -161,8 +190,44 @@ public actor AppAgent {
                 .app, text: trimmed, context: blocks, courseID: context.courseID, turnContext: turnContext, title: title
             )
         }
-        try await AgentTaskRepository(store: services.records).markReported(reported)
+        // The message is with the runtime: nothing may bounce it now (a result carried twice is
+        // better than a sent message shown as failed).
+        do {
+            try await AgentTaskRepository(store: services.records).markReported(reported)
+        } catch {
+            AppAgentModule.log.error("Marking task results reported failed: \(ReadableError.kind(of: error), privacy: .public)")
+        }
         return id
+    }
+
+    /// Files a PDF dropped on the panel as slides when the advisor (with the student's words)
+    /// says it is a lecture's deck and is sure: through smart import as an automatic change with
+    /// Undo. The `<filed>` block for the turn; nil: it is not slides, the advisor is unsure or
+    /// unavailable, or filing failed (the PDF then goes whole, within the document limits).
+    private func fileSlides(_ attachment: AgentAttachment, words: String, conversation: AgentConversation.ID?) async -> ContentBlock? {
+        guard let filing, let advisor else { return nil }
+        // A copy under the file's own name: the filing keeps the name the student dropped.
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory.appending(path: "StudyPortal-panel-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? fileManager.removeItem(at: directory) }
+        var name = (attachment.fileName as NSString).lastPathComponent
+        if name.isEmpty || name.hasPrefix(".") { name = "Slides.pdf" }
+        if (name as NSString).pathExtension.lowercased() != "pdf" { name += ".pdf" }
+        let url = directory.appending(path: name)
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try fileManager.copyItem(at: services.blobs.url(for: attachment.blob), to: url)
+        } catch {
+            AppAgentModule.log.error("Copying a dropped PDF failed: \(ReadableError.kind(of: error), privacy: .public)")
+            return nil
+        }
+        guard let request = await filing.adviceRequest(forDeckAt: url, studentWords: words),
+              let raw = await advisor.advise(request), let advice = request.validated(raw),
+              advice.isSlides, advice.confidence >= FilingAdvice.applyThreshold,
+              let filed = await filing.file(url, following: advice, quote: request.firstLine, conversationID: conversation)
+        else { return nil }
+        AppAgentModule.log.info("Filed slides from the panel (\(advice.confidence, privacy: .public))")
+        return AttachmentBlocks.filed(filed, fileName: attachment.fileName, reason: advice.reason)
     }
 
     /// Stops the agent's answer in `id` (the conversation ends `failed`, "Stopped.").

@@ -207,9 +207,14 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
     public static let maximumPerMessage = 5
     /// Images up to this size are accepted (the agent sends them downscaled, long edge ≤ 1,568 px).
     public static let maximumImageBytes = 20 * 1_024 * 1_024
-    /// PDFs: at most this size and `maximumPDFPages` pages.
-    public static let maximumPDFBytes = 32 * 1_024 * 1_024
+    /// A PDF sent whole as a document block: at most this size and `maximumPDFPages` pages (base64
+    /// grows it by a third; the API takes 32 MB a request). Not checked when attaching: slides
+    /// are filed instead of sent, whatever their size; a PDF sent whole over the limits is refused
+    /// then, with a readable reason.
+    public static let maximumPDFBytes = 24 * 1_024 * 1_024
     public static let maximumPDFPages = 100
+    /// A PDF stored as an attachment at all (a deck is filed from it, so larger lecture decks fit).
+    public static let maximumStoredPDFBytes = 500 * 1_024 * 1_024
     /// Text and code files (UTF-8).
     public static let maximumTextBytes = 512 * 1_024
     /// The long edge of an image as the agent sends it.
@@ -275,11 +280,11 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
                 height = properties[kCGImagePropertyPixelHeight] as? Int
             }
         case .pdf:
-            guard data.count <= maximumPDFBytes else { throw Refusal.tooLarge }
+            // Pages and the document size limit apply only when it is sent whole (slides are filed).
+            guard data.count <= maximumStoredPDFBytes else { throw Refusal.tooLarge }
             guard let provider = CGDataProvider(data: data as CFData), let document = CGPDFDocument(provider) else {
                 throw Refusal.unreadablePDF
             }
-            guard document.numberOfPages <= maximumPDFPages else { throw Refusal.tooManyPages }
             pageCount = document.numberOfPages
         case .text:
             guard data.count <= maximumTextBytes else { throw Refusal.tooLarge }

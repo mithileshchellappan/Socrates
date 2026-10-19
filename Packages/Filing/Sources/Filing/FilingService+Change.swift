@@ -55,7 +55,19 @@ extension FilingService {
     enum MoveReason: Sendable {
         case user
         case evidence([FilingSignal], confidence: Double)
+        /// The filing advisor decided: it stays `auto`, reviewed (confidence 1), its signal first.
+        case advice(FilingSignal)
+
+        var givesWay: Bool {
+            switch self {
+            case .user: false
+            case .evidence, .advice: true
+            }
+        }
     }
+
+    /// Runs inside a move's transaction with the filing as it was, as it is now, and its lecture.
+    typealias MoveHook = @Sendable (Database, _ before: Filing, _ after: Filing, _ lecture: Lecture) throws -> Void
 
     /// A second look found the filing changed since it read it (the user filed it meanwhile).
     struct Superseded: Error {}
@@ -63,7 +75,9 @@ extension FilingService {
     /// Moves `filing` (as the caller read it). The move itself works on the filing as it is when
     /// the transaction runs: a move by evidence gives way (`Superseded`) to any change made since
     /// it was read, and never touches a filing the user made.
-    func move(_ filing: Filing, to target: LectureTarget, courseID: Course.ID, reason: MoveReason = .user) async throws -> Filing {
+    func move(
+        _ filing: Filing, to target: LectureTarget, courseID: Course.ID, reason: MoveReason = .user, hook: MoveHook? = nil
+    ) async throws -> Filing {
         guard let course = try await store.fetch(Course.self, id: courseID) else { throw FilingError.missing }
         let now = now()
         let store = store
@@ -71,7 +85,7 @@ extension FilingService {
         let zone = try await loadLibrary().zone
         let moved = try await services.database.write { db -> Filing in
             guard let current = try Filing.find(filing.id).fetchOne(db) else { throw FilingError.missing }
-            if case .evidence = reason, current.source == .manual || current.updatedAt != filing.updatedAt || current.lectureID != filing.lectureID {
+            if reason.givesWay, current.source == .manual || current.updatedAt != filing.updatedAt || current.lectureID != filing.lectureID {
                 throw Superseded()
             }
             // The destination lecture, created when needed.
@@ -162,9 +176,15 @@ extension FilingService {
                 updated.confidence = confidence
                 updated.signals = signals + updated.signals.filter(\.isPrior)
                 updated.candidates = []
+            case .advice(let signal):
+                updated.source = .auto
+                updated.confidence = 1
+                updated.signals = [signal] + updated.signals.filter { $0.kind != .advisor && $0.kind != .user }
+                updated.candidates = []
             }
             let stamped = store.stamp(updated)
             try Filing.upsert { stamped }.execute(db)
+            try hook?(db, current, stamped, lecture)
             return stamped
         }
         Log.importer.info("Moved filing \(filing.id, privacy: .public)")

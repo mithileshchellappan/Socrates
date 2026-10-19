@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Processing
 import StudyCore
 
@@ -19,17 +20,30 @@ extension FilingService {
     /// Returns the filing when it changed.
     @discardableResult
     public func fileBySpokenContent(recordingID: Recording.ID) async throws -> Filing? {
-        guard let filing = try await FilingRepository(store: store).latest(recordingID: recordingID),
-              Self.wantsSecondLook(filing)
-        else { return nil }
-        let (transcript, decks) = try await services.database.read { db in
-            let lines = try TranscriptSegment.where { $0.recordingID.eq(recordingID) }.fetchAll(db)
-            return (lines.map(\.text).joined(separator: " "), try Self.deckWords(db))
+        try await fileBySpokenContent(recordingID: recordingID, decks: nil)
+    }
+
+    /// `decks`: the slides' words, computed once for a batch (nil: read now).
+    func fileBySpokenContent(recordingID: Recording.ID, decks given: [SpokenContent.DeckWords]?) async throws -> Filing? {
+        guard let filing = try await FilingRepository(store: store).latest(recordingID: recordingID), Self.isUnsure(filing) else {
+            return nil
         }
-        guard let match = SpokenContent.match(transcript: SpokenContent.words(transcript), decks: decks),
+        let stamp = try await services.database.read { db in try Self.transcriptStamp(recordingID, in: db) }
+        guard let stamp, Self.wantsSecondLook(filing, transcript: stamp) else { return nil }
+        let lines = try await services.database.read { db in
+            try TranscriptSegment.where { $0.recordingID.eq(recordingID) }.fetchAll(db).map(\.text)
+        }
+        let decks: [SpokenContent.DeckWords]
+        if let given {
+            decks = given
+        } else {
+            decks = try await deckWords()
+        }
+        guard let match = SpokenContent.match(transcript: SpokenContent.words(lines.joined(separator: " ")), decks: decks),
               let deck = try await store.fetch(Deck.self, id: match.deckID)
         else {
             Log.importer.info("Spoken content does not settle the filing of \(recordingID, privacy: .public)")
+            try await noteLook(filing, transcript: stamp)
             return nil
         }
         let signal = FilingSignal(kind: .spokenContent, evidence: deck.fileName, weight: match.weight)
@@ -90,18 +104,30 @@ extension FilingService {
             candidates = try await services.database.read { db in
                 try Filing.where { $0.kind.eq(FilingKind.recording) && $0.source.eq(FilingSource.auto) }
                     .fetchAll(db)
-                    .filter(Self.wantsSecondLook)
-                    .compactMap(\.recordingID)
-                    .filter { id in try TranscriptSegment.where { $0.recordingID.eq(id) }.fetchCount(db) > 0 }
+                    .filter(Self.isUnsure)
+                    .compactMap { filing -> Recording.ID? in
+                        guard let id = filing.recordingID, let stamp = try Self.transcriptStamp(id, in: db),
+                              Self.wantsSecondLook(filing, transcript: stamp) else { return nil }
+                        return id
+                    }
             }
         } catch {
             Log.importer.error("Listing unsure recordings failed: \(String(describing: error), privacy: .public)")
             return []
         }
+        guard !candidates.isEmpty else { return [] }
+        // The slides' words once for the batch (every deck of the library is tokenized).
+        let decks: [SpokenContent.DeckWords]
+        do {
+            decks = try await deckWords()
+        } catch {
+            Log.importer.error("Reading the slides' words failed: \(String(describing: error), privacy: .public)")
+            return []
+        }
         var changed: [Filing] = []
         for recordingID in Set(candidates) {
             do {
-                if let filing = try await fileBySpokenContent(recordingID: recordingID) { changed.append(filing) }
+                if let filing = try await fileBySpokenContent(recordingID: recordingID, decks: decks) { changed.append(filing) }
             } catch {
                 Log.importer.error("Filing by spoken content failed: \(String(describing: error), privacy: .public)")
             }
@@ -109,21 +135,63 @@ extension FilingService {
         return changed
     }
 
-    /// Unfiled, or filed on its own for review, and not looked at by content before.
-    static func wantsSecondLook(_ filing: Filing) -> Bool {
-        filing.kind == .recording && filing.source == .auto
-            && (filing.lectureID == nil || filing.needsReview)
-            && !filing.signals.contains { $0.kind == .spokenContent }
+    /// Unfiled, or filed on its own for review.
+    static func isUnsure(_ filing: Filing) -> Bool {
+        filing.kind == .recording && filing.source == .auto && (filing.lectureID == nil || filing.needsReview)
     }
 
-    /// Word counts of every deck that belongs to a course.
-    static func deckWords(_ db: Database) throws -> [SpokenContent.DeckWords] {
-        let decks = try Deck.where { $0.courseID.isNot(nil) }.fetchAll(db)
-        return try decks.compactMap { deck in
-            guard let courseID = deck.courseID else { return nil }
-            let text = try DeckPage.where { $0.deckID.eq(deck.id) }.fetchAll(db).map(\.text).joined(separator: " ")
+    /// Unsure, and not looked at by content before: never after a look that settled it, and
+    /// after one that did not only once the transcript changed (`transcript` is its stamp).
+    static func wantsSecondLook(_ filing: Filing, transcript stamp: String) -> Bool {
+        guard isUnsure(filing) else { return false }
+        let looks = filing.signals.filter { $0.kind == .spokenContent }
+        if looks.isEmpty { return true }
+        guard looks.allSatisfy({ $0.weight == 0 }) else { return false }
+        return !looks.contains { $0.evidence == unsettledEvidence(stamp) }
+    }
+
+    /// The evidence of a look that did not settle the filing: the transcript it read.
+    static func unsettledEvidence(_ stamp: String) -> String { "unsettled " + stamp }
+
+    /// The transcript's version (its line count and newest change); nil without one.
+    static func transcriptStamp(_ recordingID: Recording.ID, in db: Database) throws -> String? {
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT count(*) AS lines, max("updated_at") AS changed FROM "transcript_segment" WHERE "recording_id" = ?
+            """, arguments: [recordingID.uuidString.lowercased()]) else { return nil }
+        let lines: Int = row["lines"]
+        guard lines > 0 else { return nil }
+        let changed: String? = row["changed"]
+        return "\(lines) \(changed ?? "")"
+    }
+
+    /// Records a look that did not settle the filing (a `spokenContent` signal of weight 0), so
+    /// launches and drops do not look again until the transcript changes. Only while nobody
+    /// changed the filing meanwhile.
+    func noteLook(_ filing: Filing, transcript stamp: String) async throws {
+        let store = store
+        let signal = FilingSignal(kind: .spokenContent, evidence: Self.unsettledEvidence(stamp), weight: 0)
+        try await services.database.write { db in
+            guard var current = try Filing.find(filing.id).fetchOne(db), current.updatedAt == filing.updatedAt else { return }
+            current.signals.removeAll { $0.kind == .spokenContent && $0.weight == 0 }
+            current.signals.append(signal)
+            let stamped = store.stamp(current)
+            try Filing.upsert { stamped }.execute(db)
+        }
+    }
+
+    /// Word counts of every deck that belongs to a course: the pages are read in one go, the
+    /// words counted after the read (it never holds a reader while it tokenizes).
+    func deckWords() async throws -> [SpokenContent.DeckWords] {
+        let texts = try await services.database.read { db -> [(Deck.ID, Course.ID, String)] in
+            try Deck.where { $0.courseID.isNot(nil) }.fetchAll(db).compactMap { deck in
+                guard let courseID = deck.courseID else { return nil }
+                let text = try DeckPage.where { $0.deckID.eq(deck.id) }.fetchAll(db).map(\.text).joined(separator: " ")
+                return (deck.id, courseID, text)
+            }
+        }
+        return texts.compactMap { deckID, courseID, text in
             let counts = SpokenContent.words(text)
-            return counts.isEmpty ? nil : SpokenContent.DeckWords(deckID: deck.id, courseID: courseID, counts: counts)
+            return counts.isEmpty ? nil : SpokenContent.DeckWords(deckID: deckID, courseID: courseID, counts: counts)
         }
     }
 

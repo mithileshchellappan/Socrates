@@ -1,5 +1,6 @@
 import Courses
 import Deadlines
+import Filing
 import Foundation
 import StudyCore
 
@@ -125,15 +126,30 @@ public struct ChangeLog: Sendable {
         }
     }
 
+    /// Why Undo did nothing: the target changed since the change (a later change replaced it,
+    /// or the student edited it); undoing would overwrite that.
+    public enum UndoRefused: Error, Sendable, CustomStringConvertible, LocalizedError {
+        case changedSince
+
+        public var description: String { "Changed since; nothing undone." }
+        public var errorDescription: String? { String(localized: "Changed since; nothing undone.") }
+    }
+
     let services: StudyServices
     let onChange: @Sendable () async -> Void
+    /// Smart import, for Undo of the filing advisor's changes (nil: a service of its own).
+    let filing: FilingService?
     let now: @Sendable () -> Date
 
     /// `memory`: the app's deadline memory, whose `onChange` syncs the calendar after each write.
-    public init(services: StudyServices, memory: DeadlineMemory? = nil, now: @escaping @Sendable () -> Date = { Date() }) {
+    /// `filing`: the app's smart import (its Undo wakes the processor for re-alignment).
+    public init(
+        services: StudyServices, memory: DeadlineMemory? = nil, filing: FilingService? = nil, now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.services = services
         let memory = memory
         onChange = { await memory?.didChange() }
+        self.filing = filing
         self.now = now
     }
 
@@ -157,9 +173,29 @@ public struct ChangeLog: Sendable {
     public func undo(_ id: AgentChange.ID) async throws -> Bool {
         let store = services.records
         let date = now()
+        if let change = try await store.fetch(AgentChange.self, id: id), change.targetTable == .filing {
+            return try await undoFiling(change, at: date)
+        }
         let undone = try await services.database.write { db in try Self.undo(id, db: db, store: store, now: date) }
         if undone { await onChange() }
         return undone
+    }
+
+    /// Undo of a deck the filing advisor filed or moved: smart import puts the filing back (or
+    /// takes a deck filed from the panel back), then the row is marked. Refused when the filing
+    /// moved since (`UndoRefused.changedSince`).
+    private func undoFiling(_ change: AgentChange, at date: Date) async throws -> Bool {
+        guard change.undoneAt == nil else { return false }
+        guard change.supersededBy == nil else { throw UndoRefused.changedSince }
+        let service = filing ?? FilingService(services: services)
+        do {
+            try await service.undoAdvice(change)
+        } catch FilingError.changedSince {
+            throw UndoRefused.changedSince
+        }
+        let id = change.id
+        try await services.database.write { db in try AgentChangeRepository.markUndone(id, at: date, db: db) }
+        return true
     }
 
     /// Undo from an item's popover (or Mail's found row): the change written with that source
@@ -932,10 +968,21 @@ public struct ChangeLog: Sendable {
             }
         case .memory:
             if let targetID = change.targetID, var memory = try AgentMemory.find(targetID).fetchOne(db) {
+                // Only the memory as this change left it: not after a later change replaced it
+                // (`superseded_by`), nor after an edit in the Memory sheet (text or rule differ).
+                let after = change.after
+                let forgottenNow = memory.forgottenAt != nil
+                let unchanged = change.supersededBy == nil
+                    && (after?.memoryText.map { $0 == memory.text } ?? true)
+                    && after?.planRule == memory.planRule
+                    && (after?.forgotten.map { $0 == forgottenNow } ?? true)
+                guard unchanged else { throw UndoRefused.changedSince }
                 if change.before?.exists == false {
                     memory.forgottenAt = now
                 } else {
                     if let text = change.before?.memoryText { memory.text = text }
+                    // The rule goes back with the text, so the coach plans by it again.
+                    memory.planRule = change.before?.planRule
                     if change.before?.forgotten == false { memory.forgottenAt = nil }
                 }
                 let stamped = store.stamp(memory)
