@@ -140,6 +140,7 @@ struct ReviewScreen: View {
     private var spans: [LectureDeckSpan] { spansQuery.wrappedValue }
     @Environment(\.reviewChrome) private var chrome
     @Environment(\.undoManager) private var undoManager
+    @Environment(\.deleteFromLibrary) private var deleteFromLibrary
     /// ma: the agent panel is expanded into the window's trailing column: it takes the
     /// inspector's place until it shrinks (never two inspectors).
     @Environment(\.agentPanelExpanded) private var agentPanelExpanded
@@ -196,6 +197,10 @@ struct ReviewScreen: View {
         .onChange(of: timeline, initial: true) { _, timeline in
             model.session.update(timeline: timeline)
         }
+        // Edit ▸ Delete Lecture… / Delete Slides… / Delete Recording… act on what is open here.
+        .focusedSceneValue(\.openLibraryItems, deleteFromLibrary.map { delete in
+            OpenLibraryItems(lecture: model.lecture.id, deck: model.deckID, recording: model.recording?.id, delete: delete)
+        })
         .onDisappear { [undoManager] in
             model.close()
             // A flag's undo step never outlives its screen (ink's go with each page's canvas).
@@ -301,7 +306,7 @@ struct ReviewToolbar: ToolbarContent {
         }
         if model.deck != nil {
             ToolbarItemGroup(placement: .primaryAction) {
-                SlideStepper(session: model.session)
+                SlideStepper(session: model.session, deckID: model.deckID)
             }
             #if os(macOS)
             // M6: [Pen, Highlighter, (Eraser), Flag] in its own glass after the stepper.
@@ -328,30 +333,54 @@ struct ReviewToolbar: ToolbarContent {
 }
 
 /// Which of the lecture's recordings plays, by its start ("12:17").
+/// Its menu ends with Delete Recording… for the one playing (the window confirms, Edit ▸ Undo).
 struct RecordingPicker: View {
     let model: ReviewModel
+    @Environment(\.deleteFromLibrary) private var deleteFromLibrary
 
     var body: some View {
-        Picker(selection: Binding(
-            get: { model.recording?.id },
-            set: { id in if let id { model.requestedRecordingID = id } }
-        )) {
-            ForEach(model.recordings) { recording in
-                Text(recording.startedAt, format: .dateTime.hour().minute())
-                    .monospacedDigit()
-                    .tag(Optional(recording.id))
+        Menu {
+            Picker(selection: Binding(
+                get: { model.recording?.id },
+                set: { id in if let id { model.requestedRecordingID = id } }
+            )) {
+                ForEach(model.recordings) { recording in
+                    Text(recording.startedAt, format: .dateTime.hour().minute())
+                        .monospacedDigit()
+                        .tag(Optional(recording.id))
+                }
+            } label: {
+                EmptyView()
+            }
+            .pickerStyle(.inline)
+            if let deleteFromLibrary, let recording = model.recording {
+                Divider()
+                Button("Delete Recording…", role: .destructive) { deleteFromLibrary(.recording(recording.id)) }
             }
         } label: {
-            Label("Recording", systemImage: "waveform")
+            Label {
+                if let recording = model.recording {
+                    Text(recording.startedAt, format: .dateTime.hour().minute())
+                        .monospacedDigit()
+                } else {
+                    Text("Recording")
+                }
+            } icon: {
+                Image(systemName: "waveform")
+            }
+            .labelStyle(.titleAndIcon)
         }
-        .pickerStyle(.menu)
+        .accessibilityLabel(Text("Recording"))
         .fixedSize()
     }
 }
 
-/// Previous slide, "16 / 88", next slide.
+/// Previous slide, "16 / 88", next slide; the count's menu has Delete Slides… (the window
+/// confirms, Edit ▸ Undo).
 struct SlideStepper: View {
     let session: ReviewSession
+    var deckID: Deck.ID?
+    @Environment(\.deleteFromLibrary) private var deleteFromLibrary
 
     var body: some View {
         Button {
@@ -367,6 +396,11 @@ struct SlideStepper: View {
             .fixedSize()
             .padding(.horizontal, 10)
             .accessibilityLabel(Text("Slide \(session.shownPage ?? 0) of \(session.pageCount)"))
+            .contextMenu {
+                if let deleteFromLibrary, let deckID {
+                    Button("Delete Slides…", role: .destructive) { deleteFromLibrary(.deck(deckID)) }
+                }
+            }
         Button {
             session.nextSlide()
         } label: {
@@ -393,7 +427,7 @@ private struct SnapshotChrome<Content: View>: View {
                     Spacer()
                     if model.deck != nil {
                         HStack(spacing: 12) {
-                            SlideStepper(session: model.session)
+                            SlideStepper(session: model.session, deckID: model.deckID)
                         }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.plain)

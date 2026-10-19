@@ -106,6 +106,10 @@ struct RootView: View {
                     open: { target in center.importFiles(to: target.map(FilingDestination.init)) },
                     drop: { urls, target in Task { await center.file(urls, to: target.map(FilingDestination.init)) } }
                 ))
+                // Delete… on decks, lectures and recordings: one confirmation for the window
+                // naming what goes, then Edit ▸ Undo.
+                .environment(\.deleteFromLibrary, DeleteFromLibraryAction { item in center.requestDelete(item) })
+                .libraryDeleteConfirmation(center: center, willDelete: leave, failed: { model.failure = $0 })
                 .environment(\.studyServices, model.services)
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
@@ -334,6 +338,13 @@ struct RootView: View {
         guard !text.isEmpty, searchOwner == .library else { return }
         selection = .search
         searchSubmits += 1
+    }
+
+    /// A lecture about to be deleted while its review shows: its course's Lectures instead.
+    private func leave(_ item: StudyCore.LibraryItem) async {
+        guard case .lecture(let id) = item, selection == .lecture(id), let services = model.services else { return }
+        let courseID = try? await services.database.read { db in try Lecture.find(id).fetchOne(db)?.courseID }
+        selection = courseID.map { .courseLectures($0) } ?? .today
     }
 
     /// Back or Forward through the screens this window showed.

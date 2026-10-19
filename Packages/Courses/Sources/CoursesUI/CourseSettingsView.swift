@@ -511,17 +511,27 @@ struct CourseDecksRequest: FetchKeyRequest {
     }
 }
 
-/// A filed deck: its title, the lecture it is tagged with, and Change (mockup 08: 50 pt rows).
+/// A filed deck: its title, the lecture it is tagged with, and Change (mockup 08: 50 pt rows);
+/// its menu has Change… and Delete… (the window confirms, Edit ▸ Undo brings it back).
 struct DeckRow: View {
     let item: CourseDeck
     let text: SessionText
     let change: () -> Void
+    @Environment(\.deleteFromLibrary) private var deleteFromLibrary
 
     var body: some View {
         DeckRowLayout(title: item.deck.title.isEmpty ? item.deck.fileName : item.deck.title, tag: tag) {
             Button("Change", action: change)
                 .headerActionStyle(inset: 4)
                 .controlSize(.small)
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button("Change…", action: change)
+            if let deleteFromLibrary {
+                Divider()
+                Button("Delete…", role: .destructive) { deleteFromLibrary(.deck(item.deck.id)) }
+            }
         }
     }
 

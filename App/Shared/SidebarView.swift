@@ -175,7 +175,10 @@ struct SidebarView: View {
                             .contextMenu {
                                 if latestJobs[lecture.id]?.state == .failed {
                                     Button("Retry Processing") { model.retryProcessing(lectureID: lecture.id) }
+                                    Divider()
                                 }
+                                // The confirmation names what goes; Edit ▸ Undo brings it back.
+                                Button("Delete…", role: .destructive) { center.requestDelete(.lecture(lecture.id)) }
                             }
                         }
                         if let next = children.next {

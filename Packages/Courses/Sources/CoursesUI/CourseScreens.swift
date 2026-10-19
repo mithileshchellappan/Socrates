@@ -54,11 +54,13 @@ public struct CourseLecturesView: View {
     }
 }
 
-/// "L2 · Virtualization & IaaS" over "Tue 13 Oct"; the whole row opens the lecture.
+/// "L2 · Virtualization & IaaS" over "Tue 13 Oct"; the whole row opens the lecture; its menu has
+/// Delete… (the window confirms, Edit ▸ Undo brings it back).
 private struct LectureListRow: View {
     let lecture: Lecture
     let text: SessionText
     let open: () -> Void
+    @Environment(\.deleteFromLibrary) private var deleteFromLibrary
     @State private var isHovered = false
 
     var body: some View {
@@ -91,6 +93,13 @@ private struct LectureListRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .contextMenu {
+            Button("Open", action: open)
+            if let deleteFromLibrary {
+                Divider()
+                Button("Delete…", role: .destructive) { deleteFromLibrary(.lecture(lecture.id)) }
+            }
+        }
     }
 
     private var title: String {
