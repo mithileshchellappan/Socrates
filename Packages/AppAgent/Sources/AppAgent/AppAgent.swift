@@ -60,6 +60,8 @@ public actor AppAgent {
     private var reminderFollower: Task<Void, Never>?
     private var pauseWake: Task<Void, Never>?
     private var started = false
+    /// M7: the questions asked on the iPhone (`agent_request`), answered here (Mac only).
+    private var pickup: AgentRequestPickup?
 
     public init(
         services: StudyServices,
@@ -300,6 +302,15 @@ public actor AppAgent {
                 await reminders.check()
             }
         }
+        #if os(macOS)
+        // M7: the iPhone's questions, through the panel's own `send` (never on the phone).
+        let pickup = AgentRequestPickup(services: services, client: client, runtime: runtime, now: now) { [weak self] text, context, files, id in
+            guard let self else { throw CancellationError() }
+            return try await self.send(text, context: context, attachments: files, to: id)
+        }
+        self.pickup = pickup
+        await pickup.start()
+        #endif
         Task { await self.wake() }
     }
 
@@ -308,6 +319,7 @@ public actor AppAgent {
     public func wake() async {
         guard started else { return }
         await queue.wake()
+        await pickup?.wake()
         await profileItems()
         await reminders.check()
         await wakeTriage()
@@ -347,6 +359,7 @@ public actor AppAgent {
         pauseWake?.cancel()
         pauseWake = nil
         triageTask?.cancel()
+        await pickup?.stop()
         await queue.stop()
         await reminders.stop()
     }
