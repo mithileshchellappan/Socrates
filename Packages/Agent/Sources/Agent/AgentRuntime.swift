@@ -35,6 +35,8 @@ public actor AgentRuntime {
     /// Conversations whose next message `send` is storing (between its busy check and its run's
     /// launch; the actor is reentrant at every await): a second message meanwhile is busy too.
     private var sending: Set<AgentConversation.ID> = []
+    /// Conversations whose last run ended on service trouble (`endedWithServiceTrouble`).
+    private var serviceTrouble: Set<AgentConversation.ID> = []
     /// The answer being written, per conversation (M3.5: the chat streams it into place).
     private let live = LiveReplies()
 
@@ -94,7 +96,14 @@ public actor AgentRuntime {
                 throw RuntimeError.unknownKind(kind.rawValue)
             }
         }
-        guard MemoryTools.kinds.contains(kind) else { return spec }
+        return try withMemory(spec, kind: kind)
+    }
+
+    /// M5: `base` with the memory tools after its own and the memory rules after its system
+    /// prompt, for the kinds that have the memory.
+    func withMemory(_ base: ConversationSpec, kind: ConversationKind) throws -> ConversationSpec {
+        guard MemoryTools.kinds.contains(kind) else { return base }
+        var spec = base
         // ma: the app agent's memory writes are automatic changes: each logs an `agent_change`
         // row in its transaction ("Remembered", Undo).
         spec.tools = try spec.tools.adding(MemoryTools(services: services, logsChanges: kind == .app).all)
@@ -124,16 +133,24 @@ public actor AgentRuntime {
     ///
     /// ma: `turnContext` is stored with the user turn (`agent_turn.context`: an `app` turn's screen,
     /// context line and attachments); `id` gives the new conversation a chosen id (a sub-agent
-    /// task's, set on its row first so its spec can be found); `title` names it (else the
-    /// student's first words). The text may be empty when `context` carries blocks (files only).
+    /// task's, linked to its `agent_task` row once the conversation row exists); `title` names it
+    /// (else the student's first words). The text may be empty when `context` carries blocks
+    /// (files only). `spec`, when given, is used instead of the kind's provider: a `task`
+    /// conversation's spec comes from its `agent_task` row, which cannot be found by
+    /// `conversation_id` before the conversation exists (later `send`s find it that way).
     public func start(
         _ kind: ConversationKind, text: String, context: [ContentBlock] = [], courseID: Course.ID? = nil, lectureID: Lecture.ID? = nil,
-        turnContext: AgentTurnContext? = nil, id: AgentConversation.ID? = nil, title: String? = nil
+        turnContext: AgentTurnContext? = nil, id: AgentConversation.ID? = nil, title: String? = nil, spec given: ConversationSpec? = nil
     ) async throws -> AgentConversation.ID {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !context.isEmpty else { throw RuntimeError.emptyText }
         let conversationID = id ?? UUID()
-        let spec = try await spec(for: kind, conversationID: conversationID)
+        let spec: ConversationSpec
+        if let given {
+            spec = try withMemory(given, kind: kind)
+        } else {
+            spec = try await self.spec(for: kind, conversationID: conversationID)
+        }
         let memory = try await memoryBlock(for: kind, history: [])
         let startedAt = now()
         let name = (title ?? trimmed).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -283,6 +300,7 @@ public actor AgentRuntime {
         let context = ToolContext(
             conversationID: conversation.id, studentText: studentText, now: now(), trace: trace, turnContext: turnContext
         )
+        serviceTrouble.remove(conversation.id)
         tasks[conversation.id] = Task {
             await self.run(conversation, spec: spec, history: history, context: context)
             self.finished(conversation.id)
@@ -330,14 +348,21 @@ public actor AgentRuntime {
                 try await conversations.setState(id, .failed, error: "Stopped: \(reason?.rawValue ?? "unknown").")
             }
         } catch {
-            let message: String = switch error {
-            case is CancellationError: "Stopped."
-            case let error as ClaudeError: error.description
-            default: String(describing: error)
-            }
-            AgentModule.log.error("Conversation failed: \(message, privacy: .public)")
+            // One readable sentence is stored and shown; the error itself goes to the log only.
+            if (error as? ClaudeError)?.isServiceTrouble == true { serviceTrouble.insert(id) }
+            let message = ReadableError.sentence(for: error, otherwise: String(localized: "The answer could not be saved."), now: now())
+            AgentModule.log.error(
+                "Conversation failed: \(ReadableError.kind(of: error), privacy: .public): \(String(describing: error), privacy: .private)"
+            )
             _ = try? await conversations.setState(id, .failed, error: message)
         }
+    }
+
+    /// Whether the conversation's last run in this process ended on trouble with the service
+    /// (signed out, the CLI crashed, the network, an overload, a usage pause), not the request:
+    /// the sub-agent queue then waits instead of failing the task.
+    public func endedWithServiceTrouble(_ id: AgentConversation.ID) -> Bool {
+        serviceTrouble.contains(id)
     }
 
     // MARK: - Turns

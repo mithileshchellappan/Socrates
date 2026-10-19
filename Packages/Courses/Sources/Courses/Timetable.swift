@@ -162,13 +162,19 @@ public enum TimetableText {
         let text = fold(note)
         guard !text.isEmpty else { return .meeting }
         if text.contains("einsicht") || (text.contains("exam") && text.contains("review")) { return .examReview }
+        // About the exam, not the exam: preparation, a mock exam, registration, a Q&A or office
+        // hour, the discussion afterwards ("Klausurvorbereitung", "Probeklausur",
+        // "Fragestunde zur Klausur", "Infoveranstaltung Prüfungsanmeldung").
+        let aboutTheExam = ["vorbereitung", "probe", "mock", "anmeldung", "registration", "fragestunde", "sprechstunde", "nachbesprechung"]
+        if aboutTheExam.contains(where: { text.contains($0) }) { return .meeting }
         guard text.contains("klausur") || text.contains("prufung") || text.contains("pruefung") || text.contains("exam") else {
             return .meeting
         }
         if text.contains("nachklausur") || text.contains("wiederholung") || text.contains("retake") || text.contains("resit") {
             return .exam(attempt: 2)
         }
-        if let match = text.firstMatch(of: /(?:termin|date|exam)\s*(\d)/), let attempt = Int(match.1), attempt > 0 {
+        // "Klausurtermin 2", never the year of "Prüfungstermin 2027-02-09".
+        if let match = text.firstMatch(of: /(?:termin|date|exam)\s*(\d)(?!\d)/), let attempt = Int(match.1), attempt > 0 {
             return .exam(attempt: attempt)
         }
         return .exam(attempt: 1)

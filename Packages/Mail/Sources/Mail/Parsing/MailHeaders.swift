@@ -176,7 +176,9 @@ struct HeaderValue: Sendable {
                 let encoded = name.hasSuffix("*")
                 if encoded { name.removeLast() }
                 let pieces = name.split(separator: "*", maxSplits: 1)
-                let base = String(pieces[0])
+                // A name of asterisks only ("*=x", "**=x") has no base: not a parameter.
+                guard let first = pieces.first, !first.isEmpty else { continue }
+                let base = String(first)
                 let index = pieces.count > 1 ? Int(pieces[1]) ?? 0 : 0
                 extended[base, default: []].append((index, encoded, parameterValue))
             } else {

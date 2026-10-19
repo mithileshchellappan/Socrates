@@ -148,6 +148,8 @@ final class AppModel {
     /// minute), and when the last one ran.
     @ObservationIgnored private var calendarEditSync: Task<Void, Never>?
     @ObservationIgnored private var lastCalendarEditSync = Date.distantPast
+    /// The one calendar sync after deadline writes settle (`deadlinesChanged`).
+    @ObservationIgnored private var deadlineSync: Task<Void, Never>?
     /// Lets the services made in `init` call back into the model once it exists.
     @ObservationIgnored private let owner: ModelReference
 
@@ -181,21 +183,28 @@ final class AppModel {
         }
         self.processor = processor
         if let services {
+            let claude = ClaudeClient.studyPortal(services: services)
+            self.claude = claude
+            // The services exist before the model: they reach it through `owner`.
+            let owner = ModelReference()
+            // Smart slide filing: a Haiku call decides the decks the heuristics are unsure of
+            // (only where background work runs: renders send nothing).
+            let advisor: HaikuFilingAdvisor? = startsProcessing ? HaikuFilingAdvisor(client: claude, services: services) : nil
             let service = FilingService(
                 services: services,
                 afterImport: { [weak processor] in await processor?.wake() },
-                cancelJobs: { [weak processor] recordingID in try? await processor?.cancel(recordingID: recordingID) }
+                cancelJobs: { [weak processor] recordingID in try? await processor?.cancel(recordingID: recordingID) },
+                advisor: advisor,
+                afterAdvice: { @MainActor filing in await owner.model?.filingCenter?.refresh(filing) }
             )
             filing = service
             filingCenter = FilingCenter(service: service)
             searchIndexer = SearchIndexer(services: services)
-            let claude = ClaudeClient.studyPortal(services: services)
-            self.claude = claude
             let pipeline = MailPipeline(services: services, client: claude)
             mailPipeline = pipeline
-            // The memory exists before the model: its changes reach the calendar through `owner`.
-            let owner = ModelReference()
-            let memory = DeadlineMemory(services: services, onChange: { @MainActor in await owner.model?.syncCalendar() })
+            // Deadline changes reach the calendar through `owner`: one sync after a quiet moment
+            // (a triage batch writes several), never one per write.
+            let memory = DeadlineMemory(services: services, onChange: { @MainActor in owner.model?.deadlinesChanged() })
             deadlines = memory
             // The agent writes reply drafts through the pipeline's own drafter (the one Mail's Reply
             // uses), so it sees the drafts that one is writing.
@@ -234,7 +243,8 @@ final class AppModel {
             self.studyPass = studyPass
             let appAgent = startsProcessing ? AppAgent(
                 services: services, client: claude, runtime: agent, memory: memory,
-                schedule: CourseSchedule(services: services), studyPass: studyPass, coach: coach
+                schedule: CourseSchedule(services: services), studyPass: studyPass, coach: coach, specs: specs,
+                filing: service, advisor: advisor
             ) : nil
             self.appAgent = appAgent
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
@@ -305,8 +315,13 @@ final class AppModel {
         do {
             let model = AppModel(services: try StudyServices.live())
             // App-lifetime work belongs to the app, not to a window: it runs even when the window
-            // closes during launch, and a view's cancelled task never stops it halfway.
-            Task { await model.startBackgroundWork() }
+            // closes during launch, and a view's cancelled task never stops it halfway. It starts
+            // after the first frame (DESIGN: cold launch < 1 s), so its library-wide passes never
+            // compete with the first screen's reads.
+            Task(priority: .utility) {
+                try? await Task.sleep(for: .seconds(2))
+                await model.startBackgroundWork()
+            }
             return model
         } catch {
             Log.app.fault("Could not open the library: \(error.localizedDescription, privacy: .public)")
@@ -367,6 +382,9 @@ final class AppModel {
                 await filingCenter.file(pending)
             }
             await filing.repairDeckTitles()
+            // Files of decks, lectures and recordings deleted in an earlier session (their Undo
+            // is gone with it) once no row uses them; this session's deletions keep theirs.
+            await filing.removeDeletedBlobs()
         }
         await processor?.wake()
 
@@ -513,6 +531,19 @@ final class AppModel {
         }
     }
 
+
+    /// A deadline was written (the memory's `onChange`): the mirror is out of date. One sync
+    /// follows about 2 s after the last write, so a triage batch of several items runs one
+    /// EventKit pass, not one per item.
+    func deadlinesChanged() {
+        deadlineSync?.cancel()
+        deadlineSync = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
+            deadlineSync = nil
+            await syncCalendar()
+        }
+    }
 
     /// The student's calendars change (another app, iCloud): the sidebar's list loads again.
     private func observeCalendarStore() {

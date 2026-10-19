@@ -10,12 +10,15 @@ public enum FilingError: Error, Equatable, Sendable, LocalizedError {
     case unsupported(String)
     /// The file could not be read.
     case unreadable(String)
+    /// Undo of a change the filing advisor made: the filing moved since (by the student).
+    case changedSince
 
     public var errorDescription: String? {
         switch self {
         case .missing: String(localized: "It is gone.")
         case .unsupported(let name): String(localized: "“\(name)” is not slides or a recording.")
         case .unreadable(let name): String(localized: "“\(name)” can’t be read.")
+        case .changedSince: String(localized: "Changed since; nothing undone.")
         }
     }
 }
@@ -33,22 +36,36 @@ public actor FilingService {
     public nonisolated let services: StudyServices
     let afterImport: @Sendable () async -> Void
     let cancelJobs: @Sendable (Recording.ID) async -> Void
+    /// Decides uncertain deck filings (a Haiku call); nil: the heuristics' filing stays for review.
+    let advisor: (any FilingAdvisor)?
+    /// Called with a filing the advisor moved or confirmed (the toast shows it).
+    let afterAdvice: @Sendable (Filing) async -> Void
     let now: @Sendable () -> Date
     private var evidenceCache: [URL: (stamp: FileStamp, evidence: FileEvidence)] = [:]
+    /// Files deleted in this session: Undo can still bring them back, so `removeDeletedBlobs`
+    /// keeps them until the next launch.
+    var deletedThisSession: Set<String> = []
 
     /// - Parameters:
     ///   - afterImport: called after every filing that wrote something (wake the processor).
     ///   - cancelJobs: stops a recording's running job before Undo deletes the recording
     ///     (`LectureProcessor.cancel(recordingID:)`); queued jobs are removed here either way.
+    ///   - advisor: looks again at a deck filed for review, asked for a course or dropped on a
+    ///     course without a number or date, in a detached task (the toast never waits for it).
+    ///   - afterAdvice: a filing the advisor changed or confirmed.
     public init(
         services: StudyServices,
         afterImport: @escaping @Sendable () async -> Void = {},
         cancelJobs: @escaping @Sendable (Recording.ID) async -> Void = { _ in },
+        advisor: (any FilingAdvisor)? = nil,
+        afterAdvice: @escaping @Sendable (Filing) async -> Void = { _ in },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
         self.afterImport = afterImport
         self.cancelJobs = cancelJobs
+        self.advisor = advisor
+        self.afterAdvice = afterAdvice
         self.now = now
     }
 
@@ -88,6 +105,11 @@ public actor FilingService {
     /// one outcome per file. With `destination` the user's choice wins (a drop on a lecture or
     /// session, a picked course).
     public func file(_ urls: [URL], to destination: FilingDestination? = nil) async -> [FilingOutcome] {
+        await file(urls, to: destination, advise: true)
+    }
+
+    /// `advise`: uncertain deck filings go to the advisor (not when the caller has its advice).
+    func file(_ urls: [URL], to destination: FilingDestination?, advise: Bool) async -> [FilingOutcome] {
         let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
 
@@ -123,14 +145,16 @@ public actor FilingService {
             let outcome: FilingOutcome
             do {
                 switch evidence.kind {
-                case .deck: outcome = try await fileDeck(evidence, destination: destination)
+                case .deck: outcome = try await fileDeck(evidence, destination: destination, advise: advise)
                 case .capture: outcome = try await fileCapture(evidence, destination: destination, contested: contested ?? [])
                 default: outcome = try await fileRecording(evidence, destination: destination, contested: contested ?? [])
                 }
             } catch {
-                Log.importer.error("Filing \(evidence.fileName, privacy: .private) failed: \(String(describing: error), privacy: .public)")
+                Log.importer.error(
+                    "Filing \(evidence.fileName, privacy: .private) failed: \(String(reflecting: type(of: error)), privacy: .public): \(String(describing: error), privacy: .private)"
+                )
                 outcomes.append(FilingOutcome(
-                    url: item.url, fileName: evidence.fileName, kind: evidence.kind, status: .failed(error.localizedDescription),
+                    url: item.url, fileName: evidence.fileName, kind: evidence.kind, status: .failed(Self.readable(error, fileName: evidence.fileName)),
                     pageCount: evidence.pageCount, duration: evidence.duration
                 ))
                 continue
@@ -143,7 +167,7 @@ public actor FilingService {
 
     // MARK: - Decks
 
-    private func fileDeck(_ evidence: FileEvidence, destination: FilingDestination?) async throws -> FilingOutcome {
+    private func fileDeck(_ evidence: FileEvidence, destination: FilingDestination?, advise: Bool) async throws -> FilingOutcome {
         let url = evidence.url
         let sha = try BlobStore.sha256(of: url)
         if let filing = try await knownFiling(sha256: sha) {
@@ -170,10 +194,12 @@ public actor FilingService {
 
         guard let best = decision.best, decision.verdict != .needsCourse else {
             let filing = try await store.save(unfiled(evidence, sha256: sha, decision: decision, createdAt: createdAt, extra: reused, deckID: deck.id))
+            if advise { adviseLater(filing.id, decision: decision) }
             return try await outcome(evidence, filing: filing, status: .needsCourse, decision: decision)
         }
         let filingID = UUID()
-        let source: FilingSource = destination == nil ? .auto : .manual
+        // A drop on a course whose lecture is a guess stays smart import's (reviewable).
+        let source: FilingSource = destination == nil || decision.verdict == .review ? .auto : .manual
         let make: @Sendable (AttachedDeck) -> Filing = { attached in
             Filing(
                 id: filingID, kind: .deck, fileName: evidence.fileName, blobSHA256: sha,
@@ -194,6 +220,7 @@ public actor FilingService {
             try Filing.upsert { filing }.execute(db)
         }
         Log.importer.info("Filed deck \(evidence.fileName, privacy: .private) (\(best.confidence, privacy: .public))")
+        if advise, decision.verdict != .file { adviseLater(filingID, decision: decision) }
         return try await outcome(evidence, filing: make(attached), status: status(decision, destination: destination), decision: decision)
     }
 
@@ -427,8 +454,16 @@ public actor FilingService {
     }
 
     private func status(_ decision: FilingDecision, destination: FilingDestination?) -> FilingOutcome.Status {
-        if destination != nil { return .filed }
+        // A drop on a course whose lecture is a guess is for review too.
+        if destination != nil, decision.verdict != .review { return .filed }
         return decision.verdict == .file ? .filed : .review
+    }
+
+    /// The toast's line for a failed filing: smart import's own reasons as they are, anything else
+    /// (SQLite, the file system) one sentence; the error itself is in the log.
+    static func readable(_ error: any Error, fileName: String) -> String {
+        if let error = error as? FilingError { return error.localizedDescription }
+        return String(localized: "Couldn’t file “\(fileName)”.")
     }
 
     static func candidate(_ choice: FilingChoice) -> FilingCandidate {

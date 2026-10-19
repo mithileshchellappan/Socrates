@@ -411,7 +411,12 @@ struct WriteTools: Sendable {
                 return .error("No change has that key. Use list_changes.")
             }
             guard change.undoneAt == nil else { return .json(["undone": true, "note": "It was undone already."]) }
-            let undone = try await changeLog.undo(change.id)
+            let undone: Bool
+            do {
+                undone = try await changeLog.undo(change.id)
+            } catch let refused as ChangeLog.UndoRefused {
+                return .json(["undone": false, "note": .string(refused.description)])
+            }
             return .json(["undone": .bool(undone), "title": .string(change.title), "summary": .string(change.summary)])
         }
     }

@@ -40,7 +40,8 @@ public struct AgentTask: StudyRecord {
     public var result: String?
     /// Why it failed (readable, no secrets).
     public var error: String?
-    /// Runs started (a quit re-queues a running task with one more; failed after `maximumAttempts`).
+    /// Runs a quit or crash interrupted (re-queued with one more; failed after `maximumAttempts`).
+    /// A pause and its re-queue count nothing.
     public var attempts: Int
     /// `agent` (the app agent or triage spawned it) or `user` (the student asked for it).
     @Column("created_by") public var createdBy: Author

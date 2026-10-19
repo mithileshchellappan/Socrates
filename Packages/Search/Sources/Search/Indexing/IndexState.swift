@@ -27,38 +27,67 @@ enum IndexState {
         }
     }
 
-    /// Decks and notes whose chunks an earlier build cut differently: the text the chunker gives
-    /// them now is not the text they have (slides and notes became one line with " · " between
-    /// items). Checked once per launch, so a library indexed by an older build is re-chunked
-    /// without a schema change. Transcript chunks are a segment's own text and are not checked.
-    static func outdatedText(_ db: Database) throws -> Work {
-        var work = Work()
+    /// The version of the text the chunker writes (`SlideText.clean`, `ChunkBuilder.noteText`).
+    /// Bump it with any change to either: the next launch then checks every deck's and note's
+    /// chunks once (`outdatedText`); otherwise launches skip that check.
+    static let textVersion = 2
+
+    /// What `outdatedText` compares, read in one go (the cleaning runs after the read, so the
+    /// first frame's reads never wait behind it).
+    struct IndexedText: Sendable {
+        struct DeckText: Sendable {
+            var deckID: Deck.ID
+            /// (page number, slide text), in page order.
+            var pages: [(number: Int, text: String)]
+            /// The slide chunks' text by page.
+            var indexed: [Int: String]
+        }
+
+        var decks: [DeckText] = []
+        var notes: [Note] = []
+        var noteTexts: [Note.ID: String] = [:]
+    }
+
+    static func indexedText(_ db: Database) throws -> IndexedText {
+        var rows = IndexedText()
         let decks = try Deck.ID.fetchAll(db, sql: """
             SELECT DISTINCT deck_id FROM search_chunk WHERE kind = 'slide' AND deck_id IS NOT NULL
             """)
         for deckID in decks {
             let pages = try Row.fetchAll(db, sql: """
                 SELECT page_number, text FROM deck_page WHERE deck_id = ? ORDER BY page_number
-                """, arguments: [deckID.storageText])
-            let cleaned = SlideText.clean(pages.map { $0["text"] })
-            var expected: [Int: String] = [:]
-            for (page, text) in zip(pages, cleaned) where !text.isEmpty { expected[page["page_number"]] = text }
+                """, arguments: [deckID.storageText]).map { (number: $0["page_number"] as Int, text: $0["text"] as String) }
             var indexed: [Int: String] = [:]
             for row in try Row.fetchAll(db, sql: """
                 SELECT page_number, text FROM search_chunk WHERE kind = 'slide' AND deck_id = ? AND page_number IS NOT NULL
                 """, arguments: [deckID.storageText]) {
                 indexed[row["page_number"]] = row["text"]
             }
-            if indexed != expected { work.decks.append(deckID) }
+            rows.decks.append(IndexedText.DeckText(deckID: deckID, pages: pages, indexed: indexed))
         }
-
-        var noteTexts: [Note.ID: String] = [:]
         for row in try Row.fetchAll(db, sql: "SELECT note_id, text FROM search_chunk WHERE kind = 'note' AND note_id IS NOT NULL") {
-            noteTexts[row["note_id"]] = row["text"]
+            rows.noteTexts[row["note_id"]] = row["text"]
         }
-        guard !noteTexts.isEmpty else { return work }
-        for note in try Note.where({ $0.id.in(Array(noteTexts.keys)) }).fetchAll(db)
-        where noteTexts[note.id] != ChunkBuilder.noteText(note) {
+        if !rows.noteTexts.isEmpty {
+            rows.notes = try Note.where({ $0.id.in(Array(rows.noteTexts.keys)) }).fetchAll(db)
+        }
+        return rows
+    }
+
+    /// Decks and notes whose chunks an earlier build cut differently: the text the chunker gives
+    /// them now is not the text they have (slides and notes became one line with " · " between
+    /// items). Checked once per `textVersion`, so a library indexed by an older build is
+    /// re-chunked without a schema change. Transcript chunks are a segment's own text and are not
+    /// checked. Runs off the database (on rows `indexedText` read).
+    static func outdatedText(_ rows: IndexedText) -> Work {
+        var work = Work()
+        for deck in rows.decks {
+            let cleaned = SlideText.clean(deck.pages.map { $0.text })
+            var expected: [Int: String] = [:]
+            for (page, text) in zip(deck.pages, cleaned) where !text.isEmpty { expected[page.number] = text }
+            if deck.indexed != expected { work.decks.append(deck.deckID) }
+        }
+        for note in rows.notes where rows.noteTexts[note.id] != ChunkBuilder.noteText(note) {
             work.notes.append(note.id)
         }
         return work
@@ -119,19 +148,7 @@ enum IndexState {
             }
         }
 
-        for row in try Row.fetchAll(db, sql: """
-            SELECT n.id AS id, n.updated_at AS version,
-              (SELECT max(c.source_updated_at) FROM search_chunk c WHERE c.kind = 'note' AND c.note_id = n.id) AS indexed,
-              (SELECT count(*) FROM search_chunk c WHERE c.kind = 'note' AND c.note_id = n.id
-                 AND (c.lecture_id IS NOT n.lecture_id
-                      OR c.course_id IS NOT coalesce(n.course_id, (SELECT l.course_id FROM lecture l WHERE l.id = n.lecture_id)))) AS moved
-            FROM note n
-            """) {
-            let moved: Int = row["moved"]
-            if moved > 0 || !same(row["version"], row["indexed"]) {
-                work.notes.append(row["id"])
-            }
-        }
+        work.notes = try staleNotes(db).notes
 
         // M5: visible further reading (ai, not hidden), one chunk each, on its lecture's course.
         for row in try Row.fetchAll(db, sql: """
@@ -153,9 +170,33 @@ enum IndexState {
         return work
     }
 
+    /// Only the notes whose chunks are stale (a pass started by a note save: the student types, a
+    /// save every half second must not scan every recording, deck and reading).
+    static func staleNotes(_ db: Database) throws -> Work {
+        var work = Work()
+        for row in try Row.fetchAll(db, sql: """
+            SELECT n.id AS id, n.updated_at AS version,
+              (SELECT max(c.source_updated_at) FROM search_chunk c WHERE c.kind = 'note' AND c.note_id = n.id) AS indexed,
+              (SELECT count(*) FROM search_chunk c WHERE c.kind = 'note' AND c.note_id = n.id
+                 AND (c.lecture_id IS NOT n.lecture_id
+                      OR c.course_id IS NOT coalesce(n.course_id, (SELECT l.course_id FROM lecture l WHERE l.id = n.lecture_id)))) AS moved
+            FROM note n
+            """) {
+            let moved: Int = row["moved"]
+            if moved > 0 || !same(row["version"], row["indexed"]) {
+                work.notes.append(row["id"])
+            }
+        }
+        return work
+    }
+
     /// Removes chunks whose source is gone without a cascade: transcripts of recordings no longer
-    /// filed to a lecture. Returns how many.
-    static func removeOrphans(_ db: Database) throws -> Int {
+    /// filed to a lecture. Returns how many. `notesOnly`: only note chunks without a note.
+    static func removeOrphans(_ db: Database, notesOnly: Bool = false) throws -> Int {
+        if notesOnly {
+            try db.execute(sql: "DELETE FROM search_chunk WHERE kind = 'note' AND note_id IS NULL")
+            return db.changesCount
+        }
         try db.execute(sql: """
             DELETE FROM search_chunk WHERE kind = 'transcript' AND (recording_id IS NULL
               OR recording_id IN (SELECT id FROM recording WHERE lecture_id IS NULL))

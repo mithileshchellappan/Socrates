@@ -34,9 +34,10 @@ public struct AgentTaskRepository: Sendable {
     }
 
     /// Starts up to `slots` minus the running ones, oldest queued first (the student's before the
-    /// agent's), in one transaction: they are `running` with one more attempt. A paused task whose
-    /// time has come is queued again first. `kinds`: only tasks of these kinds are started (the
-    /// others stay queued untouched; nil: every kind).
+    /// agent's), in one transaction: they are `running`. A paused task whose time has come is
+    /// queued again first. Claiming a queued or paused row counts no attempt (only a run a quit
+    /// or crash interrupted does: `requeueInterrupted`). `kinds`: only tasks of these kinds are
+    /// started (the others stay queued untouched; nil: every kind).
     public func claim(slots: Int, now: Date, kinds: [AgentTaskKind]? = nil) async throws -> [AgentTask] {
         let stamp = store.currentDate
         return try await store.database.write { db in
@@ -64,12 +65,10 @@ public struct AgentTaskRepository: Sendable {
             var started: [AgentTask] = []
             for var task in picked {
                 task.state = .running
-                task.attempts += 1
                 task.startedAt = task.startedAt ?? stamp
                 task.updatedAt = stamp
                 try AgentTask.find(task.id).update {
                     $0.state = AgentTaskState.running
-                    $0.attempts = task.attempts
                     $0.startedAt = task.startedAt
                     $0.updatedAt = stamp
                 }
@@ -92,32 +91,40 @@ public struct AgentTaskRepository: Sendable {
         }
     }
 
-    /// Ends a task: `succeeded` with its result, or `failed` / `cancelled` with a readable error.
+    /// Ends an open task: `succeeded` with its result, or `failed` / `cancelled` with a readable
+    /// error. A task that ended meanwhile (a cancel) keeps its state.
     public func finish(_ id: AgentTask.ID, _ state: AgentTaskState, result: String? = nil, error: String? = nil) async throws {
         let stamp = store.currentDate
         let result = result.map { String($0.prefix(AgentTask.resultLimit)) }
         try await store.database.write { db in
-            try AgentTask.find(id).update {
-                $0.state = state
-                $0.result = result
-                $0.error = error
-                $0.finishedAt = Date?.some(stamp)
-                $0.updatedAt = stamp
-            }
-            .execute(db)
+            try AgentTask
+                .where { $0.id.eq(id) && $0.state.in(AgentTaskState.open) }
+                .update {
+                    $0.state = state
+                    $0.result = result
+                    $0.error = error
+                    $0.finishedAt = Date?.some(stamp)
+                    $0.updatedAt = stamp
+                }
+                .execute(db)
         }
     }
 
-    /// A usage limit stopped the task: it waits until `until`, then queues again (`claim`).
+    /// The service stopped the task (a usage limit, Claude Code signed out or in trouble): it
+    /// waits until `until`, then queues again (`claim`). Only a queued or running task pauses
+    /// (never one cancelled meanwhile).
     public func pause(_ id: AgentTask.ID, until: Date) async throws {
         let stamp = store.currentDate
+        let pausable: [AgentTaskState] = [.queued, .running]
         try await store.database.write { db in
-            try AgentTask.find(id).update {
-                $0.state = AgentTaskState.paused
-                $0.pausedUntil = Date?.some(until)
-                $0.updatedAt = stamp
-            }
-            .execute(db)
+            try AgentTask
+                .where { $0.id.eq(id) && $0.state.in(pausable) }
+                .update {
+                    $0.state = AgentTaskState.paused
+                    $0.pausedUntil = Date?.some(until)
+                    $0.updatedAt = stamp
+                }
+                .execute(db)
         }
     }
 
@@ -137,15 +144,18 @@ public struct AgentTaskRepository: Sendable {
         }
     }
 
-    /// At launch: tasks a quit left `running` queue again; one at its attempt limit fails.
+    /// At launch: tasks a quit (or crash) left `running` queue again with one more attempt; one
+    /// that reaches its attempt limit fails. Paused and queued tasks count nothing.
     public func requeueInterrupted() async throws {
         let stamp = store.currentDate
         try await store.database.write { db in
             for task in try AgentTask.where({ $0.state.eq(AgentTaskState.running) }).fetchAll(db) {
-                if task.attempts >= AgentTask.maximumAttempts {
+                let attempts = task.attempts + 1
+                if attempts >= AgentTask.maximumAttempts {
                     try AgentTask.find(task.id).update {
                         $0.state = AgentTaskState.failed
-                        $0.error = String?.some("Interrupted \(task.attempts) times")
+                        $0.attempts = attempts
+                        $0.error = String?.some("Interrupted \(attempts) times.")
                         $0.finishedAt = Date?.some(stamp)
                         $0.updatedAt = stamp
                     }
@@ -153,6 +163,7 @@ public struct AgentTaskRepository: Sendable {
                 } else {
                     try AgentTask.find(task.id).update {
                         $0.state = AgentTaskState.queued
+                        $0.attempts = attempts
                         $0.updatedAt = stamp
                     }
                     .execute(db)

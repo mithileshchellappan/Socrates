@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Processing
 import StudyCore
 
@@ -172,7 +173,8 @@ extension FilingService {
         try Recording.find(recordingID).delete().execute(db)
     }
 
-    /// The blobs among `blobs` that no recording segment or deck refers to any more.
+    /// The blobs among `blobs` that no recording segment, deck or agent attachment (a PDF the
+    /// student gave the panel, which the agent filed) refers to any more.
     static func unreferenced(_ blobs: [BlobRef], in db: Database) throws -> [BlobRef] {
         var seen = Set<String>()
         return try blobs.filter { blob in
@@ -180,12 +182,21 @@ extension FilingService {
             let sha = blob.sha256
             let segments = try RecordingSegment.where { $0.blobSHA256.eq(sha) }.fetchCount(db)
             let decks = try Deck.where { $0.blobSHA256.eq(sha) }.fetchCount(db)
-            return segments + decks == 0
+            return try segments + decks == 0 && !isAttachment(sha, in: db)
         }
     }
 
+    /// A chat turn keeps the file as an attachment (`agent_turn.context`, JSON with its hash).
+    static func isAttachment(_ sha256: String, in db: Database) throws -> Bool {
+        guard !sha256.isEmpty else { return false }
+        return try Bool.fetchOne(
+            db, sql: #"SELECT EXISTS (SELECT 1 FROM "agent_turn" WHERE "context" LIKE ?)"#, arguments: ["%" + sha256 + "%"]
+        ) ?? true
+    }
+
     /// True when a deck is part of something besides this filing's lecture: another lecture's
-    /// link, a capture's slide stamps, or another filing.
+    /// link, a capture's slide stamps, another filing, or the student's own work on it (ink on a
+    /// page, a note pinned to a page): Undo of the filing then never deletes it.
     static func deckIsUsedElsewhere(_ deckID: Deck.ID, lectureID: Lecture.ID?, filingID: Filing.ID, in db: Database) throws -> Bool {
         let otherLinks = try LectureDeckSpan
             .where { $0.deckID.eq(deckID) && $0.startTime.is(nil) }
@@ -194,7 +205,9 @@ extension FilingService {
             .count
         let stamps = try SlideEvent.where { $0.deckID.eq(deckID) }.fetchCount(db)
         let filings = try Filing.where { $0.deckID.eq(deckID) && $0.id.neq(filingID) }.fetchCount(db)
-        return otherLinks + stamps + filings > 0
+        let ink = try SlideInk.where { $0.deckID.eq(deckID) }.fetchCount(db)
+        let notes = try Note.where { $0.deckID.eq(deckID) }.fetchCount(db)
+        return otherLinks + stamps + filings + ink + notes > 0
     }
 
     /// True when a capture's deck link on a lecture is also there for another reason: a deck
@@ -223,13 +236,18 @@ extension FilingService {
     }
 
     /// Nothing but this filing refers to the lecture: no recording, slides, notes, annotations
-    /// of the student's own or other filing (the study pass's rows go with the lecture).
+    /// of the student's own, practice questions the student answered (their FSRS history goes
+    /// with the lecture) or other filing (the study pass's rows go with the lecture).
     static func lectureIsUnused(_ lectureID: Lecture.ID, except filingID: Filing.ID, in db: Database) throws -> Bool {
         let recordings = try Recording.where { $0.lectureID.eq(lectureID) }.fetchCount(db)
         let spans = try LectureDeckSpan.where { $0.lectureID.eq(lectureID) }.fetchCount(db)
         let notes = try Note.where { $0.lectureID.eq(lectureID) }.fetchCount(db)
         let annotations = try Annotation.where { $0.lectureID.eq(lectureID) && $0.studyUnitID.is(nil) }.fetchCount(db)
         let filings = try Filing.where { $0.lectureID.eq(lectureID) && $0.id.neq(filingID) }.fetchCount(db)
-        return recordings + spans + notes + annotations + filings == 0
+        let answered = try Int.fetchOne(db, sql: """
+            SELECT count(*) FROM "study_question" q
+            WHERE q."lecture_id" = ? AND EXISTS (SELECT 1 FROM "study_answer" a WHERE a."question_id" = q."id")
+            """, arguments: [lectureID.uuidString.lowercased()]) ?? 0
+        return recordings + spans + notes + annotations + filings + answered == 0
     }
 }
