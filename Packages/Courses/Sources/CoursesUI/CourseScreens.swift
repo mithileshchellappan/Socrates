@@ -4,8 +4,11 @@ import StudyUI
 import SwiftUI
 
 /// A course's lectures (sidebar ▸ course ▸ Lectures, mockup 08): one row per lecture by number,
-/// "L2 · Virtualization & IaaS" over its day; a row opens the lecture's review.
+/// "L2 · Virtualization & IaaS" over its day; a row opens the lecture's review. Without lectures
+/// the screen is one drop target for the course's slides and recordings; files dropped on the
+/// list are filed into the course too. Import in the toolbar.
 public struct CourseLecturesView: View {
+    private let courseID: Course.ID
     @FetchOne private var course: Course?
     @FetchAll private var lectures: [Lecture]
     @Environment(\.openDestination) private var openDestination
@@ -13,6 +16,7 @@ public struct CourseLecturesView: View {
     @Environment(\.timeZone) private var timeZone
 
     public init(courseID: Course.ID) {
+        self.courseID = courseID
         _course = FetchOne(Course.find(courseID))
         _lectures = FetchAll(Lecture.where { $0.courseID.eq(courseID) })
     }
@@ -20,9 +24,7 @@ public struct CourseLecturesView: View {
     public var body: some View {
         Group {
             if ordered.isEmpty {
-                ContentUnavailableView {
-                    Image(systemName: "waveform")
-                }
+                EmptyDropPrompt(systemImage: "waveform", line: "Drop the slides (PDF) and recordings here.", target: .course(courseID))
             } else {
                 CourseScreenColumn {
                     SettingsGroup("Lectures") {
@@ -33,9 +35,11 @@ public struct CourseLecturesView: View {
                         }
                     }
                 }
+                .importDropTarget(.course(courseID))
             }
         }
         .screenTitle(String(localized: "Lectures"), subtitle: course?.name ?? "")
+        .toolbar { CourseImportToolbarItem(courseID: courseID) }
     }
 
     /// By number, then date, then when they were added.
@@ -101,49 +105,57 @@ private struct LectureListRow: View {
 }
 
 /// A course's slides (sidebar ▸ course ▸ Slides): Course Settings' Slides group on its own, with
-/// Change on each deck and Import.
+/// Change on each deck; Import in the toolbar. Without decks the screen is one drop target for the
+/// course's slides; files dropped on the list are filed into the course too.
 public struct CourseSlidesView: View {
     private let courseID: Course.ID
     private let changeDeck: (Deck.ID) -> Void
-    private let importFiles: (() -> Void)?
-    private let importDropped: (([URL]) -> Void)?
 
     @FetchOne private var course: Course?
     @Fetch private var decks: [CourseDeck]
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
 
-    public init(
-        courseID: Course.ID,
-        changeDeck: @escaping (Deck.ID) -> Void = { _ in },
-        importFiles: (() -> Void)? = nil,
-        importDropped: (([URL]) -> Void)? = nil
-    ) {
+    public init(courseID: Course.ID, changeDeck: @escaping (Deck.ID) -> Void = { _ in }) {
         self.courseID = courseID
         self.changeDeck = changeDeck
-        self.importFiles = importFiles
-        self.importDropped = importDropped
         _course = FetchOne(Course.find(courseID))
         _decks = Fetch(wrappedValue: [], CourseDecksRequest(courseID: courseID))
     }
 
     public var body: some View {
-        CourseScreenColumn {
-            SettingsGroup("Slides") {
-                if let importFiles {
-                    Button("Import", action: importFiles)
-                }
-            } content: {
-                if decks.isEmpty {
-                    GhostDeckRow(tag: nil, importFiles: importFiles, importDropped: importDropped)
-                } else {
-                    ForEach(decks) { item in
-                        DeckRow(item: item, text: SessionText(locale: locale, timeZone: timeZone)) { changeDeck(item.deck.id) }
+        Group {
+            if decks.isEmpty {
+                EmptyDropPrompt(systemImage: "rectangle.on.rectangle", line: "Drop the slides (PDF) here.", target: .course(courseID))
+            } else {
+                CourseScreenColumn {
+                    SettingsGroup("Slides") {
+                        ForEach(decks) { item in
+                            DeckRow(item: item, text: SessionText(locale: locale, timeZone: timeZone)) { changeDeck(item.deck.id) }
+                        }
                     }
                 }
+                .importDropTarget(.course(courseID))
             }
         }
         .screenTitle(String(localized: "Slides"), subtitle: course?.name ?? "")
+        .toolbar { CourseImportToolbarItem(courseID: courseID) }
+    }
+}
+
+/// A course screen's trailing [Import +] (DESIGN 6.3, as Course Settings'): the file importer for
+/// the course.
+struct CourseImportToolbarItem: ToolbarContent {
+    let courseID: Course.ID
+    @Environment(\.importFiles) private var importFiles
+
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if let importFiles {
+                Button("Import", systemImage: "plus") { importFiles.open(to: .course(courseID)) }
+                    .labelStyle(.titleAndIcon)
+            }
+        }
     }
 }
 

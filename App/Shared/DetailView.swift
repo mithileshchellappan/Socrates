@@ -63,14 +63,10 @@ struct DetailView: View {
                 .modifier(CourseToolbarSpacer())
                 .id(id)
         case .courseSlides(let id):
-            CourseSlidesView(
-                courseID: id,
-                changeDeck: changeDeck,
-                importFiles: { model.filingCenter?.importFiles(to: .course(id)) },
-                importDropped: { file($0, into: id) }
-            )
-            .modifier(CourseToolbarSpacer())
-            .id(id)
+            // Import and drops go through `\.importFiles` (RootView).
+            CourseSlidesView(courseID: id, changeDeck: changeDeck)
+                .modifier(CourseToolbarSpacer())
+                .id(id)
         case .courseNotes(let id):
             // The Notes screen scoped to the course (DESIGN 8.4), as under the Notes row; a course's
             // screens have no search field.

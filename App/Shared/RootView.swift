@@ -3,6 +3,7 @@ import CalendarUI
 import CaptureUI
 import ChatUI
 import CoursesUI
+import Filing
 import FilingUI
 import MailUI
 import Processing
@@ -99,6 +100,12 @@ struct RootView: View {
                 .smartImport(center)
                 .timetableImport(center: center)
                 .environment(\.openDestination, OpenDestinationAction(open))
+                // Empty Lectures, Slides, Progress, Study and Review's slides: Import… and drops
+                // go through smart import (filed to the screen's course or lecture).
+                .environment(\.importFiles, ImportFilesAction(
+                    open: { target in center.importFiles(to: target.map(FilingDestination.init)) },
+                    drop: { urls, target in Task { await center.file(urls, to: target.map(FilingDestination.init)) } }
+                ))
                 .environment(\.studyServices, model.services)
                 .environment(\.calendarMirror, model.calendarMirror)
                 .environment(\.mailActions, mailActions)
@@ -712,5 +719,15 @@ private extension NotesScope {
     var courseID: Course.ID? {
         if case .course(let id) = self { return id }
         return nil
+    }
+}
+
+private extension FilingDestination {
+    /// Where a screen's Import… or drop files go.
+    init(_ target: ImportTarget) {
+        switch target {
+        case .course(let id): self = .course(id)
+        case .lecture(let id): self = .lecture(id)
+        }
     }
 }
