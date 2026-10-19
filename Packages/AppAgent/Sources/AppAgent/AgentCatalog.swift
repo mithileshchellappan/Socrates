@@ -10,7 +10,9 @@ import StudyPass
 /// What the app agent knows exists without loading it (docs/plan-agent.md §4 "Catalog"): one short
 /// block (≤ 8,000 characters) of what can be queried, rebuilt per turn from indexed reads and sent
 /// as `<catalog revision="…">` in the user turn only when it changed (the system prompt never
-/// changes, so the CLI session caches). Courses (token, name, lecturers, facts), each course's
+/// changes, so the CLI session caches). Courses (token, name, lecturers, facts; a course the agent
+/// just made shows here from its next turn), each course's weekly slots with their keys
+/// ("lecture Mon 12:15–13:45 · Room 115 [slot 1a2b3c4d]"), each course's
 /// lectures ("L2 · Virtualization Basics · Tue 13 Oct · transcribed · study pass done (3 exam
 /// hints, 5 said in class)"), notes per course (count + 3 newest titles), the next sessions (this
 /// and next week), mail folders with unread counts, open items (next 6 weeks, nearest 12, then
@@ -112,6 +114,7 @@ public struct AgentCatalog: Sendable, Hashable {
         }
         let notes = try Note.order { $0.updatedAt.desc() }.fetchAll(db)
         let lectureCourse = Dictionary(lectures.map { ($0.id, $0.courseID) }, uniquingKeysWith: { first, _ in first })
+        let slots = try WeeklySlot.order { ($0.weekday, $0.startMinute) }.fetchAll(db)
 
         for course in courses {
             let token = tokens.token(course.id)
@@ -119,7 +122,13 @@ public struct AgentCatalog: Sendable, Hashable {
             if !course.professors.isEmpty { line += " · lecturers: " + course.professors.joined(separator: "; ") }
             let facts = course.rules.filter { $0.isConfirmed && !$0.text.isEmpty }.map { "\($0.title.isEmpty ? $0.kind.rawValue : $0.title): \(ToolJSON.clip($0.text, 80))" }
             if !facts.isEmpty { line += " · facts: " + facts.joined(separator: "; ") }
+            if !course.showsInCalendar { line += " · not in the calendar" }
             lines.append(line)
+            // Its weekly classes with their keys (change_weekly_slot, remove_weekly_slot).
+            let weekly = slots.filter { $0.courseID == course.id }
+            if !weekly.isEmpty {
+                lines.append("  weekly: " + weekly.map { "\(ChangeLog.slotText($0)) [slot \(ChatCitation.key($0.id))]" }.joined(separator: "; "))
+            }
             let own = lectures.filter { $0.courseID == course.id }.sorted { ($0.number ?? Int.max, $0.heldAt ?? .distantFuture) < ($1.number ?? Int.max, $1.heldAt ?? .distantFuture) }
             for lecture in own.suffix(14) {
                 var parts = [lecture.number.map { "L\($0)" } ?? "lecture"]

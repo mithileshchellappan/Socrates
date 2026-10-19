@@ -167,6 +167,58 @@ extension AgentChangeKind {
     /// A course removed at the student's request in chat (`remove_course`), with everything that
     /// belonged to it; `before.deletion` holds the rows for Undo.
     public static let courseRemove: Self = "course_remove"
+    /// A course created at the student's request in chat (`add_course`); Undo removes it while it
+    /// holds none of their work.
+    public static let courseAdd: Self = "course_add"
+    /// A weekly slot added (`add_weekly_slot`); its sessions are planned. Undo deletes it.
+    public static let slotAdd: Self = "slot_add"
+    /// A weekly slot's day, time, room, kind, period or rhythm changed (`change_weekly_slot`).
+    public static let slotChange: Self = "slot_change"
+    /// A weekly slot removed (`remove_weekly_slot`); Undo puts it back.
+    public static let slotRemove: Self = "slot_remove"
+}
+
+extension AgentChangeTarget {
+    /// A `weekly_slot` row (the slot changes); `before` / `after.slot` hold its values.
+    public static let slot: Self = "weekly_slot"
+}
+
+/// A weekly slot's columns as an `agent_change` keeps them (`before.slot`, `after.slot`), so Undo
+/// can put the slot back as it was.
+public struct WeeklySlotValues: Hashable, Sendable, Codable {
+    public var id: WeeklySlot.ID
+    public var courseID: Course.ID
+    public var kind: SessionKind
+    public var weekday: Int
+    public var startMinute: Int
+    public var durationMinutes: Int
+    public var room: String
+    public var timeZone: String
+    public var validFrom: CalendarDay?
+    public var validUntil: CalendarDay?
+    public var weekInterval: Int
+
+    public init(_ slot: WeeklySlot) {
+        id = slot.id
+        courseID = slot.courseID
+        kind = slot.kind
+        weekday = slot.weekday
+        startMinute = slot.startMinute
+        durationMinutes = slot.durationMinutes
+        room = slot.room
+        timeZone = slot.timeZone
+        validFrom = slot.validFrom
+        validUntil = slot.validUntil
+        weekInterval = slot.weekInterval
+    }
+
+    /// The slot row with these values.
+    public func slot(updatedAt: Date) -> WeeklySlot {
+        WeeklySlot(
+            id: id, courseID: courseID, kind: kind, weekday: weekday, startMinute: startMinute, durationMinutes: durationMinutes,
+            room: room, timeZone: timeZone, validFrom: validFrom, validUntil: validUntil, weekInterval: weekInterval, updatedAt: updatedAt
+        )
+    }
 }
 
 /// The fields of the target an automatic change touched, before or after it (`agent_change.before`
@@ -211,6 +263,8 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     public var reason: String?
     // course (`course_remove`): the removed course's rows (Filing's `Deletion`, JSON), for Undo
     public var deletion: String?
+    // weekly_slot (`slot_add`, `slot_change`, `slot_remove`): the slot's values
+    public var slot: WeeklySlotValues?
 
     public init(
         exists: Bool? = nil,
@@ -238,7 +292,8 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         lectureID: Lecture.ID? = nil,
         lectureSessionID: LectureSession.ID? = nil,
         reason: String? = nil,
-        deletion: String? = nil
+        deletion: String? = nil,
+        slot: WeeklySlotValues? = nil
     ) {
         self.exists = exists
         self.startsAt = startsAt
@@ -266,6 +321,7 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         self.lectureSessionID = lectureSessionID
         self.reason = reason
         self.deletion = deletion
+        self.slot = slot
     }
 
     /// The values of a session's changeable columns.
