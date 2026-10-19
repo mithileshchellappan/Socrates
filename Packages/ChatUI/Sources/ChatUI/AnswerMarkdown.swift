@@ -95,16 +95,18 @@ enum AnswerMarkdownBlock: Hashable {
             }
             if trimmed.contains("|"), index + 1 < lines.count, let alignments = separator(lines[index + 1]) {
                 flushAll()
-                let header = fitted(cells(trimmed), count: alignments.count)
+                // The header names the columns (a separator still being written has fewer cells).
+                let header = cells(trimmed)
+                let columns = alignments.prefix(header.count) + Array(repeating: Table.Align.leading, count: max(0, header.count - alignments.count))
                 var rows: [[String]] = []
                 index += 2
                 while index < lines.count {
                     let row = lines[index].trimmingCharacters(in: .whitespaces)
                     guard !row.isEmpty, row.contains("|") else { break }
-                    rows.append(fitted(cells(row), count: alignments.count))
+                    rows.append(fitted(cells(row), count: header.count))
                     index += 1
                 }
-                blocks.append(.table(Table(header: header, alignments: alignments, rows: rows)))
+                blocks.append(.table(Table(header: header, alignments: Array(columns), rows: rows)))
                 continue
             }
             if let heading = heading(trimmed) {
@@ -170,8 +172,8 @@ enum AnswerMarkdownBlock: Hashable {
         return alignments.isEmpty ? nil : alignments
     }
 
-    /// A table line's cells: split at pipes that are not escaped, outer pipes dropped; `<br>`
-    /// becomes a line break.
+    /// A table line's cells: split at pipes that are not escaped or in a code span, outer pipes
+    /// dropped; `<br>` becomes a line break.
     private static func cells(_ line: String) -> [String] {
         var body = Substring(line)
         if body.hasPrefix("|") { body = body.dropFirst() }
@@ -179,13 +181,17 @@ enum AnswerMarkdownBlock: Hashable {
         var cells: [String] = []
         var cell = ""
         var escaped = false
+        var inCode = false
         for character in body {
             if escaped {
                 cell.append(character == "|" ? "|" : "\\\(character)")
                 escaped = false
             } else if character == "\\" {
                 escaped = true
-            } else if character == "|" {
+            } else if character == "`" {
+                inCode.toggle()
+                cell.append(character)
+            } else if character == "|", !inCode {
                 cells.append(cell)
                 cell = ""
             } else {
@@ -251,14 +257,19 @@ struct AnswerMarkdownView: View {
     /// Dropped markers are logged (not while streaming).
     let logs: Bool
     let openLecture: Lecture.ID?
+    /// "L2 · " before lecture chips, decided for the whole answer.
+    let prefixes: Bool
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.agentThreadMetrics) private var metrics
 
     var body: some View {
+        let blocks = AnswerMarkdownBlock.blocks(text)
+        // The sparkle goes on the first block that is not a rule.
+        let first = blocks.firstIndex { $0 != .rule }
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(AnswerMarkdownBlock.blocks(text).enumerated()), id: \.offset) { index, block in
-                blockView(block, sparkle: sparkle && index == 0)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                blockView(block, sparkle: sparkle && index == first)
             }
         }
     }
@@ -271,7 +282,9 @@ struct AnswerMarkdownView: View {
         case .heading(let level, let text):
             words(text, sparkle: sparkle, size: metrics.text + (level <= 2 ? 1 : 0), weight: .semibold)
                 .padding(.top, 2)
-        case .list, .table, .code, .quote, .rule:
+        case .rule:
+            Divider()
+        case .list, .table, .code, .quote:
             if sparkle {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     AIMark()
@@ -307,9 +320,11 @@ struct AnswerMarkdownView: View {
                     }
                 }
                 Divider()
+                    .gridCellUnsizedAxes(.horizontal)
                 ForEach(Array(table.rows.enumerated()), id: \.offset) { offset, row in
                     if offset > 0 {
                         Divider().opacity(0.5)
+                            .gridCellUnsizedAxes(.horizontal)
                     }
                     GridRow {
                         ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
@@ -339,16 +354,14 @@ struct AnswerMarkdownView: View {
                 .overlay(alignment: .leading) {
                     Capsule().fill(.quaternary).frame(width: 2)
                 }
-        case .rule:
-            Divider()
-        case .paragraph, .heading:
+        case .paragraph, .heading, .rule:
             EmptyView()
         }
     }
 
     /// Words with inline Markdown and their checked chips: one `Text`.
     private func words(_ text: String, sparkle: Bool, size: CGFloat? = nil, weight: Font.Weight = .regular) -> some View {
-        let answer = AnswerText(text, check: text.contains("[[") ? check : nil, logs: logs, openLecture: openLecture)
+        let answer = AnswerText(text, check: text.contains("[[") ? check : nil, logs: logs, openLecture: openLecture, prefixes: prefixes)
         return Group {
             if answer.hasChips {
                 answer.text(sparkle: sparkle)

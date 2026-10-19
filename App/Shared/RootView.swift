@@ -175,7 +175,7 @@ struct RootView: View {
     /// width without the agent's sidebar. Only the Mac's window is resized.
     private var minContentWidth: CGFloat? {
         #if os(macOS)
-        columns == .detailOnly ? 560 : 760
+        columns == .detailOnly ? 480 : 680
         #else
         nil
         #endif

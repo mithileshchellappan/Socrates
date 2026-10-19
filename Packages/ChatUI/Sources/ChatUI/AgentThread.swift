@@ -871,7 +871,12 @@ struct PanelAnswer: View {
     @Environment(\.agentThreadMetrics) private var metrics
 
     var body: some View {
-        let blocks = PanelAnswerBlock.split(isStreaming ? AnswerText.withoutOpenMarker(text) : text)
+        let shown = isStreaming ? AnswerText.withoutOpenMarker(text) : text
+        let blocks = PanelAnswerBlock.split(shown)
+        // One rule for the whole answer: its chips are drawn in many parts.
+        let prefixes = shown.contains("[[") && AnswerText.prefixes(
+            lectures: Set(AnswerText(shown, check: check, logs: false).chips.compactMap(\.citation.lectureID)), openLecture: openLecture
+        )
         VStack(alignment: .leading, spacing: 8) {
             if blocks.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -882,7 +887,9 @@ struct PanelAnswer: View {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 switch block {
                 case .text(let paragraph):
-                    AnswerMarkdownView(text: paragraph, sparkle: index == 0, check: check, logs: !isStreaming, openLecture: openLecture)
+                    AnswerMarkdownView(
+                        text: paragraph, sparkle: index == 0, check: check, logs: !isStreaming, openLecture: openLecture, prefixes: prefixes
+                    )
                 case .changes(let keys):
                     AgentChangeList(keys: keys, showsSparkle: index == 0, now: now)
                         .id(keys)
@@ -905,9 +912,9 @@ struct PanelAnswer: View {
     }
 }
 
-/// An answer cut into its text and its runs of change markers. A marker that ends its line
-/// becomes rows right there; one inside a sentence waits for the end of its line, so the
-/// sentence stays whole (no gap where the marker was) and its rows follow it.
+/// An answer cut into its text and its runs of change markers. A marker's rows follow the end of
+/// its line, so a sentence stays whole (no gap where the marker was); in a table row or a code
+/// block they follow the end of the table or the code, which is never cut.
 enum PanelAnswerBlock: Hashable {
     case text(String)
     /// Change keys in order: one list.
@@ -948,14 +955,16 @@ enum PanelAnswerBlock: Hashable {
                     if first == " ", buffer.isEmpty || buffer.last?.isNewline == true { rest = rest.drop { $0 == " " } }
                 }
                 afterMarker = false
-                if !pending.isEmpty {
-                    if let newline = rest.firstIndex(of: "\n") {
-                        buffer += rest[..<newline]
+                // At each line's end: the waiting rows go out unless the line was a table row or
+                // a code block is open.
+                while !pending.isEmpty, let newline = rest.firstIndex(of: "\n") {
+                    buffer += rest[..<newline]
+                    rest = rest[newline...]
+                    if !Self.holdsRows(buffer) {
                         emit()
-                        rest = rest[newline...]
-                    } else if rest.allSatisfy({ $0 == " " || ".,;:!?)".contains($0) }) {
-                        buffer += rest
-                        rest = ""
+                    } else {
+                        buffer += "\n"
+                        rest = rest.dropFirst()
                     }
                 }
                 buffer += rest
@@ -969,6 +978,18 @@ enum PanelAnswerBlock: Hashable {
         emit()
         flush()
         return blocks
+    }
+
+    /// The text so far ends inside a table (its last line is a row) or an open code fence.
+    private static func holdsRows(_ text: String) -> Bool {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let fences = lines.filter {
+            let trimmed = $0.drop { $0 == " " }
+            return trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~")
+        }
+        if fences.count % 2 == 1 { return true }
+        let last = lines.last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return last.contains("|") && (last.hasPrefix("|") || text.contains("-|") || text.contains("|-"))
     }
 }
 
