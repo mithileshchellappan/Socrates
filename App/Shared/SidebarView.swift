@@ -209,10 +209,12 @@ struct SidebarView: View {
         .environment(\.sidebarRowSize, .small)
         #endif
         // A bar, not an inset: long lists (Mail, a lecture's screen) scroll under it with the
-        // scroll-edge effect instead of drawing through the semester.
+        // scroll-edge effect instead of drawing through the semester; the hard edge cuts them off
+        // at the footer's hairline.
         .safeAreaBar(edge: .bottom, spacing: 0) {
             footer
         }
+        .scrollEdgeEffectStyle(.hard, for: .bottom)
         .navigationTitle("Study Portal")
         #if os(macOS)
         .navigationSplitViewColumnWidth(min: 200, ideal: Self.idealWidth, max: 320)
