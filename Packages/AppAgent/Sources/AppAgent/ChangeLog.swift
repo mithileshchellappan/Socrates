@@ -140,21 +140,23 @@ public struct ChangeLog: Sendable {
     /// or the student edited it); undoing would overwrite that.
     public enum UndoRefused: Error, Sendable, CustomStringConvertible, LocalizedError {
         case changedSince
-        /// Undo of `add_course`: the course holds the student's lectures, slides, recordings or
-        /// notes now (Delete Course… asks first).
+        /// Undo of `add_course`: the course holds more than it was made with now (lectures,
+        /// slides, notes, dates, memories, study work, edits; Delete Course… asks first).
         case holdsWork
 
         public var description: String {
             switch self {
             case .changedSince: "Changed since; nothing undone."
-            case .holdsWork: "The course has lectures, slides, recordings or notes now; nothing undone. Delete Course… in its sidebar menu removes it."
+            case .holdsWork:
+                "The course holds more than it was made with now (lectures, slides, notes, dates, memories, study work or edits); "
+                    + "nothing undone. Delete Course… in its sidebar menu removes it."
             }
         }
 
         public var errorDescription: String? {
             switch self {
             case .changedSince: String(localized: "Changed since; nothing undone.")
-            case .holdsWork: String(localized: "The course has lectures, slides, recordings or notes now; nothing undone.")
+            case .holdsWork: String(localized: "The course holds more than it was made with now; nothing undone.")
             }
         }
     }
@@ -1112,7 +1114,9 @@ public struct ChangeLog: Sendable {
                     .execute(db)
             }
         case .slot:
-            if current, let targetID = change.targetID {
+            // Slot changes are not superseded: each puts back only the fields it wrote, while the
+            // slot still has them (`undoSlot`).
+            if let targetID = change.targetID {
                 try undoSlot(change, slotID: targetID, db: db, store: store, now: now)
             }
         default:

@@ -123,8 +123,9 @@ extension WriteTools {
                 description: """
                     Adds a course's weekly class as Course Settings' Add Slot does, ONLY when the student asks (quote: \
                     their words asking): its sessions are planned for the semester's lecture days (breaks skipped) and \
-                    appear in the Study Portal calendar. Times are the university's time zone. every: null for every week. Undo \
-                    removes it with its planned sessions.
+                    appear in the Study Portal calendar. Times are the university's time zone. every: null for every week. A class \
+                    of the course that meets at an overlapping time is refused with its key (change_weekly_slot \
+                    changes it). Undo removes it with its sessions (not ones holding a lecture).
                     """,
                 inputSchema: Schema.object(slotProperties.merging([
                     "course": Schema.string("Course token."),
@@ -165,8 +166,11 @@ extension WriteTools {
                 name: "change_weekly_slot",
                 description: """
                     Changes a weekly slot (the catalog's [slot 1a2b3c4d]) ONLY when the student asks (quote: their words \
-                    asking): another day, time, room, kind, period or rhythm for every week from now (null leaves a \
-                    field). Its sessions are planned again; a single session is change_session's. Undo puts it back.
+                    asking); null leaves a field. Another day, time, room, kind or rhythm applies from today \
+                    (tomorrow once today's class began; from first when given): classes held before keep theirs, as the slot ends the day before and a new \
+                    slot takes over (its key is the result's slot); a slot with no class before then changes in \
+                    place. first or last alone changes its period. A single session is change_session's. Undo puts \
+                    it back.
                     """,
                 inputSchema: Schema.object(slotProperties.merging([
                     "slot": Schema.string("The slot's key (the 8 hex of [slot 1a2b3c4d])."),
@@ -202,7 +206,9 @@ extension WriteTools {
             }
             if let room = call.text("room") { slot.room = room }
             if let refusal = Self.period(call, into: &slot) { return .error(refusal) }
-            return try await slotOutput(applyAsked(.slotChange(slot), checked: checked, context: context), slotID: slot.id, now: context.now)
+            let outcome = try await applyAsked(.slotChange(slot), checked: checked, context: context)
+            // A change from a date: the slot that takes over is the one to cite and change next.
+            return try await slotOutput(outcome, slotID: outcome.change?.after?.successor?.id ?? slot.id, now: context.now)
         }
     }
 
@@ -322,9 +328,44 @@ extension ChangeLog {
         return parts.joined(separator: " · ")
     }
 
-    /// Two slots of a course that would plan the same class.
-    static func sameClass(_ lhs: WeeklySlot, _ rhs: WeeklySlot) -> Bool {
-        lhs.id != rhs.id && lhs.courseID == rhs.courseID && lhs.kind == rhs.kind && lhs.weekday == rhs.weekday && lhs.startMinute == rhs.startMinute
+    /// Two slots of a course that would meet at the same time: the same weekday, overlapping times
+    /// and periods, and weeks that can coincide (one meets every week, or both in the same weeks).
+    /// `lectureStart`: the course's semester's, where a slot without a first day starts.
+    static func sameClass(_ lhs: WeeklySlot, _ rhs: WeeklySlot, lectureStart: CalendarDay) -> Bool {
+        guard lhs.id != rhs.id, lhs.courseID == rhs.courseID, lhs.weekday == rhs.weekday,
+              lhs.startMinute < rhs.endMinute, rhs.startMinute < lhs.endMinute
+        else { return false }
+        if let until = lhs.validUntil, let from = rhs.validFrom, until < from { return false }
+        if let until = rhs.validUntil, let from = lhs.validFrom, until < from { return false }
+        guard lhs.weekInterval > 1, rhs.weekInterval > 1 else { return true }
+        // Every second week (the planner's parity): counted from each slot's first meeting day.
+        return weeks(from: anchor(lhs, lectureStart: lectureStart), to: anchor(rhs, lectureStart: lectureStart)) % 2 == 0
+    }
+
+    /// A slot's first meeting day, which fixes its weeks when it meets every second week.
+    static func anchor(_ slot: WeeklySlot, lectureStart: CalendarDay) -> CalendarDay {
+        let base = slot.validFrom ?? lectureStart
+        return base.adding(days: ((slot.weekday - base.weekday) % 7 + 7) % 7)
+    }
+
+    /// Whole calendar weeks (Monday to Sunday) between two days.
+    static func weeks(from lhs: CalendarDay, to rhs: CalendarDay) -> Int {
+        lhs.adding(days: 1 - lhs.weekday).days(to: rhs.adding(days: 1 - rhs.weekday)) / 7
+    }
+
+    /// The lecture start of the semester a course's sessions are planned in.
+    static func lectureStart(of course: Course, db: Database, now: Date) throws -> CalendarDay {
+        let semesters = try Semester.all.fetchAll(db)
+        if let id = course.semesterID, let own = semesters.first(where: { $0.id == id }) { return own.lectureStart }
+        return Semester.current(among: semesters, on: now).lectureStart
+    }
+
+    /// The refusal for a slot that would meet at the same time as `same`.
+    static func clash(_ same: WeeklySlot, course: Course) -> Outcome {
+        .refused(
+            "\(course.name) has a \(same.kind.rawValue) at that time already ([slot \(ChatCitation.key(same.id))] \(slotText(same))); "
+                + "change_weekly_slot changes it."
+        )
     }
 
     /// Why a slot cannot be saved, nil when it can.
@@ -366,23 +407,48 @@ extension ChangeLog {
         return .applied(change)
     }
 
-    /// Undo of `add_course`: the course goes through smart import's delete (its slots, sessions,
-    /// mail rules, items and plan with it), only while it holds none of the student's work (then
-    /// Delete Course… is theirs to use); its slot changes are marked undone with it.
+    /// Undo of `add_course`: the course goes through smart import's delete (its slots, sessions
+    /// and mail rules with it), only while it holds nothing but what it was made with and its
+    /// planned classes: no lectures, slides, recordings or notes, no dates or memories, no study
+    /// work, no edited session, no mail rule other than its own, no fact, credits or consent set
+    /// since (then Delete Course… is theirs to use, and asks first). Its slot changes are marked
+    /// undone with it.
     func undoCourseAdd(_ change: AgentChange, at date: Date) async throws -> Bool {
         guard change.undoneAt == nil else { return false }
         let courseID = change.targetID
         if let courseID {
             let key = courseID.uuidString.lowercased()
+            let changeKey = change.id.uuidString.lowercased()
+            let made = change.after
             let state = try await services.database.read { db -> (exists: Bool, holds: Bool) in
-                guard try Course.find(courseID).fetchOne(db) != nil else { return (false, false) }
+                guard let course = try Course.find(courseID).fetchOne(db) else { return (false, false) }
                 let holds = try Bool.fetchOne(db, sql: """
                     SELECT EXISTS (SELECT 1 FROM "lecture" WHERE "course_id" = ?1)
                         OR EXISTS (SELECT 1 FROM "deck" WHERE "course_id" = ?1)
                         OR EXISTS (SELECT 1 FROM "recording" WHERE "course_id" = ?1)
                         OR EXISTS (SELECT 1 FROM "note" WHERE "course_id" = ?1)
-                    """, arguments: [key]) ?? true
-                return (true, holds)
+                        OR EXISTS (SELECT 1 FROM "tracked_item" WHERE "course_id" = ?1)
+                        OR EXISTS (SELECT 1 FROM "agent_memory" WHERE "course_id" = ?1 AND "forgotten_at" IS NULL)
+                        OR EXISTS (SELECT 1 FROM "study_reading" WHERE "course_id" = ?1)
+                        OR EXISTS (SELECT 1 FROM "study_question" WHERE "course_id" = ?1)
+                        OR EXISTS (SELECT 1 FROM "study_session" WHERE "course_id" = ?1)
+                        OR EXISTS (SELECT 1 FROM "study_answer" WHERE "course_id" = ?1)
+                        OR EXISTS (SELECT 1 FROM "study_block" WHERE "course_id" = ?1 AND ("created_by" = 'user' OR "state" != 'planned'))
+                        OR EXISTS (SELECT 1 FROM "lecture_session" WHERE "course_id" = ?1 AND "edited_at" IS NOT NULL)
+                        OR EXISTS (
+                            SELECT 1 FROM "agent_change"
+                            WHERE "target_table" = 'course' AND "target_id" = ?1 AND "id" != ?2 AND "undone_at" IS NULL
+                        )
+                    """, arguments: [key, changeKey]) ?? true
+                // The course as add_course made it: its lecturers, credits, no facts, no consent,
+                // and the mail rules New Course… gives it, unedited.
+                let edited = course.professors != (made?.professors ?? course.professors) || course.credits != made?.credits
+                    || !course.rules.isEmpty || course.recordingConsentAt != nil
+                let semester = try course.semesterID.flatMap { try Semester.find($0).fetchOne(db) }
+                func rule(_ rule: MailRule) -> String { "\(rule.kind.rawValue)|\(rule.pattern)|\(rule.origin.rawValue)|\(rule.category?.rawValue ?? "")" }
+                let rules = try MailRule.where { $0.courseID.eq(Course.ID?.some(courseID)) }.fetchAll(db)
+                let ownRules = Set(CourseDraft.mailRules(for: course, semester: semester).map(rule))
+                return (true, holds || edited || Set(rules.map(rule)) != ownRules || rules.count != ownRules.count)
             }
             if state.holds { throw UndoRefused.holdsWork }
             if state.exists { _ = try await (filing ?? FilingService(services: services)).delete(.course(courseID)) }
@@ -404,10 +470,9 @@ extension ChangeLog {
     static func addSlot(_ slot: WeeklySlot, quote: String, origin: Origin, db: Database, store: RecordStore, now: Date) throws -> Outcome {
         guard let course = try Course.find(slot.courseID).fetchOne(db) else { return .refused("Unknown course.") }
         if let refusal = invalid(slot) { return .refused(refusal) }
+        let lectureStart = try lectureStart(of: course, db: db, now: now)
         let others = try WeeklySlot.where { $0.courseID.eq(slot.courseID) }.fetchAll(db)
-        if let same = others.first(where: { sameClass($0, slot) }) {
-            return .refused("\(course.name) has that \(slot.kind.rawValue) already ([slot \(ChatCitation.key(same.id))]).")
-        }
+        if let same = others.first(where: { sameClass($0, slot, lectureStart: lectureStart) }) { return clash(same, course: course) }
         let saved = try CourseSchedule.saveSlot(slot, now: now, store: store, db: db)
         let change = try logSlot(
             kind: .slotAdd, course: course, before: nil, after: saved, summary: "Weekly " + slotText(saved), quote: quote, origin: origin,
@@ -423,20 +488,70 @@ extension ChangeLog {
         }
         if let refusal = invalid(slot) { return .refused(refusal) }
         guard WeeklySlotValues(slot) != WeeklySlotValues(old) else { return .unchanged("The slot is like that already.") }
-        let others = try WeeklySlot.where { $0.courseID.eq(slot.courseID) }.fetchAll(db)
-        if let same = others.first(where: { sameClass($0, slot) }) {
-            return .refused("\(course.name) has that \(slot.kind.rawValue) already ([slot \(ChatCitation.key(same.id))]).")
+        let lectureStart = try lectureStart(of: course, db: db, now: now)
+        let others = try WeeklySlot.where { $0.courseID.eq(slot.courseID) }.fetchAll(db).filter { $0.id != old.id }
+
+        // Another day, time, room, kind or rhythm applies from today (Exampleton), or from the first
+        // day given: classes held before keep theirs.
+        let changesClass = slot.kind != old.kind || slot.weekday != old.weekday || slot.startMinute != old.startMinute
+            || slot.durationMinutes != old.durationMinutes || slot.room != old.room || slot.weekInterval != old.weekInterval
+        let today = CalendarDay(now, in: AppAgentModule.timeZone)
+        var from = slot.validFrom != old.validFrom ? slot.validFrom ?? today : today
+        let oldID = old.id
+        let zone = TimeZone(identifier: old.timeZone) ?? AppAgentModule.timeZone
+        if changesClass, from == today {
+            // Its class today that has begun is held too: the change applies from tomorrow.
+            let dayStart = today.start(in: zone)
+            let begun = try LectureSession
+                .where { $0.weeklySlotID.eq(WeeklySlot.ID?.some(oldID)) && $0.startsAt.gte(dayStart) && $0.startsAt.lte(now) }
+                .fetchCount(db)
+            if begun > 0 { from = today.adding(days: 1) }
         }
-        let id = slot.id
-        let previous = try AgentChange
-            .where { $0.targetTable.eq(AgentChangeTarget.slot) && $0.targetID.eq(UUID?.some(id)) && $0.undoneAt.is(nil) && $0.supersededBy.is(nil) && $0.kind.eq(AgentChangeKind.slotChange) }
-            .fetchAll(db)
-        let saved = try CourseSchedule.saveSlot(slot, now: now, store: store, db: db)
+        let fromStart = from.start(in: zone)
+        let held = changesClass
+            ? try LectureSession.where { $0.weeklySlotID.eq(WeeklySlot.ID?.some(oldID)) && $0.startsAt.lt(fromStart) }.fetchCount(db)
+            : 0
+
+        guard held > 0 else {
+            // Nothing held before then (or only its period changes): the slot changes in place.
+            if let same = others.first(where: { sameClass($0, slot, lectureStart: lectureStart) }) { return clash(same, course: course) }
+            let saved = try CourseSchedule.saveSlot(slot, now: now, store: store, db: db)
+            let change = try logSlot(
+                kind: .slotChange, course: course, before: old, after: saved, summary: "Weekly \(slotText(saved)) (was \(slotTime(old)))",
+                quote: quote, origin: origin, db: db, store: store, now: now
+            )
+            return .applied(change)
+        }
+
+        // The slot ends the day before; a new slot with the new values takes over from then. Its
+        // future sessions move onto the new slot's days in their weeks (ids and calendar events
+        // kept); the held ones stay as they were.
+        if let until = slot.validUntil, until < from {
+            return .refused("[slot \(ChatCitation.key(old.id))] ends on \(until.rawValue), before \(from.rawValue); add_weekly_slot adds a class.")
+        }
+        var ended = old
+        let dayBefore = from.adding(days: -1)
+        ended.validUntil = old.validUntil.map { min($0, dayBefore) } ?? dayBefore
+        var values = WeeklySlotValues(slot)
+        values.id = UUID()
+        values.validFrom = from
+        if values.weekInterval > 1, old.weekInterval > 1, slot.validFrom == old.validFrom {
+            // Every second week on: the same weeks as before.
+            let first = anchor(values.slot(updatedAt: now), lectureStart: lectureStart)
+            if weeks(from: anchor(old, lectureStart: lectureStart), to: first) % 2 != 0 { values.validFrom = from.adding(days: 7) }
+        }
+        let successor = values.slot(updatedAt: now)
+        if let refusal = invalid(successor) { return .refused(refusal) }
+        if let same = (others + [ended]).first(where: { sameClass($0, successor, lectureStart: lectureStart) }) {
+            return clash(same, course: course)
+        }
+        let stamped = store.stamp(ended)
+        try WeeklySlot.upsert { stamped }.execute(db)
+        let saved = try CourseSchedule.saveSlot(successor, now: now, store: store, db: db)
         let change = try logSlot(
-            kind: .slotChange, course: course, before: old, after: saved, summary: "Weekly \(slotText(saved)) (was \(slotTime(old)))",
-            quote: quote, origin: origin, db: db, store: store, now: now
+            kind: .slotChange, course: course, before: old, after: stamped, successor: saved,
+            summary: "Weekly \(slotText(saved)) (was \(slotTime(old)))", quote: quote, origin: origin, db: db, store: store, now: now
         )
-        for row in previous { try AgentChangeRepository.supersede(row.id, by: change.id, at: now, db: db) }
         return .applied(change)
     }
 
@@ -452,17 +567,20 @@ extension ChangeLog {
         return .applied(change)
     }
 
-    /// The change row of a slot added (`before` nil), changed or removed (`after` nil).
+    /// The change row of a slot added (`before` nil), changed or removed (`after` nil); a change
+    /// from a date names the slot that takes over (`successor`).
     static func logSlot(
-        kind: AgentChangeKind, course: Course, before: WeeklySlot?, after: WeeklySlot?, summary: String, quote: String, origin: Origin,
-        db: Database, store: RecordStore, now: Date
+        kind: AgentChangeKind, course: Course, before: WeeklySlot?, after: WeeklySlot?, successor: WeeklySlot? = nil, summary: String,
+        quote: String, origin: Origin, db: Database, store: RecordStore, now: Date
     ) throws -> AgentChange {
         func values(_ slot: WeeklySlot?) -> AgentChangeValues {
             AgentChangeValues(exists: slot != nil, courseID: course.id, slot: slot.map(WeeklySlotValues.init))
         }
+        var afterValues = values(after)
+        afterValues.successor = successor.map(WeeklySlotValues.init)
         var change = AgentChange(
             kind: kind, targetTable: .slot, targetID: (after ?? before)?.id, title: course.name, summary: summary, before: values(before),
-            after: values(after), sourceKind: origin.sourceKind, taskID: origin.taskID, eventID: origin.eventID, quote: quote, confidence: 1,
+            after: afterValues, sourceKind: origin.sourceKind, taskID: origin.taskID, eventID: origin.eventID, quote: quote, confidence: 1,
             model: origin.model, apiCallID: origin.apiCallID, appliedAt: now, createdAt: now, updatedAt: now
         )
         ItemChangeRows.apply(origin.source, to: &change)
@@ -471,24 +589,69 @@ extension ChangeLog {
         return change
     }
 
-    /// Undo of a slot change inside the caller's transaction: an added slot is deleted (its
-    /// planned sessions with it), a changed one gets its old values back while it still holds what
-    /// the change wrote, a removed one comes back unless the course has that class again.
+    /// Undo of a slot change inside the caller's transaction, only while the slot still holds what
+    /// the change wrote (`UndoRefused.changedSince` otherwise): an added slot is deleted with the
+    /// sessions it planned, past and edited ones too, except those a lecture or filing points to;
+    /// a changed one gets back the fields this change wrote (a later change of another field
+    /// stays); a change from a date deletes the slot that took over, its sessions back with the
+    /// old slot, which runs on; a removed one comes back unless the course has a class then again.
     static func undoSlot(_ change: AgentChange, slotID: WeeklySlot.ID, db: Database, store: RecordStore, now: Date) throws {
         let current = try WeeklySlot.find(slotID).fetchOne(db)
         switch change.kind {
         case .slotAdd:
-            if current != nil { try CourseSchedule.deleteSlot(slotID, now: now, store: store, db: db) }
+            guard let current else { return }
+            guard WeeklySlotValues(current) == change.after?.slot else { throw UndoRefused.changedSince }
+            try db.execute(
+                sql: """
+                    DELETE FROM "lecture_session" WHERE "weekly_slot_id" = ?1
+                        AND NOT EXISTS (SELECT 1 FROM "lecture" WHERE "lecture"."lecture_session_id" = "lecture_session"."id")
+                        AND NOT EXISTS (SELECT 1 FROM "filing" WHERE "filing"."lecture_session_id" = "lecture_session"."id")
+                    """,
+                arguments: [slotID.uuidString.lowercased()]
+            )
+            try CourseSchedule.deleteSlot(slotID, now: now, store: store, db: db)
         case .slotChange:
-            guard let before = change.before?.slot else { return }
-            guard let current, WeeklySlotValues(current) == change.after?.slot else { throw UndoRefused.changedSince }
-            try CourseSchedule.saveSlot(before.slot(updatedAt: now), now: now, store: store, db: db)
+            guard let before = change.before?.slot, let after = change.after?.slot else { return }
+            guard let current else { throw UndoRefused.changedSince }
+            if let successor = change.after?.successor {
+                guard WeeklySlotValues(current) == after, let taking = try WeeklySlot.find(successor.id).fetchOne(db),
+                      WeeklySlotValues(taking) == successor
+                else { throw UndoRefused.changedSince }
+                // Its sessions go back to the old slot first, so the replan moves them onto its
+                // days (ids, lectures and calendar events kept) instead of planning new ones.
+                try LectureSession.where { $0.weeklySlotID.eq(WeeklySlot.ID?.some(successor.id)) }
+                    .update {
+                        $0.weeklySlotID = WeeklySlot.ID?.some(slotID)
+                        $0.updatedAt = now
+                    }
+                    .execute(db)
+                try WeeklySlot.find(successor.id).delete().execute(db)
+                try CourseSchedule.saveSlot(before.slot(updatedAt: now), now: now, store: store, db: db)
+                return
+            }
+            var values = WeeklySlotValues(current)
+            func restore<Value: Equatable>(_ field: WritableKeyPath<WeeklySlotValues, Value>) throws {
+                guard before[keyPath: field] != after[keyPath: field] else { return }
+                guard values[keyPath: field] == after[keyPath: field] else { throw UndoRefused.changedSince }
+                values[keyPath: field] = before[keyPath: field]
+            }
+            try restore(\.kind)
+            try restore(\.weekday)
+            try restore(\.startMinute)
+            try restore(\.durationMinutes)
+            try restore(\.room)
+            try restore(\.validFrom)
+            try restore(\.validUntil)
+            try restore(\.weekInterval)
+            guard values != WeeklySlotValues(current) else { return }
+            try CourseSchedule.saveSlot(values.slot(updatedAt: now), now: now, store: store, db: db)
         case .slotRemove:
             guard let before = change.before?.slot else { return }
             let restored = before.slot(updatedAt: now)
-            guard current == nil, try Course.find(before.courseID).fetchOne(db) != nil else { throw UndoRefused.changedSince }
+            guard current == nil, let course = try Course.find(before.courseID).fetchOne(db) else { throw UndoRefused.changedSince }
+            let lectureStart = try lectureStart(of: course, db: db, now: now)
             let others = try WeeklySlot.where { $0.courseID.eq(before.courseID) }.fetchAll(db)
-            guard !others.contains(where: { sameClass($0, restored) }) else { throw UndoRefused.changedSince }
+            guard !others.contains(where: { sameClass($0, restored, lectureStart: lectureStart) }) else { throw UndoRefused.changedSince }
             try CourseSchedule.saveSlot(restored, now: now, store: store, db: db)
         default:
             break

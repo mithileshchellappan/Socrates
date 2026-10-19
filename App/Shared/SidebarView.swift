@@ -22,7 +22,8 @@ import SwiftUI
 /// (07). The semester, the agent panel's launcher and Settings at the bottom (New Course on a
 /// course's screen, 08). A file drag never moves the sidebar (no course opens or closes, no row
 /// changes height, nothing spring-loads): the row under the cursor lights and files dropped on a
-/// course, lecture or session row are filed exactly there; over the screen, the predicted lecture
+/// course, lecture or session row are filed exactly there (a course's screens and its Notes and
+/// Mail lists stand for the course); over the screen, the predicted lecture
 /// or session row lights if it shows (10, `filingDropTarget`). The whole sidebar is one drop area
 /// (`filingDropZone`), so the window's HUD stays away while the cursor is over it.
 struct SidebarView: View {
@@ -117,9 +118,18 @@ struct SidebarView: View {
                 if foldsMail, mailListsExpanded {
                     // Mockup 05: Mail's lists under the Mail row while one shows.
                     ForEach(mailScopes, id: \.self) { scope in
-                        NavigationLink(value: SidebarItem.mailScope(scope)) {
-                            MailScopeLabel(scope: scope)
-                                .padding(.leading, courseScreenIndent)
+                        if case .course(let courseID) = scope {
+                            // A course's list stands for its course: files dropped on it go there.
+                            NavigationLink(value: SidebarItem.mailScope(scope)) {
+                                MailScopeLabel(scope: scope)
+                                    .padding(.leading, courseScreenIndent)
+                            }
+                            .filingDropTarget(.course(courseID), center: center, showsPrediction: false)
+                        } else {
+                            NavigationLink(value: SidebarItem.mailScope(scope)) {
+                                MailScopeLabel(scope: scope)
+                                    .padding(.leading, courseScreenIndent)
+                            }
                         }
                     }
                 }
@@ -139,6 +149,7 @@ struct SidebarView: View {
                             }
                             .padding(.leading, courseScreenIndent)
                         }
+                        .filingDropTarget(.course(course.id), center: center, showsPrediction: false)
                     }
                 }
             }
@@ -163,6 +174,9 @@ struct SidebarView: View {
                                 CourseScreenSidebarRow(item: item, isSelected: selection == item)
                             }
                             .badge(item == .courseLectures(course.id) ? children.lectures.count : 0)
+                            // Each of its screens stands for the course: files dropped on one
+                            // go into it (a timetable into its settings).
+                            .filingDropTarget(.course(course.id), center: center, showsPrediction: false)
                         }
                     } else if isOpen {
                         ForEach(children.lectures) { lecture in

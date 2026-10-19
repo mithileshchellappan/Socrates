@@ -265,6 +265,9 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     public var deletion: String?
     // weekly_slot (`slot_add`, `slot_change`, `slot_remove`): the slot's values
     public var slot: WeeklySlotValues?
+    /// weekly_slot (`slot_change` from a date, `after` only): the new slot that takes over while
+    /// `slot` ends the day before, so classes held before keep their day, time and room.
+    public var successor: WeeklySlotValues?
 
     public init(
         exists: Bool? = nil,
@@ -293,7 +296,8 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         lectureSessionID: LectureSession.ID? = nil,
         reason: String? = nil,
         deletion: String? = nil,
-        slot: WeeklySlotValues? = nil
+        slot: WeeklySlotValues? = nil,
+        successor: WeeklySlotValues? = nil
     ) {
         self.exists = exists
         self.startsAt = startsAt
@@ -322,6 +326,7 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         self.reason = reason
         self.deletion = deletion
         self.slot = slot
+        self.successor = successor
     }
 
     /// The values of a session's changeable columns.

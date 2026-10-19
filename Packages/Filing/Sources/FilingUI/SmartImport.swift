@@ -14,9 +14,11 @@ extension View {
 
     /// Makes a sidebar course, lecture or session row a drop target across its whole width and
     /// height: files dropped on it go exactly there (filed as the user's choice; on a course,
-    /// smart import picks the lecture).
-    public func filingDropTarget(_ destination: FilingDestination, center: FilingCenter) -> some View {
-        modifier(FilingDropTargetModifier(destination: destination, center: center))
+    /// smart import picks the lecture). `showsPrediction` false: a further row of the same place
+    /// (a course's screens, its Notes or Mail list) lights only under the cursor, so the window's
+    /// prediction lights one row.
+    public func filingDropTarget(_ destination: FilingDestination, center: FilingCenter, showsPrediction: Bool = true) -> some View {
+        modifier(FilingDropTargetModifier(destination: destination, center: center, showsPrediction: showsPrediction))
     }
 
     /// Makes the whole sidebar one drop area around its row targets: while files are dragged
@@ -171,6 +173,7 @@ struct SidebarDropZoneDelegate: DropDelegate {
 struct FilingDropTargetModifier: ViewModifier {
     let destination: FilingDestination
     let center: FilingCenter
+    var showsPrediction = true
     @State private var isTargeted = false
 
     /// How far the drop area reaches past the row's content, up and down: half the space between
@@ -180,7 +183,7 @@ struct FilingDropTargetModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         // Lit under the cursor, and while files dragged over the window's screen would go here.
-        let isLit = isTargeted || center.predictedPlace?.isShown(byRowOf: destination) == true
+        let isLit = isTargeted || (showsPrediction && center.predictedPlace?.isShown(byRowOf: destination) == true)
         content
             .environment(\.isFilingTarget, isLit)
             .listRowBackground(isLit ? FilingTargetHighlight() : nil)
