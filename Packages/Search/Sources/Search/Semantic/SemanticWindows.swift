@@ -10,10 +10,12 @@ import StudyCore
 /// - Transcript: consecutive lines of one slide section (the slide on screen, or one off-slide
 ///   stretch), up to about 60 words; the window stands for its first line's chunk.
 /// - Slide, note, further reading: one window per chunk.
+/// - md: a kept document is one unit (`document_id`), one window per chunk (a page's window of
+///   ≤ 600 characters), in page order.
 /// - Mail: never.
 enum SemanticWindows {
     /// The chunk kinds the index embeds.
-    static let kinds: [SearchChunkKind] = [.transcript, .slide, .note, .furtherReading]
+    static let kinds: [SearchChunkKind] = [.transcript, .slide, .note, .furtherReading, .document]
     /// A transcript window closes before a line that would take it over this many words (a
     /// window under `minimumWords` takes the line anyway).
     static let windowWords = 60
@@ -47,13 +49,14 @@ enum SemanticWindows {
         case .transcript: "recording_id"
         case .slide: "deck_id"
         case .note: "note_id"
+        case .document: "document_id"
         default: "source_id"
         }
     }
 
     /// The unit's windows, from its chunks as they are now.
     static func windows(of unit: Unit, in db: Database) throws -> [Window] {
-        let order = unit.kind == .transcript ? "start_time, id" : (unit.kind == .slide ? "page_number, id" : "id")
+        let order = unit.kind == .transcript ? "start_time, id" : (unit.kind == .slide || unit.kind == .document ? "page_number, id" : "id")
         let rows = try Row.fetchAll(db, sql: """
             SELECT id, deck_id, page_number, text, lang, course_id, lecture_id FROM search_chunk
             WHERE kind = ? AND \(unitColumn(unit.kind)) = ? ORDER BY \(order)
@@ -122,7 +125,7 @@ enum SemanticWindows {
         let chunks = try Row.fetchCursor(db, sql: """
             SELECT kind, unit, max(updated_at) AS newest FROM (
               SELECT kind, CASE kind WHEN 'transcript' THEN recording_id WHEN 'slide' THEN deck_id
-                                     WHEN 'note' THEN note_id ELSE source_id END AS unit, updated_at
+                                     WHEN 'note' THEN note_id WHEN 'document' THEN document_id ELSE source_id END AS unit, updated_at
               FROM search_chunk WHERE kind IN (\(kindList))
             ) WHERE unit IS NOT NULL GROUP BY kind, unit
             """)
