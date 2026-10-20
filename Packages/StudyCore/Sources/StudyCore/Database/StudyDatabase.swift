@@ -12,7 +12,12 @@ public enum StudyDatabase {
     /// (`CloudSyncConfiguration.containerIdentifier()`); SQLiteData's sync metadatabase is then
     /// attached on every connection, as its `SyncEngine` requires. Nil (every build without the
     /// iCloud entitlement): nothing is attached and the database opens exactly as before.
-    public static func open(at url: URL, syncContainer: String? = nil) throws -> any DatabaseWriter {
+    ///
+    /// `carryOver` (oss): true only for the student's real library (`StudyServices.live` without
+    /// a data-root override), which then takes the build's university profile once
+    /// (`UniversityProfileRecord.carryOver`). Demo, parity and snapshot libraries never do, so they
+    /// show what any build shows.
+    public static func open(at url: URL, syncContainer: String? = nil, carryOver: Bool = false) throws -> any DatabaseWriter {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -25,9 +30,11 @@ public enum StudyDatabase {
         }
         let pool = try DatabasePool(path: url.path(percentEncoded: false), configuration: configuration)
         try Schema.migrator().migrate(pool)
-        // A library set up before the profile was data keeps the values it was used with, once
-        // (only builds that carry a profile over, `UniversityProfileRecord.carryOverInfoKey`).
-        UniversityProfileRecord.carryOver(UniversityProfileRecord.carryOverProfile(), into: pool)
+        // The real library, set up before the profile was data, keeps the values it was used
+        // with, once (only builds that carry a profile over, `UniversityProfileRecord.carryOverInfoKey`).
+        if carryOver {
+            UniversityProfileRecord.carryOver(UniversityProfileRecord.carryOverProfile(), into: pool)
+        }
         // The student's university (time zone, prompts, the coach's rules) for everything that
         // reads `UniversityProfile.current`.
         UniversityProfileRecord.install(from: pool)

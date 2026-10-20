@@ -71,7 +71,7 @@ public enum CoachText {
         ChangeSummary.day(day.start(in: CoachModule.timeZone).addingTimeInterval(12 * 3_600), timeZone: CoachModule.timeZone)
     }
 
-    /// "14 Dec – 8 Jan", "22 Feb – 7 Mar".
+    /// "1–12 Feb", "22 Feb – 7 Mar".
     public static func range(_ first: CalendarDay, _ last: CalendarDay) -> String {
         let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
         let firstMonth = months[(first.month - 1 + 12) % 12]

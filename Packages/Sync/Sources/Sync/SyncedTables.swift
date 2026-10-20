@@ -5,7 +5,9 @@ import StudyCore
 /// (device-local processing state: each device runs its own jobs) and the document bank
 /// (`Schema.macOnlyTableNames`, md: documents never leave the Mac). The search index
 /// (`Schema.localTableNames`, `Schema.virtualTableNames`) is rebuilt on each device and never
-/// syncs. Blobs (decks, audio, images) are files, not rows, and do not sync in M7.
+/// syncs. Blobs (decks, audio, images) are files, not rows, and do not sync in M7. The university
+/// profile (`university_profile`, oss) syncs like any row; a device installs a synced profile
+/// the next time it opens the library (`StudyDatabase.open`).
 ///
 /// The record types appear twice, as a list (checked against the schema) and in the engine's
 /// parameter pack; a new table goes into both.
@@ -26,6 +28,7 @@ enum SyncedTables {
         AgentTask.self, AgentChange.self, AgentEvent.self, AgentReminder.self,
         StudyReading.self, StudyQuestion.self, StudySession.self, StudyAnswer.self, StudyBlock.self,
         AgentRequest.self, AgentRequestFile.self,
+        UniversityProfileRecord.self,
     ] }
 
     /// Library tables the list above lacks (empty when sync covers the schema).
@@ -52,6 +55,7 @@ enum SyncedTables {
                 AgentTask.self, AgentChange.self, AgentEvent.self, AgentReminder.self,
                 StudyReading.self, StudyQuestion.self, StudySession.self, StudyAnswer.self, StudyBlock.self,
                 AgentRequest.self, AgentRequestFile.self,
+                UniversityProfileRecord.self,
             containerIdentifier: container,
             startImmediately: false
         )
