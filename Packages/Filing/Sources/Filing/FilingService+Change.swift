@@ -270,7 +270,8 @@ extension FilingService {
             // Never transcribed (it had no course): start now that it has one.
             let job = store.stamp(Job(stage: .transcribe, lectureID: lecture.id, recordingID: recordingID, createdAt: now))
             try Job.upsert { job }.execute(db)
-        } else if lines > 0, newDeck != nil, newDeck != oldDeck, pending == 0 {
+        } else if lines > 0, newDeck != oldDeck || newDeck == nil, pending == 0 {
+            // mr: a lecture without slides gets continuation detection from the align stage.
             let job = store.stamp(Job(stage: .align, lectureID: lecture.id, recordingID: recordingID, createdAt: now))
             try Job.upsert { job }.execute(db)
         }

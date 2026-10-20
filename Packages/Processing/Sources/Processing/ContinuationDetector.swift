@@ -9,7 +9,7 @@ import StudyCore
 ///
 /// Measures per candidate (`Measure`): coverage = the share of the speech time the aligner put
 /// on a slide; confidence = the duration-weighted mean confidence of those slide spans; the
-/// window = the contiguous pages between the 5th and 95th percentile of on-slide time. The best
+/// window = the contiguous pages between the 1st and 99th percentile of on-slide time. The best
 /// coverage × confidence is accepted above the `Thresholds`; within `newestWinsWithin` of it the
 /// newest lecture's deck wins. Reads only: `LectureProcessor`'s `align` stage writes the link,
 /// its change row and the alignment in one transaction.
@@ -25,9 +25,11 @@ public struct ContinuationDetector: Sendable {
         public var minimumConfidence = 0.5
         /// Pages in the window.
         public var minimumWindowPages = 3
-        /// The window: pages between these fractions of the on-slide time.
-        public var windowStart = 0.05
-        public var windowEnd = 0.95
+        /// The window: pages between these fractions of the on-slide time (calibrated: 5 % / 95 %
+        /// cut DC L2's discussed slides 38–39; 1 % / 99 % keeps them and still drops a stray visit
+        /// under 1 % of the on-slide time at either end).
+        public var windowStart = 0.01
+        public var windowEnd = 0.99
         /// A deck of a newer lecture scoring within this of the best wins.
         public var newestWinsWithin = 0.05
 
@@ -167,17 +169,17 @@ public struct ContinuationDetector: Sendable {
             let slides = AlignmentMapping.slides(candidate.pages)
             let prepared = aligner.prepare(slides: slides, transcript: transcript, duration: duration, glossary: glossary)
             let result = prepared.align(anchors: [])
-            measures.append(measure(result, deckID: candidate.deckID, transcript: transcript))
+            measures.append(self.measure(result, deckID: candidate.deckID, transcript: transcript))
             results.append(result)
             stoplists.append(prepared.deckStoplist)
         }
         guard let index = choose(measures) else { return nil }
-        let measure = measures[index]
+        let chosen = measures[index]
         let candidate = candidates[index]
-        let window = measure.firstPage...measure.lastPage
+        let window = chosen.firstPage...chosen.lastPage
         let pages = candidate.pages.filter { window.contains($0.pageNumber) }
         let line = bestLine(segments: segments, result: results[index], pages: pages, stoplist: stoplists[index])
-        return Detection(measure: measure, measures: measures, candidate: candidate, pages: pages, line: line)
+        return Detection(measure: chosen, measures: measures, candidate: candidate, pages: pages, line: line)
     }
 
     /// The index of the accepted measure (they come newest lecture first), nil when none passes.
