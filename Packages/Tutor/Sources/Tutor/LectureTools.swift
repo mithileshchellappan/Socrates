@@ -42,20 +42,25 @@ struct LectureTools: Sendable {
                 courseID = course.id
             }
             let rows: [JSONValue] = library.lectures.filter { courseID == nil || $0.courseID == courseID }.map { lecture in
-                let deck = library.decks[lecture.id]
+                let range = library.slides[lecture.id]
                 let recording = library.firstRecording(lecture.id)
                 var cite: String?
-                if deck != nil {
-                    cite = library.slideCite(lecture.id, page: 1)
+                if let range {
+                    cite = library.slideCite(lecture.id, page: range.firstPage)
                 } else if recording != nil {
                     cite = library.momentCite(lecture.id, recording: nil, seconds: 0)
+                }
+                // mr: the whole deck as its page count; a range of a shared deck as "slides 38–88 of 88".
+                var slides: JSONValue = .null
+                if let range {
+                    slides = range.isWholeDeck ? .int(range.pageCount) : .string("\(range.pagesText) of \(range.pageCount)")
                 }
                 return [
                     "lecture": .string(library.name(lecture)),
                     "key": .string(ChatCitation.key(lecture.id)),
                     "title": .string(lecture.title),
                     "day": TutorJSON.string(TutorLibrary.day(lecture.heldAt)),
-                    "slides": deck.map { .int($0.pageCount) } ?? .null,
+                    "slides": slides,
                     "duration": recording.map { .string(ChatCitation.clock(Int($0.duration))) } ?? .null,
                     "cite": TutorJSON.string(cite),
                 ]
@@ -155,12 +160,14 @@ struct LectureTools: Sendable {
             let library = try await TutorLibrary.load(database)
             guard let reference = library.lecture(call.text("lecture")) else { return .error("No such lecture. Use a key from list_lectures.") }
             let lecture = reference.lecture
-            guard let deck = library.decks[lecture.id] else { return .error("This lecture has no slides.") }
-            guard let page = call.integer("slide"), (1...max(1, deck.pageCount)).contains(page) else {
-                return .error("slide must be 1 to \(deck.pageCount).")
+            guard let range = library.slides[lecture.id] else { return .error("This lecture has no slides.") }
+            guard let page = call.integer("slide") else { return .error("slide must be a deck page number.") }
+            // mr: only the lecture's own pages of a shared deck.
+            guard range.contains(page) else {
+                return .error(range.isWholeDeck ? "slide must be 1 to \(range.pageCount)." : "\(library.name(lecture)) shows \(range.pagesText).")
             }
             let lectureID = lecture.id
-            let deckID = deck.id
+            let deckID = range.deckID
             let includeNotes = self.includeNotes
             let rows = try await database.read { db in
                 (

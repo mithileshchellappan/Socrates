@@ -299,7 +299,7 @@ public struct ChangeLog: Sendable {
     /// queued alignment. `UndoRefused.changedSince` when the link changed since.
     private func undoDeckLink(_ id: AgentChange.ID, at date: Date) async throws -> Bool {
         let store = services.records
-        let result: (undone: Bool, jobs: [Job]) = try await services.database.write { db in
+        let result: (undone: Bool, jobs: [Job]) = try await services.database.write { db -> (undone: Bool, jobs: [Job]) in
             guard let change = try AgentChange.find(id).fetchOne(db), change.undoneAt == nil else { return (false, []) }
             let jobs = try Self.undoDeckLink(change, db: db, store: store, now: date)
             try AgentChangeRepository.markUndone(id, at: date, db: db)

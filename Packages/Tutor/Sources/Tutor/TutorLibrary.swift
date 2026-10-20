@@ -7,25 +7,28 @@ import StudyCore
 
 /// The lectures as the tutor's tools and context blocks name them: "DC L2", the lecture's key
 /// (`ChatCitation.key`, the first 8 hex of its id), its recordings (oldest first: a moment marker
-/// without a recording key is on the first) and its deck. Read once per tool call (a few dozen
+/// without a recording key is on the first) and its slides. Read once per tool call (a few dozen
 /// rows).
 struct TutorLibrary: Sendable {
     let courses: CourseList
     /// In course order, then by number.
     let lectures: [Lecture]
     let recordings: [Lecture.ID: [Recording]]
-    /// The lecture's deck: the newest coarse span's (as Review opens it).
-    let decks: [Lecture.ID: Deck]
+    /// mr: the lecture's slides, a page range of a deck that other lectures may share
+    /// (`LectureSlides.current`, as Review shows them; deck page numbers kept).
+    let slides: [Lecture.ID: LectureSlideRange]
 
     static func load(_ database: any DatabaseReader) async throws -> TutorLibrary {
         let courses = try await CourseList.load(database)
-        let rows = try await database.read { db in
-            (
-                lectures: try Lecture.all.fetchAll(db),
-                recordings: try Recording.where { $0.lectureID.isNot(nil) }.order(by: \.startedAt).fetchAll(db),
-                spans: try LectureDeckSpan.where { $0.startTime.is(nil) }.order(by: \.updatedAt).fetchAll(db),
-                decks: try Deck.all.fetchAll(db)
-            )
+        typealias Rows = (lectures: [Lecture], recordings: [Recording], slides: [Lecture.ID: LectureSlideRange])
+        let rows: Rows = try await database.read { db -> Rows in
+            let lectures = try Lecture.all.fetchAll(db)
+            var slides: [Lecture.ID: LectureSlideRange] = [:]
+            for lecture in lectures {
+                if let range = try LectureSlides.current(lectureID: lecture.id, in: db) { slides[lecture.id] = range }
+            }
+            let recordings = try Recording.where { $0.lectureID.isNot(nil) }.order(by: \.startedAt).fetchAll(db)
+            return (lectures: lectures, recordings: recordings, slides: slides)
         }
         let order = Dictionary(courses.courses.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let lectures = rows.lectures.sorted { lhs, rhs in
@@ -39,12 +42,7 @@ struct TutorLibrary: Sendable {
         for recording in rows.recordings {
             if let lectureID = recording.lectureID { recordings[lectureID, default: []].append(recording) }
         }
-        let deckByID = Dictionary(rows.decks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var decks: [Lecture.ID: Deck] = [:]
-        for span in rows.spans {
-            if let deck = deckByID[span.deckID] { decks[span.lectureID] = deck }
-        }
-        return TutorLibrary(courses: courses, lectures: lectures, recordings: recordings, decks: decks)
+        return TutorLibrary(courses: courses, lectures: lectures, recordings: recordings, slides: rows.slides)
     }
 
     func lecture(id: Lecture.ID?) -> Lecture? {
