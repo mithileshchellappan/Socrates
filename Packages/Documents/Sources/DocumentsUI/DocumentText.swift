@@ -75,7 +75,7 @@ enum DocumentText {
         return String(localized: "Added \(day)")
     }
 
-    /// A date row's day: "Mon 1 Feb", a range "1–12 Feb" / "28 Dec–8 Jan", with ", 10:15" when the
+    /// A date row's day: "Mon 1 Feb", a range "18–29 Jan" / "28 Dec–8 Jan", with ", 10:15" when the
     /// document states a time. The year is added when the day is not within the half year behind
     /// and the year ahead ("Tue 30 Sep 2025").
     static func day(_ date: DocumentDate, now: Date) -> String {

@@ -248,6 +248,32 @@ enum AnswerMarkdownBlock: Hashable {
     }
 }
 
+/// An answer's inks on the panel's opaque surface (#f8f8fa / #222225; the phone's content surface),
+/// as solid colours: never the hierarchical `.secondary`, which AppKit draws vibrant in the
+/// inspector column and as black 49.8 % (3.9:1 on #f8f8fa) on the compact panel (docs/DESIGN.md
+/// §3.1, §8.6).
+enum AnswerInk {
+    /// The words: DESIGN's secondary label, #6e6e73 / #a1a1a6 (4.8:1 / 6.2:1 on the panel).
+    static func body(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 0xA1 / 255, green: 0xA1 / 255, blue: 0xA6 / 255) : Color(red: 0x6E / 255, green: 0x6E / 255, blue: 0x73 / 255)
+    }
+
+    /// Bold, headings, table headers, inline code and code blocks: the label, #1d1d1f / #f5f5f7.
+    static func emphasis(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 0xF5 / 255, green: 0xF5 / 255, blue: 0xF7 / 255) : Color(red: 0x1D / 255, green: 0x1D / 255, blue: 0x1F / 255)
+    }
+
+    /// Bullets and a quote's bar: DESIGN's tertiary label, #a1a1a6 / #6e6e73.
+    static func quiet(_ scheme: ColorScheme) -> Color {
+        body(scheme == .dark ? .light : .dark)
+    }
+
+    /// Behind inline code: `QuietFill` (rgb(120,120,128) at 10 % / 20 %), as a code block's.
+    static func codeFill(_ scheme: ColorScheme) -> Color {
+        Color(red: 120 / 255, green: 120 / 255, blue: 128 / 255).opacity(scheme == .dark ? 0.20 : 0.10)
+    }
+}
+
 /// The answer's sparkle where it stands apart from a paragraph (before a list, a table, change
 /// rows, the skeleton line): drawn as the paragraph's inline sparkle, at the answer's text size,
 /// so every answer's one sparkle has one size and the skeleton-to-text swap keeps it.
@@ -261,8 +287,9 @@ struct AnswerSparkle: View {
     }
 }
 
-/// An answer's text as its Markdown blocks, in the answer's grey: ONE sparkle at the start of
-/// the first block when `sparkle`.
+/// An answer's text as its Markdown blocks, in the answer's grey (`AnswerInk.body`) with its
+/// emphasis (bold, headings, table headers, code) in `AnswerInk.emphasis`: ONE sparkle at the
+/// start of the first block when `sparkle`.
 struct AnswerMarkdownView: View {
     let text: String
     let sparkle: Bool
@@ -293,7 +320,7 @@ struct AnswerMarkdownView: View {
         case .paragraph(let text):
             words(text, sparkle: sparkle)
         case .heading(let level, let text):
-            words(text, sparkle: sparkle, size: metrics.text + (level <= 2 ? 1 : 0), weight: .semibold)
+            words(text, sparkle: sparkle, size: metrics.text + (level <= 2 ? 1 : 0), weight: .semibold, ink: AnswerInk.emphasis(colorScheme))
                 .padding(.top, 2)
         case .rule:
             Hairline()
@@ -313,7 +340,8 @@ struct AnswerMarkdownView: View {
         }
     }
 
-    /// A list: its markers right-aligned in one column as wide as the widest (at least 10 pt).
+    /// A list: its markers right-aligned in one column as wide as the widest (at least 10 pt);
+    /// bullets quiet, numbers in the words' grey (a number is read).
     private func list(_ items: [AnswerMarkdownBlock.ListItem], sparkle: Bool) -> some View {
         let widest = items.map(\.marker.count).max() ?? 1
         let markerWidth = max(10, CGFloat(widest) * metrics.text * 0.6)
@@ -322,7 +350,7 @@ struct AnswerMarkdownView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(verbatim: item.marker)
                         .font(.system(size: metrics.text).monospacedDigit())
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(item.marker.hasSuffix(".") ? AnswerInk.body(colorScheme) : AnswerInk.quiet(colorScheme))
                         .frame(minWidth: markerWidth, alignment: .trailing)
                     words(item.text, sparkle: sparkle && index == 0)
                 }
@@ -349,7 +377,7 @@ struct AnswerMarkdownView: View {
             ScrollView(.horizontal) {
                 Text(verbatim: code)
                     .font(.system(size: metrics.text - 1.5, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AnswerInk.emphasis(colorScheme))
                     .lineSpacing(2)
                     .textSelection(.enabled)
                     .fixedSize()
@@ -363,19 +391,20 @@ struct AnswerMarkdownView: View {
             words(text, sparkle: false)
                 .padding(.leading, 10)
                 .overlay(alignment: .leading) {
-                    Capsule().fill(.quaternary).frame(width: 2)
+                    Capsule().fill(AnswerInk.quiet(colorScheme)).frame(width: 2)
                 }
         case .paragraph, .heading, .rule, .list:
             EmptyView()
         }
     }
 
-    /// A table's cells: the header semibold over a full hairline, rows between half-strength ones.
+    /// A table's cells: the header semibold in the emphasis ink over a full hairline, rows between
+    /// half-strength ones.
     private func tableGrid(_ table: AnswerMarkdownBlock.Table) -> some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 5) {
             GridRow {
                 ForEach(Array(table.header.enumerated()), id: \.offset) { column, cell in
-                    words(cell, sparkle: false, size: metrics.text - 1, weight: .semibold)
+                    words(cell, sparkle: false, size: metrics.text - 1, weight: .semibold, ink: AnswerInk.emphasis(colorScheme))
                         .gridColumnAlignment(Self.alignment(table.alignments[column]))
                 }
             }
@@ -397,23 +426,25 @@ struct AnswerMarkdownView: View {
         .padding(.vertical, 2)
     }
 
-    /// Words with inline Markdown and their checked chips: one `Text`.
-    private func words(_ text: String, sparkle: Bool, size: CGFloat? = nil, weight: Font.Weight = .regular) -> some View {
+    /// Words with inline Markdown and their checked chips: one `Text`, in `ink` (the body grey
+    /// unless given), its bold and inline code in the emphasis ink.
+    private func words(_ text: String, sparkle: Bool, size: CGFloat? = nil, weight: Font.Weight = .regular, ink: Color? = nil) -> some View {
         let answer = AnswerText(text, check: text.contains("[[") ? check : nil, logs: logs, openLecture: openLecture, prefixes: prefixes)
         let textSize: CGFloat = size ?? metrics.text
-        let codeSize: CGFloat = textSize - 1.5
+        let style = AnswerText.RunStyle(
+            codeSize: textSize - 1.5, weight: weight, emphasis: AnswerInk.emphasis(colorScheme), codeFill: AnswerInk.codeFill(colorScheme)
+        )
+        let drawn = answer.text(sparkle: sparkle, style: style)
         return Group {
             if answer.hasChips {
-                answer.text(sparkle: sparkle, codeSize: codeSize)
-                    .textRenderer(AnswerChipRenderer(colorScheme: colorScheme))
+                drawn.textRenderer(AnswerChipRenderer(colorScheme: colorScheme))
             } else {
-                answer.text(sparkle: sparkle, codeSize: codeSize)
-                    .textSelection(.enabled)
+                drawn.textSelection(.enabled)
             }
         }
         .font(.system(size: textSize, weight: weight))
         .lineSpacing(metrics.answerLineSpacing)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(ink ?? AnswerInk.body(colorScheme))
         .fixedSize(horizontal: false, vertical: true)
         // md: a document chip's help is its title.
         .documentChipHelp(answer)

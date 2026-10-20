@@ -67,8 +67,8 @@ enum SnapshotRunner {
             }
             var shots: [Shot] = [Shot(name: "01-today", item: .today), Shot(name: "06-calendar", item: .calendar)]
             model.fixedCalendarWeek = ProcessInfo.processInfo.environment["STUDYPORTAL_SNAPSHOT_WEEK"].flatMap(CalendarDay.init(rawValue:))
-            if let cc = courses.first(where: { $0.shortName == "DC" }) {
-                shots.append(Shot(name: "08-course-settings", item: .courseSettings(cc.id)))
+            if let dc = courses.first(where: { $0.shortName == "DC" }) {
+                shots.append(Shot(name: "08-course-settings", item: .courseSettings(dc.id)))
             }
             if let id = lecture("DC", 2) {
                 shots.append(Shot(name: "03-review-dc-l2", item: .lecture(id), target: (id, ReviewTarget(page: 16, time: 2247)), size: CGSize(width: 1440, height: 900)))

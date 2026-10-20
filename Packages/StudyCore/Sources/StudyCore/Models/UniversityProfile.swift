@@ -279,7 +279,7 @@ public struct ExamPeriod: Hashable, Sendable, Codable {
     }
 }
 
-/// A registration window ("Register for exams", Mon 1 – Fri 12 Feb 2027, in the exam office's
+/// A registration window ("Register for exams", Mon 18 – Fri 29 Jan 2027, in the exam office's
 /// system).
 public struct RegistrationWindow: Hashable, Sendable, Codable {
     /// The sitting it registers for (1: the first exam period; 2: the second).
@@ -289,7 +289,7 @@ public struct RegistrationWindow: Hashable, Sendable, Codable {
     /// Where the student registers (the exam office's online system, by its name).
     public var system: String
     /// The profile's own line, used as the item's source quote: "Registration for the first exam
-    /// period closes on 12 Feb."
+    /// period closes on 29 Jan."
     public var rule: String
 
     public init(sitting: Int, first: CalendarDay, last: CalendarDay, system: String, rule: String) {

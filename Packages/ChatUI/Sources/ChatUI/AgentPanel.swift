@@ -123,8 +123,8 @@ enum AgentPanelMetrics {
 }
 
 /// What one window's panel shows and holds: its size, the conversation, the composer's text and
-/// files, the message sent but not stored yet. Every size shows the whole conversation;
-/// only a render may show some of its exchanges.
+/// files, the message sent but not stored yet. Every size shows the whole conversation (earlier
+/// exchanges never drop out of the compact panel); only a render may show some of its exchanges.
 @MainActor
 @Observable
 final class AgentPanelModel {

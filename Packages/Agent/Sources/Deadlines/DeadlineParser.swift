@@ -5,8 +5,8 @@ import StudyCore
 /// course by name, short name or token, the kind by its words, and the rest as the title.
 /// Deterministic, no network, well under 5 ms (the caller caches the courses).
 ///
-/// "DC sheet 1 due next Tuesday 12:00" on Fri 16 Oct 2026 → exercise "DC sheet 1", Cloud
-/// Concepts, Tue 20 Oct 12:00. "Klausur CL am 12.02." → exam "Klausur CL", all-day 12 Feb 2027.
+/// "DC sheet 1 due next Tuesday 12:00" on Fri 16 Oct 2026 → exercise "DC sheet 1", Data
+/// Centers, Tue 20 Oct 12:00. "Klausur CL am 11.02." → exam "Klausur CL", all-day 11 Feb 2027.
 /// Nil without a date.
 public enum DeadlineParser {
     public static func parse(
@@ -77,8 +77,9 @@ public enum DeadlineParser {
         "deadline", "@",
     ]
 
-    /// The course named by its name, short name or token ("DC", "CL", "SN"). Tokens are
-    /// matched as written in capitals at word boundaries ("it" is a word, "SN" a course).
+    /// The course named by its name, short name or token ("DC", "CL", "SN"; a subtitled name
+    /// also by its main title's initials). Tokens are matched as written in capitals at word boundaries (a token
+    /// that is also a word, "IS", counts only in capitals).
     static func course(in text: String, courses: [Course]) -> Course? {
         let folded = " " + TextFolding.words(text).joined(separator: " ") + " "
         let originalWords = Set(Self.originalWords(text))

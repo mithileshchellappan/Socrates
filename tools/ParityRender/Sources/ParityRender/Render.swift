@@ -75,7 +75,7 @@ import SwiftUI
 // no recording) and `mr-review-l2` (DC L2's Review on slide 16 at 37:27, as `03-review`).
 //
 // `--calendar-sample` (a library with mockup 06's rows, e.g. .data/parity/m3/library): adds an
-// exam review from a timetable file (Mon 19 Oct, 11:00), a Data Centers exam (Fri 23 Oct,
+// exam review from a timetable file (Wed 21 Oct, 11:00), a Data Centers exam (Fri 23 Oct,
 // 09:00, two rooms) and study-pass rows for DC Lecture 2 to the clone, and the shots
 // `06-calendar-session` (the week's first session with a lecture, its detail popover drawn
 // inline: render with `--week 2026-10-12`) and `06-calendar-exam` (the week's exam).
@@ -259,7 +259,7 @@ struct ParityRender {
         if options.sweep {
             shots = try await sweepShots(services: services, newestMail: newestMail, now: options.now)
         } else {
-            let cc = try ParityMode.course("DC", services: services)
+            let dc = try ParityMode.course("DC", services: services)
             let (_, dcLecture2) = try ParityMode.lecture("DC", 2, services: services)
             // M6 (`--m6-sample`): mockup 04's open note, the DC L2 note (titled in its first block).
             let dcL2Note = try await services.database.read { db in
@@ -320,7 +320,7 @@ struct ParityRender {
                 RenderShot(name: "ma-today-files", window: .main(ParityMode.Launch(selection: .today, panel: panel(.compact, qemu, exchanges: 0..<1)))),
                 // The sidebar, Course Settings and the agent's right sidebar together (the window
                 // layout of 2026-10-20: no column cut off, Course Settings adapts).
-                RenderShot(name: "ma-course-expanded", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id), panel: panel(.expanded, weekendPlan)))),
+                RenderShot(name: "ma-course-expanded", window: .main(ParityMode.Launch(selection: .courseSettings(dc.id), panel: panel(.expanded, weekendPlan)))),
                 RenderShot(name: "ma-mail-expanded", window: .main(ParityMode.Launch(
                     selection: .mailScope(.inbox), mailSelection: newestMail, panel: panel(.expanded, weekendPlan)
                 ))),
@@ -329,8 +329,8 @@ struct ParityRender {
                     reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
                     panel: panel(.expanded, weekendPlan)
                 ))),
-                RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(cc.id)))),
-                RenderShot(name: "08-course-lectures", window: .main(ParityMode.Launch(selection: .courseLectures(cc.id)))),
+                RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(dc.id)))),
+                RenderShot(name: "08-course-lectures", window: .main(ParityMode.Launch(selection: .courseLectures(dc.id)))),
                 // M6 (on a copy seeded by `tools/parity/seed --m6-sample`): mockup 04, the Notes row's
                 // All Notes with the DC L2 note selected. Review's ink on slide 16 shows in `03-review`.
                 RenderShot(name: "04-notes", window: .main(ParityMode.Launch(selection: .notes(.all), noteSelection: dcL2Note))),
@@ -338,7 +338,7 @@ struct ParityRender {
                     try await ParityMode.importPreview(model: model, services: services, size: size)
                 }
             ]
-            // CL L1 (36 slides, a 44:42 recording, aligned) where review left off: the sidebar
+            // CL L1 (36 slides, a recording, aligned) where review left off: the sidebar
             // on a lecture's screen, and with `--review-layout` the student's collapsed panes.
             if let (_, clLecture1) = try? ParityMode.lecture("CL", 1, services: services) {
                 shots.append(RenderShot(name: "03-review-cl", window: .main(ParityMode.Launch(selection: .lecture(clLecture1.id)))))
@@ -354,7 +354,7 @@ struct ParityRender {
                 ))))
             }
             shots += try await mdShots(services: services)
-            if options.mc { shots = try mcShots(cc: cc, services: services) }
+            if options.mc { shots = try mcShots(dc: dc, services: services) }
             if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
             if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
         }
@@ -436,22 +436,22 @@ struct ParityRender {
     }
 
     /// mc: the study coach's screens (mockups 11–19, 16 is M7's iPhone) the library has.
-    static func mcShots(cc: Course, services: StudyServices) throws -> [RenderShot] {
+    static func mcShots(dc: Course, services: StudyServices) throws -> [RenderShot] {
         func screen(_ selection: SidebarItem) -> RenderShot.Window { .main(ParityMode.Launch(selection: selection)) }
         var shots = [
             RenderShot(name: "11-today-plan", window: screen(.today)),
             RenderShot(name: "12-today-travel", window: screen(.today)),
             RenderShot(name: "13-study", window: screen(.study)),
-            RenderShot(name: "14-course-progress", window: screen(.courseProgress(cc.id))),
-            RenderShot(name: "17-practice-exam-start", window: screen(.courseProgress(cc.id)), examSheet: cc.id)
+            RenderShot(name: "14-course-progress", window: screen(.courseProgress(dc.id))),
+            RenderShot(name: "17-practice-exam-start", window: screen(.courseProgress(dc.id)), examSheet: dc.id)
         ]
         for (kind, question, name) in [(StudySessionKind.round, 4, "15-quiz-4"), (.round, 7, "15-quiz-7"), (.exam, 2, "18-practice-exam-2"), (.exam, 8, "18-practice-exam-8")] {
             if let session = try? ParityMode.practiceSession(kind, question: question, services: services) {
                 shots.append(RenderShot(name: name, window: screen(.practice(session.id))))
             }
         }
-        if let results = try? ParityMode.practiceResults(cc, services: services) {
-            shots.append(RenderShot(name: "19-practice-exam-results", window: screen(.practiceResults(results.id, course: cc.id))))
+        if let results = try? ParityMode.practiceResults(dc, services: services) {
+            shots.append(RenderShot(name: "19-practice-exam-results", window: screen(.practiceResults(results.id, course: dc.id))))
         }
         return shots
     }
@@ -488,15 +488,15 @@ struct ParityRender {
     static func seedCalendar(services: StudyServices) async throws {
         let zone = UniversityProfile.current.zone
         let cl = try ParityMode.course("CL", services: services)
-        let cc = try ParityMode.course("DC", services: services)
+        let dc = try ParityMode.course("DC", services: services)
         let samples: [(TrackedItem, file: String, quote: String)] = [
             (TrackedItem(
                 courseID: cl.id, kind: .event, title: "Computational Linguistics exam review", details: "Room 204",
-                dueAt: CalendarDay(year: 2026, month: 10, day: 20).date(minute: 14 * 60, in: zone),
+                dueAt: CalendarDay(year: 2026, month: 10, day: 21).date(minute: 11 * 60, in: zone),
                 room: "B2-0204 (Room 204) Sample Street 3, Seminar Building (S | 03)", inCalendar: true
-            ), "timetable (7).ics", "Computational Linguistics - Klausureinsicht · 19.10.2026 11:00"),
+            ), "timetable (7).ics", "Computational Linguistics - Klausureinsicht · 21.10.2026 11:00"),
             (TrackedItem(
-                courseID: cc.id, kind: .exam, title: "Data Centers exam", details: "Room 102 / Hall A",
+                courseID: dc.id, kind: .exam, title: "Data Centers exam", details: "Room 102 / Hall A",
                 dueAt: CalendarDay(year: 2026, month: 10, day: 23).date(minute: 9 * 60, in: zone),
                 room: "B1-0102 (Room 102) Sample Street 1, Lecture Building (L | 01) / B0-0001 (Hall A) Example Road 2, Main Hall (M | 02)",
                 inCalendar: true

@@ -368,7 +368,7 @@ public final class PhoneRecorder {
     // MARK: - Preview (debug builds)
 
     #if DEBUG
-    /// Debug builds only (parity renders): Data Centers's Lecture 2 at slide 17 of 88 (the
+    /// Debug builds only (parity renders): Data Centers' Lecture 2 at slide 17 of 88 (the
     /// deck when its file is in the library), 38:41 in, a few stamps and an input level. It never
     /// records. `stopped`: the screen after Stop, with the capture and an outbox. `startsActivity`
     /// also shows its Live Activity (iOS).

@@ -128,7 +128,7 @@ public struct FilingMatcher: Sendable {
         var signals: [FilingSignal] = []
         let surnames = course.professors.compactMap(TextMatch.surname)
 
-        // File name: "Data_Centers_03.pdf", "NLS_L2.m4a".
+        // File name: "Data_Centers_03.pdf", "CL_L2.m4a".
         let base = (evidence.fileName as NSString).deletingPathExtension
         if TextMatch.contains(base, phrase: course.name) {
             signals.append(FilingSignal(kind: .deckTitle, evidence: evidence.fileName, weight: 0.4))
