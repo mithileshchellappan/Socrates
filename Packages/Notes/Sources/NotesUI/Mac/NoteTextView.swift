@@ -50,12 +50,17 @@ final class NoteTextView: NSTextView {
         positionTrailingAccessory()
     }
 
-    /// The document's text column: at most 680 wide, at least 52 pt from each side, under the stamp.
+    /// The document's text column: 52 pt in from the left (Apple Notes), at most 680 wide, under
+    /// the stamp. A wide editor leaves the room on the right, never a gap before the text.
     func updateInsets() {
         guard isDocument else { return }
-        let side = max(NoteMetrics.documentSide, (bounds.width - NoteMetrics.documentWidth) / 2)
-        let inset = NSSize(width: side.rounded(), height: 27)
+        let side = NoteMetrics.documentSide
+        let inset = NSSize(width: side, height: 27)
         if textContainerInset != inset { textContainerInset = inset }
+        let width = max(120, min(NoteMetrics.documentWidth, bounds.width - side * 2)).rounded()
+        if let container = textContainer, container.size.width != width {
+            container.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        }
         if stampLabel.superview == nil {
             stampLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             stampLabel.textColor = .tertiaryLabelColor
@@ -69,7 +74,9 @@ final class NoteTextView: NSTextView {
         guard isDocument else { return }
         stampLabel.sizeToFit()
         let size = stampLabel.frame.size
-        stampLabel.frame = CGRect(x: ((bounds.width - size.width) / 2).rounded(), y: 2, width: size.width, height: size.height)
+        // Centred over the text column.
+        let column = textContainer?.size.width ?? bounds.width
+        stampLabel.frame = CGRect(x: (textContainerOrigin.x + (column - size.width) / 2).rounded(), y: 2, width: size.width, height: size.height)
     }
 
     /// The end of the text in view coordinates: the last line's trailing edge and its line box.
@@ -897,7 +904,8 @@ struct NoteTextEditor: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
+        // The column's width is set by `updateInsets` (at most 680), not by the view's.
+        textView.textContainer?.widthTracksTextView = false
         textView.textContainer?.size = NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude)
         scrollView.documentView = textView
         return scrollView
