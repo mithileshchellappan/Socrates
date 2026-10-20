@@ -206,7 +206,7 @@ public actor AppAgent {
             try await runtime.send(trimmed, context: blocks, turnContext: turnContext, readUntrustedContent: untrusted, to: conversation)
             id = conversation
         } else {
-            let title = trimmed.isEmpty ? (attachments.first?.fileName ?? "Files") : trimmed
+            let title = Self.title(words: trimmed, attachments: attachments)
             id = try await runtime.start(
                 .app, text: trimmed, context: blocks, courseID: context.courseID, turnContext: turnContext, title: title,
                 readUntrustedContent: untrusted
@@ -250,6 +250,49 @@ public actor AppAgent {
         else { return nil }
         AppAgentModule.log.info("Filed slides from the panel (\(advice.confidence, privacy: .public))")
         return AttachmentBlocks.filed(filed, fileName: attachment.fileName, reason: advice.reason)
+    }
+
+    /// A new conversation's title (the history menu): the first line of the words, cut at the last
+    /// word boundary at or before 40 characters + "…", its first letter uppercased; files alone:
+    /// the first file's name.
+    static func title(words: String, attachments: [AgentAttachment]) -> String {
+        let firstLine = words.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let line = firstLine.trimmingCharacters(in: .whitespaces)
+        guard !line.isEmpty else { return attachments.first?.fileName ?? "Files" }
+        var title = line
+        if line.count > 40 {
+            let head = line.prefix(41)
+            if let space = head.lastIndex(where: \.isWhitespace), space > head.startIndex {
+                title = String(head[..<space])
+            } else {
+                title = String(line.prefix(40))
+            }
+            title = title.trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters)) + "…"
+        }
+        return title.prefix(1).uppercased() + title.dropFirst()
+    }
+
+    /// Answers the conversation's last message again after its run failed (the panel's Try again).
+    public func retry(_ id: AgentConversation.ID) async throws {
+        try await runtime.retry(id)
+    }
+
+    /// The readable sentence for a message that did not go because of one of its files ("Notes.pdf
+    /// could not be read."); nil for any other error.
+    public static func readableSendFailure(_ error: any Error) -> String? {
+        (error as? AttachmentBlocks.Failure)?.description
+    }
+
+    /// The faint context line a message sent in `context` would carry (the screen's glyph and
+    /// label); nil when it cannot be read.
+    public func contextLine(for context: AgentContext) async -> (glyph: String, label: String)? {
+        do {
+            let block = try await AgentContextBlock.build(context, services: services)
+            return (block.glyph, block.label)
+        } catch {
+            AppAgentModule.log.error("Reading the context line failed: \(ReadableError.kind(of: error), privacy: .public)")
+            return nil
+        }
     }
 
     /// Stops the agent's answer in `id` (the conversation ends `failed`, "Stopped.").

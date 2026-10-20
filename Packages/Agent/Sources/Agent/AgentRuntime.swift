@@ -70,6 +70,8 @@ public actor AgentRuntime {
         case busy
         case emptyText
         case unknownKind(String)
+        /// Try again on a conversation whose last turn is a finished answer.
+        case nothingToRetry
 
         public var description: String {
             switch self {
@@ -77,6 +79,7 @@ public actor AgentRuntime {
             case .unknownConversation: "no such conversation"
             case .busy: "the agent is still working on this conversation"
             case .emptyText: "nothing to send"
+            case .nothingToRetry: "the last message was answered"
             }
         }
     }
@@ -230,6 +233,50 @@ public actor AgentRuntime {
         }
     }
 
+    /// ma: answers a conversation's last message again after its run failed (the panel's Try
+    /// again). Calls the failed run left open get "interrupted" results first (in a user turn
+    /// without words); a conversation whose last turn is a finished answer has nothing to retry.
+    public func retry(_ id: AgentConversation.ID) async throws {
+        guard tasks[id] == nil, !sending.contains(id) else { throw RuntimeError.busy }
+        sending.insert(id)
+        defer { sending.remove(id) }
+        guard let conversation = try await services.records.fetch(AgentConversation.self, id: id) else {
+            throw RuntimeError.unknownConversation
+        }
+        let spec = try await spec(for: conversation.kind, conversationID: id)
+        let stored = try await conversations.turns(id)
+        var history = try Self.history(stored)
+        let readUntrusted = Self.readUntrustedContent(stored, history: history, tools: spec.tools)
+        guard let last = history.last else { throw RuntimeError.nothingToRetry }
+        if last.role == .assistant {
+            let open = last.content.blocks.compactMap(\.toolUse)
+            guard !open.isEmpty else { throw RuntimeError.nothingToRetry }
+            let results: [ContentBlock] = open.map { call in
+                .toolResult(ToolResultBlock(toolUseID: call.id, content: .text("interrupted"), isError: true))
+            }
+            let turn = MessageParam.user(results)
+            try await conversations.append(to: id, role: .user, message: try Self.encode(turn), context: nil)
+            history.append(turn)
+        }
+        let message = try Self.lastStudentMessage(stored)
+        try await conversations.setState(id, .running)
+        launch(conversation, spec: spec, history: history, studentText: message.text, turnContext: message.context, readUntrusted: readUntrusted)
+    }
+
+    /// The student's words in the conversation's last message (its last text block, after the
+    /// context blocks; empty for files alone) and the context stored with it.
+    static func lastStudentMessage(_ stored: [AgentTurn]) throws -> (text: String, context: AgentTurnContext?) {
+        for turn in stored.reversed() where turn.role == .user {
+            let message = try MessageParam(json: JSONValue.parse(turn.message))
+            let texts = message.content.blocks.compactMap(\.textValue)
+            // A turn of tool results only is not a message.
+            guard let words = texts.last else { continue }
+            let trimmed = words.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed.hasPrefix("<") ? "" : trimmed, turn.context)
+        }
+        return ("", nil)
+    }
+
     /// Stops a running conversation (it ends `failed`).
     public func stop(_ id: AgentConversation.ID) async {
         guard let task = tasks[id] else { return }
@@ -346,14 +393,20 @@ public actor AgentRuntime {
             case .truncated:
                 try await conversations.setState(id, .failed, error: "The answer was cut off.")
             case .iterationLimit:
-                try await conversations.setState(id, .failed, error: "Stopped after \(spec.maxIterations) calls.")
+                AgentModule.log.notice("Run stopped after \(spec.maxIterations, privacy: .public) calls")
+                try await conversations.setState(id, .failed, error: String(localized: "Stopped after too many steps."))
             case .other(let reason):
-                try await conversations.setState(id, .failed, error: "Stopped: \(reason?.rawValue ?? "unknown").")
+                // The raw stop reason goes to the log only.
+                AgentModule.log.notice("Run stopped early: \(reason?.rawValue ?? "unknown", privacy: .public)")
+                try await conversations.setState(id, .failed, error: String(localized: "The answer stopped early."))
             }
         } catch {
             // One readable sentence is stored and shown; the error itself goes to the log only.
+            // Only a task's run is tried again by itself (the queue): an answer's says "busy".
             if (error as? ClaudeError)?.isServiceTrouble == true { serviceTrouble.insert(id) }
-            let message = ReadableError.sentence(for: error, otherwise: String(localized: "The answer could not be saved."), now: now())
+            let message = ReadableError.sentence(
+                for: error, otherwise: String(localized: "The answer could not be saved."), retrying: conversation.kind == .task, now: now()
+            )
             AgentModule.log.error(
                 "Conversation failed: \(ReadableError.kind(of: error), privacy: .public): \(String(describing: error), privacy: .private)"
             )

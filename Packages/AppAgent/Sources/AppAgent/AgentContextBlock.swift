@@ -141,6 +141,10 @@ public struct AgentContextBlock: Sendable, Hashable {
             glyph = "doc.on.doc"
         case .today:
             lines.append("screen: Today")
+        case .study:
+            lines.append("screen: Study")
+            label = "Study"
+            glyph = "brain"
         default:
             lines.append("screen: \(context.screen.rawValue)")
             label = context.screen.rawValue.capitalized
