@@ -15,3 +15,5 @@ xcuserdata/
 *.qta
 .env
 .claude/worktrees/
+# Signing values of one machine (see Config/Local.xcconfig.example)
+Config/Local.xcconfig

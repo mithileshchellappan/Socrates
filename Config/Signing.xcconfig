@@ -1,0 +1,20 @@
+// Signing and bundle IDs for every target (project.yml's configFiles). These defaults let anyone
+// build: no team, the Mac app signed to run locally (ad-hoc), bundle IDs under com.example.
+//
+// To sign with your own team, copy Local.xcconfig.example to Local.xcconfig (not committed) and
+// set your values there; it is included last, so its values win.
+
+// Your Apple developer team ID (empty: none). iPhone device builds need one; a free personal team
+// works. Simulator builds and the ad-hoc Mac build do not.
+STUDYPORTAL_TEAM =
+
+// The bundle ID prefix: the app is $(BUNDLE_ID_PREFIX).studyportal, its widget extension
+// $(BUNDLE_ID_PREFIX).studyportal.widgets.
+BUNDLE_ID_PREFIX = com.example
+
+// The Mac app's signing identity and style. "-" with Automatic signs to run locally; macOS may
+// ask for permissions again after a rebuild because the signature changes every build.
+STUDYPORTAL_MAC_SIGN_IDENTITY = -
+STUDYPORTAL_MAC_SIGN_STYLE = Automatic
+
+#include? "Local.xcconfig"

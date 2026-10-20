@@ -1,0 +1,17 @@
+// Copy to Config/Local.xcconfig (not committed) and fill in your own values, then run
+// `xcodegen generate`. Signing.xcconfig includes it last, so these values win.
+
+// Your Apple developer team ID (Xcode > Settings > Accounts, or developer.apple.com).
+STUDYPORTAL_TEAM = ABCDE12345
+
+// Your own reverse-DNS prefix: the app becomes com.yourname.studyportal.
+BUNDLE_ID_PREFIX = com.yourname
+
+// The Mac app with your Apple Development certificate, signed automatically:
+// STUDYPORTAL_MAC_SIGN_IDENTITY = Apple Development
+// STUDYPORTAL_MAC_SIGN_STYLE = Automatic
+
+// Or with a Developer ID certificate, signed manually (the signature stays the same across
+// rebuilds, so Keychain and privacy permissions stick; no provisioning profile is needed):
+// STUDYPORTAL_MAC_SIGN_IDENTITY = Developer ID Application
+// STUDYPORTAL_MAC_SIGN_STYLE = Manual
