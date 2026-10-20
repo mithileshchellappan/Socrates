@@ -665,6 +665,10 @@ struct RootView: View {
             if let id { documentSelection = id }
             documentPage = page
             selection = .documents
+        // ln: until the integrator pushes the notes page on the course's Lectures
+        // (`SidebarItem.lectureNotes`), the lecture's review.
+        case .lectureNotes(let id):
+            open(.lecture(id))
         }
     }
 

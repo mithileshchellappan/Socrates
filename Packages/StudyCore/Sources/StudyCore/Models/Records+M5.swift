@@ -36,6 +36,9 @@ public struct AgentMemory: StudyRecord {
     /// which date to sit, seminar hours, classes not attended); written with the memory by
     /// `mark_away_days` / `plan_adjust`. Forgetting the memory drops the rule.
     @Column("plan_rule", as: PlanRule?.JSONRepresentation.self) public var planRule: PlanRule?
+    /// v16 (ln): a `preference` memory's length for lecture notes, typed (written with the memory
+    /// by `set_notes_length`). Forgetting the memory drops the rule.
+    @Column("notes_rule", as: NotesRule?.JSONRepresentation.self) public var notesRule: NotesRule?
 
     public init(
         id: UUID = UUID(),
@@ -49,7 +52,8 @@ public struct AgentMemory: StudyRecord {
         forgottenAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        planRule: PlanRule? = nil
+        planRule: PlanRule? = nil,
+        notesRule: NotesRule? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -63,6 +67,7 @@ public struct AgentMemory: StudyRecord {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.planRule = planRule
+        self.notesRule = notesRule
     }
 
     /// A memory's text is at most this long.

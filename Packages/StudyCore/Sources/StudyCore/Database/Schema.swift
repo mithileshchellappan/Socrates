@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -73,6 +73,10 @@ public enum Schema {
             try db.execute(sql: v15)
             try placeSeededSemester(db, now: Date(), zone: .current)
         }
+        // ln, additive only (new tables and a nullable column): lecture notes.
+        migrator.registerMigration("v16") { db in
+            try db.execute(sql: v16)
+        }
         return migrator
     }
 
@@ -94,6 +98,7 @@ public enum Schema {
         "agent_request", "agent_request_file",
         "document", "document_page",
         "university_profile",
+        "lecture_notes", "lecture_notes_mark",
     ]
 
     /// md: library tables that stay on the Mac and never sync (PRD "Document bank": documents never
@@ -1323,6 +1328,77 @@ public enum Schema {
             arguments: .init(values)
         )
     }
+
+    /// v16 (ln, docs/plan-lecture-notes.md §5.5): lecture notes.
+    /// - `lecture_notes`: one row per version of a lecture's notes (never deleted; the current one is
+    ///   the newest neither discarded nor cancelled); `body` the Markdown (`LectureNotesFormat`),
+    ///   `sections` JSON `[LectureNotesSection]`;
+    /// - `lecture_notes_mark`: the student's highlights and kept answers, anchored by quoted text;
+    /// - `agent_memory.notes_rule`: JSON `NotesRule` on a `preference` memory.
+    /// Both tables sync (no document-bank text goes in); no unique index (CloudKit rules).
+    static let v16 = """
+        CREATE TABLE "lecture_notes" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "course_id" TEXT NOT NULL REFERENCES "course"("id") ON DELETE CASCADE,
+          "lecture_id" TEXT NOT NULL REFERENCES "lecture"("id") ON DELETE CASCADE,
+          "version" INTEGER NOT NULL DEFAULT 1,
+          "state" TEXT NOT NULL DEFAULT 'queued',
+          "source" TEXT NOT NULL DEFAULT 'recording',
+          "request" TEXT,
+          "length" TEXT,
+          "target_words" INTEGER,
+          "body" TEXT NOT NULL DEFAULT '',
+          "sections" TEXT NOT NULL DEFAULT '[]',
+          "input_hash" TEXT,
+          "prompt_version" INTEGER,
+          "model" TEXT,
+          "effort" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "cost_usd" REAL,
+          "repairs" INTEGER NOT NULL DEFAULT 0,
+          "error" TEXT,
+          "task_id" TEXT REFERENCES "agent_task"("id") ON DELETE SET NULL,
+          "created_by" TEXT NOT NULL DEFAULT 'agent',
+          "paused_until" TEXT,
+          "discarded_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "finished_at" TEXT,
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "lecture_notes_lecture" ON "lecture_notes"("lecture_id", "version");
+        CREATE INDEX "lecture_notes_course" ON "lecture_notes"("course_id");
+        CREATE INDEX "lecture_notes_state" ON "lecture_notes"("state");
+        CREATE INDEX "lecture_notes_task" ON "lecture_notes"("task_id");
+        CREATE INDEX "lecture_notes_api_call" ON "lecture_notes"("api_call_id");
+
+        CREATE TABLE "lecture_notes_mark" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "lecture_id" TEXT NOT NULL REFERENCES "lecture"("id") ON DELETE CASCADE,
+          "notes_id" TEXT REFERENCES "lecture_notes"("id") ON DELETE SET NULL,
+          "kind" TEXT NOT NULL DEFAULT 'highlight',
+          "section_key" TEXT NOT NULL DEFAULT '',
+          "exact" TEXT NOT NULL DEFAULT '',
+          "prefix" TEXT NOT NULL DEFAULT '',
+          "suffix" TEXT NOT NULL DEFAULT '',
+          "start_offset" INTEGER,
+          "end_offset" INTEGER,
+          "question" TEXT,
+          "answer" TEXT,
+          "model" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "cost_usd" REAL,
+          "created_by" TEXT NOT NULL DEFAULT 'user',
+          "orphaned_at" TEXT,
+          "removed_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "lecture_notes_mark_lecture" ON "lecture_notes_mark"("lecture_id");
+        CREATE INDEX "lecture_notes_mark_notes" ON "lecture_notes_mark"("notes_id");
+        CREATE INDEX "lecture_notes_mark_api_call" ON "lecture_notes_mark"("api_call_id");
+
+        ALTER TABLE "agent_memory" ADD COLUMN "notes_rule" TEXT;
+        """
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row
     /// (from → sender, list_id → list_id, subject → subject). The column stays, unread.

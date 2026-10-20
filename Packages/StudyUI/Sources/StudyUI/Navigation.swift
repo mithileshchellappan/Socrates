@@ -34,6 +34,10 @@ public enum StudyDestination: Hashable, Sendable {
     /// newest), from a search hit, a `[[doc …]]` chip or a course's related documents. `page`: the
     /// page a hit or chip names (the reader shows the document; Quick Look opens at its start).
     case documents(StudyDocument.ID?, page: Int?)
+    /// ln: a lecture's notes (docs/plan-lecture-notes.md), pushed full width on its course's
+    /// Lectures (the sidebar keeps the course's Lectures row selected; the toolbar's Back returns to
+    /// the list).
+    case lectureNotes(Lecture.ID)
 
     public static func lecture(_ id: Lecture.ID) -> StudyDestination { .lecture(id, ReviewTarget()) }
 

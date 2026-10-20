@@ -150,6 +150,9 @@ struct PhoneRootView: View {
             // A fresh request: opening the same place again moves there again.
             target.request = UUID()
             cover = .lecture(id, target)
+        // ln: lecture notes are Mac-only in this milestone: the lecture opens.
+        case .lectureNotes(let id):
+            cover = .lecture(id, ReviewTarget(request: UUID()))
         case .practice(let id):
             // Practice exams stay on the Mac: an exam's session shows the course instead.
             guard let services = model.services else { return }

@@ -310,6 +310,8 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     // part of the change)
     public var universityProfile: UniversityProfile?
     public var semester: SemesterValues?
+    // agent_memory (ln: a `preference` memory's notes length, `notes_rule`)
+    public var notesRule: NotesRule?
 
     public init(
         exists: Bool? = nil,
@@ -346,7 +348,8 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         spanSource: SpanSource? = nil,
         spanUpdatedAt: Date? = nil,
         universityProfile: UniversityProfile? = nil,
-        semester: SemesterValues? = nil
+        semester: SemesterValues? = nil,
+        notesRule: NotesRule? = nil
     ) {
         self.exists = exists
         self.startsAt = startsAt
@@ -383,6 +386,7 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         self.spanUpdatedAt = spanUpdatedAt
         self.universityProfile = universityProfile
         self.semester = semester
+        self.notesRule = notesRule
     }
 
     /// The values of a session's changeable columns.

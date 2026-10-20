@@ -63,6 +63,9 @@ public struct AgentContext: Hashable, Sendable, Codable {
     public var sessionID: LectureSession.ID?
     /// md: the selected kept document (the Documents screen).
     public var documentID: StudyDocument.ID?
+    /// ln: a passage of a lecture's notes the student took to the panel (Continue in Chat), with
+    /// the Ask exchange so far.
+    public var notesPassage: NotesPassageContext?
 
     public init(
         screen: Screen,
@@ -81,7 +84,8 @@ public struct AgentContext: Hashable, Sendable, Codable {
         selection: [ChatSource] = [],
         itemID: TrackedItem.ID? = nil,
         sessionID: LectureSession.ID? = nil,
-        documentID: StudyDocument.ID? = nil
+        documentID: StudyDocument.ID? = nil,
+        notesPassage: NotesPassageContext? = nil
     ) {
         self.screen = screen
         self.courseID = courseID
@@ -100,6 +104,7 @@ public struct AgentContext: Hashable, Sendable, Codable {
         self.itemID = itemID
         self.sessionID = sessionID
         self.documentID = documentID
+        self.notesPassage = notesPassage
     }
 
     /// Today, nothing selected.
@@ -133,6 +138,7 @@ public struct AgentContext: Hashable, Sendable, Codable {
         merged.itemID = other.itemID ?? itemID
         merged.sessionID = other.sessionID ?? sessionID
         merged.documentID = other.documentID ?? documentID
+        merged.notesPassage = other.notesPassage ?? notesPassage
         return merged
     }
 }
