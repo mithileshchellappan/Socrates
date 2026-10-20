@@ -116,6 +116,8 @@ public enum GlossarySuggestions {
     }
 
     /// Which pages of which deck a lecture showed; with times for one visit (`LectureDeckSpan`).
+    /// Without seconds: the lecture's range of the deck (its coarse span; mr: one deck serves
+    /// several lectures, each with its range).
     public struct Span: Hashable, Sendable {
         public var lectureID: Lecture.ID
         public var deckID: Deck.ID
@@ -346,6 +348,12 @@ public enum GlossarySuggestions {
         return parts.count > 1 ? .none : .word
     }
 
+    /// A lecture and one of its decks.
+    struct LectureDeck: Hashable {
+        var lectureID: Lecture.ID
+        var deckID: Deck.ID
+    }
+
     /// Every word on the course's slides, with the pages it is on and those transcribed lectures
     /// showed.
     static func slideCandidates(_ input: Input, transcript: TranscriptText) -> [String: Candidate] {
@@ -356,11 +364,18 @@ public enum GlossarySuggestions {
             if deckIndex[page.deckID] == nil { deckIndex[page.deckID] = deckIndex.count }
             pageCount[page.deckID, default: 0] += 1
         }
+        // mr: a lecture's range of a deck (a span without seconds); a visit counts only inside it.
+        var ranges: [LectureDeck: ClosedRange<Int>] = [:]
+        for span in input.spans where span.seconds == 0 && span.firstPage <= span.lastPage {
+            ranges[LectureDeck(lectureID: span.lectureID, deckID: span.deckID)] = span.firstPage...span.lastPage
+        }
         // Pages the transcribed lectures showed, the lecture that showed them, and for how long.
         var shownBy: [Deck.ID: [Int: Lecture.ID]] = [:]
         var seconds: [Deck.ID: [Int: Double]] = [:]
         for span in input.spans where transcribed.contains(span.lectureID) && span.firstPage <= span.lastPage {
+            let range = ranges[LectureDeck(lectureID: span.lectureID, deckID: span.deckID)]
             for page in span.firstPage...span.lastPage {
+                if span.seconds > 0, let range, !range.contains(page) { continue }
                 if shownBy[span.deckID]?[page] == nil { shownBy[span.deckID, default: [:]][page] = span.lectureID }
                 if span.seconds > 0 { seconds[span.deckID, default: [:]][page, default: 0] += span.seconds }
             }

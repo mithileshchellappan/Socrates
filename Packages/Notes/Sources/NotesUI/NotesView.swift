@@ -440,14 +440,15 @@ public struct NotesView: View {
                     for id in ids {
                         guard let note = try Note.find(id).fetchOne(db) else { continue }
                         // Review finds a slide's notes by lecture + page, so a slide note keeps its
-                        // anchor only in a lecture that shows its deck; elsewhere it becomes a
-                        // lecture (or course) note. The recording belongs to the old lecture.
+                        // anchor only in a lecture that shows that slide (mr: its range of the
+                        // deck); elsewhere it becomes a lecture (or course) note. The recording
+                        // belongs to the old lecture.
                         let lectureChanged = lectureID != note.lectureID
                         var dropsSlide = note.pageNumber != nil && lectureChanged
-                        if dropsSlide, let lectureID, let deckID = note.deckID {
-                            dropsSlide = try LectureDeckSpan
-                                .where { $0.lectureID.eq(lectureID) && $0.deckID.eq(deckID) }
-                                .fetchCount(db) == 0
+                        if dropsSlide, let lectureID, let deckID = note.deckID, let page = note.pageNumber {
+                            let range = try LectureSlides.current(lectureID: lectureID, in: db)
+                            let shows: Bool = range.map { $0.deckID == deckID && $0.contains(page) } ?? false
+                            dropsSlide = !shows
                         }
                         try Note.find(id).update {
                             $0.courseID = Course.ID?.some(courseID)

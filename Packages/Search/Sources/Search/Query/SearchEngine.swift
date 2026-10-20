@@ -452,13 +452,11 @@ struct Retrieval {
             }
             if let lectureID = query.lectureID {
                 // A slide belongs to its deck, not a lecture: the lecture's slides are the pages
-                // inside its deck spans.
-                filter += """
-                     AND (c.lecture_id = ? OR (c.kind = 'slide' AND EXISTS (SELECT 1 FROM lecture_deck_span s
-                       WHERE s.lecture_id = ? AND s.deck_id = c.deck_id AND s.first_page IS NOT NULL
-                         AND c.page_number BETWEEN s.first_page AND coalesce(s.last_page, s.first_page))))
-                    """
-                arguments += [lectureID.storageText, lectureID.storageText]
+                // of its range (mr: `LectureSlides.current`).
+                let slides = try LectureSlideScope.condition(lectureID: lectureID, alias: "c", in: db)
+                filter += " AND (c.lecture_id = ? OR \(slides.sql))"
+                arguments += [lectureID.storageText]
+                arguments += slides.arguments
             }
             filter += ")"
         }
@@ -618,7 +616,7 @@ struct Retrieval {
                 }
             case .slide:
                 if let deckID = meta.deckID, let page = meta.page,
-                   let visit = Self.firstVisit(deck: deckID, page: page, spans: spans, lectures: lectures) {
+                   let visit = Self.firstVisit(deck: deckID, page: page, spans: spans, lectures: lectures, preferring: query.lectureID) {
                     hit.lectureID = visit.lecture
                     hit.time = visit.time
                     hit.recordingID = visit.recording
@@ -666,13 +664,26 @@ struct Retrieval {
 
     /// The lecture that showed `page` of `deck` first (earliest lecture, then earliest visit) and
     /// when; a lecture whose deck range only covers the page (no timed visit) comes after those.
+    /// mr: one deck serves several lectures, each with its range (coarse span): a timed visit
+    /// counts only inside its lecture's range of the deck; `preferring` (a lecture-scoped search)
+    /// wins when its range covers the page.
     static func firstVisit(
-        deck: Deck.ID, page: Int, spans: [LectureDeckSpan], lectures: [Lecture.ID: Lecture]
+        deck: Deck.ID, page: Int, spans: [LectureDeckSpan], lectures: [Lecture.ID: Lecture], preferring: Lecture.ID? = nil
     ) -> (lecture: Lecture.ID, time: Double?, recording: Recording.ID?)? {
-        let covering = spans.filter { span in
-            guard span.deckID == deck, let first = span.firstPage else { return false }
-            return first <= page && page <= (span.lastPage ?? first)
+        var ranges: [Lecture.ID: ClosedRange<Int>] = [:]
+        for span in spans.sorted(by: { $0.updatedAt < $1.updatedAt }) where span.deckID == deck && !span.isTimed {
+            let first: Int = span.firstPage ?? 1
+            let last: Int = max(span.lastPage ?? Int.max, first)
+            ranges[span.lectureID] = first...last
         }
+        let all = spans.filter { span in
+            guard span.deckID == deck, let first = span.firstPage else { return false }
+            guard first <= page, page <= (span.lastPage ?? first) else { return false }
+            guard span.isTimed, let range = ranges[span.lectureID] else { return true }
+            return range.contains(page)
+        }
+        let preferred = all.filter { $0.lectureID == preferring }
+        let covering = preferred.isEmpty ? all : preferred
         func order(_ span: LectureDeckSpan) -> (Date, Double) {
             (lectures[span.lectureID]?.heldAt ?? .distantFuture, span.startTime ?? .infinity)
         }

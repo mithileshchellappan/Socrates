@@ -411,9 +411,11 @@ public actor CoachEngine: StudyCoaching {
             let page = block.firstPage
             let time = try await services.database.read { db -> Double? in
                 guard let page else { return nil }
-                let spans = try LectureDeckSpan
+                let timed = try LectureDeckSpan
                     .where { $0.lectureID.eq(lectureID) && $0.startTime.isNot(nil) && $0.firstPage.isNot(nil) }
                     .fetchAll(db)
+                // mr: only visits on the lecture's slides (its range).
+                let spans = try CoachRows.onSlides(timed, in: db)
                     .filter { ($0.firstPage ?? 0) <= page && page <= ($0.lastPage ?? $0.firstPage ?? 0) }
                 return spans.compactMap(\.startTime).min()
             }
