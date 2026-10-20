@@ -243,6 +243,9 @@ public struct StudyScope: Hashable, Sendable, Codable {
         public static let weakest: Self = "weakest"
         /// Practice exam: one old exam's own questions (`oldExamTitle`).
         public static let oldExam: Self = "old_exam"
+        /// ln: one lecture's round questions (Practice on its notes page): `lectureID`, the
+        /// course in `courseIDs`.
+        public static let lecture: Self = "lecture"
     }
 
     public var kind: Kind
@@ -251,6 +254,8 @@ public struct StudyScope: Hashable, Sendable, Codable {
     public var sessionID: StudySession.ID?
     public var readingID: StudyReading.ID?
     public var oldExamTitle: String?
+    /// ln: the lecture of a `lecture` round.
+    public var lectureID: Lecture.ID?
 
     public init(
         kind: Kind,
@@ -258,7 +263,8 @@ public struct StudyScope: Hashable, Sendable, Codable {
         topic: TopicKey? = nil,
         sessionID: StudySession.ID? = nil,
         readingID: StudyReading.ID? = nil,
-        oldExamTitle: String? = nil
+        oldExamTitle: String? = nil,
+        lectureID: Lecture.ID? = nil
     ) {
         self.kind = kind
         self.courseIDs = courseIDs
@@ -266,9 +272,15 @@ public struct StudyScope: Hashable, Sendable, Codable {
         self.sessionID = sessionID
         self.readingID = readingID
         self.oldExamTitle = oldExamTitle
+        self.lectureID = lectureID
     }
 
     public static func course(_ id: Course.ID) -> StudyScope { StudyScope(kind: .course, courseIDs: [id]) }
+
+    /// ln: one lecture's round (its notes' Check yourself questions and the coach's drafts).
+    public static func lecture(_ id: Lecture.ID, course: Course.ID) -> StudyScope {
+        StudyScope(kind: .lecture, courseIDs: [course], lectureID: id)
+    }
 }
 
 /// Where Start takes the student (`StudyCoaching.start(block:)`); the screen maps it to a
