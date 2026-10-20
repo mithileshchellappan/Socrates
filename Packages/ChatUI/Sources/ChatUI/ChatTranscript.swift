@@ -4,12 +4,13 @@ import StudyCore
 
 /// The conversation as the chat shows it: the student's messages and the agent's answers. One
 /// answer block is all the agent wrote between two messages of the student (its text blocks
-/// across the tool loop's calls); thinking, tool calls, tool results and the `<mail>` context
-/// blocks are not shown.
+/// across the tool loop's calls, `answerText`); thinking, tool calls, tool results and the
+/// `<mail>` context blocks are not shown.
 struct ChatTranscript: Equatable {
     enum Entry: Identifiable, Equatable {
         case student(id: AgentTurn.ID, text: String)
-        case answer(id: AgentTurn.ID, text: String)
+        /// The texts of the assistant turns after a message, in order (shown by `answerText`).
+        case answer(id: AgentTurn.ID, parts: [AnswerPart])
 
         var id: AgentTurn.ID {
             switch self {
@@ -21,6 +22,9 @@ struct ChatTranscript: Equatable {
     var entries: [Entry] = []
     /// The stored turns it was read from (live text follows exactly this many).
     var turnCount = 0
+    /// Where each of the student's messages is among the stored turns (its index): text written
+    /// after `n` stored turns answers the last message before index `n`.
+    var positions: [AgentTurn.ID: Int] = [:]
     /// M5: the web pages the conversation's web tools returned (WebSearch, WebFetch, the `url`
     /// of list_study_items' verified further reading; no other tool's result, so a link in a
     /// mail or a slide is never a source), by `CitationCheck.normalized` key → the https URL as
@@ -41,12 +45,11 @@ struct ChatTranscript: Equatable {
         var answerID: AgentTurn.ID?
         var answer: [AnswerPart] = []
         func flush() {
-            let kept = Self.withoutNarration(answer)
-            if let answerID, !kept.isEmpty { entries.append(.answer(id: answerID, text: kept.joined(separator: "\n\n"))) }
+            if let answerID, !answer.isEmpty { entries.append(.answer(id: answerID, parts: answer)) }
             answerID = nil
             answer = []
         }
-        for turn in turns {
+        for (index, turn) in turns.enumerated() {
             guard let digest = cache.digest(turn) else { continue }
             webPages.merge(digest.webPages, uniquingKeysWith: { first, _ in first })
             switch turn.role {
@@ -57,6 +60,7 @@ struct ChatTranscript: Equatable {
                 guard digest.words != nil || !files.isEmpty else { continue }
                 flush()
                 entries.append(.student(id: turn.id, text: digest.words ?? ""))
+                positions[turn.id] = index
                 if let context = turn.context { contexts[turn.id] = context }
                 times[turn.id] = turn.createdAt
             default:
@@ -69,24 +73,36 @@ struct ChatTranscript: Equatable {
     }
 
     /// One assistant turn's text in an answer.
-    struct AnswerPart {
+    struct AnswerPart: Equatable, Sendable {
         var text: String
         var hasToolUse: Bool
     }
 
-    /// The answer's texts without the narration before tool calls ("Let me check your
-    /// calendar."): a tool-use turn's text is left out when it is one line under 160 characters
-    /// and a later turn of the same answer has text (an answer written before a `remember` call
-    /// stays: it is the last text or longer).
-    static func withoutNarration(_ parts: [AnswerPart]) -> [String] {
+    /// An answer as the thread shows it: its stored parts without the narration before tool calls
+    /// ("Let me check your calendar."), then `following` (text written after them that no stored
+    /// turn holds: a stopped run's, the live text). A tool-use turn's text is narration when it is
+    /// one line under 160 characters without a marker and the text after it (later parts and
+    /// `following`) is longer: a change marker or a short fact before a `remember` call stays,
+    /// and the rule reads the same while the answer streams and once it is stored (the text above
+    /// never jumps when the final turn lands). Nil: nothing to show.
+    static func answerText(_ parts: [AnswerPart], following: [String] = []) -> String? {
+        let extra = following.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        // The length of the text after each part.
+        var after = Array(repeating: 0, count: parts.count)
+        var total = extra.reduce(0) { $0 + $1.count }
+        for index in parts.indices.reversed() {
+            after[index] = total
+            total += parts[index].text.count
+        }
         var kept: [String] = []
         for index in parts.indices {
             let part = parts[index]
-            let laterText = parts[(index + 1)...].contains { !$0.text.isEmpty }
-            let isNarration = part.hasToolUse && laterText && !part.text.contains("\n") && part.text.count < 160
+            let isNarration = part.hasToolUse && !part.text.contains("\n") && part.text.count < 160 && !part.text.contains("[[")
+                && after[index] > part.text.count
             if !isNarration { kept.append(part.text) }
         }
-        return kept
+        kept += extra
+        return kept.isEmpty ? nil : kept.joined(separator: "\n\n")
     }
 
     /// The tools whose results name citable web pages.
@@ -100,11 +116,13 @@ struct ChatTranscript: Equatable {
 
     /// A block the app put before the student's words (`<context …>`, `<catalog …>`,
     /// `<task_result …>`, `<memory>`, `<mail …>`, `<filed …>` for slides filed from the message,
-    /// `<attached_file …>` for a long PDF's first pages, mc's `<reminder …>`), never shown as the
-    /// student's message: a message of files alone shows only its tiles.
+    /// `<attached_file …>` for a long PDF's first pages, mc's `<reminder …>`), or Try again's
+    /// `<retry>` turn: never shown as the student's message (a message of files alone shows only
+    /// its tiles; a turn of tool results and `<retry>` belongs to the answer).
     static func isContextBlock(_ text: String) -> Bool {
         let head = text.prefix(16).trimmingCharacters(in: .whitespacesAndNewlines)
-        return ["<context", "<catalog", "<task_result", "<memory", "<mail", "<filed", "<reminder", "<attached_file"].contains { head.hasPrefix($0) }
+        return ["<context", "<catalog", "<task_result", "<memory", "<mail", "<filed", "<reminder", "<attached_file", "<retry"]
+            .contains { head.hasPrefix($0) }
     }
 
     /// The student's last message has no answer yet.

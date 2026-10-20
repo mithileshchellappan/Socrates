@@ -9,10 +9,14 @@ public struct LiveReply: Sendable, Hashable {
     /// The number of stored turns this text follows.
     public var afterTurns: Int
     public var text: String
+    /// The run ended without storing this text (stopped, failed, cut off): it is all that will
+    /// ever be of that answer, so it stays under the message it answered.
+    public var unsaved: Bool
 
-    public init(afterTurns: Int, text: String) {
+    public init(afterTurns: Int, text: String, unsaved: Bool = false) {
         self.afterTurns = afterTurns
         self.text = text
+        self.unsaved = unsaved
     }
 }
 
@@ -49,10 +53,20 @@ final class LiveReplies: Sendable {
         for subscriber in subscribers { subscriber.yield(reply) }
     }
 
-    /// The run ended: later subscribers get nothing. Current subscribers keep their last value;
-    /// the stored turns and the conversation's state tell them it is over (no flicker between the
-    /// end of the stream and the stored turn landing).
+    /// The run ended: later subscribers get nothing but its unsaved text (a panel opened after a
+    /// stopped or failed run still keeps it). Current subscribers keep their last value; the
+    /// stored turns and the conversation's state tell them it is over (no flicker between the end
+    /// of the stream and the stored turn landing).
     func end(_ id: AgentConversation.ID) {
+        state.withLock { entries in
+            if entries[id]?.reply?.unsaved != true { entries[id]?.reply = nil }
+            if let entry = entries[id], entry.subscribers.isEmpty, entry.reply == nil { entries[id] = nil }
+        }
+    }
+
+    /// A new run starts: the last run's unsaved text is no longer handed to later subscribers
+    /// (Try again answers that message anew).
+    func clear(_ id: AgentConversation.ID) {
         state.withLock { entries in
             entries[id]?.reply = nil
             if entries[id]?.subscribers.isEmpty == true { entries[id] = nil }

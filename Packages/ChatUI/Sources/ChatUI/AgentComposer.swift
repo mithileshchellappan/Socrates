@@ -225,7 +225,9 @@ struct AgentTaskLineSection: View {
     var body: some View {
         let tasks = tasksQuery.wrappedValue
         if !tasks.isEmpty {
+            // 6 pt from the thread: its faded bottom edge never touches the line.
             AgentTaskLine(tasks: tasks, now: now)
+                .padding(.top, 6)
                 .padding(.bottom, 6)
         }
     }

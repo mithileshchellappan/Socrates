@@ -17,7 +17,16 @@ struct PanelExchange: Identifiable, Equatable {
     var text: String
     var context: AgentTurnContext?
     var sentAt: Date
-    var answer: String?
+    /// The texts of the answer's stored turns (`ChatTranscript.answerText` shows them).
+    var parts: [ChatTranscript.AnswerPart] = []
+    /// Where the message is among the stored turns.
+    var position = 0
+    /// What runs answering it wrote and never stored (stopped, failed, cut off), in order: it
+    /// stays under the message after later ones are sent.
+    var unsaved: [String] = []
+
+    /// The answer as shown without the live text; nil when nothing was written.
+    var answer: String? { ChatTranscript.answerText(parts, following: unsaved) }
 }
 
 /// What the thread shows, in order: exchanges and finished sub-agent tasks' results.
@@ -35,20 +44,25 @@ enum PanelThreadItem: Identifiable, Equatable {
 }
 
 enum PanelThread {
-    /// The exchanges of a transcript (the student's message with the answer after it).
-    static func exchanges(_ transcript: ChatTranscript) -> [PanelExchange] {
+    /// The exchanges of a transcript (the student's message with the answer after it). An
+    /// `unsaved` text goes under the last message stored before it.
+    static func exchanges(_ transcript: ChatTranscript, unsaved: [ChatLiveReply] = []) -> [PanelExchange] {
         var exchanges: [PanelExchange] = []
         for entry in transcript.entries {
             switch entry {
             case .student(let id, let text):
                 exchanges.append(PanelExchange(
-                    id: id, text: text, context: transcript.contexts[id], sentAt: transcript.times[id] ?? .distantPast
+                    id: id, text: text, context: transcript.contexts[id], sentAt: transcript.times[id] ?? .distantPast,
+                    position: transcript.positions[id] ?? 0
                 ))
-            case .answer(_, let text):
+            case .answer(_, let parts):
                 guard !exchanges.isEmpty else { continue }
-                let last = exchanges.count - 1
-                exchanges[last].answer = exchanges[last].answer.map { $0 + "\n\n" + text } ?? text
+                exchanges[exchanges.count - 1].parts += parts
             }
+        }
+        for reply in unsaved {
+            guard let index = exchanges.lastIndex(where: { $0.position < reply.afterTurns }) else { continue }
+            exchanges[index].unsaved.append(reply.text)
         }
         return exchanges
     }
@@ -198,6 +212,11 @@ struct AgentThreadView: View {
     @State private var contentHeight: CGFloat = 0
     /// The thread is scrolled to (within 24 pt of) its end: a streaming answer follows it.
     @State private var isAtBottom = true
+    /// More than the thread's bottom padding is below the visible part: the compact thread fades
+    /// its bottom edge (no row is cut off hard against the task line or the composer).
+    @State private var hidesEnd = false
+    /// The scroll view's visible height (the opening place keeps `topClear` above the question).
+    @State private var viewportHeight: CGFloat = 0
     /// When the thread was placed on its latest question (once per thread view).
     @State private var placedAt: Date?
     /// The student scrolled or sent since: the opening place is not set again.
@@ -242,7 +261,8 @@ struct AgentThreadView: View {
 
     /// Whether the live text may show at all: while the run lasts, after it finished until its
     /// stored turn lands (the answer never blinks out in between), and after it stopped or failed
-    /// (what was written stays). `LiveAnswerText` also checks it follows exactly the stored turns.
+    /// until its unsaved text comes (`LiveReplyBox.unsaved`). `LiveAnswerText` also checks it
+    /// follows exactly the stored turns.
     private var showsLive: Bool {
         guard let state = conversation?.state else { return false }
         return state == .running || state == .finished || state == .failed
@@ -280,8 +300,15 @@ struct AgentThreadView: View {
 
     private var check: CitationCheck { CitationCheck(rows: rows, webPages: transcript.webPages) }
 
+    /// Try again's hand-over: the unsaved text of the answer it replaces stays hidden until the
+    /// run starts (it comes back when the retry could not go).
+    private var replaced: [ChatLiveReply] {
+        awaitsRun ? model.awaitingRun?.replaces ?? [] : []
+    }
+
     var body: some View {
-        let exchanges = PanelThread.exchanges(transcript)
+        let hidden = replaced
+        let exchanges = PanelThread.exchanges(transcript, unsaved: live.unsaved.filter { !hidden.contains($0) })
         let items = PanelThread.items(
             exchanges: exchanges,
             tasks: tasksQuery.wrappedValue.filter { $0.state != .succeeded || ($0.result ?? "").isEmpty == false },
@@ -348,13 +375,20 @@ struct AgentThreadView: View {
                 guard let conversationID else { return }
                 let box = model.liveBox(for: conversationID)
                 for await reply in actions.liveReply(conversationID) {
-                    // The end of the stream (nil) leaves the last text: a stopped run keeps what
-                    // it wrote, and a finished one's text stays until its stored turn is read
-                    // (`LiveSource` shows a reply only after exactly the stored turns).
+                    // The end of the stream (nil) leaves the last text: a finished run's text
+                    // stays until its stored turn is read (`LiveSource` shows a reply only after
+                    // exactly the stored turns).
                     guard let reply else { continue }
-                    box.reply = reply
                     // Set once (each set re-renders the thread): the citation rows are read for it.
                     if !box.sawMarker, reply.text.contains("[[") { box.sawMarker = true }
+                    if reply.isUnsaved {
+                        // A stopped, failed or cut-off run's text: it stays under the message it
+                        // answered, also once later messages are sent and answered.
+                        if !box.unsaved.contains(reply) { box.unsaved.append(reply) }
+                        if box.reply?.afterTurns == reply.afterTurns { box.reply = nil }
+                        continue
+                    }
+                    box.reply = reply
                 }
             }
             .task(id: citesLectures) {
@@ -369,17 +403,24 @@ struct AgentThreadView: View {
             .environment(\.openURL, OpenURLAction { url in open(url) })
     }
 
-    /// The hand-over ends once this conversation's run is seen starting, or ending after it.
+    /// The hand-over ends once this conversation's run is seen starting, or ending after it; Try
+    /// again's run then replaces the unsaved text it answers anew.
     private func settleAwaitedRun() {
         guard let awaited = model.awaitingRun, let conversation, awaited.conversationID == conversation.id else { return }
         let started = conversation.state == .running
         let endedSince = conversation.state != .running && conversation.updatedAt >= awaited.sentAt
-        if started || endedSince { model.awaitingRun = nil }
+        guard started || endedSince else { return }
+        model.awaitingRun = nil
+        guard !awaited.replaces.isEmpty else { return }
+        let box = model.liveBox(for: conversation.id)
+        box.unsaved.removeAll { awaited.replaces.contains($0) }
+        if let reply = box.reply, awaited.replaces.contains(reply) { box.reply = nil }
     }
 
     /// Compact: as tall as the thread up to `maxHeight` (sized in the same layout pass as its
     /// rows, so it grows and shrinks with them without a frame's lag), then it scrolls under a
-    /// faded top edge. Expanded and the sheet: the whole height, the rows at its bottom.
+    /// faded top edge, and a 14 pt faded bottom edge while more is below (as Review's rail and
+    /// transcript). Expanded and the sheet: the whole height, the rows at its bottom.
     @ViewBuilder
     private func scroll(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
         if style == .compact {
@@ -391,9 +432,13 @@ struct AgentThreadView: View {
                 VStack(spacing: 0) {
                     if overflows {
                         LinearGradient(colors: [.black.opacity(0), .black], startPoint: .top, endPoint: .bottom)
-                            .frame(height: 40)
+                            .frame(height: Self.topFade)
                     }
                     Rectangle()
+                    if overflows, hidesEnd {
+                        LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 14)
+                    }
                 }
             }
         } else {
@@ -429,6 +474,17 @@ struct AgentThreadView: View {
             } action: { _, atBottom in
                 isAtBottom = atBottom
             }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                // Only the thread's bottom padding (12 pt) may be out of sight without the fade.
+                geometry.contentSize.height - geometry.visibleRect.maxY > 12
+            } action: { _, hides in
+                if style == .compact { hidesEnd = hides }
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.containerSize.height.rounded()
+            } action: { _, height in
+                viewportHeight = height
+            }
             .onScrollPhaseChange { _, phase in
                 if phase == .interacting || phase == .tracking { settled = true }
             }
@@ -452,8 +508,11 @@ struct AgentThreadView: View {
 
     /// The thread's end (`scrollTo`).
     private static let endID = "end"
-    /// The room kept above a placed question: clear of the compact panel's 40 pt faded edge.
-    private var topClear: CGFloat { style == .compact ? 28 : 8 }
+    /// The compact thread's faded top edge.
+    private static let topFade: CGFloat = 40
+    /// The room kept above a placed question: in compact clear of the whole faded edge, so its
+    /// context line reads at its own tertiary and the bubble is never dimmed.
+    private var topClear: CGFloat { style == .compact ? Self.topFade + 4 : 8 }
 
     private static func lastExchangeID(_ items: [PanelThreadItem]) -> String? {
         for item in items.reversed() {
@@ -492,24 +551,28 @@ struct AgentThreadView: View {
 
     private func scroll(_ proxy: ScrollViewProxy, to lastExchange: String) {
         let toEnd = isRunning || pending != nil || awaitsRun
+        // The anchor's top goes `topClear` below the visible top: a unit point aligns the same
+        // fraction of the 1 pt anchor and of the scroll view (compact: as tall as `maxHeight` once
+        // the thread scrolls at all).
+        let visible = viewportHeight > 1 ? viewportHeight : (style == .compact ? maxHeight : 0)
+        let anchor = visible > topClear ? UnitPoint(x: 0.5, y: topClear / visible) : UnitPoint.top
         Task { @MainActor in
             await Task.yield()
             if toEnd {
                 proxy.scrollTo(Self.endID, anchor: .bottom)
             } else {
-                proxy.scrollTo(Self.questionID(lastExchange), anchor: .top)
+                proxy.scrollTo(Self.questionID(lastExchange), anchor: anchor)
             }
         }
     }
 
-    /// An exchange's place for `scrollTo`: `topClear` above its first line.
+    /// An exchange's place for `scrollTo`: a 1 pt line at its top.
     private static func questionID(_ itemID: String) -> String {
         "q" + itemID
     }
 
     private func threadContent(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
-        let clear: CGFloat = topClear
-        return VStack(alignment: .leading, spacing: metrics.spacing) {
+        VStack(alignment: .leading, spacing: metrics.spacing) {
             ForEach(items) { item in
                 switch item {
                 case .exchange(let exchange, let showsLine, let isLast):
@@ -517,7 +580,6 @@ struct AgentThreadView: View {
                         .overlay(alignment: .top) {
                             Color.clear
                                 .frame(height: 1)
-                                .alignmentGuide(.top) { _ in clear }
                                 .id(Self.questionID(item.id))
                         }
                 case .task(let task):
@@ -547,7 +609,7 @@ struct AgentThreadView: View {
             if pending != nil || working {
                 // After a pending message nothing streams yet (its run is not this one's).
                 LiveAnswerText(
-                    live: pending == nil ? liveSource : nil, stored: nil, running: true, check: check,
+                    live: pending == nil ? liveSource : nil, parts: [], unsaved: [], running: true, check: check,
                     openLecture: context.lectureID, now: model.now
                 )
             }
@@ -582,30 +644,25 @@ struct AgentThreadView: View {
                 FaintLine(glyph: exchange.context?.glyph ?? "bubble.left", label: label)
             }
             PanelStudentMessage(text: exchange.text, attachments: exchange.context?.attachments ?? [], maxWidth: bubbleWidth)
-            // The live text follows exactly the stored turns, so it is the last exchange's.
+            // The live text follows exactly the stored turns, so it is the last exchange's; text a
+            // run wrote and never stored stays with the message it answered.
             LiveAnswerText(
-                live: isLast && pending == nil ? liveSource : nil, stored: exchange.answer, running: running, check: check,
-                openLecture: exchange.context?.context?.lectureID ?? context.lectureID, now: model.now
+                live: isLast && pending == nil ? liveSource : nil, parts: exchange.parts, unsaved: exchange.unsaved, running: running,
+                check: check, openLecture: exchange.context?.context?.lectureID ?? context.lectureID, now: model.now
             )
         }
     }
 
     /// The live reply as the last answer reads it.
     private var liveSource: LiveSource {
-        LiveSource(box: live, afterTurns: transcript.turnCount, isShown: showsLive)
-    }
-
-    static func joined(_ text: String?, _ live: String?) -> String? {
-        guard let live else { return text }
-        guard let text, !text.isEmpty else { return live }
-        return text + "\n\n" + live
+        LiveSource(box: live, afterTurns: transcript.turnCount, isShown: showsLive, hidden: replaced)
     }
 
     /// Some answer (or the one being written) has a marker: the rows are read (again when the
     /// conversation grows).
     private var citesLectures: Int {
         let hasMarker = transcript.entries.contains { entry in
-            if case .answer(_, let text) = entry { return text.contains("[[") }
+            if case .answer(_, let parts) = entry { return parts.contains { $0.text.contains("[[") } }
             return false
         } || live.sawMarker || tasksQuery.wrappedValue.contains { ($0.result ?? "").contains("[[") }
         return hasMarker ? transcript.turnCount : -1
@@ -632,7 +689,8 @@ struct AgentThreadView: View {
         guard error != ReadableError.stopped else { return nil }
         let storedAnswer = exchanges.last?.answer != nil
         let wrote = storedAnswer || liveSource.text != nil
-        let retry: (() -> Void)? = actions.retry == nil ? nil : { retryLast() }
+        let position = exchanges.last?.position ?? -1
+        let retry: (() -> Void)? = actions.retry == nil ? nil : { retryLast(after: position) }
         let failed = NotAnsweredLine(reason: error, showsTitle: !wrote, retry: retry)
         guard let until = actions.pausedUntil, until > Date() else { return AnyView(failed) }
         return AnyView(
@@ -646,13 +704,16 @@ struct AgentThreadView: View {
         )
     }
 
-    /// Try again: the conversation's last message is answered again (its run hands over as a sent
-    /// message does).
-    private func retryLast() {
+    /// Try again: the conversation's last message (stored at `position`) is answered again (its
+    /// run hands over as a sent message does). What the failed run wrote stays until the new run
+    /// is seen starting (`settleAwaitedRun`), and comes back when Try again could not go.
+    private func retryLast(after position: Int) {
         guard let conversationID, let retry = actions.retry else { return }
-        model.liveBox(for: conversationID).reply = nil
+        let box = model.liveBox(for: conversationID)
+        var replaces = box.unsaved.filter { $0.afterTurns > position }
+        if let reply = box.reply, reply.afterTurns > position { replaces.append(reply) }
         model.notice = nil
-        model.awaitingRun = AwaitedRun(conversationID: conversationID, sentAt: Date())
+        model.awaitingRun = AwaitedRun(conversationID: conversationID, sentAt: Date(), replaces: replaces)
         let model = model
         Task {
             do {
@@ -1029,20 +1090,25 @@ private struct TaskUnfinishedLine: View {
 @Observable
 final class LiveReplyBox {
     var reply: ChatLiveReply?
+    /// What runs wrote and never stored (stopped, failed, cut off), in order: each stays under
+    /// the message it answered for as long as the panel lives (`PanelThread.exchanges`).
+    var unsaved: [ChatLiveReply] = []
     /// Some live text had a marker: the thread reads its citation rows.
     var sawMarker = false
 }
 
 /// The live reply as one answer may show it: after exactly `afterTurns` stored turns, while
-/// `isShown` (the run lasts, or finished until its stored turn lands).
+/// `isShown` (the run lasts, or finished until its stored turn lands), unless Try again is
+/// replacing it (`hidden`).
 struct LiveSource {
     let box: LiveReplyBox
     let afterTurns: Int
     let isShown: Bool
+    var hidden: [ChatLiveReply] = []
 
     @MainActor
     var text: String? {
-        guard isShown, let reply = box.reply, reply.afterTurns == afterTurns, !reply.text.isEmpty else { return nil }
+        guard isShown, let reply = box.reply, reply.afterTurns == afterTurns, !reply.text.isEmpty, !hidden.contains(reply) else { return nil }
         return reply.text
     }
 }
@@ -1053,7 +1119,9 @@ struct LiveSource {
 private struct LiveAnswerText: View {
     /// Nil: no live text goes here.
     let live: LiveSource?
-    let stored: String?
+    /// The stored answer's turns, and what runs wrote after them and never stored.
+    let parts: [ChatTranscript.AnswerPart]
+    let unsaved: [String]
     /// The run answers this exchange.
     let running: Bool
     let check: CitationCheck
@@ -1062,7 +1130,8 @@ private struct LiveAnswerText: View {
 
     var body: some View {
         let streamed = live?.text
-        let answer = AgentThreadView.joined(stored, streamed)
+        // One rule for narration before tool calls, with the live text as with the stored turn.
+        let answer = ChatTranscript.answerText(parts, following: unsaved + (streamed.map { [$0] } ?? []))
         if let answer, !answer.isEmpty {
             PanelAnswer(
                 text: answer, isWorking: running && streamed == nil, isStreaming: running || streamed != nil, check: check,

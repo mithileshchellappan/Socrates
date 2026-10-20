@@ -917,7 +917,7 @@ final class AppModel {
                 return AsyncStream { continuation in
                     let task = Task {
                         for await reply in source {
-                            continuation.yield(reply.map { ChatLiveReply(afterTurns: $0.afterTurns, text: $0.text) })
+                            continuation.yield(reply.map { ChatLiveReply(afterTurns: $0.afterTurns, text: $0.text, isUnsaved: $0.unsaved) })
                         }
                         continuation.finish()
                     }

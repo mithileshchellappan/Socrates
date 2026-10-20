@@ -446,6 +446,9 @@ struct AwaitedRun: Equatable {
     /// Nil: a new conversation, until `send` returns its id.
     var conversationID: AgentConversation.ID?
     var sentAt: Date
+    /// Try again: the unsaved text of the answer it replaces (hidden meanwhile, dropped once the
+    /// run starts, back when it could not go).
+    var replaces: [ChatLiveReply] = []
 }
 
 extension EnvironmentValues {

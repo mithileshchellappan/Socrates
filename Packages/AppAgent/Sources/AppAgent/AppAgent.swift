@@ -273,8 +273,15 @@ public actor AppAgent {
     }
 
     /// Answers the conversation's last message again after its run failed (the panel's Try again).
+    /// The run knows the untrusted text its history carries, as `send`'s does: files sent as their
+    /// text, and results of tasks that read mail, documents or the web.
     public func retry(_ id: AgentConversation.ID) async throws {
-        try await runtime.retry(id)
+        let history = try await ConversationRepository(store: services.records).turns(id)
+        var untrusted = history.compactMap(\.context).flatMap(\.attachments).contains(where: AttachmentBlocks.sentAsText)
+        if !untrusted, try await AgentTaskRepository(store: services.records).tasks(parent: id).contains(where: Self.carriesUntrustedResult) {
+            untrusted = true
+        }
+        try await runtime.retry(id, readUntrustedContent: untrusted)
     }
 
     /// The readable sentence for a message that did not go because of one of its files ("Notes.pdf
