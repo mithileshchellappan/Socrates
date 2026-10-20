@@ -13,16 +13,17 @@ import Tutor
 ///
 /// - `app` (the panel): Opus 5.5, effort medium, adaptive thinking. Read: the lecture tools
 ///   (Tutor), the mail tools (untrusted, delimited), search_notes, read_note, query_items,
-///   query_sessions, query_calendar, query_memory, list_changes, check_tasks. Verified writes
-///   through the change log: add_item, move_item, complete_item, update_item, change_session,
-///   add_session, set_course_fact, set_reminder, append_note and remove_course (only when the
-///   student asks; a course with recordings or notes is left to the app's Delete Course…),
-///   add_course, add_weekly_slot, change_weekly_slot and remove_weekly_slot (only when the student
-///   asks; `CourseTools.swift`), undo_change, and the memory's remember / update_memory / forget
-///   (added by the runtime). Draft: draft_reply. Delegate: spawn_task, cancel_task,
-///   rerun_study_pass. No web tool (it reads mail:
-///   web goes through a research task), no send, no other calendars, no delete of notes or
-///   recordings: those tools do not exist.
+///   query_sessions, query_calendar, query_memory, list_changes, check_tasks, plan_query,
+///   search_documents, read_document. Direct verified writes through the change log: add_item,
+///   move_item, complete_item, update_item, set_reminder, append_note, undo_change, and the
+///   memory's remember / update_memory / forget (added by the runtime). Draft: draft_reply.
+///   Delegate: spawn_task, cancel_task. mr: every other write is a registered action
+///   (`ActionRegistry.app`: change_session, add_session, set_course_fact, remove_course,
+///   add_course, the weekly slot tools, plan_adjust, mark_away_days, set_course_credits,
+///   keep_document, rerun_study_pass, link_deck_pages, unlink_deck), reached through find_actions
+///   and run_action with the same handlers. No web tool (it reads mail: web goes through a
+///   research task), no send, no other calendars, no delete of notes or recordings: those tools
+///   do not exist.
 /// - `task` (a sub-agent): the tool groups of its `agent_task` row, fixed at spawn; its model and
 ///   effort; `.background`. `web` only beside `lectures`, whose tools then leave out the
 ///   student's notes (`webCompanions`: spawn_task and `taskSpec` refuse anything else), and a web
@@ -82,19 +83,22 @@ public enum AppAgentChat {
         let writes = WriteTools(services: deps.services, changeLog: deps.changeLog, chatSource: true, mailSource: true)
         let delegate = DelegateTools(services: deps.services)
         let plan = PlanTools(services: deps.services, changeLog: deps.changeLog, coach: deps.coach, writes: writes)
+        // mr: the rare writes are registered actions (find_actions / run_action), not tools.
+        let actions = ActionTools(registry: try ActionRegistry.app(deps))
+        // Reads.
         var tools: [AgentTool] = TutorChat.lectureTools(services: deps.services, search: deps.lectureSearch)
         tools += MailChat.mailTools(services: deps.services)
         tools += [
             query.searchNotes, query.readNote, query.queryItems, query.querySessions, query.queryCalendar, query.queryMemory,
-            query.listChanges, query.checkTasks,
-            writes.addItem, writes.moveItem, writes.completeItem, writes.updateItem, writes.changeSession, writes.addSession,
-            writes.setCourseFact, writes.setReminder, writes.appendNote, writes.removeCourse, writes.undoChange,
-            writes.addCourse, writes.addWeeklySlot, writes.changeWeeklySlot, writes.removeWeeklySlot,
-            plan.planQuery, plan.planAdjust, plan.setCourseCredits, plan.markAwayDays,
+            query.listChanges, query.checkTasks, plan.planQuery,
         ]
+        tools += deps.documentTools.readTools
+        // The direct writes (the frequent ones), draft and delegate.
+        tools += [writes.addItem, writes.moveItem, writes.completeItem, writes.updateItem, writes.setReminder, writes.appendNote, writes.undoChange]
         if let drafter = deps.drafter { tools.append(MailChat.draftReplyTool(drafter)) }
-        tools += deps.documentTools.appTools
-        tools += [delegate.spawnTask, delegate.cancelTask, delegate.rerunStudyPass]
+        tools += [delegate.spawnTask, delegate.cancelTask]
+        // Everything else.
+        tools += [actions.findActions, actions.runAction]
         return ConversationSpec(
             kind: .app, model: model, effort: effort, maxTokens: maxTokens, maxIterations: maxIterations, thinking: .adaptive,
             tools: try ToolSet(kind: .app, tools: tools),
@@ -116,7 +120,7 @@ public enum AppAgentChat {
         \(courses.promptLines)
 
         Before the student's words a message may carry: <memory> (what you keep about them), <catalog> (what \
-        exists and can be queried: courses with their weekly classes, lectures with their state, notes, the next sessions, mail folders, \
+        exists and can be queried: courses with their weekly classes, slide decks, lectures with their state, notes, the next sessions, mail folders, \
         open items), <context> (the screen they are on: "this" and "here" mean what it names), \
         <task_result> (a sub-agent's answer), <reminder> (a notification the app showed since their last message: \
         "done" means its item is done, complete_item; "remind me at 22:00" means set_reminder for it), <filed> (slides \
@@ -131,10 +135,11 @@ public enum AppAgentChat {
         query_calendar. Memory: query_memory.
         - After a claim from a lecture, put the cite marker of the row, copied character for character \
         ([[key S13]] a slide, [[key 37:59]] a moment); never write a marker you did not see.
-        - Change the student's data only when they ask or a source clearly states it, with the write tools: \
-        add_item, move_item, complete_item, update_item, change_session, add_session, set_course_fact, \
-        set_reminder, append_note, remove_course, add_course, add_weekly_slot, change_weekly_slot, remove_weekly_slot, \
-        undo_change, remember. Each needs quote = the exact words that state it and \
+        - Change the student's data only when they ask or a source clearly states it. The write tools: add_item, \
+        move_item, complete_item, update_item, set_reminder, append_note, undo_change, remember. Anything else \
+        (sessions, course facts, courses, weekly classes, the plan, credits, keeping a document, a study pass, a \
+        lecture's slides): find_actions with a few words, then run_action with the action's name and params. Each \
+        write needs quote = the exact words that state it and \
         source: chat (the student's own words in the message you are answering), mail (with the mail's id as \
         source_id), lecture (the lecture's key) or event. Dates must be in the quote. Look before you write; never \
         add twice. Every change is logged and can be undone.

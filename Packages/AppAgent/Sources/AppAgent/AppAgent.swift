@@ -176,7 +176,8 @@ public actor AppAgent {
             }
         }
         var blocks = try await AttachmentBlocks.contentBlocks(whole, blobs: services.blobs) + filed
-        let catalog = try await AgentCatalog.build(services: services, now: now())
+        let actions = ActionRegistry.appCount(documents: documents != nil)
+        let catalog = try await AgentCatalog.build(services: services, now: now(), actions: actions)
         if AgentCatalog.lastRevision(in: texts) != catalog.revision { blocks.append(.text(catalog.text)) }
         let block = try await AgentContextBlock.build(context, services: services)
         if AgentContextBlock.lastRevision(in: texts) != block.revision { blocks.append(.text(block.text)) }
