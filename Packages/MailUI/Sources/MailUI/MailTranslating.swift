@@ -13,9 +13,12 @@ struct MailTranslator: Sendable {
 
     static let system = MailTranslator(target: MailLanguage.preferred)
 
-    /// The code `LocalTranslator` takes ("de", "en", "zh-Hant").
+    /// The code `LocalTranslator` takes: the language, with its script when that is not the
+    /// language's usual one ("de", "en", "zh-Hant"; Simplified Chinese is "zh").
     static func code(_ language: Locale.Language) -> String {
-        language.minimalIdentifier
+        guard let code = language.languageCode?.identifier else { return language.minimalIdentifier }
+        guard let script = MailLanguage.distinctiveScript(of: language) else { return code }
+        return "\(code)-\(script.identifier)"
     }
 }
 
