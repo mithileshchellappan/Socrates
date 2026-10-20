@@ -83,17 +83,19 @@ public struct CourseDraft: Hashable, Sendable {
     }
 
     /// The mail rules a new course starts with: "Sender is" each lecturer's name (without
-    /// academic titles) and "LMS course is" "<name> (<semester>)", as LMS writes the course
-    /// path ("Data Centers (WS 2026/27)").
-    public static func mailRules(for course: Course, semester: Semester?) -> [MailRule] {
+    /// academic titles) and, when the profile names a learning platform, "<platform> course is"
+    /// "<name> (<semester>)", as such platforms write the course path ("Data Centers (WS
+    /// 2026/27)").
+    public static func mailRules(for course: Course, semester: Semester?, profile: UniversityProfile = .current) -> [MailRule] {
         var rules: [MailRule] = []
         for name in course.professors.map(plainName) where !name.isEmpty {
             guard !rules.contains(where: { $0.pattern.caseInsensitiveCompare(name) == .orderedSame }) else { continue }
             rules.append(MailRule(courseID: course.id, kind: .sender, pattern: name, sortOrder: rules.count, createdAt: course.createdAt))
         }
+        guard !profile.platformMarker.isEmpty else { return rules }
         let semesterName = semester?.name.trimmingCharacters(in: .whitespaces) ?? ""
-        let lms = semesterName.isEmpty ? course.name : "\(course.name) (\(semesterName))"
-        rules.append(MailRule(courseID: course.id, kind: .platformCourse, pattern: lms, sortOrder: rules.count, createdAt: course.createdAt))
+        let path = semesterName.isEmpty ? course.name : "\(course.name) (\(semesterName))"
+        rules.append(MailRule(courseID: course.id, kind: .platformCourse, pattern: path, sortOrder: rules.count, createdAt: course.createdAt))
         return rules
     }
 

@@ -178,7 +178,7 @@ enum ExtractionPrompt {
 
     static func system(courses: CourseDirectory) -> String {
         """
-        You read university mails of a university student at Example University. \
+        You read university mails of \(UniversityProfile.current.student). \
         For each mail you decide whether it needs a reply from the student, and you list what the student \
         must not miss.
 
@@ -200,12 +200,13 @@ enum ExtractionPrompt {
         For every item:
         - quote: copy, character for character, the shortest sentence or phrase of the mail that states the \
         item and its date and time (at most 300 characters; no paraphrase, no ellipsis, no added words).
-        - due: the date in the university's time zone (Europe/Lisbon) as "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day \
+        - due: the date in \(UniversityProfile.current.localTime) (\(UniversityProfile.current.zone.identifier)) as \
+        "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day \
         true when the mail gives no time; for room changes and cancellations the session's date. Resolve \
         relative dates ("next Friday", "morgen", "bis Mittwoch") against the date of the mail. null when the \
         item has no date.
-        - title: a short English title (at most 8 words), e.g. "Online quiz 1", "CL exercise sheet 1", \
-        "Register in the exam portal".
+        - title: a short English title (at most 8 words), e.g. "Quiz 1 on \(UniversityProfile.current.platformName)", \
+        "CL exercise sheet 1", "\(UniversityProfile.current.registrationSystem.map { "Register in \($0)" } ?? "Register for the exam")".
         - course: the token of the course it is about (list below), else null.
         - details: at most 12 words on why it matters or what to do beyond the title, taken from the mail \
         ("Weekly from then on", "Required for exam admission"), else "".

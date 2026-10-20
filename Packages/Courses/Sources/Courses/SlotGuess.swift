@@ -8,7 +8,7 @@ public enum SlotGuess {
     public static func slot(
         courseID: Course.ID,
         sessions: [LectureSession],
-        timeZone: TimeZone = TimeZone(identifier: "Europe/Lisbon") ?? .current
+        timeZone: TimeZone = UniversityProfile.current.zone
     ) -> WeeklySlot? {
         struct Key: Hashable {
             var kind: SessionKind

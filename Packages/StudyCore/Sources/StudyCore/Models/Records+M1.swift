@@ -7,7 +7,8 @@ import SQLiteData
 
 /// A semester's lecture period and breaks; weekly slots become sessions inside it.
 ///
-/// v4 seeds WS 2026/27 (`Semester.winter2026`, fixed id); the user edits it in Settings.
+/// v4 seeds one semester (fixed id `Semester.seededID`); the student edits it in Settings or
+/// through the agent (`set_profile`).
 @Table("semester")
 public struct Semester: StudyRecord {
     public let id: UUID
@@ -29,7 +30,7 @@ public struct Semester: StudyRecord {
         lectureStart: CalendarDay,
         lectureEnd: CalendarDay,
         breaks: [SemesterBreak] = [],
-        timeZone: String = "Europe/Lisbon",
+        timeZone: String = UniversityProfile.current.zone.identifier,
         updatedAt: Date = Date()
     ) {
         self.id = id
@@ -41,23 +42,27 @@ public struct Semester: StudyRecord {
         self.updatedAt = updatedAt
     }
 
-    /// The id v4 seeds WS 2026/27 with: fixed, so every device (and a later CloudKit sync) has the
-    /// same row.
-    public static let winter2026ID = UUID(uuid: (0x57, 0x53, 0x20, 0x26, 0x27, 0x00, 0x40, 0x00, 0x80, 0x00, 0, 0, 0, 0, 0, 0x01))
+    /// The id v4 seeds its semester with: fixed, so every device (and a later CloudKit sync) has
+    /// the same row.
+    public static let seededID = UUID(uuid: (0x57, 0x53, 0x20, 0x26, 0x27, 0x00, 0x40, 0x00, 0x80, 0x00, 0, 0, 0, 0, 0, 0x01))
 
-    /// WS 2026/27 at Exampleton: lectures 5 Oct 2026 – 29 Jan 2027, Christmas break 24 Dec – 6 Jan.
-    public static let winter2026 = Semester(
-        id: winter2026ID,
-        name: "WS 2026/27",
-        lectureStart: CalendarDay(year: 2026, month: 10, day: 5),
-        lectureEnd: CalendarDay(year: 2027, month: 1, day: 29),
-        breaks: [SemesterBreak(
-            name: "Christmas break",
-            first: CalendarDay(year: 2026, month: 12, day: 24),
-            last: CalendarDay(year: 2027, month: 1, day: 6)
-        )],
-        updatedAt: Date(timeIntervalSince1970: 0)
-    )
+    /// How long `placeholder` runs: 15 weeks of lectures.
+    public static let placeholderDays = 15 * 7
+
+    /// The semester a library without one plans in (never stored): "Semester", 15 weeks of
+    /// lectures from `date`'s day, no breaks, in `zone`. v15 gives a new library's seeded row the
+    /// same values.
+    public static func placeholder(on date: Date, zone: TimeZone = UniversityProfile.current.zone) -> Semester {
+        let first = CalendarDay(date, in: zone)
+        return Semester(
+            id: seededID,
+            name: "Semester",
+            lectureStart: first,
+            lectureEnd: first.adding(days: placeholderDays - 1),
+            timeZone: zone.identifier,
+            updatedAt: Date(timeIntervalSince1970: 0)
+        )
+    }
 
     public var zone: TimeZone { TimeZone(identifier: timeZone) ?? .current }
 

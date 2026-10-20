@@ -227,8 +227,8 @@ public struct ActionRegistry: Sendable {
 }
 
 extension ActionRegistry {
-    /// The `app` conversation's actions (docs/plan-actions.md §4 "Registered"): 22, 21 without the
-    /// document bank (`keep_document`). Their tools are the instances `AppAgentChat.spec` builds
+    /// The `app` conversation's actions (docs/plan-actions.md §4 "Registered"): 23, 22 without the
+    /// document bank (`keep_document`); oss adds set_profile. Their tools are the instances `AppAgentChat.spec` builds
     /// for its direct writes (the student's words and mail are sources).
     public static func app(_ deps: AppAgentChat.Services) throws -> ActionRegistry {
         let writes = WriteTools(services: deps.services, changeLog: deps.changeLog, chatSource: true, mailSource: true)
@@ -348,6 +348,15 @@ extension ActionRegistry {
                 sources: chat, studentOnly: false
             ),
             AgentAction(
+                writes.setProfile, summary: "Records the student's university, city, programme, time zone, platform, hours per credit, semester.",
+                keywords: [
+                    "university", "Universität", "Uni", "profile", "Profil", "city", "Stadt", "programme", "program", "Studiengang",
+                    "degree", "timezone", "Zeitzone", "zone", "platform", "Lernplattform", "semester", "Semester", "lectures",
+                    "Vorlesungszeit", "period", "credit", "hours",
+                ],
+                sources: chat, studentOnly: true
+            ),
+            AgentAction(
                 plan.setCourseCredits, summary: "Records a course's credits (ECTS / LP) and/or its self-study hours.",
                 keywords: [
                     "credits", "ECTS", "LP", "Leistungspunkte", "Kreditpunkte", "workload", "Arbeitsaufwand", "selfstudy", "Selbststudium",
@@ -387,5 +396,5 @@ extension ActionRegistry {
     }
 
     /// How many actions `app` registers (the catalog's "actions" line).
-    static func appCount(documents: Bool) -> Int { documents ? 22 : 21 }
+    static func appCount(documents: Bool) -> Int { documents ? 23 : 22 }
 }

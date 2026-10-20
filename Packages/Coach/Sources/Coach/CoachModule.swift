@@ -10,8 +10,8 @@ public enum CoachModule {
     public static let moduleName = "Coach"
     static let log = Log.logger(category: "coach")
 
-    /// The plan's days and every date the coach writes are the university's time zone.
-    public static let timeZone = DeadlinesModule.timeZone
+    /// The plan's days and every date the coach writes are in the university's time zone.
+    public static var timeZone: TimeZone { DeadlinesModule.timeZone }
 
     /// `api_call.purpose` of the coach's calls (billing `subscription`).
     public enum Purpose {

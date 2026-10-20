@@ -67,7 +67,8 @@ public struct MailCategory: StringKind {
 
     /// About one of the student's courses (`course_id` set).
     public static let course: Self = "course"
-    /// University administration: IT services, the student office, the exam office, library, LMS service mail.
+    /// University administration: IT services, the student office, the exam office, the library,
+    /// the learning platform's service mail.
     public static let university: Self = "university"
     /// Mailing lists, newsletters, announcements to many recipients that need nothing from the student.
     public static let newsletter: Self = "newsletter"
@@ -119,9 +120,9 @@ public struct MailRuleKind: StringKind {
     public static let listID: Self = "list_id"
     /// "Subject contains".
     public static let subject: Self = "subject"
-    /// "LMS course is": an LMS notification about the course with this title (the
-    /// "[Data Centers]" subject prefix or the course path in the body, e.g.
-    /// "Data Centers (WS 2026/27)").
+    /// "<platform> course is": a notification of the learning platform (the profile's
+    /// `learningPlatform`) about the course with this title (the "[Data Centers]" subject
+    /// prefix or the course path in the body, e.g. "Data Centers (WS 2026/27)").
     public static let platformCourse: Self = "platform_course"
 }
 

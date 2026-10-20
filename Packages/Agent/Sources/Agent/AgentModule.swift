@@ -91,7 +91,7 @@ extension Calendar {
 
 /// Dates as the agent reads and writes them, in the university's time zone.
 enum AgentDates {
-    static let timeZone = DeadlinesModule.timeZone
+    static var timeZone: TimeZone { DeadlinesModule.timeZone }
 
     /// "2026-10-20T12:00" (local) or "2026-10-20" (all-day).
     static func text(_ date: Date?, allDay: Bool) -> String? {

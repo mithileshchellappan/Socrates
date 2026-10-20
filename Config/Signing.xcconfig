@@ -1,5 +1,6 @@
-// Signing and bundle IDs for every target (project.yml's configFiles). These defaults let anyone
-// build: no team, the Mac app signed to run locally (ad-hoc), bundle IDs under com.example.
+// Signing, bundle IDs and the other values one machine's builds may set, for every target
+// (project.yml's configFiles). These defaults let anyone build: no team, the Mac app signed to
+// run locally (ad-hoc), bundle IDs under com.example.
 //
 // To sign with your own team, copy Local.xcconfig.example to Local.xcconfig (not committed) and
 // set your values there; it is included last, so its values win.
@@ -16,5 +17,11 @@ BUNDLE_ID_PREFIX = com.example
 // ask for permissions again after a rebuild because the signature changes every build.
 STUDYPORTAL_MAC_SIGN_IDENTITY = -
 STUDYPORTAL_MAC_SIGN_STYLE = Automatic
+
+// A university profile as one line of JSON (`UniversityProfile`'s keys; no "//" in it), which a
+// library that has courses but no profile takes once when it opens: for a library set up by a
+// build that had its university built in. Empty: none (a student sets their profile by telling
+// the agent).
+STUDYPORTAL_UNIVERSITY_PROFILE =
 
 #include? "Local.xcconfig"

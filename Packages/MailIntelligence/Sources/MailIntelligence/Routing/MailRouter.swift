@@ -176,8 +176,8 @@ public struct MailRouter: Sendable {
     // MARK: - Corrections
 
     /// The student moved a message (the route menu): sets a `.user` route, learns a rule (the
-    /// List-Id, else the LMS course, else a personal sender address; never a no-reply or LMS
-    /// address; not when a user rule already covers the message) and re-routes the other mail
+    /// List-Id, else the learning platform's course, else a personal sender address; never a
+    /// no-reply or platform address; not when a user rule already covers the message) and re-routes the other mail
     /// that rule matches and the model had routed. Returns the learned rule, if any.
     @discardableResult
     public func correct(_ id: MailMessage.ID, to route: MailRoute) async throws -> MailRule? {
@@ -233,7 +233,9 @@ public struct MailRouter: Sendable {
         if !listID.isEmpty { return (.listID, listID) }
         let fields = RuleMatcher.Fields(message)
         if fields.isPlatform {
-            if let title = PlatformCourseTitle.find(subject: message.subject, body: message.bodyText) { return (.platformCourse, title) }
+            if let title = PlatformCourseTitle.find(subject: message.subject, body: message.bodyText, marker: fields.marker) {
+                return (.platformCourse, title)
+            }
             return nil
         }
         let address = message.from.normalizedAddress
@@ -241,14 +243,16 @@ public struct MailRouter: Sendable {
         return (.sender, address)
     }
 
-    /// No-reply, system and LMS addresses (shared by many courses): never a sender rule.
-    static func isSharedAddress(_ address: String) -> Bool {
+    /// No-reply, system and learning platform addresses (shared by many courses): never a sender
+    /// rule.
+    static func isSharedAddress(_ address: String, platform: String = UniversityProfile.current.platformMarker) -> Bool {
         let parts = address.split(separator: "@", maxSplits: 1).map(String.init)
         let local = parts.first ?? address
         let domain = parts.count > 1 ? parts[1] : ""
-        let markers = ["noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "do_not_reply", "mailer-daemon",
-                       "postmaster", "bounce", "lms", "notification", "notify", "daemon"]
-        return markers.contains { local.contains($0) } || domain.contains("lms")
+        var markers = ["noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "do_not_reply", "mailer-daemon",
+                       "postmaster", "bounce", "notification", "notify", "daemon"]
+        if !platform.isEmpty { markers.append(platform) }
+        return markers.contains { local.contains($0) } || (!platform.isEmpty && domain.contains(platform))
     }
 
     // MARK: - Rule changes
@@ -294,14 +298,15 @@ public struct MailRouter: Sendable {
     }
 }
 
-/// The course title an LMS notification is about: its "[Course]" subject tag, else the course
-/// path with a semester ("Data Centers (WS 2026/27)") in the body.
+/// The course title a learning platform's notification is about: its "[Course]" subject tag
+/// (not the platform's own name), else the course path with a semester ("Data Centers (WS
+/// 2026/27)") in the body.
 enum PlatformCourseTitle {
-    static func find(subject: String, body: String) -> String? {
+    static func find(subject: String, body: String, marker: String) -> String? {
         if let path = bodyPath(body) { return path }
         if let open = subject.firstIndex(of: "["), let close = subject[open...].firstIndex(of: "]") {
             let tag = subject[subject.index(after: open)..<close].trimmingCharacters(in: .whitespaces)
-            if !tag.isEmpty, Folding.fold(tag) != "lms" { return tag }
+            if !tag.isEmpty, Folding.fold(tag) != marker { return tag }
         }
         return nil
     }

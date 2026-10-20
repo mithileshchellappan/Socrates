@@ -61,6 +61,8 @@
 	<string>Shows live captions while a lecture is recorded.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>StudyPortalUniversityProfile</key>
+	<string>$(STUDYPORTAL_UNIVERSITY_PROFILE)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

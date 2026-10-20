@@ -8,7 +8,7 @@ import SQLiteData
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -65,6 +65,14 @@ public enum Schema {
         migrator.registerMigration("v14") { db in
             try db.execute(sql: v14)
         }
+        // oss, additive only (a new table, a renamed rule kind): the university profile as the
+        // student's data. A new library's seeded semester takes the system's time zone and a
+        // neutral period. (A library with courses keeps the values earlier builds used through
+        // `UniversityProfileRecord.carryOver` when it opens, not here.)
+        migrator.registerMigration("v15") { db in
+            try db.execute(sql: v15)
+            try placeSeededSemester(db, now: Date(), zone: .current)
+        }
         return migrator
     }
 
@@ -85,6 +93,7 @@ public enum Schema {
         "study_reading", "study_question", "study_session", "study_answer", "study_block",
         "agent_request", "agent_request_file",
         "document", "document_page",
+        "university_profile",
     ]
 
     /// md: library tables that stay on the Mac and never sync (PRD "Document bank": documents never
@@ -1279,6 +1288,41 @@ public enum Schema {
         ALTER TABLE "agent_task" ADD COLUMN "document_id" TEXT;
         CREATE INDEX "agent_task_document" ON "agent_task"("document_id");
         """
+
+    /// v15 (oss): the student's university as data.
+    /// - `university_profile`: one row (fixed id `UniversityProfileRecord.rowID`), the profile as
+    ///   JSON (`UniversityProfile`); none = `UniversityProfile.standard`;
+    /// - `mail_rule.kind` `platform_course`: the learning platform's course (the platform's name is
+    ///   the profile's `learningPlatform`).
+    static let v15 = """
+        CREATE TABLE "university_profile" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "profile" TEXT NOT NULL DEFAULT '{}',
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+
+
+        """
+
+    /// v15: a new library (no courses) whose seeded semester was never edited gets a neutral one
+    /// in the system's time zone: "Semester", 15 weeks of lectures from today, no breaks
+    /// (`Semester.placeholder`). The student sets the real period in Settings or through the agent.
+    static func placeSeededSemester(_ db: Database, now: Date, zone: TimeZone) throws {
+        let courses = try Int.fetchOne(db, sql: #"SELECT count(*) FROM "course""#) ?? 0
+        guard courses == 0 else { return }
+        let semester = Semester.placeholder(on: now, zone: zone)
+        let values: [String] = [
+            semester.name, semester.lectureStart.rawValue, semester.lectureEnd.rawValue, semester.timeZone,
+            Semester.seededID.uuidString.lowercased(),
+        ]
+        try db.execute(
+            sql: """
+                UPDATE "semester" SET "name" = ?, "lecture_start" = ?, "lecture_end" = ?, "breaks" = '[]', "time_zone" = ?
+                WHERE "id" = ? AND "updated_at" = '1970-01-01 00:00:00.000'
+                """,
+            arguments: .init(values)
+        )
+    }
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row
     /// (from → sender, list_id → list_id, subject → subject). The column stays, unread.

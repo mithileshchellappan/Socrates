@@ -43,10 +43,10 @@ public enum MessageComposer {
     private static let weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-    /// "Fri, 16 Oct 2026 15:02:00 +0200" (Europe/Lisbon).
+    /// "Fri, 16 Oct 2026 15:02:00 +0200" (the university's time zone).
     static func dateHeader(_ date: Date) -> String {
         var calendar = Calendar(identifier: .gregorian)
-        let zone = MailClock.berlin
+        let zone = MailClock.zone
         calendar.timeZone = zone
         let parts = calendar.dateComponents([.weekday, .day, .month, .year, .hour, .minute, .second], from: date)
         let offset = zone.secondsFromGMT(for: date) / 60

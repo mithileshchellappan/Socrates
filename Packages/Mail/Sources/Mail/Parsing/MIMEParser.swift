@@ -121,7 +121,10 @@ public enum MIMEParser {
         }
 
         var kept: [String: String] = [:]
-        for field in headers.fields where keptHeaders.contains(field.name) || field.name.hasPrefix("x-lms") {
+        // The learning platform's own "X-<platform>…" headers too (routing tells its mail by them).
+        let marker = UniversityProfile.current.platformMarker
+        let platformPrefix = marker.isEmpty ? nil : "x-" + marker
+        for field in headers.fields where keptHeaders.contains(field.name) || platformPrefix.map({ field.name.hasPrefix($0) }) == true {
             if kept[field.name] == nil {
                 kept[field.name] = String(EncodedWords.decode(field.value).prefix(500))
             }

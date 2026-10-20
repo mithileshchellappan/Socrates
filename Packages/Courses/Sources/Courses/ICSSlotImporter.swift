@@ -1,7 +1,7 @@
 import Foundation
 import StudyCore
 
-/// Weekly slots from an iCalendar file (a campus system or LMS export): every weekly or fortnightly
+/// Weekly slots from an iCalendar file (a campus system's or a learning platform's export): every weekly or fortnightly
 /// VEVENT becomes one slot per weekday it repeats on. Pure parsing; saving is the caller's.
 public enum ICSSlotImporter {
     /// Slots for `courseID` in `text`, without those `existing` already has (same kind, weekday
@@ -10,7 +10,7 @@ public enum ICSSlotImporter {
         from text: String,
         courseID: Course.ID,
         existing: [WeeklySlot] = [],
-        timeZone: TimeZone = TimeZone(identifier: "Europe/Lisbon") ?? .current
+        timeZone: TimeZone = UniversityProfile.current.zone
     ) -> [WeeklySlot] {
         var result: [WeeklySlot] = []
         func isKnown(_ slot: WeeklySlot) -> Bool {

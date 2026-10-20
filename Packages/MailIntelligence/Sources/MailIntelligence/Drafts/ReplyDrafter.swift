@@ -411,8 +411,8 @@ public actor ReplyDrafter {
         let firstName = name.split(separator: " ").first.map(String.init) ?? name
         var lines: [String] = []
         lines.append("""
-            You draft a reply for \(name.isEmpty ? "the student" : name), a university student at \
-            Example University, to the last mail of the thread below. The student reads your draft, \
+            You draft a reply for \(name.isEmpty ? "the student" : name), \(UniversityProfile.current.student), to \
+            the last mail of the thread below. The student reads your draft, \
             edits it and sends it themselves.
             """)
         if let course {

@@ -10,8 +10,8 @@ import StudyCore
 public enum MailIntelligenceModule {
     public static let moduleName = "MailIntelligence"
 
-    /// The university's time zone: dates in mail are read in it.
-    public static let timeZone = TimeZone(identifier: "Europe/Lisbon") ?? .current
+    /// The university's time zone (the profile's, else the system's): dates in mail are read in it.
+    public static var timeZone: TimeZone { UniversityProfile.current.zone }
 }
 
 /// Shared constants of the package.

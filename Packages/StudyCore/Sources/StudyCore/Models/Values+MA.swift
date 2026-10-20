@@ -144,6 +144,33 @@ public struct AgentChangeKind: StringKind {
     public static let noteAppend: Self = "note_append"
     /// A reminder scheduled.
     public static let reminder: Self = "reminder"
+    /// oss: the university profile and/or the current semester set (`set_profile`).
+    public static let profile: Self = "profile"
+}
+
+/// A semester's columns as an `agent_change` keeps them (`set_profile`: `before` / `after.semester`),
+/// so Undo can put its name and lecture period back.
+public struct SemesterValues: Hashable, Sendable, Codable {
+    public var id: Semester.ID
+    public var name: String
+    public var lectureStart: CalendarDay
+    public var lectureEnd: CalendarDay
+    public var breaks: [SemesterBreak]
+    public var timeZone: String
+
+    public init(_ semester: Semester) {
+        id = semester.id
+        name = semester.name
+        lectureStart = semester.lectureStart
+        lectureEnd = semester.lectureEnd
+        breaks = semester.breaks
+        timeZone = semester.timeZone
+    }
+
+    /// The semester row with these values.
+    public func semester(updatedAt: Date) -> Semester {
+        Semester(id: id, name: name, lectureStart: lectureStart, lectureEnd: lectureEnd, breaks: breaks, timeZone: timeZone, updatedAt: updatedAt)
+    }
 }
 
 /// The table an automatic change wrote (`agent_change.target_table`); `target_id` is that row.
@@ -159,6 +186,8 @@ public struct AgentChangeTarget: StringKind {
     public static let reminder: Self = "agent_reminder"
     /// A `filing` row: a deck the filing advisor filed or moved (Undo puts it back).
     public static let filing: Self = "filing"
+    /// oss: the `university_profile` row (`set_profile`; the semester it changed rides along).
+    public static let profile: Self = "university_profile"
 }
 
 extension AgentChangeKind {
@@ -277,6 +306,10 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     /// The coarse span's `updated_at` (which of the lecture's decks is current): Undo puts it
     /// back, so a restored link of a deck that was not current does not become the current one.
     public var spanUpdatedAt: Date?
+    // university_profile (oss: `set_profile`): the profile, and the semester it changed (nil: not
+    // part of the change)
+    public var universityProfile: UniversityProfile?
+    public var semester: SemesterValues?
 
     public init(
         exists: Bool? = nil,
@@ -311,7 +344,9 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         firstPage: Int? = nil,
         lastPage: Int? = nil,
         spanSource: SpanSource? = nil,
-        spanUpdatedAt: Date? = nil
+        spanUpdatedAt: Date? = nil,
+        universityProfile: UniversityProfile? = nil,
+        semester: SemesterValues? = nil
     ) {
         self.exists = exists
         self.startsAt = startsAt
@@ -346,6 +381,8 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         self.lastPage = lastPage
         self.spanSource = spanSource
         self.spanUpdatedAt = spanUpdatedAt
+        self.universityProfile = universityProfile
+        self.semester = semester
     }
 
     /// The values of a session's changeable columns.

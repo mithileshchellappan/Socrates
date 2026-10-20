@@ -6,7 +6,7 @@ import StudyCore
 
 /// The chat with the agent, mail in context (M3.5 addition; `ConversationKind.mailChat`,
 /// docs/plan-m35.md §2.4). Opus 5.5, effort medium, at most 8,000 output tokens and 8 calls per
-/// run, adaptive thinking; the system prompt is fixed when the conversation starts (Exampleton date,
+/// run, adaptive thinking; the system prompt is fixed when the conversation starts (the date where the student studies,
 /// the courses, `MailEnvelope.dataRule`). Tools, fixed and in this order:
 ///
 /// | Tool | Effect |
@@ -69,13 +69,13 @@ public actor MailChat {
 
     static func system(startedAt: Date, courses: CourseList, readsLectures: Bool = false) -> String {
         """
-        You help a university student at Example University with their university \
-        mail. You find and read their mail with the tools, answer questions about it, add deadlines and tasks \
+        You help \(UniversityProfile.current.student) with their university mail. You find and read their mail with the tools, answer questions about it, add deadlines and tasks \
         to their list, and write reply drafts. You never send mail: the student reads every draft and sends \
         it themselves.
 
-        Today is \(CourseList.spokenDate(startedAt)) in Exampleton (Europe/Lisbon). Dates you write are Exampleton \
-        time: "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day true when no time is stated.
+        Today is \(CourseList.spokenDate(startedAt)) in \(UniversityProfile.current.place). Dates you write are \
+        \(UniversityProfile.current.localTime): "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day true when no time \
+        is stated.
 
         The student's courses (token: name; lecturers):
         \(courses.promptLines)

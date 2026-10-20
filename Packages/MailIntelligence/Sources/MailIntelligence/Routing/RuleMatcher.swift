@@ -8,9 +8,10 @@ import StudyCore
 /// - `sender`: the From address or display name contains the pattern;
 /// - `list_id`: the List-Id contains it;
 /// - `subject`: the subject contains it;
-/// - `platform_course`: an LMS notification about that course: a "[Data Centers]" subject tag
-///   equal to the pattern (semester suffix such as "(WS 2026/27)" ignored), or the pattern (the
-///   course path) in the body of a mail from LMS.
+/// - `platform_course`: a notification of the learning platform (the profile's
+///   `learningPlatform`) about that course: a "[Data Centers]" subject tag equal to the pattern
+///   (semester suffix such as "(WS 2026/27)" ignored), or the pattern (the course path) in the body
+///   of a mail from the platform.
 ///
 /// User rules come before learned ones (`MailRuleRepository.rules()` order) and the first matching
 /// user rule wins (confidence 1). Without one, matching learned rules decide when they agree
@@ -19,7 +20,7 @@ struct RuleMatcher: Sendable {
     struct Prepared: Sendable {
         var rule: MailRule
         var pattern: String
-        /// The pattern without a semester suffix (LMS course titles).
+        /// The pattern without a semester suffix (the platform's course titles).
         var base: String
     }
 
@@ -32,12 +33,15 @@ struct RuleMatcher: Sendable {
 
     static let userConfidence = 1.0
     static let learnedConfidence = 0.9
-    /// How much of a body the LMS check reads (the course path is at the top).
+    /// How much of a body the platform check reads (the course path is at the top).
     static let bodyPrefix = 4_000
 
     let rules: [Prepared]
+    /// The learning platform's folded name (`UniversityProfile.platformMarker`); "" = none.
+    let marker: String
 
-    init(rules: [MailRule]) {
+    init(rules: [MailRule], marker: String = UniversityProfile.current.platformMarker) {
+        self.marker = marker
         self.rules = rules.compactMap { rule in
             let pattern = Folding.fold(rule.pattern)
             guard !pattern.isEmpty, rule.route != nil else { return nil }
@@ -46,7 +50,7 @@ struct RuleMatcher: Sendable {
     }
 
     func match(_ message: MailMessage) -> Outcome {
-        let fields = Fields(message)
+        let fields = Fields(message, marker: marker)
         var learned: [MailRule] = []
         for prepared in rules where Self.matches(prepared, fields) {
             if prepared.rule.origin == .user { return .rule(prepared.rule, confidence: Self.userConfidence) }
@@ -59,29 +63,32 @@ struct RuleMatcher: Sendable {
 
     /// User rules that match (corrections never learn what a user rule already says).
     func userRules(matching message: MailMessage) -> [MailRule] {
-        let fields = Fields(message)
+        let fields = Fields(message, marker: marker)
         return rules.filter { $0.rule.origin == .user && Self.matches($0, fields) }.map(\.rule)
     }
 
     func matches(_ rule: MailRule, _ message: MailMessage) -> Bool {
         let pattern = Folding.fold(rule.pattern)
         guard !pattern.isEmpty else { return false }
-        return Self.matches(Prepared(rule: rule, pattern: pattern, base: Self.withoutSemester(pattern)), Fields(message))
+        return Self.matches(Prepared(rule: rule, pattern: pattern, base: Self.withoutSemester(pattern)), Fields(message, marker: marker))
     }
 
     // MARK: - Matching
 
-    /// A message's folded fields, computed once (the body only when an LMS rule asks).
+    /// A message's folded fields, computed once (the body only when a platform rule asks).
     final class Fields {
         let message: MailMessage
+        /// The learning platform's folded name; "" = none (no mail is the platform's).
+        let marker: String
         let fromAddress: String
         let fromName: String
         let listID: String
         let subject: String
         private var foldedBody: String?
 
-        init(_ message: MailMessage) {
+        init(_ message: MailMessage, marker: String = UniversityProfile.current.platformMarker) {
             self.message = message
+            self.marker = marker
             fromAddress = Folding.fold(message.fromAddress)
             fromName = Folding.fold(message.fromName)
             listID = Folding.fold(message.listID)
@@ -95,12 +102,14 @@ struct RuleMatcher: Sendable {
             return folded
         }
 
-        /// The mail comes from LMS (sender, subject or mailer).
+        /// The mail comes from the learning platform (sender, subject, mailer or its own
+        /// "X-<platform>…" headers).
         var isPlatform: Bool {
-            fromAddress.contains("lms") || fromName.contains("lms") || subject.contains("lms")
+            guard !marker.isEmpty else { return false }
+            let prefix = "x-" + marker
+            return fromAddress.contains(marker) || fromName.contains(marker) || subject.contains(marker)
                 || message.headers.contains { key, value in
-                    (key == "x-mailer" || key == "x-lms" || key.hasPrefix("x-lms")) && Folding.fold(value).contains("lms")
-                        || key.hasPrefix("x-lms")
+                    key.hasPrefix(prefix) || (key == "x-mailer" && Folding.fold(value).contains(marker))
                 }
         }
 

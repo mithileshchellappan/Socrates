@@ -133,7 +133,7 @@ public struct Course: StudyRecord {
     public var recordsLectures: Bool { recordingConsentAt != nil }
 }
 
-/// A recurring weekly class slot, e.g. "Mon 12:15–13:45, Room 115".
+/// A recurring weekly class slot, e.g. "Mon 12:15–13:45, Room 101".
 @Table("weekly_slot")
 public struct WeeklySlot: StudyRecord {
     public let id: UUID
@@ -164,7 +164,7 @@ public struct WeeklySlot: StudyRecord {
         startMinute: Int,
         durationMinutes: Int = 90,
         room: String = "",
-        timeZone: String = "Europe/Lisbon",
+        timeZone: String = UniversityProfile.current.zone.identifier,
         validFrom: CalendarDay? = nil,
         validUntil: CalendarDay? = nil,
         weekInterval: Int = 1,

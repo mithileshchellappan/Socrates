@@ -25,6 +25,12 @@ public enum StudyDatabase {
         }
         let pool = try DatabasePool(path: url.path(percentEncoded: false), configuration: configuration)
         try Schema.migrator().migrate(pool)
+        // A library set up before the profile was data keeps the values it was used with, once
+        // (only builds that carry a profile over, `UniversityProfileRecord.carryOverInfoKey`).
+        UniversityProfileRecord.carryOver(UniversityProfileRecord.carryOverProfile(), into: pool)
+        // The student's university (time zone, prompts, the coach's rules) for everything that
+        // reads `UniversityProfile.current`.
+        UniversityProfileRecord.install(from: pool)
         Log.database.info("Opened database at \(url.path(percentEncoded: false), privacy: .public)")
         return pool
     }

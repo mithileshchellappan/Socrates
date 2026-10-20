@@ -114,6 +114,9 @@ public struct ChangeLog: Sendable {
         case deckLink(lectureID: Lecture.ID, deckID: Deck.ID, firstPage: Int, lastPage: Int)
         /// mr: a lecture's link to a deck removed (`unlink_deck`, `LectureSlides.unlink`; the deck stays).
         case deckUnlink(lectureID: Lecture.ID, deckID: Deck.ID)
+        /// oss: the university profile as it is to be, and the semester row as it is to be (nil:
+        /// unchanged), from `set_profile` (`ProfileTools.swift`).
+        case profile(UniversityProfile, semester: Semester?)
     }
 
     /// What `apply` did.
@@ -426,6 +429,8 @@ public struct ChangeLog: Sendable {
             return try removeSlot(id, quote: quote, origin: origin, db: db, store: store, now: now)
         case .deckLink, .deckUnlink:
             return try applyDeck(request, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now).outcome
+        case .profile(let profile, let semester):
+            return try setProfile(profile, semester: semester, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now)
         }
     }
 
@@ -1224,6 +1229,10 @@ public struct ChangeLog: Sendable {
         case .deckSpan:
             // mr: a deck link made, changed or removed (the agent's, or continuation detection's).
             _ = try undoDeckLink(change, db: db, store: store, now: now)
+        case .profile:
+            // oss: the profile and the semester as they were, each only while it is still as the
+            // change left it.
+            if current { try undoProfile(change, db: db, store: store, now: now) }
         default:
             break
         }

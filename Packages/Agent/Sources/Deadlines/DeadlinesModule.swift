@@ -8,8 +8,9 @@ import StudyCore
 public enum DeadlinesModule {
     public static let moduleName = "Deadlines"
 
-    /// The university's time zone: dates said or written are read in it.
-    public static let timeZone = TimeZone(identifier: "Europe/Lisbon") ?? .current
+    /// The university's time zone (the profile's, else the system's): dates said or written are
+    /// read in it.
+    public static var timeZone: TimeZone { UniversityProfile.current.zone }
 
     /// Never log titles, quotes, mail or transcript text at `.public` privacy.
     static let log = Log.logger(category: "deadlines")

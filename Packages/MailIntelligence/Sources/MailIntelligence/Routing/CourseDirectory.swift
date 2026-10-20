@@ -65,7 +65,7 @@ struct CourseDirectory: Sendable {
         case .sender: "sender contains \"\(rule.pattern)\""
         case .listID: "mailing list \"\(rule.pattern)\""
         case .subject: "subject contains \"\(rule.pattern)\""
-        case .platformCourse: "LMS course \"\(rule.pattern)\""
+        case .platformCourse: "\(UniversityProfile.current.platformName) course \"\(rule.pattern)\""
         default: "\(rule.kind.rawValue) \"\(rule.pattern)\""
         }
     }

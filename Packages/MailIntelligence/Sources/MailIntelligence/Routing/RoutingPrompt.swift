@@ -40,11 +40,11 @@ enum RoutingPrompt {
 
     static func system(courses: CourseDirectory) -> String {
         """
-        You sort the university mail of one university student at Example \
-        University. For each <mail> element decide where the message belongs:
+        You sort the university mail of one \(UniversityProfile.current.studentNoun). For each <mail> element \
+        decide where the message belongs:
         - course: it is about one of the student's courses listed below; put that course's token in "course".
-        - university: university administration and services (IT services, the student office, the exam office, \
-        library, LMS service notices) that are not about one of the courses.
+        - university: university administration and services (\(UniversityProfile.current.officeList), \
+        \(UniversityProfile.current.platformName) service notices) that are not about one of the courses.
         - newsletter: mailing lists, newsletters and announcements to many recipients that need nothing \
         from the student.
         - personal: written to the student personally and about none of the courses.
