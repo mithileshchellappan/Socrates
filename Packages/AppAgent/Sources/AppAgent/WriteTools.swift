@@ -332,7 +332,7 @@ struct WriteTools: Sendable {
                 inputSchema: Schema.object(sourceProperties.merging([
                     "item": Schema.optionalString("The item it is about (query_items)."),
                     "title": Schema.string("The notification's title: the item as Today names it."),
-                    "body": Schema.string("e.g. \"Wed 21 Oct, 23:59 · Data Centers\"."),
+                    "body": Schema.string("e.g. \"Mon 19 Oct, 23:59 · Data Centers\"."),
                     "at": Schema.string("When, YYYY-MM-DDTHH:MM."),
                 ]) { first, _ in first })
             ),

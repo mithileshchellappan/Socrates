@@ -100,7 +100,7 @@ enum CalendarText {
         return question(proposal)
     }
 
-    /// The proposal card's grey line: "DC Lecture 4, Thu 22 Oct only".
+    /// The proposal card's grey line: "DC Lecture 4, Tue 20 Oct only".
     static func proposalDetail(
         _ proposal: TrackedItem, session: LectureSession?, course: Course?, locale: Locale, timeZone: TimeZone
     ) -> String {

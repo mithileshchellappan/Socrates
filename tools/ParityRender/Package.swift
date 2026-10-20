@@ -5,7 +5,7 @@ import PackageDescription
 // toolbar, screen) and the live lecture window of a parity library copy into off-screen windows
 // and writes PNGs, at the mockups' size and names. Nothing is ordered on screen, the process never
 // activates (no Dock icon, no focus), and the app bundle is not launched.
-//   tools/parity/render [--out DIR] [--only 01-today,03-review] [--appearance light|dark|both]
+//   swift run -j 4 --package-path tools/ParityRender ParityRender [--out DIR] [--only 01-today,03-review]
 // `Sources/ParityRender/App` links to the app target's sources (App/), compiled here with the
 // app's settings (main-actor default isolation, approachable concurrency) minus its `@main`.
 let package = Package(

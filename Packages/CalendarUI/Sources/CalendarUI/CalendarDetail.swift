@@ -160,7 +160,7 @@ private struct SessionDetail: View {
 }
 
 /// An item tied to the session: a waiting room change or cancellation (sparkle + question with
-/// Discard and Confirm), a settled one ("Moved to Room 5", "Cancelled"; ma: "Moved to Thu 22 Oct,
+/// Discard and Confirm), a settled one ("Moved to Room 5", "Cancelled"; ma: "Moved to Tue 20 Oct,
 /// 10:15", "Extra session", applied on their own, Undo in the footer), or an event that is the
 /// session (its title and grey gloss); then its sources.
 private struct ChangeBlock: View {
@@ -423,7 +423,7 @@ private enum DetailText {
         return Text("\(day), \(range)").monospacedDigit()
     }
 
-    /// "Wed 21 Oct, 23:59", the day alone when all-day, " · SN seminar" when tied to a session.
+    /// "Mon 19 Oct, 23:59", the day alone when all-day, " · SN seminar" when tied to a session.
     static func due(
         _ date: Date, allDay: Bool, session: LectureSession?, course: Course?, locale: Locale, timeZone: TimeZone
     ) -> Text {

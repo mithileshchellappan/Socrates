@@ -180,7 +180,7 @@ struct Meter: View {
 }
 
 /// A topic's mastery as four 6 pt dots (mockups 13–15): filled in secondary, empty in Fill 2; the
-/// help says the level and when it comes back ("Mastery 1 of 4 · again Thu 22 Oct").
+/// help says the level and when it comes back ("Mastery 1 of 4 · again Tue 20 Oct").
 public struct MasteryDots: View {
     private let mastery: TopicMastery
     @Environment(\.timeZone) private var timeZone
@@ -271,14 +271,14 @@ struct AIBlock: View {
 /// The coach's strings, built in one place (DESIGN §9 formats: days through `DayText`, clocks and
 /// durations in SF Mono).
 enum CoachText {
-    /// "Mastery 1 of 4 · again Thu 22 Oct" (the dots' help).
+    /// "Mastery 1 of 4 · again Tue 20 Oct" (the dots' help).
     static func mastery(_ mastery: TopicMastery, locale: Locale, timeZone: TimeZone) -> String {
         let level = String(localized: "Mastery \(mastery.level) of \(CoachRules.maximumLevel)")
         guard let due = mastery.nextDue else { return level }
         return String(localized: "\(level) · again \(DayText.day(due, locale: locale, timeZone: timeZone))")
     }
 
-    /// "Wed 21 Oct, 23:59" with the clock in SF Mono; the day alone for an all-day date.
+    /// "Mon 19 Oct, 23:59" with the clock in SF Mono; the day alone for an all-day date.
     static func dayTime(_ date: Date, allDay: Bool = false, locale: Locale, timeZone: TimeZone) -> Text {
         let day = DayText.day(date, locale: locale, timeZone: timeZone)
         if allDay { return Text(verbatim: day) }

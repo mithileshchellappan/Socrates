@@ -184,7 +184,7 @@ public enum DayText {
         "\(time(start, timeZone: timeZone))–\(time(end, timeZone: timeZone))"
     }
 
-    /// "Wed 21 Oct, 23:59" (lists, deadlines); the day alone for an all-day item ("Thu 29 Oct":
+    /// "Mon 19 Oct, 23:59" (lists, deadlines); the day alone for an all-day item ("Thu 29 Oct":
     /// a time the source does not state is never shown).
     public static func dayTime(_ date: Date, allDay: Bool = false, locale: Locale = .current, timeZone: TimeZone = .current) -> String {
         let day = day(date, locale: locale, timeZone: timeZone)

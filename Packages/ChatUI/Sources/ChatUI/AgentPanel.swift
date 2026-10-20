@@ -137,7 +137,7 @@ final class AgentPanelModel {
     /// Which exchanges the compact panel shows.
     enum ThreadWindow: Hashable {
         /// Those sent since it opened (and task results since then), and always at least the
-        /// conversation's latest exchange: an answer never hides behind ⤢.
+        /// conversation's latest exchange: an answer never hides behind ⤢ (2026-10-18).
         case since(Date)
         /// A conversation picked in the title menu: its last exchange.
         case last

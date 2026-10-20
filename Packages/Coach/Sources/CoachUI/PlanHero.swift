@@ -53,7 +53,7 @@ public struct PlanDay: Hashable, Sendable {
 
 /// The card Today and Study share (mockups 11–13): the plan's current block. Eyebrow: the course
 /// dot and name (a round: its courses' dots and names, "Data Centers · CL"; an item: "· due
-/// Wed 21 Oct, 23:59" in tertiary; on an away day the `tram` leads); the title; the meta (the
+/// Mon 19 Oct, 23:59" in tertiary; on an away day the `tram` leads); the title; the meta (the
 /// block's scope, its length in SF Mono digits, then the star + "Exam admission" with the item's
 /// source glyph, or the block's grey why); Start (filled, ↩) opens what the block opens; beside it
 /// "Then Lecture 2 · slides 13–21 · 1 h 30 min". Without the coach Start is not offered.

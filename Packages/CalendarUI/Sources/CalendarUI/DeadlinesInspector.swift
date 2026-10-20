@@ -142,7 +142,7 @@ struct DeadlinesInspector: View {
 }
 
 /// One due item: [course dot | title (+ the exam chip) | source glyph] over its day and time
-/// ("Wed 21 Oct, 23:59 · SN seminar"); Undo while hovered or selected when it went in on its own.
+/// ("Mon 19 Oct, 23:59 · SN seminar"); Undo while hovered or selected when it went in on its own.
 struct DeadlineRow: View {
     let item: TrackedItem
     let course: Course?
@@ -200,7 +200,7 @@ struct DeadlineRow: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// "Wed 21 Oct, 23:59" (the clock in SF Mono), the day alone when all-day, " · SN seminar"
+    /// "Mon 19 Oct, 23:59" (the clock in SF Mono), the day alone when all-day, " · SN seminar"
     /// when tied to a session.
     private var when: Text {
         guard let due = item.dueAt else { return Text(verbatim: "") }

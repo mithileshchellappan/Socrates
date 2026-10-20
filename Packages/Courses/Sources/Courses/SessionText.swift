@@ -69,7 +69,7 @@ public struct SessionText: Sendable {
         return "\(clock(start))–\(clock(end))"
     }
 
-    /// "Wed 21 Oct" (German "Mo. 19 Okt."): weekday, day, month whatever the region, the pattern
+    /// "Mon 19 Oct" (German "Mo. 19 Okt."): weekday, day, month whatever the region, the pattern
     /// of StudyUI's `DayText` that the sidebar and the other screens use.
     public func day(_ date: Date) -> String {
         date.formatted(Date.VerbatimFormatStyle(

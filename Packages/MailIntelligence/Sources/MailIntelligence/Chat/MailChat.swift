@@ -4,8 +4,8 @@ import Deadlines
 import Foundation
 import StudyCore
 
-/// The chat with the agent, mail in context (M3.5 addition; `ConversationKind.mailChat`,
-/// docs/plan-m35.md §2.4). Opus 5.5, effort medium, at most 8,000 output tokens and 8 calls per
+/// The chat with the agent, mail in context (M3.5 addition; `ConversationKind.mailChat`).
+/// Opus 5.5, effort medium, at most 8,000 output tokens and 8 calls per
 /// run, adaptive thinking; the system prompt is fixed when the conversation starts (the date where the student studies,
 /// the courses, `MailEnvelope.dataRule`). Tools, fixed and in this order:
 ///

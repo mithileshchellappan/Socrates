@@ -69,10 +69,10 @@ enum AgentText {
     /// "Tue 20 Oct, 12:15" (or the day alone).
     static func dayTime(_ date: Date, allDay: Bool = false) -> String { ChangeSummary.dayTime(date, allDay: allDay) }
 
-    /// "Thu 22 Oct".
+    /// "Tue 20 Oct".
     static func day(_ date: Date) -> String { ChangeSummary.day(date) }
 
-    /// "2026-10-20T12:15" / "2026-10-22".
+    /// "2026-10-20T12:15" / "2026-10-20".
     static func iso(_ date: Date?, allDay: Bool = false) -> String? { AgentToolSupport.dateText(date, allDay: allDay) }
 
     /// "29:44" / "1:02:03".

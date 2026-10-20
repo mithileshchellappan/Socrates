@@ -1,13 +1,13 @@
 import Foundation
 import StudyCore
 
-/// ma: how the activity log (`agent_change`) words dates: "Wed 21 Oct", "Tue 20 Oct, 12:15"
+/// ma: how the activity log (`agent_change`) words dates: "Mon 19 Oct", "Tue 20 Oct, 12:15"
 /// (the university's time zone), as the panel's change rows and Today show them (DESIGN 9 strings).
 public enum ChangeSummary {
     static let weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     static let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-    /// "Wed 21 Oct".
+    /// "Mon 19 Oct".
     public static func day(_ date: Date, timeZone: TimeZone = DeadlinesModule.timeZone) -> String {
         let parts = Calendar.gregorian(in: timeZone).dateComponents([.weekday, .day, .month], from: date)
         return "\(weekdays[((parts.weekday ?? 1) - 1 + 7) % 7]) \(parts.day ?? 1) \(months[((parts.month ?? 1) - 1 + 12) % 12])"

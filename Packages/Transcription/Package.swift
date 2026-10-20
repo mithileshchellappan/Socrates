@@ -21,7 +21,7 @@ let package = Package(
                 .product(name: "WhisperKit", package: "argmax-oss-swift")
             ]
         ),
-        // Real-model evaluation and benchmarking. Never run by `swift test`.
+        // Real-model evaluation and benchmarking.
         .executableTarget(
             name: "TranscribeBench",
             dependencies: [

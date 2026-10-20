@@ -14,8 +14,8 @@ public enum ReviewUIModule {
 
 /// How the screen puts itself in its window. `.window` (the app) uses the window toolbar, the
 /// inspector column and Liquid Glass. `.snapshot` lays the same toolbar items and inspector out
-/// inline and draws glass as material, because off-screen rendering (StudyUITesting.Snapshot)
-/// cannot draw window chrome or glass.
+/// inline and draws glass as material, because off-screen rendering cannot draw window chrome or
+/// glass.
 enum ReviewChrome: Hashable, Sendable {
     case window
     case snapshot

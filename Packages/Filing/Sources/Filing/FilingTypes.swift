@@ -10,7 +10,7 @@ public enum FilingDestination: Hashable, Sendable {
     case session(LectureSession.ID)
 }
 
-/// A lecture a file can go to, ready to show: "● Data Centers / Lecture 3 · Wed 21 Oct".
+/// A lecture a file can go to, ready to show: "● Data Centers / Lecture 3 · Mon 19 Oct".
 public struct FilingPlace: Sendable, Hashable {
     public var course: Course
     /// The existing lecture, if any.

@@ -255,7 +255,7 @@ private struct HeroTitle: View {
     }
 }
 
-/// "Review Lecture 2 before Wednesday" with the one filled button.
+/// "Review Lecture 2 before Monday" with the one filled button.
 private struct ReviewHero: View {
     let review: ReviewCandidate
     let course: Course?

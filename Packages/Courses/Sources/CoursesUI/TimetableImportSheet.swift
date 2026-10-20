@@ -4,7 +4,7 @@ import StudyUI
 import SwiftUI
 
 /// The confirm sheet of a timetable drop (docs/DESIGN.md §8.3): per course what the files add —
-/// weekly slots ("Wed 16:00–18:00 · Room 104 · weekly"), one-off sessions and exam dates. Courses in
+/// weekly slots ("Mon 16:00–18:00 · Room 104 · weekly"), one-off sessions and exam dates. Courses in
 /// the library are in; courses that are not have a checkbox and are added only when checked. The
 /// semester's widened breaks last. Import is the one filled button; Cancel changes nothing.
 public struct TimetableImportSheet: View {
@@ -139,7 +139,7 @@ public struct TimetableImportSheet: View {
 
     // MARK: - Words
 
-    /// "Wed 16:00–18:00 · Room 104 · weekly".
+    /// "Mon 16:00–18:00 · Room 104 · weekly".
     private func slotLine(_ slot: TimetableSlot) -> Text {
         let text = SessionText(locale: locale, timeZone: TimeZone(identifier: slot.timeZone) ?? .current)
         let cadence = switch slot.weekInterval {

@@ -29,7 +29,7 @@ public enum Schema {
             try db.execute(sql: v5)
             try copyLegacyMailRules(db)
         }
-        // Additive only: the user's real library migrates on its next launch.
+        // Additive only: an existing library migrates on its next launch.
         migrator.registerMigration("v6") { db in
             try db.execute(sql: v6)
         }

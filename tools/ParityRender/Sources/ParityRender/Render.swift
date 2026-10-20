@@ -14,10 +14,11 @@ import SwiftUI
 
 // parity-render: the six mockup screens of a parity library copy, drawn off screen.
 //
-//   tools/parity/render [--library DIR] [--out DIR] [--only 01-today,03-review]
-//                       [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
-//                       [--week 2026-10-19] [--m35-sample] [--mc] [--sweep] [--claude]
-//                       [--review-layout 0.5,1,0] [--size 1800x1130] [--panel-width 560]
+//   ParityRender [--library DIR] [--out DIR] [--only 01-today,03-review]
+//                [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
+//                [--week 2026-10-19] [--m35-sample] [--mc] [--sweep] [--claude]
+//                [--review-layout 0.5,1,0] [--size 1800x1130] [--panel-width 560]
+//   (swift run -j 4 --package-path tools/ParityRender ParityRender …)
 //
 // `--size` draws the windows at that size in points (default the mockups' 1440×900); the PNG's
 // name gets the size (`08-course-1800x1130-light.png`). A window whose columns' minimums do not
@@ -50,7 +51,7 @@ import SwiftUI
 // the Documents group); on a library without documents `md-documents-empty`.
 //
 // `06-calendar` opens on the week of `--week` (default: mockup 06's, Mon 19 Oct 2026); `--now`
-// also fixes Today's clock (the DemoLibrary's is 2026-10-16T09:41, its mail's 15:02).
+// also fixes Today's clock (the sample mail's is 2026-10-16T15:02).
 //
 // `05-mail` (Mail: the Inbox with its newest message selected) needs a library with mail, e.g.
 // the sample library `swift run --package-path tools/EndToEnd m1-e2e demo --library DIR` writes

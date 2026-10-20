@@ -137,7 +137,7 @@ public struct AgentChange: StudyRecord {
     @Column("target_id") public var targetID: UUID?
     /// The target as Today and Calendar name it ("DC Lecture 3", "Online quiz 1"), ≤ 120.
     public var title: String
-    /// What happened ("Moved to Room 5 · Wed 21 Oct", "Added · Mon 19 Oct, 12:00"), ≤ 160.
+    /// What happened ("Moved to Room 5 · Mon 19 Oct", "Added · Mon 19 Oct, 12:00"), ≤ 160.
     public var summary: String
     @Column(as: AgentChangeValues?.JSONRepresentation.self) public var before: AgentChangeValues?
     @Column(as: AgentChangeValues?.JSONRepresentation.self) public var after: AgentChangeValues?
@@ -318,7 +318,7 @@ public struct AgentReminder: StudyRecord {
     public let id: UUID
     /// The notification's title: the item as Today names it ("Online quiz 1"), ≤ 120.
     public var title: String
-    /// Its body: "Wed 21 Oct, 23:59 · Data Centers", ≤ 200.
+    /// Its body: "Mon 19 Oct, 23:59 · Data Centers", ≤ 200.
     public var body: String
     @Column("fire_at") public var fireAt: Date
     /// The item it is about (CASCADE: it goes with the item).

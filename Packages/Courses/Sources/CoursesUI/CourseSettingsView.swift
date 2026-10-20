@@ -371,7 +371,7 @@ public struct CourseSettingsView: View {
 
     private var sessionText: SessionText { SessionText(locale: locale, timeZone: timeZone) }
 
-    /// "Lecture 3 · Wed 21 Oct", "Seminar 2 · Thu 29 Oct": the next class without a lecture yet
+    /// "Lecture 3 · Mon 19 Oct", "Seminar 2 · Thu 29 Oct": the next class without a lecture yet
     /// (any kind for a course without lectures), as the sidebar shows it.
     private var nextClassTag: String? {
         let filed = Set(lectures.compactMap(\.lectureSessionID))

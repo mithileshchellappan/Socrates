@@ -15,7 +15,7 @@ public enum ToolEffect: String, Sendable, Hashable {
     /// not the model's: the quote is the student's words of the turn or an exact span of a mail,
     /// the date is found in that quote (`DateMentions`), a mail quote is `trusted` only when the
     /// mail passes the injection guard. Allowed beside tools that read untrusted content (the
-    /// mail chat's add_item).
+    /// mail chat's add_item; added 2026-10-17).
     case verifiedWrite
     /// M3.5: writes a reply draft (`mail_draft`) and nothing else; only the student sends it.
     /// Allowed beside tools that read untrusted content.

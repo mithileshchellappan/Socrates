@@ -1,7 +1,7 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// md (docs/plan-docs.md): the document bank (PRD "Document bank"). The
+// md: the document bank (PRD "Document bank", 2026-10-19). The
 // student's own documents (CV, handbooks, regulations, transcripts, certificates, letters): kept in
 // the BlobStore, read on the Mac off the main thread (PDF + OCR, Word, RTF, Pages via its preview,
 // text, images by OCR), summarised by one background Haiku task, chunked into Search, and pulled by

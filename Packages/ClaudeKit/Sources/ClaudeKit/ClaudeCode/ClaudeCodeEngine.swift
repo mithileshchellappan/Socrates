@@ -55,7 +55,7 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
     /// CLI frees its process slot the same session.
     public static let defaultIdleTimeout: Duration = .seconds(10 * 60)
 
-    /// Background processes at once by default (PRD "Sub-agents": two at once).
+    /// Background processes at once by default (PRD "Sub-agents", 2026-10-18: 2 at once).
     public static let defaultBackgroundSlots = 2
 
     /// `~/.local/bin/claude` (the native installer), `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`.

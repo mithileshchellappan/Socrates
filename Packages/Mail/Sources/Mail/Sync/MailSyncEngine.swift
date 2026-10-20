@@ -207,7 +207,7 @@ public actor MailSyncEngine {
             return
         }
         guard state == .running else { return }
-        // DHCP, DNS and the campus Wi-Fi's 802.1X need a moment after the path comes back.
+        // DHCP, DNS and an 802.1X Wi-Fi need a moment after the path comes back.
         try? await clock.sleep(.seconds(3))
         guard isOnline, state == .running else { return }
         Log.mail.notice("The network is back; syncing mail")

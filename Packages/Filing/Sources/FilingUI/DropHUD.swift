@@ -116,7 +116,7 @@ struct DropHUD: View {
     }
 }
 
-/// Course dot + course name, then "Lecture 3 · Wed 21 Oct" under it.
+/// Course dot + course name, then "Lecture 3 · Mon 19 Oct" under it.
 struct PlaceRows: View {
     let place: FilingPlace
     var emphasis: Font = DropHUD.titleFont

@@ -700,7 +700,7 @@ enum ItemMatching {
         }
     }
 
-    /// "Thu 22 Oct".
+    /// "Tue 20 Oct".
     static func dayText(_ date: Date, timeZone: TimeZone) -> String {
         let parts = Calendar.gregorian(in: timeZone).dateComponents([.weekday, .day, .month], from: date)
         let weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][((parts.weekday ?? 1) - 1 + 7) % 7]

@@ -3,7 +3,7 @@ import Synchronization
 @preconcurrency import WhisperKit
 import Transcription
 
-/// Real-model evaluation of the transcription engine. Not part of `swift test`.
+/// Real-model evaluation of the transcription engine.
 ///
 /// Transcripts it writes contain lecture text: keep `--out` under the git-ignored `.data/`.
 enum Bench {

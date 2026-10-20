@@ -6,7 +6,7 @@ import SwiftUI
 /// [Discard] plain and [Confirm], filled while it is the screen's first thing, else plain accent.
 /// Nothing changes until Confirm.
 ///
-///     ProposalCard(question: "Move to Room 5?", detail: "DC Lecture 4, Thu 22 Oct only",
+///     ProposalCard(question: "Move to Room 5?", detail: "DC Lecture 4, Tue 20 Oct only",
 ///                  isFirstThing: true, discard: { … }, confirm: { … }) {
 ///         SourceTrailButton(entries: trail, now: now, inCalendar: false)
 ///     }

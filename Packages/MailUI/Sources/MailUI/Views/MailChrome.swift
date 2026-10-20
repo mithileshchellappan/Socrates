@@ -4,7 +4,7 @@ import SwiftUI
 
 /// How the Mail screen puts itself in its window. `.window` (the app) uses the window toolbar and
 /// Liquid Glass; `.snapshot` lays the same toolbar items out inline above the content and draws
-/// glass as material, because off-screen rendering (StudyUITesting.Snapshot) draws neither
+/// glass as material, because off-screen rendering draws neither
 /// window chrome nor glass (as ReviewUI, docs/decisions.md).
 enum MailChrome: Hashable, Sendable {
     case window
