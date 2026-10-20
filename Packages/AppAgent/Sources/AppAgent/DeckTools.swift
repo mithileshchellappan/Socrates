@@ -40,7 +40,7 @@ extension WriteTools {
             guard let reference = call.text("lecture"), let lectureID = try await WriteToolsLookup.lectureID(reference, services: services) else {
                 return .error("Unknown lecture. Use list_lectures.")
             }
-            guard let deck = try await deck(call.text("deck")) else {
+            guard let deck = try await deckNamed(call.text("deck")) else {
                 return .error("Unknown deck. Use a [deck 1a2b3c4d] key from the catalog, or a lecture whose slides it is.")
             }
             let first = call.integer("first_page") ?? 1
@@ -74,7 +74,7 @@ extension WriteTools {
             guard let reference = call.text("lecture"), let lectureID = try await WriteToolsLookup.lectureID(reference, services: services) else {
                 return .error("Unknown lecture. Use list_lectures.")
             }
-            guard let deck = try await deck(call.text("deck")) else {
+            guard let deck = try await deckNamed(call.text("deck")) else {
                 return .error("Unknown deck. Use a [deck 1a2b3c4d] key from the catalog, or a lecture whose slides it is.")
             }
             let request = ChangeLog.Request.deckUnlink(lectureID: lectureID, deckID: deck.id)
@@ -95,7 +95,7 @@ extension WriteTools {
 
     /// The deck a reference names: the catalog's `[deck 1a2b3c4d]` key (or its 8 hex), a deck id,
     /// or a lecture reference meaning that lecture's current slides (`LectureSlides.current`).
-    func deck(_ reference: String?) async throws -> Deck? {
+    func deckNamed(_ reference: String?) async throws -> Deck? {
         guard var text = reference?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
         if text.hasPrefix("[deck "), text.hasSuffix("]") {
             text = String(text.dropFirst("[deck ".count).dropLast()).trimmingCharacters(in: .whitespaces)

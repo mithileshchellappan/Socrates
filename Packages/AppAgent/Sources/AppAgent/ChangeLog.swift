@@ -475,7 +475,11 @@ public struct ChangeLog: Sendable {
         guard var change = made else {
             let summary = result.summary
             let prefix = "Uses "
-            let already = summary.hasPrefix(prefix) ? "Already uses " + summary.dropFirst(prefix.count) : "Already so: " + summary
+            var already = "Already so: " + summary
+            if summary.hasPrefix(prefix) {
+                let rest = String(summary.dropFirst(prefix.count))
+                already = "Already uses " + rest
+            }
             return (.unchanged(already + "."), [])
         }
         let lectureID = change.lectureID
