@@ -45,7 +45,7 @@ public struct MailActions: Sendable {
     /// Logs in to IMAP and SMTP with `account` and `password` without sending anything (account
     /// settings). Throws a readable error; the password is never stored by this call.
     public var verifyAccount: @Sendable (MailAccount, String) async throws -> Void
-    /// Change… in the lecture menu of an LMS "New file" mail: smart import's change sheet for
+    /// Change… in the lecture menu of a learning platform's "New file" mail: smart import's change sheet for
     /// that filing (added by MailUI; the app wires it to `FilingCenter.presentChange`).
     public var changeFiling: @Sendable (Filing.ID) async -> Void
     /// The account settings saved an account and its password (the app lets the sync engine

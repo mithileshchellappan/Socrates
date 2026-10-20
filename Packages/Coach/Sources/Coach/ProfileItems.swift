@@ -3,7 +3,7 @@ import StudyCore
 
 /// The university profile's own items (plan §4 "Profile items"): while the student has a course
 /// with an exam, each registration window of the semester the profile knows becomes ONE "Register
-/// for exams" deadline: no course, due the window's last day at 23:59, details "Exam portal · 14 Dec – 8 Jan",
+/// for exams" deadline: no course, due the window's last day at 23:59, details "Exam office · 14 Dec – 8 Jan",
 /// relevance `registration`, source `profile` with the window's `rule` as the quote. The second
 /// sitting's window only once the student sits a second date. AppAgent writes them through its
 /// change log (listed, undoable; never twice: a window whose key has a change row is never added

@@ -108,7 +108,7 @@ extension WriteTools {
 
     var slotProperties: JSONObject {
         [
-            "room": Schema.optionalString("Room (\"Room 115\"); null: none yet."),
+            "room": Schema.optionalString("Room (\"Room 101\"); null: none yet."),
             "first": Schema.optionalString("First day, YYYY-MM-DD; null: the semester's lecture start (it also sets which weeks for every second week)."),
             "last": Schema.optionalString("Last day, YYYY-MM-DD; null: the semester's lecture end."),
             "every": Schema.nullable(Schema.stringEnum(["week", "second_week"])),
@@ -123,7 +123,7 @@ extension WriteTools {
                 description: """
                     Adds a course's weekly class as Course Settings' Add Slot does, ONLY when the student asks (quote: \
                     their words asking): its sessions are planned for the semester's lecture days (breaks skipped) and \
-                    appear in the Study Portal calendar. Times are the university's time zone. every: null for every week. A class \
+                    appear in the Study Portal calendar. Times are \(UniversityProfile.current.localTime). every: null for every week. A class \
                     of the course that meets at an overlapping time is refused with its key (change_weekly_slot \
                     changes it). Undo removes it with its sessions (not ones holding a lecture).
                     """,
@@ -317,7 +317,7 @@ extension ChangeLog {
         return "\(day) \(clock(slot.startMinute))–\(clock(slot.endMinute))"
     }
 
-    /// "lecture Mon 12:15–13:45 · Room 115 · every 2nd week · from 2026-11-02": a slot as the
+    /// "lecture Mon 12:15–13:45 · Room 101 · every 2nd week · from 2026-11-02": a slot as the
     /// catalog and the activity log name it.
     static func slotText(_ slot: WeeklySlot) -> String {
         var parts = ["\(slot.kind.rawValue) \(slotTime(slot))"]
@@ -491,7 +491,7 @@ extension ChangeLog {
         let lectureStart = try lectureStart(of: course, db: db, now: now)
         let others = try WeeklySlot.where { $0.courseID.eq(slot.courseID) }.fetchAll(db).filter { $0.id != old.id }
 
-        // Another day, time, room, kind or rhythm applies from today (Exampleton), or from the first
+        // Another day, time, room, kind or rhythm applies from today (the university's time zone), or from the first
         // day given: classes held before keep theirs.
         let changesClass = slot.kind != old.kind || slot.weekday != old.weekday || slot.startMinute != old.startMinute
             || slot.durationMinutes != old.durationMinutes || slot.room != old.room || slot.weekInterval != old.weekInterval

@@ -11,7 +11,7 @@ import Foundation
 public protocol StudyCoaching: Sendable {
     /// Start pressed on a plan block (Today's hero, Study's current block): marks it started and
     /// says where it opens: a round's new session, a lecture at the block's first slide, the item,
-    /// a URL (an LMS quiz, a reading), the practice exam sheet.
+    /// a URL (an online quiz, a reading), the practice exam sheet.
     func start(block: StudyBlock.ID) async throws -> StudyStart
 
     /// What a round of `scope` would ask (Progress's "12 questions · 10 min").

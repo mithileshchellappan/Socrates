@@ -39,7 +39,7 @@ extension TranscriptionOptions {
     /// Options for a course: per-chunk detection among the course's teaching and admin languages
     /// plus German and English, and the course glossary as the decoder prompt.
     ///
-    /// German and English are always candidates: in Exampleton either can come up in any course
+    /// German and English are always candidates: either can come up in any course
     /// (admin notes, questions, student talks), and a language that is not a candidate comes
     /// out translated. The course language is listed first and is the fallback.
     public init(course: Course, guards: TranscriptionGuards = .standard) {

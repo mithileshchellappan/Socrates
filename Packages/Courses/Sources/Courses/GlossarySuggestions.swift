@@ -586,7 +586,7 @@ public enum GlossarySuggestions {
 /// no model download.
 public enum Lexicon {
     /// The lower-cased `words` that have a lemma in `language` (BCP 47), English or German (slides
-    /// at Exampleton mix them).
+    /// often mix them).
     public static func knownWords(_ words: Set<String>, language: String = "en") -> Set<String> {
         var languages: [NLLanguage] = []
         for code in [NLLanguage(rawValue: String(language.prefix(2))), .english, .german]

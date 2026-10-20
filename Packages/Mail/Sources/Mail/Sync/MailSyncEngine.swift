@@ -700,7 +700,7 @@ public actor MailSyncEngine {
         }
 
         // The window, newest first, then new mail, oldest first.
-        var since = account.syncSince ?? CalendarDay(clock.now(), in: MailClock.berlin).adding(days: -configuration.defaultWindowDays)
+        var since = account.syncSince ?? CalendarDay(clock.now(), in: MailClock.zone).adding(days: -configuration.defaultWindowDays)
         if let windowFloor, windowFloor < since { since = windowFloor }
         var run = FetchRun()
         var windowComplete = mailbox.syncedSince.map { $0 <= since } ?? false

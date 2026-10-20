@@ -40,7 +40,7 @@ public enum LanguageStrategy: Hashable, Sendable, Codable {
     /// Detect the language per chunk, restricted to the given candidates (argmax over these only).
     case detect(among: [String])
 
-    /// The default for Exampleton lectures (see docs/decisions.md and docs/eval/transcription-m0.md).
+    /// The default for German and English lectures (see docs/decisions.md and docs/eval/transcription-m0.md).
     public static let germanEnglish: LanguageStrategy = .detect(among: ["de", "en"])
 }
 

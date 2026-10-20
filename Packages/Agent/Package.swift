@@ -25,9 +25,7 @@ let package = Package(
         .package(path: "../ClaudeKit"),
         // Already in the graph through SQLiteData (same pin as Search and MailIntelligence); used
         // directly for `DatabaseRegionObservation` (transcript extraction follows new transcripts).
-        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0"),
-        // Tests only: `DemoLibrary` (mockups 01 and 06 as rows).
-        .package(path: "../StudyUI")
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0")
     ],
     targets: [
         .target(

@@ -1,7 +1,7 @@
 import Foundation
 import StudyCore
 
-// Timetable files (the campus system `.ics`, one file per course unit: the lecture and its
+// Timetable files (a campus management system's `.ics`, one file per course unit: the lecture and its
 // exercise come as separate files) read into what the timetable import proposes: weekly slots,
 // one-off sessions and exam dates per course. Pure; `TimetableImporter` reads and writes the
 // library.
@@ -32,7 +32,7 @@ public struct TimetableEvent: Hashable, Sendable {
     }
 
     public var uid: String
-    /// The file's name ("timetable13.ics").
+    /// The file's name ("timetable 13.ics").
     public var file: String
     /// The course unit's number without "LV-" ("90-100-128"), when the title starts with one.
     public var number: String?
@@ -53,13 +53,13 @@ public struct TimetableEvent: Hashable, Sendable {
     /// The short room: the location's first parenthesis ("Room 104").
     public var room: String { TimetableText.room(fromLocation: location) }
     public var role: Role { TimetableText.role(of: note) }
-    public var zone: TimeZone { TimeZone(identifier: timeZone) ?? TimetableText.berlin }
+    public var zone: TimeZone { TimeZone(identifier: timeZone) ?? TimetableText.zone }
 }
 
 public enum TimetableParser {
     /// Every timed VEVENT of `text` (all-day events are left out). Floating times are read in
     /// `timeZone`.
-    public static func events(in text: String, file: String, timeZone: TimeZone = TimetableText.berlin) -> [TimetableEvent] {
+    public static func events(in text: String, file: String, timeZone: TimeZone = TimetableText.zone) -> [TimetableEvent] {
         ICSSlotImporter.events(in: text).compactMap { event($0, file: file, fallback: timeZone) }
     }
 
@@ -138,7 +138,8 @@ public enum TimetableParser {
 
 /// How timetable titles, rooms and descriptions are read.
 public enum TimetableText {
-    public static let berlin = TimeZone(identifier: "Europe/Lisbon") ?? .current
+    /// The university's time zone (the profile's, else the system's): floating times are read in it.
+    public static var zone: TimeZone { UniversityProfile.current.zone }
 
     /// "LV-90-100-128 Data Centers" → ("90-100-128", "Data Centers").
     static func splitNumber(_ summary: String) -> (String?, String) {
@@ -149,7 +150,7 @@ public enum TimetableText {
         return (nil, trimmed)
     }
 
-    /// "B1-0101 (Room 104) Sample Street 1, …" → "Room 104"; without a parenthesis, the part
+    /// "B1-0101 (Room 101) Sample Street 1, …" → "Room 101"; without a parenthesis, the part
     /// before the first comma.
     public static func room(fromLocation location: String) -> String {
         if let match = location.firstMatch(of: /\(([^()]+)\)/) {
@@ -282,7 +283,7 @@ public struct TimetableSlot: Hashable, Sendable, Identifiable {
 
     /// True when the slot meets at `date` (its weekday, start, period and week parity).
     func meets(at date: Date) -> Bool {
-        let zone = TimeZone(identifier: timeZone) ?? TimetableText.berlin
+        let zone = TimeZone(identifier: timeZone) ?? TimetableText.zone
         let day = CalendarDay(date, in: zone)
         guard day.weekday == weekday, TimetableText.minute(of: date, in: zone) == startMinute, validFrom <= day else { return false }
         if let validUntil, day > validUntil { return false }
@@ -425,7 +426,7 @@ public enum Timetable {
         let slots = courses.flatMap(\.slots)
         let firstDay = slots.map(\.validFrom).min()
             ?? events.map { CalendarDay($0.startsAt, in: $0.zone) }.min()
-            ?? CalendarDay(now, in: TimetableText.berlin)
+            ?? CalendarDay(now, in: TimetableText.zone)
         var semesterIsNew = false
         var semester: Semester
         if let containing = semesters.first(where: { $0.contains(firstDay) }) {
@@ -435,7 +436,7 @@ public enum Timetable {
         } else {
             semesterIsNew = true
             let last = slots.compactMap(\.validUntil).max() ?? firstDay.adding(days: 7 * 15)
-            semester = Semester(name: semesterName(starting: firstDay), lectureStart: firstDay, lectureEnd: last, timeZone: TimetableText.berlin.identifier)
+            semester = Semester(name: semesterName(starting: firstDay), lectureStart: firstDay, lectureEnd: last, timeZone: TimetableText.zone.identifier)
         }
         var periodChanged = semesterIsNew
         if !semesterIsNew, !slots.isEmpty {

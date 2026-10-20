@@ -154,7 +154,7 @@ struct MailListRow: View {
     }
 }
 
-/// The one extra line: a proposal chip, the lecture an LMS file went into, or why a draft
+/// The one extra line: a proposal chip, the lecture a learning platform's file went into, or why a draft
 /// was not sent.
 private struct ExtraLine: View {
     let extra: MailListExtra

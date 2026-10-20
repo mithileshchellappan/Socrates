@@ -82,7 +82,7 @@ struct MailGlass<S: Shape>: ViewModifier {
 }
 
 /// The label of a guess the student can change in one click (mockup 05's `.pick`: the route,
-/// the lecture an LMS file went into): optional leading content, the value in secondary and a
+/// the lecture a learning platform's file went into): optional leading content, the value in secondary and a
 /// small tertiary chevron. Use on a `Menu` with `.quietMenu()`.
 struct PickLabel<Leading: View>: View {
     let text: String

@@ -253,13 +253,13 @@ actor SwiftMailIMAPSession: IMAPSession {
     func search(_ criteria: IMAPSearch) async throws -> [UInt32] {
         try await run {
             var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = MailClock.berlin
+            calendar.timeZone = MailClock.zone
             let result: ExtendedSearchResult<UID>
             switch criteria {
             case .all:
                 result = try await server.extendedSearch(criteria: [.all], calendar: calendar)
             case .since(let day):
-                result = try await server.extendedSearch(criteria: [.since(day.start(in: MailClock.berlin))], calendar: calendar)
+                result = try await server.extendedSearch(criteria: [.since(day.start(in: MailClock.zone))], calendar: calendar)
             case .uids(let range):
                 result = try await server.extendedSearch(
                     identifierSet: UIDSet(UID(range.lowerBound)...UID(range.upperBound)), criteria: [.all], calendar: calendar

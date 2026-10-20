@@ -1,9 +1,16 @@
 # XcodeGen spec. Run `xcodegen generate`; the .xcodeproj is generated and not committed.
 # Only the integrator edits this file (see CLAUDE.md).
+#
+# Signing and the bundle ID prefix come from Config/Signing.xcconfig, which includes
+# Config/Local.xcconfig when it exists (not committed; copy Config/Local.xcconfig.example). Without
+# it no team is set and the Mac app is signed to run locally (ad-hoc).
 name: StudyPortal
 
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+
 options:
-  bundleIdPrefix: com.example
   deploymentTarget:
     macOS: "26.0"
     iOS: "26.0"
@@ -13,7 +20,7 @@ options:
 
 settings:
   base:
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: $(STUDYPORTAL_TEAM)
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
@@ -116,11 +123,14 @@ targets:
         # studyportal://session/<id> and studyportal://item/<id>: links on the Study Portal
         # calendar's events open the lecture or the mail a deadline was read from.
         CFBundleURLTypes:
-          - CFBundleURLName: com.example.studyportal
+          - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
             CFBundleURLSchemes: [studyportal]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
         UILaunchScreen: {}
+        # A university profile a library with courses but none takes once (Config/Signing.xcconfig;
+        # empty unless a local Config/Local.xcconfig sets it). StudyCore's UniversityProfileRecord.
+        StudyPortalUniversityProfile: $(STUDYPORTAL_UNIVERSITY_PROFILE)
         UIBackgroundModes: [audio]
         # M7: the recording's Live Activity (Lock Screen + Dynamic Island), from StudyPortalWidgets.
         NSSupportsLiveActivities: true
@@ -155,7 +165,7 @@ targets:
     settings:
       base:
         PRODUCT_NAME: StudyPortal
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.studyportal
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).studyportal
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
@@ -168,20 +178,14 @@ targets:
         "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": YES
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": App/macOS/StudyPortal.entitlements
         "COMBINE_HIDPI_IMAGES[sdk=macosx*]": YES
-      configs:
-        # The macOS Debug and Release builds are signed with the team's Developer ID (""),
-        # so the designated requirement stays the same across rebuilds and the Keychain's "Always
-        # Allow" sticks (ad-hoc signing changed it on every build). No provisioning profile is
-        # needed: the app uses no restricted entitlements. Release signs the same way (there is no
-        # "Mac Development" certificate on this Mac). See docs/decisions.md.
-        Debug:
-          "CODE_SIGN_IDENTITY[sdk=macosx*]": "Developer ID Application"
-          "CODE_SIGN_STYLE[sdk=macosx*]": Manual
-          "PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]": ""
-        Release:
-          "CODE_SIGN_IDENTITY[sdk=macosx*]": "Developer ID Application"
-          "CODE_SIGN_STYLE[sdk=macosx*]": Manual
-          "PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]": ""
+        # The macOS identity and style come from Config/Signing.xcconfig ("-", Automatic: signed to
+        # run locally) or Config/Local.xcconfig. A Developer ID identity keeps the designated
+        # requirement the same across rebuilds, so the Keychain's "Always Allow" and the privacy
+        # grants stick (ad-hoc signing changes it on every build). No provisioning profile is
+        # needed: the app uses no restricted entitlements. See docs/decisions.md.
+        "CODE_SIGN_IDENTITY[sdk=macosx*]": $(STUDYPORTAL_MAC_SIGN_IDENTITY)
+        "CODE_SIGN_STYLE[sdk=macosx*]": $(STUDYPORTAL_MAC_SIGN_STYLE)
+        "PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]": ""
     dependencies:
       - package: StudyCore
       - package: Capture
@@ -194,7 +198,7 @@ targets:
       - package: Alignment
         product: Alignment
       - package: Processing
-      # M1 (docs/plan-m1.md). StudyUITesting is test-only and never linked here.
+      # M1 (docs/plan-m1.md).
       - package: StudyUI
         product: StudyUI
       - package: Courses
@@ -298,7 +302,7 @@ targets:
     settings:
       base:
         PRODUCT_NAME: StudyPortalWidgets
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.studyportal.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).studyportal.widgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES
     dependencies:

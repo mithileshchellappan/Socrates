@@ -10,7 +10,7 @@ import SwiftUI
 /// compared with mockups 09, 16 and the agent panel's §7 (docs/plan-m7.md §7.3):
 ///
 ///     SIMCTL_CHILD_STUDYPORTAL_DATA_ROOT=<library copy> \
-///         xcrun simctl launch "SP Test" com.example.studyportal -phoneParity <route>
+///         xcrun simctl launch "SP Test" <your bundle id> -phoneParity <route>
 ///
 /// Routes: `recorder` (DC Lecture 2 at slide 17 of 88, 38:41 in), `recorder-after-stop` (the
 /// finished capture with Share and the outbox), `activity` (the Live Activity's Lock Screen view

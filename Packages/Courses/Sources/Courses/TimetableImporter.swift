@@ -78,7 +78,7 @@ public struct TimetableImportResult: Sendable {
     public var eventItemIDs: [TrackedItem.ID] = []
 }
 
-/// The timetable import: dropped `.ics` files (the campus system, one file per course unit) →
+/// The timetable import: dropped `.ics` files (a campus management system's, one file per course unit) →
 /// a proposal without what the library has already (`prepare`) → after the student confirms,
 /// courses, weekly slots, one-off sessions, the semester's holiday weeks and exam dates
 /// (`apply`, one transaction). Dropping the same files again proposes nothing new.
@@ -128,7 +128,7 @@ public struct TimetableImporter: Sendable {
     /// ma: what a re-import adds to existing courses, one line per row (≤ 6,000 characters): the
     /// `timetable` event's detail for the app agent's triage. Empty when nothing changed.
     static func diff(_ courses: [TimetableCourse]) -> String {
-        let zone = TimetableText.berlin
+        let zone = TimetableText.zone
         var lines: [String] = []
         for course in courses where !course.isEmpty {
             let name = course.existing?.name ?? course.name
@@ -233,7 +233,7 @@ public struct TimetableImporter: Sendable {
             for entry in written {
                 var cancelled = false
                 for (slot, slotID) in entry.slots {
-                    let zone = TimeZone(identifier: slot.timeZone) ?? TimetableText.berlin
+                    let zone = TimeZone(identifier: slot.timeZone) ?? TimetableText.zone
                     let skipped = Set(slot.excluded.filter { day in !semester.breaks.contains { $0.contains(day) } })
                     guard !skipped.isEmpty else { continue }
                     let sessions = try LectureSession.where { $0.weeklySlotID.eq(WeeklySlot.ID?.some(slotID)) }.fetchAll(db)

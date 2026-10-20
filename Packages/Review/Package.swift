@@ -20,9 +20,7 @@ let package = Package(
         // ma: the agent panel's composer focus (`\.isAgentComposerFocused`: the plain keys stand down).
         .package(path: "../ChatUI"),
         // M6: "Your notes" are rich notes (`NoteSession`, `NotesUI.NoteEditor`).
-        .package(path: "../Notes"),
-        // Test-only: real alignment runs for fixture-backed snapshots and anchor tests.
-        .package(path: "../Alignment")
+        .package(path: "../Notes")
     ],
     targets: [
         .target(

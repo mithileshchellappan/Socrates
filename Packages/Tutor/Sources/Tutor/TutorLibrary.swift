@@ -113,7 +113,7 @@ struct TutorLibrary: Sendable {
         return ChatCitation.moment(lectureID, recording: other, seconds: seconds).marker
     }
 
-    /// "YYYY-MM-DD" in Exampleton.
+    /// "YYYY-MM-DD" in the university's time zone.
     static func day(_ date: Date?) -> String? {
         date.map { CalendarDay($0, in: DeadlinesModule.timeZone).rawValue }
     }

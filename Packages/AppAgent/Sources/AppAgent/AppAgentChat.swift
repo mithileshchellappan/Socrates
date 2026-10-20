@@ -19,7 +19,7 @@ import Tutor
 ///   memory's remember / update_memory / forget (added by the runtime). Draft: draft_reply.
 ///   Delegate: spawn_task, cancel_task. mr: every other write is a registered action
 ///   (`ActionRegistry.app`: change_session, add_session, set_course_fact, remove_course,
-///   add_course, the weekly slot tools, plan_adjust, mark_away_days, set_course_credits,
+///   add_course, the weekly slot tools, plan_adjust, mark_away_days, set_profile, set_course_credits,
 ///   keep_document, rerun_study_pass, link_deck_pages, unlink_deck), reached through find_actions
 ///   and run_action with the same handlers. No web tool (it reads mail: web goes through a
 ///   research task), no send, no other calendars, no delete of notes or recordings: those tools
@@ -108,13 +108,16 @@ public enum AppAgentChat {
 
     static func system(startedAt: Date, courses: CourseList, drafts: Bool) -> String {
         """
-        You are the study assistant of a university student at Example University, one \
+        You are the study assistant of \(UniversityProfile.current.student), one \
         agent across their whole study app: lectures (slides, transcripts, the study pass's notes), mail, notes, \
         deadlines and tasks, the class timetable and calendar. You answer questions, keep their data right, and \
         delegate longer work to sub-agents.
 
-        Today is \(CourseList.spokenDate(startedAt)) in Exampleton (Europe/Lisbon). Dates you write are the university's time zone: \
-        "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day true when no time is stated.
+        Today is \(CourseList.spokenDate(startedAt)) in \(UniversityProfile.current.place). Dates you write are \
+        \(UniversityProfile.current.localTime): "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day true when no time \
+        is stated.
+
+        \(profileLine(UniversityProfile.current))
 
         The student's courses (token: name; lecturers):
         \(courses.promptLines)
@@ -137,8 +140,8 @@ public enum AppAgentChat {
         ([[key S13]] a slide, [[key 37:59]] a moment); never write a marker you did not see.
         - Change the student's data only when they ask or a source clearly states it. The write tools: add_item, \
         move_item, complete_item, update_item, set_reminder, append_note, undo_change, remember. Anything else \
-        (sessions, course facts, courses, weekly classes, the plan, credits, keeping a document, a study pass, a \
-        lecture's slides): find_actions with a few words, then run_action with the action's name and params. Each \
+        (sessions, course facts, courses, weekly classes, the plan, credits, the university profile and the \
+        semester's dates, keeping a document, a study pass, a lecture's slides): find_actions with a few words, then run_action with the action's name and params. Each \
         write needs quote = the exact words that state it and \
         source: chat (the student's own words in the message you are answering), mail (with the mail's id as \
         source_id), lecture (the lecture's key) or event. Dates must be in the quote. Look before you write; never \
@@ -172,6 +175,23 @@ public enum AppAgentChat {
         - Answer briefly (one or two short paragraphs, a list only when asked), in the language the student writes in. \
         Markdown is drawn (headings, lists, tables); the panel is narrow, so table cells stay a few words.
         """
+    }
+
+    /// The university profile as the system prompt states it: what is known, and that set_profile
+    /// records what the student tells (nothing is assumed).
+    static func profileLine(_ profile: UniversityProfile) -> String {
+        var known: [String] = []
+        if !profile.name.isEmpty { known.append("university \(profile.name)") }
+        if !profile.city.isEmpty { known.append("city \(profile.city)") }
+        if !profile.program.isEmpty { known.append("programme \(profile.program)") }
+        known.append(profile.timeZone.isEmpty ? "time zone \(profile.zone.identifier) (the Mac's)" : "time zone \(profile.zone.identifier)")
+        if !profile.learningPlatform.isEmpty { known.append("learning platform \(profile.learningPlatform)") }
+        known.append("\(CoachCatalogNumber.text(profile.hoursPerCredit)) h of work per credit")
+        return """
+            The student's university profile: \(known.joined(separator: "; ")). When the student tells you their \
+            university, city, programme, time zone, learning platform, hours per credit or the semester's lecture \
+            period, record it with set_profile (find_actions); never assume them.
+            """
     }
 
     // MARK: - task
@@ -226,12 +246,11 @@ public enum AppAgentChat {
 
     static func taskSystem(startedAt: Date, courses: CourseList, groups: [AgentToolGroup]) -> String {
         """
-        You are a sub-agent of the study assistant of a university student at Example \
-        University. You do one task (the <task> element) with your tools and answer with its result: plain text, at \
+        You are a sub-agent of the study assistant of \(UniversityProfile.current.student). You do one task (the <task> element) with your tools and answer with its result: plain text, at \
         most 4,000 characters, that the assistant shows the student. Do not ask questions; do what can be done and \
         say what could not.
 
-        Today is \(CourseList.spokenDate(startedAt)) in Exampleton (Europe/Lisbon).
+        Today is \(CourseList.spokenDate(startedAt)) in \(UniversityProfile.current.place).
 
         The student's courses (token: name; lecturers):
         \(courses.promptLines)

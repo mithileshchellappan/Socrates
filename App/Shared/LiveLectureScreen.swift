@@ -51,7 +51,7 @@ struct LiveLectureScreen: View {
         #endif
     }
 
-    /// "Data Centers · Lecture 2 · Virtualization Basics · Tue 13 Oct, 16:15 · Room 115": the
+    /// "Data Centers · Lecture 2 · Virtualization Basics · Tue 13 Oct, 16:15 · Room 101": the
     /// class from its session (number, start, room) when the course has one now, else when the
     /// live lecture was opened.
     static func title(for live: AppModel.LiveCapture, text: SessionText = SessionText()) -> String {

@@ -16,7 +16,7 @@ public struct MailClock: Sendable {
     }
 
     /// The university's time zone (IMAP SINCE days, Date headers of sent mail).
-    public static let berlin = TimeZone(identifier: "Europe/Lisbon") ?? .current
+    public static var zone: TimeZone { UniversityProfile.current.zone }
 }
 
 /// Tuning of the sync engine (defaults per docs/plan-m2.md §3).

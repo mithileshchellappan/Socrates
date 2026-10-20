@@ -376,7 +376,7 @@ public final class PhoneRecorder {
         let recorder = PhoneRecorder(services: services)
         recorder.isPreview = true
         await recorder.loadCourses()
-        let course = recorder.courses.first { $0.shortName == "DC" || $0.name == "Data Centers" } ?? recorder.courses.first
+        let course = recorder.courses.first { $0.shortName == "DC" } ?? recorder.courses.first
         recorder.course = course
         var lecture: Lecture?
         if let course {

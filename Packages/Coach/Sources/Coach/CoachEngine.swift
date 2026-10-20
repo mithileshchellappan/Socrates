@@ -12,7 +12,7 @@ import StudyCore
 /// - Follows the rows it plans from (`DatabaseRegionObservation`: courses, lectures, sessions,
 ///   items, plan memories, questions, answers, readings, study units) and replans debounced (2 s,
 ///   then at most once every 15 s while rows keep changing: a review's saved position), on a new
-///   day (local midnight) and after answers, ended rounds and submitted exams (its own writes).
+///   day (midnight in the university's time zone) and after answers, ended rounds and submitted exams (its own writes).
 ///   Rounds and exams are not followed: the screens write only drafts, flags, position and pause.
 /// - Nothing here waits for a model: choices and labels are graded in code at once; a written
 ///   answer is `pending` until `AnswerGrader` (Opus, background) grades it; drafting runs as a
@@ -100,6 +100,8 @@ public actor CoachEngine: StudyCoaching {
             SQLRequest<Row>(sql: "SELECT id, result FROM study_answer"),
             SQLRequest<Row>(sql: "SELECT id, done_at, hidden_at FROM study_reading"),
             SQLRequest<Row>(sql: "SELECT id, state FROM study_unit"),
+            // oss: hours per credit, exam terms (`set_profile`).
+            SQLRequest<Row>(sql: "SELECT id, profile FROM university_profile"),
         ]
         observation = DatabaseRegionObservation(tracking: tracked).start(
             in: services.database,

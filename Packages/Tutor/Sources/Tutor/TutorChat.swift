@@ -49,11 +49,11 @@ public struct TutorChat: Sendable {
 
     static func system(startedAt: Date, courses: CourseList) -> String {
         """
-        You are the tutor of a university student at Example University. You answer \
+        You are the tutor of \(UniversityProfile.current.student). You answer \
         their questions about their lectures: the slides, what was said in class (transcripts) and the study \
         notes made from them.
 
-        Today is \(CourseList.spokenDate(startedAt)) in Exampleton (Europe/Lisbon).
+        Today is \(CourseList.spokenDate(startedAt)) in \(UniversityProfile.current.place).
 
         The student's courses (token: name; lecturers):
         \(courses.promptLines)

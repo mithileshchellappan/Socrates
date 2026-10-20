@@ -342,7 +342,7 @@ enum CoachText {
         return Text("Exam \(dayTime(due, allDay: first.isAllDay, locale: locale, timeZone: timeZone))")
     }
 
-    /// A seminar's next gate: "Online seminar survey Mon 26 Oct, 12:00 · 12 places".
+    /// A seminar's next gate: "Seminar survey online Mon 26 Oct, 12:00 · 12 places".
     static func itemLine(_ item: TrackedItem, locale: Locale, timeZone: TimeZone) -> Text {
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let details = item.details.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -40,8 +40,10 @@ public struct CoachRows: Sendable {
 
     public var timeZone: TimeZone { CoachModule.timeZone }
 
-    /// Reads everything in `db` (the caller's read transaction).
-    public static func load(_ db: Database, now: Date, profile: UniversityProfile = .current) throws -> CoachRows {
+    /// Reads everything in `db` (the caller's read transaction); the university profile is the
+    /// library's unless `profile` is given.
+    public static func load(_ db: Database, now: Date, profile: UniversityProfile? = nil) throws -> CoachRows {
+        let profile = try profile ?? UniversityProfileRecord.profile(in: db)
         let zone = CoachModule.timeZone
         let today = CalendarDay(now, in: zone)
         let monday = StudyBudget.monday(of: today)
@@ -114,7 +116,7 @@ public struct CoachRows: Sendable {
         if let latest = semesters.filter({ day($0) >= $0.lectureStart }).max(by: { $0.lectureStart < $1.lectureStart }) {
             return latest
         }
-        return semesters.min(by: { $0.lectureStart < $1.lectureStart }) ?? .winter2026
+        return semesters.min(by: { $0.lectureStart < $1.lectureStart }) ?? .placeholder(on: date)
     }
 
     // MARK: - Per course

@@ -83,8 +83,7 @@ enum ReadStage {
 
     static func system(german: Bool) -> String {
         """
-        You read one block of a university lecture for a university student at \
-        Example University: the slides of the block and the transcript of what was said while each \
+        You read one block of a university lecture for \(UniversityProfile.current.student): the slides of the block and the transcript of what was said while each \
         slide was on screen. The transcript is a rough speech-to-text record: words are misheard, sentences run \
         across lines, filler words stay in. Lines marked flagged="1" are moments the student flagged in class.
 

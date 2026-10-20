@@ -106,8 +106,8 @@ enum SynthesisStage {
 
     static func system(german: Bool) -> String {
         """
-        You read the essentials of one university lecture for a university student at \
-        Example University, to prepare them for the exam. You get every slide of the lecture (number, \
+        You read the essentials of one university lecture for \(UniversityProfile.current.student), to prepare \
+        them for the exam. You get every slide of the lecture (number, \
         title, text, a description of figure slides, a summary of what was said while it was shown) and selected \
         transcript lines: those around moments a first reading marked, around exam cues and the student's flags \
         (flagged="1"), and everything said while no slide was shown. <gap/> marks left-out lines. The transcript \

@@ -43,7 +43,7 @@ public struct StudyBlock: StudyRecord {
     @Column("reading_id") public var readingID: StudyReading.ID?
     /// The round or practice exam Start made.
     @Column("session_id") public var sessionID: StudySession.ID?
-    /// What Start opens outside the app (an LMS quiz), when known.
+    /// What Start opens outside the app (an online quiz), when known.
     public var url: URL?
     /// Planned as an away day (phone-sized; the hero's tram glyph).
     @Column("is_away") public var isAway: Bool

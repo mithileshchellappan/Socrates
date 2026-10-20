@@ -8,7 +8,7 @@ import Foundation
 /// have neither: `containerIdentifier()` is nil, nothing about sync runs (no CloudKit call, which
 /// would trap without the entitlement) and the database opens exactly as before.
 public enum CloudSyncConfiguration {
-    /// The Info.plist key a signed build sets to its CloudKit container ("iCloud.com.example.studyportal").
+    /// The Info.plist key a signed build sets to its CloudKit container ("iCloud.com.yourname.studyportal").
     public static let infoKey = "StudyPortalCloudKitContainer"
 
     /// The CloudKit container this build syncs to, or nil: sync off.

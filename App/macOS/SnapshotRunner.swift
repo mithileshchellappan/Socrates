@@ -13,7 +13,7 @@ import SwiftUI
 ///
 /// Shots (light and dark): Today, Calendar (the week of `STUDYPORTAL_SNAPSHOT_WEEK`, YYYY-MM-DD, else
 /// this week), Mail (Inbox with the newest message, its course, Drafts), Course
-/// Settings of Data Centers, the review of DC lecture 2
+/// Settings of DC, the review of DC lecture 2
 /// (slide 16, 37:27) and CL lecture 1 (slide 11, 7:25), Search for "paravirtualization" and
 /// "ELIZA", and the drop HUD over Today for the files in `STUDYPORTAL_SNAPSHOT_DROP` (paths
 /// separated by ":"), after filing those in `STUDYPORTAL_SNAPSHOT_FILE` (their toasts). Filing
@@ -60,19 +60,20 @@ enum SnapshotRunner {
             let (courses, lectures) = try await services.database.read { db in
                 (try Course.all.fetchAll(db), try Lecture.all.fetchAll(db))
             }
+            // Courses by short name ("DC", "CL"), whatever the library calls them.
             func lecture(_ course: String, _ number: Int) -> Lecture.ID? {
-                guard let courseID = courses.first(where: { $0.name == course })?.id else { return nil }
+                guard let courseID = courses.first(where: { $0.shortName == course })?.id else { return nil }
                 return lectures.first { $0.courseID == courseID && $0.number == number }?.id
             }
             var shots: [Shot] = [Shot(name: "01-today", item: .today), Shot(name: "06-calendar", item: .calendar)]
             model.fixedCalendarWeek = ProcessInfo.processInfo.environment["STUDYPORTAL_SNAPSHOT_WEEK"].flatMap(CalendarDay.init(rawValue:))
-            if let cc = courses.first(where: { $0.name == "Data Centers" }) {
+            if let cc = courses.first(where: { $0.shortName == "DC" }) {
                 shots.append(Shot(name: "08-course-settings", item: .courseSettings(cc.id)))
             }
-            if let id = lecture("Data Centers", 2) {
+            if let id = lecture("DC", 2) {
                 shots.append(Shot(name: "03-review-dc-l2", item: .lecture(id), target: (id, ReviewTarget(page: 16, time: 2247)), size: CGSize(width: 1440, height: 900)))
             }
-            if let id = lecture("Computational Linguistics", 1) {
+            if let id = lecture("CL", 1) {
                 shots.append(Shot(name: "03-review-cl-l1", item: .lecture(id), target: (id, ReviewTarget(page: 11, time: 445)), size: CGSize(width: 1440, height: 900)))
             }
             // Mail (mockup 05): the Inbox with its newest message, a course's mail, Drafts.

@@ -12,7 +12,7 @@ import StudyCore
 ///   or the composer, and then only for the same course, title and due day) → nothing new; (2) a session proposal: the same session and kind (and room); (3) an event
 ///   or announcement tied to the same session and kind; (3b) an undated task (M3.5, its own kind
 ///   group): same course and session, similar titles; (4) a dated item: same course, kind
-///   group (deadline/exercise/exam together), same day in Exampleton, times within an hour unless
+///   group (deadline/exercise/exam together), same day in the university's time zone, times within an hour unless
 ///   one is all-day, similar titles. A match gets a new source row; otherwise a new item. A task
 ///   with a due date is recorded as a deadline.
 /// - **Calendar**: in on its own only for deadline/exercise/exam with a due date, a verified date
@@ -657,7 +657,7 @@ enum ItemMatching {
         kind.isDue ? "due" : kind.rawValue
     }
 
-    /// The same item as `draft` describes: course, similar title, the due day in Exampleton (or both
+    /// The same item as `draft` describes: course, similar title, the due day in the university's time zone (or both
     /// undated) and, for a proposal, the session.
     static func sameItem(_ item: TrackedItem, _ draft: DeadlineDraft, timeZone: TimeZone) -> Bool {
         guard item.courseID == draft.courseID, similarTitles(item.title, draft.title) else { return false }

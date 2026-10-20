@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The line under the slide: which course and lecture this recording is filed under.
 public struct LiveLectureContext {
-    /// e.g. "Data Centers · Lecture 2 · Virtualization Basics · Tue 13 Oct, 16:15 · Room 115".
+    /// e.g. "Data Centers · Lecture 2 · Virtualization Basics · Tue 13 Oct, 16:15 · Room 101".
     public var title: String
     public var color: Color?
     /// Shows "Change" to fix a wrong match.

@@ -33,7 +33,7 @@ public struct SemesterRepository: Sendable {
         if let next = semesters.filter({ day($0) < $0.lectureStart }).min(by: { $0.lectureStart < $1.lectureStart }) {
             return next
         }
-        return semesters.max(by: { $0.lectureStart < $1.lectureStart }) ?? .winter2026
+        return semesters.max(by: { $0.lectureStart < $1.lectureStart }) ?? .placeholder(on: date)
     }
 }
 

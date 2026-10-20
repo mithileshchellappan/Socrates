@@ -56,12 +56,25 @@ public struct CourseSchedule: Sendable {
     public func save(_ semester: Semester, now: Date = Date()) async throws -> Semester {
         let planner = planner
         let store = store
+        return try await services.database.write { db in
+            try Self.saveSemester(semester, now: now, planner: planner, store: store, db: db)
+        }
+    }
+
+    /// Saves a semester and replans every course inside the caller's transaction (Settings'
+    /// semester through `save(_:)`, AppAgent's `set_profile` and its Undo). The semester as written.
+    @discardableResult
+    public static func saveSemester(
+        _ semester: Semester,
+        now: Date,
+        planner: SessionPlanner = SessionPlanner(),
+        store: RecordStore,
+        db: Database
+    ) throws -> Semester {
         let stamped = store.stamp(semester)
-        try await services.database.write { db in
-            try Semester.upsert { stamped }.execute(db)
-            for course in try Course.all.fetchAll(db) {
-                try Self.replan(courseID: course.id, now: now, planner: planner, store: store, db: db)
-            }
+        try Semester.upsert { stamped }.execute(db)
+        for course in try Course.all.fetchAll(db) {
+            try replan(courseID: course.id, now: now, planner: planner, store: store, db: db)
         }
         return stamped
     }
@@ -395,6 +408,6 @@ enum SemesterChoice {
         if let next = semesters.filter({ day($0) < $0.lectureStart }).min(by: { $0.lectureStart < $1.lectureStart }) {
             return next
         }
-        return semesters.max(by: { $0.lectureStart < $1.lectureStart }) ?? .winter2026
+        return semesters.max(by: { $0.lectureStart < $1.lectureStart }) ?? .placeholder(on: date)
     }
 }

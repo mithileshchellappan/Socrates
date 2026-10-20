@@ -5,7 +5,7 @@ import SQLiteData
 // mail that needs a reply; chat with the agent, mail in context). docs/plan-m35.md §2.
 
 extension TrackedItemKind {
-    /// Something the student must do that has no due date of its own: register in the exam portal, fill in
+    /// Something the student must do that has no due date of its own: register for an exam, fill in
     /// a survey, bring a laptop, hand in a form. A dated action is a `deadline` (or `exercise`,
     /// `exam`); extraction turns a task with a due date into a deadline. Tied to a session when
     /// the source names one (`lecture_session_id`). Never goes into the calendar on its own

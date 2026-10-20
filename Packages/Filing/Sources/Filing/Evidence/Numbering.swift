@@ -1,7 +1,7 @@
 import Foundation
 
 /// Lecture numbers in file names and on slides: "02_Virtualization_Basics…" → 2,
-/// "Slides I_ Overview" → 1 (Roman), "2 Virtualization Basics" → 2, "I: Introduction" → 1.
+/// "Slides I_ Overview" → 1 (Roman), "2 Virtualization Basics" → 2, "I: Overview" → 1.
 enum Numbering {
     /// Numbers above this are versions, years or page counts, not lectures.
     static let maximum = 40
@@ -17,7 +17,7 @@ enum Numbering {
         let base = (fileName as NSString).deletingPathExtension
         let words = Self.words(base)
         guard let first = words.first else { return nil }
-        // A leading number: "02_Enabling…", "3 - Storage". Not a leading date ("15-10-2026…").
+        // A leading number: "02_Virtualization…", "3 - Storage". Not a leading date ("15-10-2026…").
         let leadingDate = words.count >= 3 && words.prefix(3).allSatisfy { Int($0) != nil }
         if let number = Int(first), first.count <= 2, (1...maximum).contains(number), !leadingDate,
            SlideDate.day(in: words.prefix(3).joined(separator: "-")) == nil {

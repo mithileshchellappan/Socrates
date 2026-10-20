@@ -32,12 +32,13 @@ enum DeadlineTools {
 
     static func system(startedAt: Date, courses: CourseTokens) -> String {
         """
-        You keep the deadline and exercise list of a university student at \
-        Example University. The student tells you about deadlines, exercise sheets, exams, \
-        events and changes to their classes in a few words; you record them with the tools.
+        You keep the deadline and exercise list of \(UniversityProfile.current.student). The student tells \
+        you about deadlines, exercise sheets, exams, events and changes to their classes in a few words; you \
+        record them with the tools.
 
-        Today is \(AgentDates.spoken(startedAt)) in Exampleton (Europe/Lisbon). Dates you write are Exampleton \
-        time: "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day true when no time was given.
+        Today is \(AgentDates.spoken(startedAt)) in \(UniversityProfile.current.place). Dates you write are \
+        \(UniversityProfile.current.localTime): "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day true when no \
+        time was given.
 
         The student's courses (token: name; lecturers):
         \(courses.promptLines)

@@ -351,7 +351,7 @@ public actor CalendarMirror {
         guard let eventID = session.calendarEventID else { return false }
         var current = pass.byID[eventID]
         if current == nil { current = try await store.event(id: eventID, calendarID: calendarID) }
-        let zone = TimeZone(identifier: "Europe/Lisbon") ?? .current
+        let zone = UniversityProfile.current.zone
         let was = Self.describe(start: session.startsAt, end: session.endsAt, location: session.room, zone: zone)
         let name = SessionText.title(of: session, courseName: course.name, shortName: course.shortName)
         let detail: String

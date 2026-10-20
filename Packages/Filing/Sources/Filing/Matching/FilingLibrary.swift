@@ -85,7 +85,7 @@ struct FilingLibrary: Sendable {
         }
 
         let semesters = try Semester.order(by: \.lectureStart).fetchAll(db)
-        let zone = semesters.first?.zone ?? TimeZone(identifier: "Europe/Lisbon") ?? .current
+        let zone = semesters.first?.zone ?? UniversityProfile.current.zone
         return FilingLibrary(
             courses: courses, sessions: sessions, lectures: infos, filedDecks: filedDecks, zone: zone, now: now
         )

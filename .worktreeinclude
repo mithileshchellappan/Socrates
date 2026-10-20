@@ -1,0 +1,3 @@
+# Ignored files Claude Code copies into each new worktree it creates: this machine's build values
+# (signing, bundle prefix), so worktree builds sign as the main checkout does.
+Config/Local.xcconfig

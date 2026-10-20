@@ -83,17 +83,19 @@ public struct CourseDraft: Hashable, Sendable {
     }
 
     /// The mail rules a new course starts with: "Sender is" each lecturer's name (without
-    /// academic titles) and "LMS course is" "<name> (<semester>)", as LMS writes the course
-    /// path ("Data Centers (WS 2026/27)").
-    public static func mailRules(for course: Course, semester: Semester?) -> [MailRule] {
+    /// academic titles) and, when the profile names a learning platform, "<platform> course is"
+    /// "<name> (<semester>)", as such platforms write the course path ("Data Centers (WS
+    /// 2026/27)").
+    public static func mailRules(for course: Course, semester: Semester?, profile: UniversityProfile = .current) -> [MailRule] {
         var rules: [MailRule] = []
         for name in course.professors.map(plainName) where !name.isEmpty {
             guard !rules.contains(where: { $0.pattern.caseInsensitiveCompare(name) == .orderedSame }) else { continue }
             rules.append(MailRule(courseID: course.id, kind: .sender, pattern: name, sortOrder: rules.count, createdAt: course.createdAt))
         }
+        guard !profile.platformMarker.isEmpty else { return rules }
         let semesterName = semester?.name.trimmingCharacters(in: .whitespaces) ?? ""
-        let lms = semesterName.isEmpty ? course.name : "\(course.name) (\(semesterName))"
-        rules.append(MailRule(courseID: course.id, kind: .platformCourse, pattern: lms, sortOrder: rules.count, createdAt: course.createdAt))
+        let path = semesterName.isEmpty ? course.name : "\(course.name) (\(semesterName))"
+        rules.append(MailRule(courseID: course.id, kind: .platformCourse, pattern: path, sortOrder: rules.count, createdAt: course.createdAt))
         return rules
     }
 
@@ -148,23 +150,9 @@ public struct CourseLibrary: Sendable {
         }
     }
 
-    /// Creates `drafts` in one transaction, but only in a library without courses (a first
-    /// launch). Consent, when a draft records, is dated `consentAt`. Returns the courses created
-    /// (none when the library already had some).
-    @discardableResult
-    public func seedIfEmpty(_ drafts: [CourseDraft], consentAt: Date, now: Date = Date()) async throws -> [Course] {
-        let store = store
-        return try await services.database.write { db in
-            guard try Course.all.fetchCount(db) == 0 else { return [] }
-            return try drafts.filter(\.isValid).map { draft in
-                try Self.insert(draft, now: now, consentAt: consentAt, store: store, db: db)
-            }
-        }
-    }
-
-    /// Saves a new course from `draft` inside the caller's transaction (`create`, the first-launch
-    /// seed, AppAgent's change log for `add_course`): the same semester, colour, order and mail
-    /// rules as the New Course sheet.
+    /// Saves a new course from `draft` inside the caller's transaction (`create`, AppAgent's
+    /// change log for `add_course`): the same semester, colour, order and mail rules as the New
+    /// Course sheet.
     public static func insert(_ draft: CourseDraft, now: Date, consentAt: Date, store: RecordStore, db: Database) throws -> Course {
         let courses = try Course.all.fetchAll(db)
         let semester: Semester

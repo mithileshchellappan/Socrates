@@ -23,7 +23,7 @@ public enum AppAgentModule {
     }
 
     static let log = Log.logger(category: "app-agent")
-    static let timeZone = DeadlinesModule.timeZone
+    static var timeZone: TimeZone { DeadlinesModule.timeZone }
 }
 
 /// Tool results: compact JSON (sorted keys) of at most `limit` characters.

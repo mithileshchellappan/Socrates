@@ -178,16 +178,22 @@ struct RuleEditor: View {
 }
 
 extension MailRuleKind {
-    /// The kinds Course Settings offers, in menu order.
-    static let settingsKinds: [MailRuleKind] = [.sender, .listID, .subject, .platformCourse]
+    /// The kinds Course Settings offers, in menu order (the platform's course once the profile
+    /// names a learning platform).
+    static var settingsKinds: [MailRuleKind] {
+        UniversityProfile.current.platformMarker.isEmpty ? [.sender, .listID, .subject] : [.sender, .listID, .subject, .platformCourse]
+    }
 
-    /// "Sender is", "Mailing list is", "Subject contains", "LMS course is".
+    /// "Sender is", "Mailing list is", "Subject contains", "<platform> course is".
     var settingsTitle: String {
         switch self {
         case .sender: String(localized: "Sender is")
         case .listID: String(localized: "Mailing list is")
         case .subject: String(localized: "Subject contains")
-        case .platformCourse: String(localized: "LMS course is")
+        case .platformCourse:
+            UniversityProfile.current.platformMarker.isEmpty
+                ? String(localized: "Learning platform course is")
+                : String(localized: "\(UniversityProfile.current.platformName) course is")
         default: rawValue
         }
     }
@@ -217,7 +223,7 @@ struct MailRuleRow: View {
                     TextField("Value", text: $value)
                         .labelsHidden()
                         .textFieldStyle(.plain)
-                        // A long LMS course keeps its start and its term ("Spanish A1.1 … (WS 2026/27)").
+                        // A long platform course keeps its start and its term ("Spanish A1.1 … (WS 2026/27)").
                         .truncationMode(.middle)
                         .focused($focused)
                         .onSubmit(commit)
@@ -295,7 +301,8 @@ struct MailRuleRow: View {
 }
 
 /// The Mail group of a course without rules (mockup 08's rule rows, in tertiary): "Sender is" and
-/// the course's lecturer, or "LMS course is" and the course's name. Clicking it keeps that rule.
+/// the course's lecturer, or "<platform> course is" (else "Subject contains") and the course's
+/// name. Clicking it keeps that rule.
 struct GhostMailRuleRow: View {
     let rule: MailRule
     let add: () -> Void
@@ -334,12 +341,14 @@ struct GhostMailRuleRow: View {
         .accessibilityValue(Text(verbatim: "\(rule.kind.settingsTitle) \(rule.pattern)"))
     }
 
-    /// The rule a course most likely wants: mail from its lecturer, else its LMS course.
+    /// The rule a course most likely wants: mail from its lecturer, else its course on the
+    /// learning platform, else its name in the subject.
     static func rule(for course: Course, sortOrder: Int) -> MailRule {
         if let lecturer = course.professors.first.map(Self.plainName), !lecturer.isEmpty {
             return MailRule(courseID: course.id, kind: .sender, pattern: lecturer, sortOrder: sortOrder)
         }
-        return MailRule(courseID: course.id, kind: .platformCourse, pattern: course.name, sortOrder: sortOrder)
+        let kind: MailRuleKind = UniversityProfile.current.platformMarker.isEmpty ? .subject : .platformCourse
+        return MailRule(courseID: course.id, kind: kind, pattern: course.name, sortOrder: sortOrder)
     }
 
     /// "Prof. Dr. Ada Example" → "Ada Example" (a sender's display name has no titles).
