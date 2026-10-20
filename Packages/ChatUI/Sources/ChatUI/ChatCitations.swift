@@ -429,21 +429,51 @@ struct AnswerText: Equatable {
         }
     }
 
-    /// The answer as one `Text`: one sparkle, then the Markdown runs (links removed: only checked
-    /// chips link) and the chips as link runs for `AnswerChipRenderer`. ma: `sparkle` false for a
-    /// paragraph after the answer's first block (one sparkle per answer).
-    /// - Parameter codeSize: inline `code` runs' size (mono, 1.5 pt under the text: mockup `.ans
-    ///   code`); nil keeps the text's size.
-    func text(sparkle: Bool = true, codeSize: CGFloat? = nil) -> Text {
+    /// How an answer's runs are drawn (docs/DESIGN.md §3.2, §8.6): bold and inline code in the
+    /// emphasis ink (the words around them keep the view's grey), inline code in SF Mono at
+    /// `codeSize` on `codeFill`. The fill is the run's own background, so it draws in selectable
+    /// text too (a `TextRenderer` is skipped there).
+    struct RunStyle {
+        /// Inline code's size: 1.5 pt under the words.
+        var codeSize: CGFloat
+        /// The words' weight (semibold in headings and table headers); inline code keeps it.
+        var weight: Font.Weight = .regular
+        var emphasis: Color
+        var codeFill: Color
+    }
+
+    /// Stands for a chip while the text is parsed (the object replacement character).
+    private static let chipPlaceholder: Character = "\u{FFFC}"
+
+    /// The answer as one `Text`: one sparkle, then its Markdown with the chips in place. The text
+    /// is parsed once as a whole with a placeholder per chip, so bold or italics around a chip
+    /// keep their style on both sides (a parse per piece left "**" showing). Links are removed
+    /// (only checked chips link); chips are link runs for `AnswerChipRenderer`. ma: `sparkle`
+    /// false for a paragraph after the answer's first block (one sparkle per answer).
+    func text(sparkle: Bool = true, style: RunStyle? = nil) -> Text {
         var result = sparkle ? Text("\(Text(Image(systemName: "sparkle")).foregroundStyle(Color.ai)) ") : Text(verbatim: "")
+        var source = ""
         for piece in pieces {
             switch piece {
-            case .text(let text):
-                result = Text("\(result)\(Text(Self.markdown(text, codeSize: codeSize)))")
-            case .chip(let chip):
-                result = Text("\(result)\(Self.chipText(chip))")
+            case .text(let text): source += text.filter { $0 != Self.chipPlaceholder }
+            case .chip: source.append(Self.chipPlaceholder)
             }
         }
+        let styled = Self.markdown(source, style: style)
+        var chips = self.chips.makeIterator()
+        func append(_ range: Range<AttributedString.Index>) {
+            guard !range.isEmpty else { return }
+            result = Text("\(result)\(Text(AttributedString(styled[range])))")
+        }
+        var start = styled.startIndex
+        for index in styled.characters.indices where styled.characters[index] == Self.chipPlaceholder {
+            append(start..<index)
+            if let chip = chips.next() {
+                result = Text("\(result)\(Self.chipText(chip))")
+            }
+            start = styled.characters.index(after: index)
+        }
+        append(start..<styled.endIndex)
         return result
     }
 
@@ -471,18 +501,27 @@ struct AnswerText: Equatable {
     }
 
     /// Inline Markdown (bold, italics, code), whitespace kept; links are removed, so nothing in an
-    /// answer links except its checked chips.
-    static func markdown(_ text: String, codeSize: CGFloat? = nil) -> AttributedString {
+    /// answer links except its checked chips. With a `style`, each run gets its ink and font: bold
+    /// the emphasis ink (SwiftUI draws its weight from the run's intent), inline code SF Mono at
+    /// the code size in the emphasis ink, keeping the words' weight, bold and italics.
+    static func markdown(_ text: String, style: RunStyle? = nil) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         var string = (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
         let linked = string.runs.filter { $0.link != nil }.map(\.range)
         for range in linked {
             string[range].link = nil
         }
-        if let codeSize {
-            let code = string.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true }.map(\.range)
-            for range in code {
-                string[range].swiftUI.font = .system(size: codeSize, design: .monospaced)
+        guard let style else { return string }
+        let intents = string.runs.compactMap { run in run.inlinePresentationIntent.map { (run.range, $0) } }
+        for (range, intent) in intents {
+            if intent.contains(.code) {
+                let weight: Font.Weight = intent.contains(.stronglyEmphasized) ? .bold : style.weight
+                let font = Font.system(size: style.codeSize, weight: weight, design: .monospaced)
+                string[range].swiftUI.font = intent.contains(.emphasized) ? font.italic() : font
+                string[range].swiftUI.foregroundColor = style.emphasis
+                string[range].swiftUI.backgroundColor = style.codeFill
+            } else if intent.contains(.stronglyEmphasized) {
+                string[range].swiftUI.foregroundColor = style.emphasis
             }
         }
         return string
