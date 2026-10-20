@@ -194,8 +194,8 @@ struct RootView: View {
                 .background { MainWindowReader() }
                 .background {
                     SidebarFit(
-                        columns: $columns, sidebarWidth: sidebarWidth, agentExpanded: agentExpanded,
-                        isPaused: selection?.isPractice == true
+                        columns: $columns, sidebarWidth: sidebarWidth, screenMin: screenMinWidth,
+                        agentExpanded: agentExpanded, isPaused: selection?.isPractice == true
                     )
                 }
                 #endif
@@ -206,10 +206,16 @@ struct RootView: View {
     /// sidebar while it shows (the Mac's window; iOS has no limit).
     private var panelRoom: AgentPanelRoom? {
         #if os(macOS)
-        AgentPanelRoom(screen: WindowColumns.detailMin, sidebar: shownSidebarWidth)
+        AgentPanelRoom(screen: screenMinWidth, sidebar: shownSidebarWidth)
         #else
         nil
         #endif
+    }
+
+    /// The screen on display's declared minimum (480; Mail's list and reader need more). From the
+    /// selection, so it changes in the same update as the screen.
+    private var screenMinWidth: CGFloat {
+        WindowColumns.detailMin(for: selection)
     }
 
     /// The sidebar's column while it shows (its glass inset included), else 0.
@@ -270,8 +276,8 @@ struct RootView: View {
             #if os(macOS)
             // The screen's minimum and ideal are declared, never measured from its content: a
             // screen's rigid rows or one-line ideals never widen the window or push the sidebar
-            // and the agent's sidebar out of it (screens adapt to 480 pt instead).
-            .frame(minWidth: WindowColumns.detailMin, idealWidth: WindowColumns.detailIdeal, maxWidth: .infinity)
+            // and the agent's sidebar out of it (screens adapt to their declared minimum).
+            .frame(minWidth: screenMinWidth, idealWidth: max(WindowColumns.detailIdeal, screenMinWidth), maxWidth: .infinity)
             #endif
             // A new stack per screen; the top-level screens share one, so the search field (and
             // its focus while typing on Today opens Search) stays.
@@ -282,14 +288,14 @@ struct RootView: View {
         }
         #if os(macOS)
         // The split view's minimum is declared too: the sidebar while it shows and the screen's
-        // 480 (a frame with both bounds reports its own minimum, not its content's). On macOS 26
+        // minimum (a frame with both bounds reports its own minimum, not its content's). On macOS 26
         // the split view runs under the agent's right sidebar, so its own minimum (the detail's,
         // which spans under both side columns) already holds that column's width, and the window
         // added it once more (sidebar 236 + 480 + a 560 pt agent column needed 1836, not 1276): a
         // window that cannot grow overflowed and cut the sidebar and the agent column off at its
         // edges. Under the agent's column as before (AppKit still insets the detail's content by
-        // it), so the window's minimum counts that column once: sidebar + 480 + its width.
-        .frame(minWidth: WindowColumns.detailMin + shownSidebarWidth, maxWidth: .infinity)
+        // it), so the window's minimum counts that column once: sidebar + screen + its width.
+        .frame(minWidth: screenMinWidth + shownSidebarWidth, maxWidth: .infinity)
         .ignoresSafeArea(.container, edges: .trailing)
         #endif
         .onChange(of: query) { _, text in
@@ -777,21 +783,35 @@ private struct SearchFieldModifier: ViewModifier {
 }
 #endif
 
-/// The main window's columns (DESIGN 3.3, 6.1): the sidebar 200–320, the screen at least 480, the
-/// agent's right sidebar 300–560. The screen's minimum is declared, never its content's, and the
-/// window's minimum is the sidebar's width while it shows + 480 + the agent column's width while
-/// it shows (`.windowResizability(.contentMinSize)`).
+/// The main window's columns (DESIGN 3.3, 6.1): the sidebar 200–320, the screen at least 480 (Mail
+/// 700), the agent's right sidebar 300–560. The screen's minimum is declared per screen, never
+/// measured from its content, and the window's minimum is the sidebar's width while it shows + the
+/// screen's minimum + the agent column's width while it shows (`.windowResizability(.contentMinSize)`).
 enum WindowColumns {
     static let sidebarMin: CGFloat = 200
     static let sidebarMax: CGFloat = 320
-    /// The screen's narrowest: Course Settings, Mail's list and reader, Notes, Calendar adapt to it.
+    /// The screen's narrowest: Course Settings, Notes, Calendar and the others adapt to it.
     static let detailMin: CGFloat = 480
+    /// Mail's narrowest: its 318 pt list, the divider and the reader's rigid rows (a found row's
+    /// text, lecture chip, Add to Calendar and its 64 pt trailing action; the route menu), about
+    /// 380 pt with the reader's 26 pt margins. At 480 the list and reader were laid out wider than
+    /// the column, centred, and drawn over the sidebar and under the agent's column.
+    static let mailMin: CGFloat = 700
     /// The screen's own ideal, so no one-line text ideal of a screen sizes the window.
     static let detailIdeal: CGFloat = 720
     /// macOS 26's floating sidebar sits this far in from the window's edge.
     static let sidebarInset: CGFloat = 8
     /// The room past the agent's minimum before a sidebar it hid comes back (no flicker at the edge).
     static let sidebarReturn: CGFloat = 40
+
+    /// What `screen` declares as its narrowest: the detail column's minimum, the room the agent's
+    /// sidebar leaves it and `SidebarFit`'s measure.
+    static func detailMin(for screen: SidebarItem?) -> CGFloat {
+        switch screen {
+        case .mail?, .mailScope?: mailMin
+        default: detailMin
+        }
+    }
 }
 
 #if os(macOS)
@@ -804,6 +824,8 @@ enum WindowColumns {
 private struct SidebarFit: View {
     @Binding var columns: NavigationSplitViewVisibility
     let sidebarWidth: CGFloat
+    /// The screen on display's declared minimum (`WindowColumns.detailMin(for:)`).
+    let screenMin: CGFloat
     let agentExpanded: Bool
     let isPaused: Bool
 
@@ -820,6 +842,8 @@ private struct SidebarFit: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.width.rounded() } action: { windowWidth = $0 }
             .onChange(of: agentExpanded) { fit() }
             .onChange(of: windowWidth) { fit() }
+            // Another screen (Mail needs more than 480): the sidebar makes room or comes back.
+            .onChange(of: screenMin) { fit() }
             .onChange(of: columns) { _, visibility in
                 if visibility != wrote { hidSidebar = false }
                 wrote = nil
@@ -828,7 +852,7 @@ private struct SidebarFit: View {
 
     private func fit() {
         guard !isPaused, windowWidth > 0 else { return }
-        let screen = WindowColumns.detailMin
+        let screen = screenMin
         let sidebar = sidebarWidth + WindowColumns.sidebarInset
         let showsSidebar = columns != .detailOnly
         let fitsAlone = AgentPanelLayout.fits(windowWidth: windowWidth, beside: screen)

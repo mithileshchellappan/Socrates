@@ -251,9 +251,10 @@ final class AgentPanelModel {
         focusRequests += 1
     }
 
-    /// In the same update as the panel expands: the column shows now, or once the app has made
-    /// room (`columnFits`), so the window never holds more than it can for a frame.
-    private func measureColumn() {
+    /// In the same update as the panel expands (or another screen with another minimum shows):
+    /// the column shows now, or once the app has made room (`columnFits`), so the window never
+    /// holds more than it can for a frame.
+    func measureColumn() {
         columnFits = AgentPanelLayout.hasRoom(window: windowWidth, room: room, withSidebar: true)
     }
 
@@ -538,8 +539,14 @@ struct AgentPanelModifier: ViewModifier {
                 }
                 model.fitColumn()
             }
-            .onChange(of: room, initial: true) { _, new in
+            .onChange(of: room, initial: true) { old, new in
                 model.room = new
+                if model.mode == .expanded, old?.screen != new?.screen {
+                    // Another screen with another minimum (Mail's list and reader): as when the
+                    // panel expands, the column waits while the app makes room (its sidebar
+                    // hides); a screen change is not the student's choice of the sidebar.
+                    model.measureColumn()
+                }
                 if model.mode == .expanded, !model.columnFits,
                    AgentPanelLayout.hasRoom(window: model.windowWidth, room: new, withSidebar: true) {
                     // The app made room (its sidebar hid, at once): the column shows, at once too.

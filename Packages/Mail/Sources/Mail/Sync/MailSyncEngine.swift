@@ -18,7 +18,8 @@ import CoreServices
 /// While the Mac has no network (Wi-Fi roaming, sleep and dark wake) no pass runs; one runs a
 /// moment after it is back. A short outage is not recorded on the account (its `last_error`),
 /// from the third failed pass in a row it is. A command the server refuses (NO/BAD) costs only
-/// its mailbox, move, flag change, sent copy or message, never the whole pass.
+/// its mailbox, move, flag change, sent copy or message, never the whole pass; a skipped mailbox or
+/// an undone move is still that pass's error (`last_error`, the back-off), never a success.
 ///
 /// The password is read from `services.secrets` right before each login and never kept.
 public actor MailSyncEngine {
@@ -84,6 +85,11 @@ public actor MailSyncEngine {
     private var step = "login"
     /// Sent copies the server refused to take this run (tried again after the next launch).
     private var refusedSentCopies: Set<MailDraft.ID> = []
+    /// What the server refused in the pass in progress (a mailbox it skipped, moves it undid), in
+    /// the student's words: such a pass is recorded as this error, never as a success.
+    private var refusals: [String] = []
+    /// Mailboxes the pass in progress skipped after a refusal.
+    private var skippedMailboxes = 0
 
     public init(
         services: StudyServices,
@@ -492,8 +498,22 @@ public actor MailSyncEngine {
             return
         }
         step = "login"
+        refusals = []
+        skippedMailboxes = 0
         do {
             try await sync(account, scope: scope)
+            if let refusal = refusals.first {
+                // A mailbox or a move the server refused: the student sees why (the reason in the
+                // account's error, no fresh sync time). A skipped mailbox backs the poll off as a
+                // failed pass does; a refused move is never tried again, so it does not.
+                consecutiveFailures = skippedMailboxes > 0 ? consecutiveFailures + 1 : 0
+                let failures = consecutiveFailures
+                let count = refusals.count
+                Log.mail.error("Mail sync incomplete: \(count, privacy: .public) refused (\(failures, privacy: .public) in a row)")
+                _ = try? await accounts.recordSync(account.id, at: clock.now(), error: refusal)
+                resumePoll(token: nil, timedOut: false)
+                return
+            }
             if consecutiveFailures > 0 {
                 consecutiveFailures = 0
                 resumePoll(token: nil, timedOut: false)
@@ -603,10 +623,13 @@ public actor MailSyncEngine {
                 try await syncMailbox(mailbox, account: account, session: session, qresync: qresync, mailboxes: byID, passStart: passStart)
             } catch let error as MailTransportError where error.isRefusal {
                 // The server refused a command in this mailbox (the session is still good): the
-                // other mailboxes sync; this one is tried again next pass.
+                // other mailboxes sync; this one is tried again next pass, and the pass reports it.
                 let role = mailbox.role?.rawValue ?? "a mailbox"
                 let failedAt = self.step
                 Log.mail.error("Mail sync skipped \(role, privacy: .public): refused at \(failedAt, privacy: .public)")
+                let name = mailbox.role == .inbox ? "Inbox" : mailbox.name
+                skippedMailboxes += 1
+                refusals.append("\(name) couldn’t be synced. \(error.localizedDescription)")
             }
         }
         if scope == .all {
@@ -741,6 +764,8 @@ public actor MailSyncEngine {
                 // The messages stay where the server has them (never retried on every pass).
                 Log.mail.error("The server refused to move \(rows.count, privacy: .public) messages; they stay where they are")
                 try await store.cancelMoves(rows.map(\.id))
+                let what = rows.count == 1 ? "A message" : "\(rows.count) messages"
+                refusals.append("\(what) couldn’t be moved. \(error.localizedDescription)")
                 continue
             }
             let validityMatches = result.map { copy in destination.uidValidity.map { $0 == Int64(copy.uidValidity) } ?? true } ?? false

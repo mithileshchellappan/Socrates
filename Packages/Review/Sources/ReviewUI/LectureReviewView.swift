@@ -239,7 +239,11 @@ struct ReviewScreen: View {
 /// The notes inspector, left out entirely while the agent panel is expanded into the window's
 /// trailing column (as Calendar's Deadlines): a hidden inspector still kept its column's room, so
 /// beside the sidebar and the agent's column the review took that room on one pass and gave it
-/// back on the next, a layout loop that AppKit ends by raising an exception.
+/// back on the next, a layout loop that AppKit ends by raising an exception (off screen a crash in
+/// `swift_beginAccess`, every time; an empty hidden inspector does the same, and one anchored on a
+/// background no longer insets the review). The `if` makes the review a new view each time the
+/// panel expands or shrinks: what that would cost is kept in `ReviewModel` (the transcript's lines
+/// and where the list was scrolled); the slide comes from the deck's cache in the same frame.
 private struct ReviewInspectorColumn<Inspector: View>: ViewModifier {
     let isPanelExpanded: Bool
     let isPresented: Binding<Bool>

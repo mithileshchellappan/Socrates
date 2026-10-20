@@ -98,8 +98,10 @@ public struct CourseSettingsView: View {
         }
         .onAppear { adopt(course) }
         .onChange(of: course) { adopt(course) }
-        // A name stored by someone else while the field had focus comes in when it is left.
-        .onChange(of: nameFocused) { if !nameFocused { adopt(course) } }
+        // A name stored by someone else while the field had focus comes in when it is left. Not
+        // while this view's own saves are on their way back: `course` may then be older than
+        // them (an echo already handled), and adopting it would put the old name back.
+        .onChange(of: nameFocused) { if !nameFocused, written.isEmpty { adopt(course) } }
         .task(id: draft) { await saveSoon() }
         .onDisappear(perform: saveNow)
     }
