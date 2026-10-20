@@ -4,13 +4,16 @@ import StudyUI
 import SwiftUI
 
 /// A course's lectures (sidebar ▸ course ▸ Lectures, mockup 08): one row per lecture by number,
-/// "L2 · Virtualization & IaaS" over its day; a row opens the lecture's review. Without lectures
-/// the screen is one drop target for the course's slides and recordings; files dropped on the
-/// list are filed into the course too. Import in the toolbar.
+/// "L2 · Virtualization & IaaS" over its day; a row opens the lecture's notes, pushed full width
+/// (ln, `StudyDestination.lectureNotes`), and shows a mini determinate ring while they are written.
+/// Without lectures the screen is one drop target for the course's slides and recordings; files
+/// dropped on the list are filed into the course too. Import in the toolbar.
 public struct CourseLecturesView: View {
     private let courseID: Course.ID
     @FetchOne private var course: Course?
     @FetchAll private var lectures: [Lecture]
+    /// ln: versions being written (queued, generating, paused): the rows' rings.
+    @FetchAll private var writing: [LectureNotes]
     @Environment(\.openDestination) private var openDestination
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
@@ -19,6 +22,7 @@ public struct CourseLecturesView: View {
         self.courseID = courseID
         _course = FetchOne(Course.find(courseID))
         _lectures = FetchAll(Lecture.where { $0.courseID.eq(courseID) })
+        _writing = FetchAll(LectureNotes.where { $0.courseID.eq(courseID) && $0.state.in(LectureNotesState.open) })
     }
 
     public var body: some View {
@@ -29,9 +33,12 @@ public struct CourseLecturesView: View {
                 CourseScreenColumn {
                     SettingsGroup("Lectures") {
                         ForEach(ordered) { lecture in
-                            LectureListRow(lecture: lecture, text: SessionText(locale: locale, timeZone: timeZone)) {
-                                openDestination(.lecture(lecture.id, ReviewTarget()))
-                            }
+                            LectureListRow(
+                                lecture: lecture, text: SessionText(locale: locale, timeZone: timeZone),
+                                notesProgress: progress(lecture.id),
+                                open: { openDestination(.lectureNotes(lecture.id)) },
+                                openInReview: { openDestination(.lecture(lecture.id, ReviewTarget())) }
+                            )
                         }
                     }
                 }
@@ -40,6 +47,15 @@ public struct CourseLecturesView: View {
         }
         .screenTitle(String(localized: "Lectures"), subtitle: course?.name ?? "")
         .toolbar { CourseImportToolbarItem(courseID: courseID) }
+    }
+
+    /// How far a lecture's notes are written (0…1); nil when none is being written.
+    private func progress(_ lectureID: Lecture.ID) -> Double? {
+        guard let notes = writing.filter({ $0.lectureID == lectureID && $0.discardedAt == nil }).max(by: { $0.version < $1.version }) else {
+            return nil
+        }
+        let words = Double(notes.body.split(whereSeparator: \.isWhitespace).count)
+        return min(0.98, max(0.04, words / Double(max(1, notes.targetWords ?? 2_000))))
     }
 
     /// By number, then date, then when they were added.
@@ -54,12 +70,15 @@ public struct CourseLecturesView: View {
     }
 }
 
-/// "L2 · Virtualization & IaaS" over "Tue 13 Oct"; the whole row opens the lecture; its menu has
-/// Delete… (the window confirms, Edit ▸ Undo brings it back).
+/// "L2 · Virtualization & IaaS" over "Tue 13 Oct"; the whole row opens the lecture's notes; while
+/// they are written a mini determinate ring takes the chevron's place (DESIGN 4.8); its menu has
+/// Open, Open in Review and Delete… (the window confirms, Edit ▸ Undo brings it back).
 private struct LectureListRow: View {
     let lecture: Lecture
     let text: SessionText
+    let notesProgress: Double?
     let open: () -> Void
+    let openInReview: () -> Void
     @Environment(\.deleteFromLibrary) private var deleteFromLibrary
     @State private var isHovered = false
 
@@ -80,10 +99,14 @@ private struct LectureListRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
+                if let notesProgress {
+                    NotesProgressRing(value: notesProgress)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
             }
             .padding(.vertical, 9)
             .padding(.horizontal, 12)
@@ -95,6 +118,7 @@ private struct LectureListRow: View {
         .onHover { isHovered = $0 }
         .contextMenu {
             Button("Open", action: open)
+            Button("Open in Review", action: openInReview)
             if let deleteFromLibrary {
                 Divider()
                 Button("Delete…", role: .destructive) { deleteFromLibrary(.lecture(lecture.id)) }

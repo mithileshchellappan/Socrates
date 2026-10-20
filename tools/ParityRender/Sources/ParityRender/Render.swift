@@ -18,6 +18,7 @@ import SwiftUI
 //                [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
 //                [--week 2026-10-19] [--m35-sample] [--mc] [--sweep] [--claude]
 //                [--review-layout 0.5,1,0] [--size 1800x1130] [--panel-width 560]
+//                [--review-tab slide|lecture]
 //   (swift run -j 4 --package-path tools/ParityRender ParityRender …)
 //
 // `--size` draws the windows at that size in points (default the mockups' 1440×900); the PNG's
@@ -27,6 +28,9 @@ import SwiftUI
 // `--m35-sample` on a `--ma-sample` copy, `ma-course-expanded`, `ma-mail-expanded` and
 // `ma-review-expanded` are DC's Course Settings, the Inbox and DC L2's review with the panel as the
 // window's right sidebar (the window layout: no column under its minimum or cut off).
+//
+// `--review-tab lecture` (ln): every review opens on the inspector's Whole lecture tab (the
+// lecture's notes on a copy of .data/parity/ln/library).
 //
 // `03-review-cl` (a library with Computational Linguistics L1, e.g. the M1 library): that review
 // where it left off. `--review-layout` sets Review's stored layout ("share,transcript,rail", 1 =
@@ -117,6 +121,8 @@ struct RenderOptions {
     var windowSize: CGSize?
     /// The expanded agent panel's stored width (`--panel-width`).
     var panelWidth: Double?
+    /// The tab a review opens on (`--review-tab lecture`: Whole lecture).
+    var reviewTab: ReviewInspectorTab = .slide
 
     init(arguments: [String]) throws {
         var index = 0
@@ -152,6 +158,12 @@ struct RenderOptions {
                 let parts = try value().split(separator: "x").compactMap { Double($0) }
                 guard parts.count == 2, parts[0] > 0, parts[1] > 0 else { throw RenderFailure("--size takes 1800x1130") }
                 windowSize = CGSize(width: parts[0], height: parts[1])
+            case "--review-tab":
+                switch try value() {
+                case "lecture": reviewTab = .lecture
+                case "slide": reviewTab = .slide
+                default: throw RenderFailure("--review-tab takes slide or lecture")
+                }
             case "--panel-width":
                 guard let width = Double(try value()) else { throw RenderFailure("--panel-width takes 560") }
                 panelWidth = width
@@ -208,7 +220,11 @@ struct ParityRender {
         app.run()
     }
 
+    /// `--review-tab`.
+    static var reviewTab: ReviewInspectorTab = .slide
+
     static func render(_ options: RenderOptions) async throws {
+        reviewTab = options.reviewTab
         let size = options.windowSize ?? ParityMode.windowSize
         // `08-course-1800x1130-light.png` for a size other than the mockups'.
         let sizeSuffix = options.windowSize.map { "-\(Int($0.width))x\(Int($0.height))" } ?? ""
@@ -538,6 +554,7 @@ struct ParityRender {
                     panel: launch.panel
                 )
                 .environment(\.calendarDetailPreview, shot.calendarDetail)
+                .environment(\.reviewInspectorTab, reviewTab)
                 .environment(model)
             )
         case .live:

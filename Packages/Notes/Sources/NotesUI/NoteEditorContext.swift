@@ -113,19 +113,19 @@ enum NoteImageCache {
 /// with a small bitmap budget, enough for clips and thumbnails), emptied when the Notes screen
 /// closes. A view that shows a deck keeps it open while it is on screen.
 @MainActor
-enum NoteDeckCache {
+public enum NoteDeckCache {
     private static var decks: [String: SlideDeck] = [:]
     /// Least recently used first.
     private static var order: [String] = []
     private static let limit = 3
 
-    static func cached(sha: String) -> SlideDeck? {
+    public static func cached(sha: String) -> SlideDeck? {
         guard let deck = decks[sha] else { return nil }
         touch(sha)
         return deck
     }
 
-    static func deck(blob: BlobRef, services: StudyServices) async -> SlideDeck? {
+    public static func deck(blob: BlobRef, services: StudyServices) async -> SlideDeck? {
         if let deck = cached(sha: blob.sha256) { return deck }
         let url = services.blobs.url(for: blob)
         let caches = services.paths.caches.appending(path: "Slides", directoryHint: .isDirectory)

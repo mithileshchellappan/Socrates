@@ -14,14 +14,20 @@ import SwiftUI
 // the line, so it takes its own line inside its paragraph and never floats.
 
 /// What an attachment shows and how big it is. The state lives on the main actor; the
-/// `NSTextAttachment` (`NoteTextAttachment`) only carries it.
+/// `NSTextAttachment` (`NoteTextAttachment`) only carries it. Public (ln): the lecture notes
+/// (StudyPageUI) draw their figures, chips and kept answers with the same machinery.
 @MainActor
-protocol NoteAttachmentContent: AnyObject, Sendable {
-    var context: NoteEditorContext? { get }
+public protocol TextAttachmentContent: AnyObject, Sendable {
     /// The attachment's view (hosted SwiftUI).
     func makeView() -> NSView?
     /// Bounds relative to the baseline, for a line `lineWidth` wide.
     func bounds(lineWidth: CGFloat, view: NSView?) -> CGRect
+}
+
+/// A note's attachment: it knows its editor's context.
+@MainActor
+protocol NoteAttachmentContent: TextAttachmentContent {
+    var context: NoteEditorContext? { get }
 }
 
 extension NoteAttachmentContent {
@@ -34,23 +40,23 @@ extension NoteAttachmentContent {
 }
 
 /// One character of a note's text that shows a view (`content`).
-final class NoteTextAttachment: NSTextAttachment {
-    let content: any NoteAttachmentContent
+public final class NoteTextAttachment: NSTextAttachment {
+    public let content: any TextAttachmentContent
 
-    init(_ content: any NoteAttachmentContent) {
+    public init(_ content: any TextAttachmentContent) {
         self.content = content
         super.init(data: nil, ofType: nil)
         allowsTextAttachmentView = true
     }
 
-    required init?(coder: NSCoder) { nil }
+    public required init?(coder: NSCoder) { nil }
 
     /// Nothing under the view (TextKit otherwise draws a generic file icon there).
-    override func image(for bounds: CGRect, attributes: [NSAttributedString.Key: Any], location: any NSTextLocation, textContainer: NSTextContainer?) -> NSImage? {
+    override public func image(for bounds: CGRect, attributes: [NSAttributedString.Key: Any], location: any NSTextLocation, textContainer: NSTextContainer?) -> NSImage? {
         NSImage(size: NSSize(width: 1, height: 1))
     }
 
-    override func viewProvider(for parentView: NSView?, location: any NSTextLocation, textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
+    override public func viewProvider(for parentView: NSView?, location: any NSTextLocation, textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
         let provider = NoteAttachmentViewProvider(
             textAttachment: self, parentView: parentView, textLayoutManager: textContainer?.textLayoutManager, location: location
         )
@@ -82,10 +88,10 @@ final class NoteAttachmentViewProvider: NSTextAttachmentViewProvider {
 
 /// A hosting view that takes clicks only over its content's leading `hitWidth` (a line-wide
 /// attachment's empty end belongs to the text).
-final class NoteAttachmentHostingView: NSHostingView<AnyView> {
-    var hitWidth: CGFloat?
+public final class NoteAttachmentHostingView: NSHostingView<AnyView> {
+    public var hitWidth: CGFloat?
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
+    override public func hitTest(_ point: NSPoint) -> NSView? {
         if let hitWidth, let superview {
             let local = convert(point, from: superview)
             if local.x > hitWidth { return nil }
@@ -514,6 +520,36 @@ struct NoteQuoteView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(.vertical, mediaMargin)
         .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Claude's words
+
+/// The one sparkle before a paragraph's first words that Claude wrote (ln, Edit as Note: the `ai`
+/// mark). Drawn, never stored: the note's blocks read it as nothing, and it comes back on the next
+/// load only while the paragraph still holds Claude's words.
+@MainActor
+final class AISparkleAttachment: NoteAttachmentContent {
+    weak var context: NoteEditorContext?
+
+    init(context: NoteEditorContext?) {
+        self.context = context
+    }
+
+    func makeView() -> NSView? {
+        let size = context?.metrics.bodySize ?? 14
+        return host(
+            Image(systemName: "sparkle")
+                .font(.system(size: size - 1))
+                .foregroundStyle(Color.ai)
+                .frame(width: size, height: size, alignment: .leading)
+                .accessibilityLabel(Text("AI"))
+        )
+    }
+
+    func bounds(lineWidth: CGFloat, view: NSView?) -> CGRect {
+        let size = context?.metrics.bodySize ?? 14
+        return CGRect(x: 0, y: -2, width: size + 4, height: size)
     }
 }
 

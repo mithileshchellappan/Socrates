@@ -16,7 +16,9 @@ let package = Package(
     dependencies: [
         .package(path: "../StudyCore"),
         .package(path: "../StudyUI"),
-        .package(path: "../ClaudeKit")
+        .package(path: "../ClaudeKit"),
+        // ln: the Markdown block parser, shared with the lecture notes (StudyPageFormat).
+        .package(path: "../StudyPage")
     ],
     targets: [
         .target(
@@ -24,7 +26,8 @@ let package = Package(
             dependencies: [
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "StudyUI", package: "StudyUI"),
-                .product(name: "ClaudeKit", package: "ClaudeKit")
+                .product(name: "ClaudeKit", package: "ClaudeKit"),
+                .product(name: "StudyPageFormat", package: "StudyPage")
             ]
         ),
     ],

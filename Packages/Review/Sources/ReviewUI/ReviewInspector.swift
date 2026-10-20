@@ -2,6 +2,7 @@ import Notes
 import NotesUI
 import Review
 import StudyCore
+import StudyPageUI
 import StudyUI
 import SwiftUI
 
@@ -65,7 +66,7 @@ struct ReviewInspector: View {
                     case .slide:
                         SlideNotesPane(model: model, notes: notes, items: items, minHeight: listHeight)
                     case .lecture:
-                        LectureNotesPane(model: model, notes: notes, items: items)
+                        WholeLecturePane(model: model, notes: notes, items: items)
                     }
                 }
             }
@@ -296,6 +297,18 @@ private struct NoteSessionRow: View {
 /// one of another lecture opens that lecture.
 @MainActor
 enum ReviewNoteLinks {
+    #if os(macOS)
+    /// ln: a chip in the lecture's notes, the same way.
+    static func open(_ target: NotesChipTarget, model: ReviewModel) -> Bool {
+        switch target {
+        case .slide(let lecture, let page):
+            open(.slide(SourceRef(kind: .slide, lectureID: lecture, pageNumber: page)), model: model)
+        case .moment(let lecture, let recording, let seconds):
+            open(.time(SourceRef(kind: .transcript, lectureID: lecture, recordingID: recording, time: seconds)), model: model)
+        }
+    }
+    #endif
+
     static func open(_ link: NoteLink, model: ReviewModel) -> Bool {
         switch link {
         case .slide(let source):
@@ -374,7 +387,83 @@ private struct LectureOnlyNotesPane: View {
     }
 }
 
-/// The whole lecture: summary, exam hints, things said in class, further reading, then your notes.
+/// Whole lecture (ln, decision 2): with the lecture's notes written (their text has started), the
+/// same notes as the Lectures page in the inspector's narrow column (`LectureNotesView`), then
+/// Further reading, then the lecture's own note editor; the Summary, Exam hints, Only said in
+/// class and the read-only slide notes are not shown beside them (each is inside the notes: no
+/// fact twice). With Follow on, the notes scroll to the section whose slides hold the slide on
+/// screen; chips move the review. Without notes text yet: the study pass's blocks, and the first
+/// show queues the notes (`queueIfNeeded`).
+private struct WholeLecturePane: View {
+    let model: ReviewModel
+    let notes: [Note]
+    let items: StudyItems
+    private let versionsQuery: FetchAll<LectureNotes>
+    @Environment(\.lectureNotesQueuesOnOpen) private var queuesOnOpen
+
+    init(model: ReviewModel, notes: [Note], items: StudyItems) {
+        self.model = model
+        self.notes = notes
+        self.items = items
+        let lectureID = model.lecture.id
+        versionsQuery = FetchAll(LectureNotes.where { $0.lectureID.eq(lectureID) }, database: model.services.database)
+    }
+
+    private var hasNotes: Bool {
+        LectureNotes.current(of: versionsQuery.wrappedValue)?.hasText ?? false
+    }
+
+    var body: some View {
+        #if os(macOS)
+        if hasNotes {
+            notesPane
+        } else {
+            blocks
+        }
+        #else
+        blocks
+        #endif
+    }
+
+    private var blocks: some View {
+        LectureNotesPane(model: model, notes: notes, items: items)
+            .task(id: model.lecture.id) {
+                guard queuesOnOpen else { return }
+                do {
+                    try await LectureNotesRepository(store: model.services.records).queueIfNeeded(lectureID: model.lecture.id)
+                } catch {
+                    ReviewLog.logger.error("Queueing the lecture's notes failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+    }
+
+    #if os(macOS)
+    private var notesPane: some View {
+        let model = model
+        return VStack(alignment: .leading, spacing: 14) {
+            LectureNotesView(
+                lectureID: model.lecture.id, style: .inspector,
+                followPage: model.session.isFollowing ? model.session.shownPage : nil,
+                onChip: { ReviewNoteLinks.open($0, model: model) }
+            )
+            if !items.furtherReading.isEmpty {
+                Hairline()
+                FurtherReadingBlock(model: model, readings: items.furtherReading, showsSlides: true)
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                SectionLabel("Your notes")
+                SlideNoteEditorView(model: model, page: nil, notes: notes.filter { $0.pageNumber == nil })
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    #endif
+}
+
+/// The whole lecture before its notes are written: summary, exam hints, things said in class,
+/// further reading, then your notes.
 private struct LectureNotesPane: View {
     let model: ReviewModel
     let notes: [Note]
