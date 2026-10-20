@@ -276,8 +276,16 @@ extension FilingService {
         }
     }
 
+    /// mr: moves only this filing's lecture link (`oldLectureID` → `lecture`); other lectures that
+    /// use the deck keep their ranges. A deck other lectures use never changes course
+    /// (`FilingError.sharedDeck`).
     static func moveDeck(_ deckID: Deck.ID, from oldLectureID: Lecture.ID?, to lecture: Lecture, in db: Database, store: RecordStore, now: Date) throws {
         guard var deck = try Deck.find(deckID).fetchOne(db) else { throw FilingError.missing }
+        if deck.courseID != lecture.courseID {
+            let others = try LectureSlides.lectures(usingDeck: deckID, in: db)
+                .filter { $0.lectureID != oldLectureID && $0.lectureID != lecture.id }
+            if !others.isEmpty { throw FilingError.sharedDeck }
+        }
         let old = try oldLectureID.flatMap { id in
             try LectureDeckSpan.where { $0.lectureID.eq(id) && $0.deckID.eq(deckID) && $0.startTime.is(nil) }.fetchOne(db)
         }

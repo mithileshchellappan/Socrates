@@ -66,6 +66,8 @@ public struct AttachedDeck: Sendable, Hashable {
     /// `previousDeckCourseID` is that course (what Undo puts back).
     public var movedDeck: Bool = false
     public var previousDeckCourseID: Course.ID?
+    /// mr (`linkDeck`): false when the lecture had exactly this link already (nothing written).
+    public var linkedNow: Bool = true
 }
 
 /// Brings a lecture into the library and queues its processing.
@@ -415,7 +417,10 @@ public struct LectureImporter: Sendable {
             guard let range = result.after, let span = try LectureDeckSpan.find(range.spanID).fetchOne(db),
                   let current = try Deck.find(deckID).fetchOne(db)
             else { throw LectureImportError.lectureMissing }
-            let attached = AttachedDeck(lecture: lecture, deck: current, span: span, createdLecture: committed.created, alignJobs: result.alignJobs)
+            let attached = AttachedDeck(
+                lecture: lecture, deck: current, span: span, createdLecture: committed.created, alignJobs: result.alignJobs,
+                linkedNow: result.changed
+            )
             try companion?(db, attached)
             return attached
         }
