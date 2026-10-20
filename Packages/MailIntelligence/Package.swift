@@ -26,9 +26,7 @@ let package = Package(
         .package(path: "../Search"),
         // Already in the graph through SQLiteData (same pin as Search); used directly for raw
         // FTS5 SQL and `DatabaseRegionObservation` (SQLiteData re-exports only a few GRDB types).
-        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0"),
-        // Tests only: `DemoLibrary.mail` (mockup 05 as rows) for the opt-in live check.
-        .package(path: "../StudyUI")
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0")
     ],
     targets: [
         .target(
