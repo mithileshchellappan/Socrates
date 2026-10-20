@@ -63,8 +63,10 @@ import SwiftUI
 // available, so the agent panel's launcher shows. On a copy seeded with
 // `tools/parity/seed --library <copy> --ma-sample` it adds the agent panel's shots (ma, mockup
 // agent-panel-mockups.html §1–4): `ma-review` (compact, on DC L2 slide 12 at 29:44, the Weekend
-// plan's first exchange), `ma-review-reopened` (compact as ⌘J opens it again: the conversation's
-// latest exchange), `ma-calendar` (compact on Week 43, the same exchange), `ma-calendar-expanded`
+// plan's first exchange), `ma-review-reopened` (compact as ⌘J opens it again: the whole
+// conversation, its latest question at the top), `ma-review-sent` (compact after the follow-up
+// "and what about CL?": its bubble and skeleton after both exchanges), `ma-calendar` (compact on
+// Week 43, the same exchange), `ma-calendar-expanded`
 // (the right sidebar: the whole Weekend plan with the 7 change rows) and `ma-today-files`
 // (compact on Today, the QEMU conversation with its file tiles).
 //
@@ -298,12 +300,19 @@ struct ParityRender {
                     reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
                     panel: panel(.compact, weekendPlan, exchanges: 0..<1)
                 ))),
-                // Opened again (no exchange range): the conversation's latest exchange, never only the
-                // title row and the composer.
+                // Opened again (no exchange range): the whole conversation, its latest question at
+                // the top, never only the title row and the composer.
                 RenderShot(name: "ma-review-reopened", window: .main(ParityMode.Launch(
                     selection: .lecture(dcLecture2.id),
                     reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
                     panel: panel(.compact, weekendPlan)
+                ))),
+                // A follow-up just sent: the earlier exchanges stay, the student's bubble and the
+                // skeleton line at the end (2026-10-20).
+                RenderShot(name: "ma-review-sent", window: .main(ParityMode.Launch(
+                    selection: .lecture(dcLecture2.id),
+                    reviewTarget: (dcLecture2.id, ReviewTarget(page: 12, time: 29 * 60 + 44, request: UUID())),
+                    panel: AgentPanelLaunch(mode: .compact, conversationID: weekendPlan, pendingText: "and what about CL?", now: options.now)
                 ))),
                 // §2: the same conversation after Go ▸ Calendar (its context line "DC Lecture 2").
                 RenderShot(name: "ma-calendar", window: .main(ParityMode.Launch(selection: .calendar, panel: panel(.compact, weekendPlan, exchanges: 0..<1)))),
@@ -595,7 +604,7 @@ struct ParityRender {
     static func overlayCompactPanel(
         on png: Data, launch: ParityMode.Launch, scheme: ColorScheme, model: AppModel, windowSize: CGSize, settle: Duration
     ) async throws -> Data {
-        // Room for the panel's shadow (radius 20, 12 down).
+        // Room for the panel's shadow (radius 20, 18 down).
         let pad: CGFloat = 40
         let margin: CGFloat = 12
         var shown = panelContext(launch)
@@ -706,6 +715,11 @@ struct ParityRender {
         case .today: .today
         case .calendar: AgentContext(screen: .calendar)
         case .lecture(let id): AgentContext(screen: .lecture, lectureID: id, page: launch.reviewTarget?.target.page)
+        case .mail, .mailScope: AgentContext(screen: .mail, mailMessageID: launch.mailSelection)
+        case .notes, .notesRow: AgentContext(screen: .notes, noteID: launch.noteSelection)
+        case .search: AgentContext(screen: .search)
+        case .documents: AgentContext(screen: .documents, documentID: launch.documentSelection)
+        case .study: AgentContext(screen: .study)
         default: AgentContext(screen: .other)
         }
     }

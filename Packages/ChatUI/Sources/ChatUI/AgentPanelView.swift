@@ -26,7 +26,8 @@ struct AgentPanelView: View {
     let context: AgentContext
     /// The context a message carries, read at ↩ (the playhead).
     let sendContext: @MainActor () -> AgentContext
-    let maxThreadHeight: CGFloat
+    /// Compact: the panel's greatest height (half the window); expanded: the thread's (infinity).
+    let maxHeight: CGFloat
     let headerPlacement: HeaderPlacement
     /// The compact panel's drag (nil: not movable).
     let move: PanelMove?
@@ -34,16 +35,17 @@ struct AgentPanelView: View {
 
     @Environment(\.agentPanelActions) private var actions
     private let historyQuery: FetchAll<AgentConversation>
-    private let openTasksQuery: FetchAll<AgentTask>
     /// Memory… from the expanded header's title menu (a toolbar item).
     @State private var showsMemory = false
+    /// The compact panel's task line, composer and notice, measured (the thread gets the rest).
+    @State private var bottomHeight: CGFloat = 52
 
     init(
         style: Style,
         model: AgentPanelModel,
         context: AgentContext,
         sendContext: @escaping @MainActor () -> AgentContext,
-        maxThreadHeight: CGFloat,
+        maxHeight: CGFloat,
         headerPlacement: HeaderPlacement = .inline,
         move: PanelMove? = nil,
         moveEnded: ((CGSize) -> Void)? = nil
@@ -52,15 +54,13 @@ struct AgentPanelView: View {
         self.model = model
         self.context = context
         self.sendContext = sendContext
-        self.maxThreadHeight = maxThreadHeight
+        self.maxHeight = maxHeight
         self.headerPlacement = headerPlacement
         self.move = move
         self.moveEnded = moveEnded
         historyQuery = FetchAll(
             AgentConversation.where { $0.kind.eq(ConversationKind.app) }.order { $0.createdAt.desc() }.limit(AgentPanelView.historyLimit)
         )
-        let open = AgentTaskState.open
-        openTasksQuery = FetchAll(AgentTask.where { $0.state.in(open) }.order { $0.createdAt.asc() })
     }
 
     static let historyLimit = 40
@@ -117,28 +117,42 @@ struct AgentPanelView: View {
             case .toolbar:
                 Hairline()
             }
-            AgentThreadView(style: style, conversationID: conversationID, model: model, context: context, maxHeight: maxThreadHeight)
+            AgentThreadView(style: style, conversationID: conversationID, model: model, context: context, maxHeight: threadMaxHeight)
                 .id(conversationID)
-            if !openTasksQuery.wrappedValue.isEmpty {
-                AgentTaskLine(tasks: openTasksQuery.wrappedValue, now: model.now)
+            VStack(spacing: 0) {
+                AgentTaskLineSection(conversationID: conversationID, now: model.now)
                     .padding(.horizontal, style == .compact ? 14 : 16)
-                    .padding(.bottom, 6)
+                AgentComposer(model: model, prompt: prompt, conversationID: conversationID, send: { send(to: conversationID) })
+                    .padding(.horizontal, style == .compact ? 8 : 12)
+                    .padding(.bottom, model.notice == nil ? (style == .compact ? 8 : 12) : 4)
+                if let notice = model.notice {
+                    // Why the message or a file did not go, until the next edit.
+                    Text(verbatim: notice)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, style == .compact ? 14 : 16)
+                        .padding(.bottom, style == .compact ? 8 : 12)
+                }
             }
-            AgentComposer(model: model, prompt: prompt, conversationID: conversationID, send: { send(to: conversationID) })
-                .padding(.horizontal, style == .compact ? 8 : 12)
-                .padding(.bottom, model.notice == nil ? (style == .compact ? 8 : 12) : 4)
-            if let notice = model.notice {
-                // Why the message or a file did not go, until the next edit.
-                Text(verbatim: notice)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, style == .compact ? 14 : 16)
-                    .padding(.bottom, style == .compact ? 8 : 12)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded() } action: { height in
+                if style == .compact { bottomHeight = height }
             }
         }
         .frame(maxHeight: style == .expanded ? .infinity : nil, alignment: .top)
+        .onChange(of: newest, initial: true) { _, newest in
+            // The conversation on screen stays the one it opened on: a newer one (a question from
+            // the phone, a reminder's) never takes the thread over by itself.
+            if model.selected == nil, !model.startsNew, let newest { model.selected = newest }
+        }
+    }
+
+    /// The thread's room: compact, the panel is at most `maxHeight` (half the window) with its
+    /// title row, task line, composer and notice (a tall composer takes from the thread).
+    private var threadMaxHeight: CGFloat {
+        guard style == .compact else { return maxHeight }
+        return max(80, maxHeight - AgentPanelMetrics.compactHeader - bottomHeight)
     }
 
     // MARK: Header
@@ -192,9 +206,15 @@ extension AgentPanelModel {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let files = attachments
         guard !text.isEmpty || !files.isEmpty, !isSending, reading == 0 else { return }
-        pending = PendingPanelMessage(
+        var message = PendingPanelMessage(
             text: text, attachments: files, conversationID: conversationID, afterTurns: conversationID == nil ? 0 : turnCount
         )
+        message.context = context.settled
+        let sentID = message.id
+        let sentAt = message.sentAt
+        let choice = choices
+        pending = message
+        awaitingRun = AwaitedRun(conversationID: conversationID, sentAt: sentAt)
         let sent = draft
         attachments = []
         notice = nil
@@ -205,28 +225,54 @@ extension AgentPanelModel {
         Task {
             if draft == sent { draft = "" }
         }
+        if let contextLine = actions.contextLine {
+            // The faint line the stored turn will carry, for the pending bubble meanwhile.
+            Task {
+                let line = await contextLine(context)
+                if pending?.id == sentID { pending?.line = line }
+            }
+        }
         Task {
             do {
                 let id = try await actions.send(text, context, files, conversationID)
-                selected = id
-                startsNew = false
-                if pending?.conversationID == nil { pending?.conversationID = id }
+                // A New Chat or another conversation picked meanwhile stays the student's choice;
+                // the sent conversation is in the title menu.
+                if choices == choice {
+                    selected = id
+                    startsNew = false
+                }
+                if pending?.id == sentID, pending?.conversationID == nil { pending?.conversationID = id }
+                if awaitingRun?.sentAt == sentAt, awaitingRun?.conversationID == nil { awaitingRun?.conversationID = id }
             } catch {
                 ChatUILog.ui.error("Sending to the agent failed: \(String(describing: error), privacy: .public)")
-                // Back into the composer unless the student is typing there (or composing a
-                // character): their text is never replaced under the caret.
-                if draft.isEmpty, !FieldEditor.isComposing { draft = text }
-                if attachments.isEmpty { attachments = files }
-                pending = nil
-                // The message is back in the composer; one line says why (a readable reason
-                // only, never a raw error).
-                if let reason = (error as? any LocalizedError)?.errorDescription, !reason.isEmpty {
-                    notice = String(localized: "Couldn’t send: \(reason)")
-                } else {
-                    notice = String(localized: "Couldn’t send. Try again.")
-                }
+                if pending?.id == sentID { pending = nil }
+                if awaitingRun?.sentAt == sentAt { awaitingRun = nil }
+                // One line says why (a readable sentence only, never an error's own text).
+                notice = (error as? AgentSendFailure)?.sentence ?? String(localized: "Not sent")
+                await restore(text: text, files: files)
             }
             isSending = false
+        }
+    }
+
+    /// A message that did not go back into the composer: its words before whatever the student
+    /// wrote since (never while a character is being composed there), its files with the current
+    /// ones (up to five): nothing they wrote is dropped.
+    private func restore(text: String, files: [AgentAttachment]) async {
+        var waited = 0
+        while FieldEditor.isComposing, waited < 50 {
+            try? await Task.sleep(for: .milliseconds(100))
+            waited += 1
+        }
+        if !text.isEmpty {
+            let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+            draft = current.isEmpty ? text : text + "\n\n" + draft
+        }
+        let room = AgentAttachment.maximumPerMessage - attachments.count
+        let missing = files.filter { file in !attachments.contains { $0.id == file.id } }
+        attachments += missing.prefix(max(0, room))
+        if missing.count > max(0, room) {
+            notice = String(localized: "At most \(AgentAttachment.maximumPerMessage) files go with one message.")
         }
     }
 }
@@ -247,8 +293,16 @@ private struct AgentPanelHeader: View {
 
     var body: some View {
         HStack(spacing: 2) {
+            // At most 200 pt: a long title truncates and leaves the row free to drag the panel by.
             titleMenu
-            Spacer(minLength: 4)
+                .frame(maxWidth: isExpanded ? nil : 200, alignment: .leading)
+                .layoutPriority(1)
+            Color.clear
+                .frame(minWidth: 4, maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                #if os(macOS)
+                .pointerStyle(move == nil ? nil : (isMoving ? .grabActive : .grabIdle))
+                #endif
             AgentPanelHeaderButtons(model: model, isExpanded: isExpanded)
         }
         .buttonStyle(.borderless)

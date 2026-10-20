@@ -892,7 +892,14 @@ final class AppModel {
             isAvailable: true,
             pausedUntil: availability.status?.pausedUntil,
             send: { text, context, files, conversation in
-                try await appAgent.send(text, context: context, attachments: files, to: conversation)
+                do {
+                    return try await appAgent.send(text, context: context, attachments: files, to: conversation)
+                } catch {
+                    // One readable sentence for the panel's notice line, never the error's text.
+                    let sentence = AppAgent.readableSendFailure(error)
+                        ?? ReadableError.sentence(for: error, otherwise: String(localized: "Not sent"), retrying: false)
+                    throw AgentSendFailure(sentence: sentence)
+                }
             },
             stop: { id in await appAgent.stop(id) },
             liveReply: { id in
@@ -900,7 +907,7 @@ final class AppModel {
                 return AsyncStream { continuation in
                     let task = Task {
                         for await reply in source {
-                            continuation.yield(reply.map { ChatLiveReply(afterTurns: $0.afterTurns, text: $0.text) })
+                            continuation.yield(reply.map { ChatLiveReply(afterTurns: $0.afterTurns, text: $0.text, isUnsaved: $0.unsaved) })
                         }
                         continuation.finish()
                     }
@@ -908,7 +915,19 @@ final class AppModel {
                 }
             },
             cancelTask: { id in await appAgent.cancelTask(id) },
-            undoChange: { id in try await appAgent.undo(id) }
+            undoChange: { id in try await appAgent.undo(id) },
+            retry: { id in
+                do {
+                    try await appAgent.retry(id)
+                } catch {
+                    let sentence = ReadableError.sentence(for: error, otherwise: String(localized: "Not sent"), retrying: false)
+                    throw AgentSendFailure(sentence: sentence)
+                }
+            },
+            contextLine: { context in
+                guard let line = await appAgent.contextLine(for: context) else { return nil }
+                return AgentContextLine(glyph: line.glyph, label: line.label)
+            }
         )
         #else
         // M7: the phone never runs Claude: a question becomes an `agent_request` row the Mac

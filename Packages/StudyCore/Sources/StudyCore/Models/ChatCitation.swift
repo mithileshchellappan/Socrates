@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// A source the tutor (and the mail chat, for lectures) cites after a claim, written in the answer
 /// text as a marker the model copies from tool results and context blocks (docs/plan-m5.md §4):
@@ -142,12 +143,24 @@ public enum ChatCitation: Hashable, Sendable {
         }
     }
 
+    /// A marker's inside as the model writes one (a lecture or document key first, or a kind),
+    /// whether or not the rest parses.
+    static func looksLikeMarker(_ body: Substring) -> Bool {
+        let trimmed = body.drop { $0 == " " }
+        let kinds = ["key ", "change ", "web ", "doc "]
+        if kinds.contains(where: { trimmed.hasPrefix($0) }) { return true }
+        let head = trimmed.prefix(8)
+        return head.count == 8 && head.allSatisfy(\.isHexDigit)
+    }
+
     static func isKey(_ text: Substring) -> Bool {
         text.count == 8 && text.allSatisfy { $0.isHexDigit && ($0.isNumber || $0.isLowercase) }
     }
 
-    /// The answer as text and citations in order. Markers that do not parse stay text; adjacent
-    /// text runs are merged; a space before a citation stays in the text before it.
+    /// The answer as text and citations in order. A marker the model got wrong (it starts as one:
+    /// a key, "key ", "change ", "web ", "doc ") is dropped with its gap, never shown raw; any
+    /// other "[[" stays text (code). Adjacent text runs are merged; a space before a citation stays
+    /// in the text before it.
     public static func pieces(of text: String) -> [ChatAnswerPiece] {
         var pieces: [ChatAnswerPiece] = []
         var pending = ""
@@ -156,11 +169,19 @@ public enum ChatCitation: Hashable, Sendable {
             guard let close = rest[open.upperBound...].range(of: "]]") else { break }
             let body = rest[open.upperBound..<close.lowerBound]
             pending += rest[..<open.lowerBound]
-            if !body.contains("[["), !body.contains("\n"), let citation = ChatCitation(markerBody: body) {
+            let isOneLine = !body.contains("[[") && !body.contains("\n")
+            if isOneLine, let citation = ChatCitation(markerBody: body) {
                 if !pending.isEmpty { pieces.append(.text(pending)) }
                 pending = ""
                 pieces.append(.citation(citation))
                 rest = rest[close.upperBound...]
+            } else if isOneLine, Self.looksLikeMarker(body) {
+                Log.claude.debug("marker_unparsed")
+                rest = rest[close.upperBound...]
+                // Its gap goes too: no space before punctuation, no double space.
+                let next = rest.first
+                let closesGap = next.map { $0 == " " || ".,;:!?)".contains($0) } ?? true
+                if closesGap, pending.hasSuffix(" ") { pending.removeLast() }
             } else {
                 pending += "[["
                 rest = rest[open.upperBound...]

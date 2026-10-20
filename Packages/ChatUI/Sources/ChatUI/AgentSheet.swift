@@ -16,7 +16,7 @@ import UIKit
 /// How the sheet starts (renders: `tools/parity` and the integrator's phone parity routes).
 public struct AgentSheetLaunch: Hashable, Sendable {
     public enum Detent: Hashable, Sendable {
-        /// The newest exchange over Today and the tab bar.
+        /// 356 pt over Today and the tab bar: the conversation, scrolled as the panel.
         case small
         /// The whole conversation.
         case large
@@ -27,8 +27,8 @@ public struct AgentSheetLaunch: Hashable, Sendable {
     public var conversationID: AgentConversation.ID?
     /// An empty New Chat instead of a conversation.
     public var newChat: Bool
-    /// The small detent's exchanges (0-based; mockup §7 draws the first one); nil: as a sheet
-    /// just opened (the newest exchange).
+    /// Renders only: the exchanges shown (0-based; mockup §7 draws the first one); nil: the
+    /// whole conversation, as the sheet shows it.
     public var exchanges: Range<Int>?
     /// Text in the composer.
     public var draft: String
@@ -49,8 +49,8 @@ public struct AgentSheetLaunch: Hashable, Sendable {
 }
 
 /// The agent on the iPhone (agent panel mockup §7): a sheet with two detents, small (356 pt: the
-/// newest exchange, the composer, Today above it still usable) and large (the whole conversation,
-/// Today dimmed); the opaque content surface at both heights (answers are content, never glass);
+/// conversation scrolled as the panel, the composer, Today above it still usable) and large (the
+/// whole conversation, Today dimmed);the opaque content surface at both heights (answers are content, never glass);
 /// the title row's menu (recent conversations by day, New Chat, Memory…); the panel's thread rows
 /// at the sheet's sizes; the composer with the paperclip menu (Photo Library, Take Photo where a
 /// camera exists, Choose File…) and Paste in the field. Present it from the shell's bubble:
@@ -103,11 +103,10 @@ public struct AgentSheet: View {
             .padding(.horizontal, 12)
             .frame(height: 44)
             .padding(.top, 10)
-            AgentThreadView(
-                style: .sheet, conversationID: conversationID, model: model, context: shown, maxHeight: .infinity,
-                isWindowed: detent != .large
-            )
-            .id(conversationID)
+            // Both heights show the whole conversation, scrolled as the panel (its latest question
+            // in sight).
+            AgentThreadView(style: .sheet, conversationID: conversationID, model: model, context: shown, maxHeight: .infinity)
+                .id(conversationID)
             SheetComposer(model: model, prompt: prompt) {
                 send(to: conversationID)
             }

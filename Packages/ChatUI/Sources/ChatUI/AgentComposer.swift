@@ -1,3 +1,6 @@
+#if os(macOS)
+import AppKit
+#endif
 import StudyCore
 import StudyUI
 import SwiftUI
@@ -5,8 +8,8 @@ import SwiftUI
 /// The panel's composer (DESIGN 8.6, mockup §1, §4): the files waiting as tiles, then [paperclip |
 /// the field | Send or Stop] on the content surface, radius 12, a 0.5 pt ring. The prompt names
 /// what the next message is about. Send (`arrow.up.circle`, accent outline) appears with text or a
-/// file; Stop while the agent works. ↩ sends, ⌥↩ adds a line, ⌘V pastes a file or screenshot, Esc
-/// clears and then closes the panel.
+/// file; Stop while the agent works. ↩ sends (a beep while a message cannot go), ⌥↩ and ⇧↩ add a
+/// line, ⌘V pastes a file or screenshot, Esc clears (⌘Z brings it back) and then closes the panel.
 struct AgentComposer: View {
     let model: AgentPanelModel
     let prompt: Text
@@ -15,8 +18,14 @@ struct AgentComposer: View {
 
     @Environment(\.agentPanelActions) private var actions
     @Environment(\.studyServices) private var services
+    @Environment(\.undoManager) private var undoManager
     @FocusState private var isFocused: Bool
     @State private var showsImporter = false
+    /// The caret: put at the end of the kept draft when the panel puts it in the field (a focused
+    /// field otherwise selects all of its text, and the next key would replace the draft).
+    @State private var selection: TextSelection?
+    /// The last caret request (`model.focusRequests`) handled.
+    @State private var handledRequest = 0
 
     private var hasText: Bool { !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var canSend: Bool { (hasText || model.hasFiles) && model.canSendNow }
@@ -59,12 +68,18 @@ struct AgentComposer: View {
                 TextField("", text: Binding(get: { model.draft }, set: { text in
                     model.draft = text
                     if model.notice != nil { model.notice = nil }
-                }), prompt: prompt, axis: .vertical)
+                }), selection: $selection, prompt: prompt.foregroundStyle(.tertiary), axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .lineLimit(1...6)
                     .focused($isFocused)
-                    .onSubmit(send)
+                    .onSubmit(submit)
+                    .onKeyPress(.return, phases: .down) { press in
+                        // ⇧↩ adds a line, as ⌥↩ does (after the key, never inside its event).
+                        guard press.modifiers.contains(.shift), !FieldEditor.isComposing else { return .ignored }
+                        Task { @MainActor in insertLine() }
+                        return .handled
+                    }
                     .onKeyPress(.escape) {
                         // A dead key or an input method's composition: Esc is the input method's
                         // (it cancels the composition).
@@ -130,21 +145,90 @@ struct AgentComposer: View {
         #endif
     }
 
-    /// The caret goes in once the panel is on screen (it may have just appeared or grown).
+    /// The caret goes in once the panel is on screen (it may have just appeared or grown), at the
+    /// end of the kept draft; once per request (a later click elsewhere keeps its caret).
     private func focusSoon() {
+        let request = model.focusRequests
+        guard request > handledRequest else { return }
+        handledRequest = request
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(60))
+            await Task.yield()
             if !isFocused { isFocused = true }
+            await Task.yield()
+            selection = TextSelection(insertionPoint: model.draft.endIndex)
         }
     }
 
-    /// Esc: clears the text and files, then closes the panel.
+    /// ↩: sends, or a beep while the message cannot go yet (one is handed over or answered, a
+    /// file is still being read).
+    private func submit() {
+        let hasSomething = hasText || model.hasFiles
+        if hasSomething, !model.canSendNow {
+            #if os(macOS)
+            NSSound.beep()
+            #endif
+            return
+        }
+        send()
+    }
+
+    /// ⇧↩: a line break at the caret (replacing a selection).
+    private func insertLine() {
+        let text = model.draft
+        var range = text.endIndex..<text.endIndex
+        // A selection from before the text last changed may point past its end: the end then.
+        if case .selection(let selected)? = selection?.indices, selected.upperBound <= text.endIndex { range = selected }
+        let offset = text.distance(from: text.startIndex, to: range.lowerBound)
+        var changed = text
+        changed.replaceSubrange(range, with: "\n")
+        model.draft = changed
+        let caret = changed.index(changed.startIndex, offsetBy: offset + 1)
+        selection = TextSelection(insertionPoint: caret)
+    }
+
+    /// Esc: clears the text and files (Edit ▸ Undo brings them back), then closes the panel.
     private func escape() {
         if !model.draft.isEmpty || model.hasFiles {
+            let text = model.draft
+            let files = model.attachments
             model.draft = ""
             model.attachments = []
+            undoManager?.registerUndo(withTarget: model) { model in
+                MainActor.assumeIsolated {
+                    model.draft = text
+                    model.attachments = files
+                }
+            }
         } else {
             model.close()
+        }
+    }
+}
+
+/// The open conversation's own sub-agent tasks while queued or running (`AgentTaskLine`); none
+/// for a New Chat, and never the app's own background work (triage, document reads, coach
+/// drafts: they have no parent conversation).
+struct AgentTaskLineSection: View {
+    let now: Date
+    private let tasksQuery: FetchAll<AgentTask>
+
+    init(conversationID: AgentConversation.ID?, now: Date) {
+        self.now = now
+        // A New Chat: the nil UUID no row has (the query stays the same across renders).
+        let id = conversationID ?? Self.none
+        let open = AgentTaskState.open
+        tasksQuery = FetchAll(AgentTask.where { $0.parentConversationID.eq(id) && $0.state.in(open) }.order { $0.createdAt.asc() })
+    }
+
+    private static let none = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    var body: some View {
+        let tasks = tasksQuery.wrappedValue
+        if !tasks.isEmpty {
+            // 6 pt from the thread: its faded bottom edge never touches the line.
+            AgentTaskLine(tasks: tasks, now: now)
+                .padding(.top, 6)
+                .padding(.bottom, 6)
         }
     }
 }

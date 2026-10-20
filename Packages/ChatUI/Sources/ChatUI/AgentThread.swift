@@ -1,6 +1,13 @@
+#if canImport(AppKit)
+import AppKit
+#endif
+import ClaudeKit
 import StudyCore
 import StudyUI
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 import UniformTypeIdentifiers
 
 /// One exchange of the panel's thread: the student's message (words and files, with the context
@@ -10,7 +17,16 @@ struct PanelExchange: Identifiable, Equatable {
     var text: String
     var context: AgentTurnContext?
     var sentAt: Date
-    var answer: String?
+    /// The texts of the answer's stored turns (`ChatTranscript.answerText` shows them).
+    var parts: [ChatTranscript.AnswerPart] = []
+    /// Where the message is among the stored turns.
+    var position = 0
+    /// What runs answering it wrote and never stored (stopped, failed, cut off), in order: it
+    /// stays under the message after later ones are sent.
+    var unsaved: [String] = []
+
+    /// The answer as shown without the live text; nil when nothing was written.
+    var answer: String? { ChatTranscript.answerText(parts, following: unsaved) }
 }
 
 /// What the thread shows, in order: exchanges and finished sub-agent tasks' results.
@@ -28,30 +44,35 @@ enum PanelThreadItem: Identifiable, Equatable {
 }
 
 enum PanelThread {
-    /// The exchanges of a transcript (the student's message with the answer after it).
-    static func exchanges(_ transcript: ChatTranscript) -> [PanelExchange] {
+    /// The exchanges of a transcript (the student's message with the answer after it). An
+    /// `unsaved` text goes under the last message stored before it.
+    static func exchanges(_ transcript: ChatTranscript, unsaved: [ChatLiveReply] = []) -> [PanelExchange] {
         var exchanges: [PanelExchange] = []
         for entry in transcript.entries {
             switch entry {
             case .student(let id, let text):
                 exchanges.append(PanelExchange(
-                    id: id, text: text, context: transcript.contexts[id], sentAt: transcript.times[id] ?? .distantPast
+                    id: id, text: text, context: transcript.contexts[id], sentAt: transcript.times[id] ?? .distantPast,
+                    position: transcript.positions[id] ?? 0
                 ))
-            case .answer(_, let text):
+            case .answer(_, let parts):
                 guard !exchanges.isEmpty else { continue }
-                let last = exchanges.count - 1
-                exchanges[last].answer = exchanges[last].answer.map { $0 + "\n\n" + text } ?? text
+                exchanges[exchanges.count - 1].parts += parts
             }
+        }
+        for reply in unsaved {
+            guard let index = exchanges.lastIndex(where: { $0.position < reply.afterTurns }) else { continue }
+            exchanges[index].unsaved.append(reply.text)
         }
         return exchanges
     }
 
-    /// The items a panel shows: compact, the window's exchanges (since it opened and at least the
-    /// latest, the last one, or a render's range); expanded, all. A context line goes before an exchange whose context
-    /// label differs from the one before it; before the first when the conversation moved between
-    /// screens or was asked elsewhere than the screen on display.
+    /// The items a panel shows: the whole conversation in every size (2026-10-20), or a
+    /// render's range of exchanges (`window`). A context line goes before an exchange whose
+    /// context label differs from the one before it; before the first when the conversation moved
+    /// between screens or was asked elsewhere than the screen on display.
     static func items(
-        exchanges: [PanelExchange], tasks: [AgentTask], window: AgentPanelModel.ThreadWindow?, current: AgentContext
+        exchanges: [PanelExchange], tasks: [AgentTask], window: Range<Int>?, current: AgentContext
     ) -> [PanelThreadItem] {
         let labels = exchanges.map { $0.context?.label }
         func showsLine(_ index: Int) -> Bool {
@@ -68,41 +89,27 @@ enum PanelThread {
             let index = exchanges.lastIndex { $0.sentAt <= finished } ?? (exchanges.isEmpty ? -1 : 0)
             tasksAfter[index, default: []].append(task)
         }
-        let shown: Range<Int>
-        var since: Date?
-        switch window {
-        case nil:
-            shown = 0..<exchanges.count
-        case .exchanges(let range)?:
-            shown = range.clamped(to: 0..<exchanges.count)
-        case .last?:
-            shown = max(0, exchanges.count - 1)..<exchanges.count
-        case .since(let date)?:
-            since = date
-            // Those sent since it opened, and at least the latest (its answer stays in sight).
-            let first = exchanges.firstIndex { $0.sentAt >= date } ?? exchanges.count
-            shown = min(first, max(0, exchanges.count - 1))..<exchanges.count
-        }
+        let all = 0..<exchanges.count
+        let shown = window.map { $0.clamped(to: all) } ?? all
         var items: [PanelThreadItem] = []
-        if window == nil || shown.lowerBound == 0 {
-            for task in tasksAfter[-1] ?? [] where since.map({ (task.finishedAt ?? .distantPast) >= $0 }) ?? true {
+        if shown.lowerBound == 0 {
+            for task in tasksAfter[-1] ?? [] {
                 items.append(.task(task))
             }
         }
         for index in shown {
-            // The compact panel's first exchange has its line only when it was asked elsewhere
-            // (mockup §1: none on the lecture it was asked on).
-            let line = window != nil && index == shown.lowerBound
-                ? (exchanges[index].context?.label?.isEmpty == false && exchanges[index].context?.context.map { !sameScreen($0, current) } == true)
-                : showsLine(index)
+            let line: Bool
+            if window != nil, index == shown.lowerBound {
+                // A render's first exchange has its line only when it was asked elsewhere
+                // (mockup §1: none on the lecture it was asked on).
+                let hasLabel = exchanges[index].context?.label?.isEmpty == false
+                let elsewhere = exchanges[index].context?.context.map { !sameScreen($0, current) } ?? false
+                line = hasLabel && elsewhere
+            } else {
+                line = showsLine(index)
+            }
             items.append(.exchange(exchanges[index], showsContextLine: line, isLast: index == exchanges.count - 1))
             for task in tasksAfter[index] ?? [] {
-                items.append(.task(task))
-            }
-        }
-        if let since, shown.isEmpty {
-            // Results that came in since the panel opened, after exchanges it does not show.
-            for task in tasks where (task.finishedAt ?? .distantPast) >= since {
                 items.append(.task(task))
             }
         }
@@ -171,18 +178,21 @@ extension EnvironmentValues {
 /// with their files, the answers with checked chips and change rows, finished task results, the
 /// answer being written (a skeleton line until its first words), the state line. Reports the
 /// conversation's state to the panel (the composer's Stop, a pending message's place).
+///
+/// Every size shows the whole conversation. It opens with the latest exchange's question at the
+/// top (at the bottom when that exchange fits, or while an answer is written), follows a streaming
+/// answer only while scrolled to the end, and ↩ scrolls to the end.
 struct AgentThreadView: View {
     let style: AgentPanelView.Style
     let conversationID: AgentConversation.ID?
     let model: AgentPanelModel
     let context: AgentContext
     let maxHeight: CGFloat
-    /// The window's exchanges only (`model.shown`): the compact panel, the sheet's small height.
-    let isWindowed: Bool
 
     @Environment(\.agentPanelActions) private var actions
     @Environment(\.openDestination) private var openDestination
     @Environment(\.agentThreadMetrics) private var metrics
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Dependency(\.defaultDatabase) private var database
     private let conversationQuery: FetchOne<AgentConversation?>
     private let turnsQuery: FetchAll<AgentTurn>
@@ -194,26 +204,35 @@ struct AgentThreadView: View {
     /// The turns parsed so far: a new turn parses only itself.
     @State private var turnCache = ChatTurnCache()
     @State private var rows = CitationRows()
-    /// The answer streaming in (about 10 times a second): read only by the views that draw it
-    /// (`LiveAnswerText`), so this body (the exchanges, the items) is not worked out again for it.
-    @State private var live = LiveReplyBox()
+    /// A new chat's answer box (a conversation's is the panel's, `AgentPanelModel.liveBox`).
+    @State private var newChatLive = LiveReplyBox()
     /// The compact thread's rows' height, for its faded top edge only (its own height is laid out
     /// with the rows, `UpToHeight`). Reported from the first layout on, so a thread that is too
     /// tall when it appears has the edge too.
     @State private var contentHeight: CGFloat = 0
+    /// The thread is scrolled to (within 24 pt of) its end: a streaming answer follows it.
+    @State private var isAtBottom = true
+    /// More than the thread's bottom padding is below the visible part: the compact thread fades
+    /// its bottom edge (no row is cut off hard against the task line or the composer).
+    @State private var hidesEnd = false
+    /// The scroll view's visible height (the opening place keeps `topClear` above the question).
+    @State private var viewportHeight: CGFloat = 0
+    /// When the thread was placed on its latest question (once per thread view).
+    @State private var placedAt: Date?
+    /// The student scrolled or sent since: the opening place is not set again.
+    @State private var settled = false
 
     init(
-        style: AgentPanelView.Style, conversationID: AgentConversation.ID?, model: AgentPanelModel, context: AgentContext, maxHeight: CGFloat,
-        isWindowed: Bool? = nil
+        style: AgentPanelView.Style, conversationID: AgentConversation.ID?, model: AgentPanelModel, context: AgentContext, maxHeight: CGFloat
     ) {
         self.style = style
         self.conversationID = conversationID
         self.model = model
         self.context = context
         self.maxHeight = maxHeight
-        self.isWindowed = isWindowed ?? (style == .compact)
-        // A new chat reads nothing (an id no row has).
-        let id = conversationID ?? UUID()
+        // A new chat reads nothing (the fixed nil UUID no row has, so its queries stay the same
+        // across the panel's renders).
+        let id = conversationID ?? Self.noRequests
         conversationQuery = FetchOne(AgentConversation.find(id))
         turnsQuery = FetchAll(AgentTurn.where { $0.conversationID.eq(id) }.order(by: \.sequence))
         // Finished tasks: results, and the ones that failed or were cancelled (one line each).
@@ -233,41 +252,74 @@ struct AgentThreadView: View {
     private var conversation: AgentConversation? { conversationQuery.wrappedValue }
     private var isRunning: Bool { conversation?.state == .running }
 
-    /// Whether the live text may show at all: while the run lasts, and after it finished until
-    /// its stored turn lands (the answer never blinks out in between); a stopped or failed run's
-    /// text goes. `LiveAnswerText` also checks it follows exactly the stored turns.
+    /// The answer streaming in (about 10 times a second): read only by the views that draw it
+    /// (`LiveAnswerText`), so this body (the exchanges, the items) is not worked out again for it.
+    private var live: LiveReplyBox {
+        guard let conversationID else { return newChatLive }
+        return model.liveBox(for: conversationID)
+    }
+
+    /// Whether the live text may show at all: while the run lasts, after it finished until its
+    /// stored turn lands (the answer never blinks out in between), and after it stopped or failed
+    /// until its unsaved text comes (`LiveReplyBox.unsaved`). `LiveAnswerText` also checks it
+    /// follows exactly the stored turns.
     private var showsLive: Bool {
-        isRunning || conversation?.state == .finished
+        guard let state = conversation?.state else { return false }
+        return state == .running || state == .finished || state == .failed
+    }
+
+    /// A message (or Try again) was handed over and this conversation's run has not been seen
+    /// starting yet: the skeleton stays and the last run's state line waits.
+    private var awaitsRun: Bool {
+        guard let awaited = model.awaitingRun else { return false }
+        return awaited.conversationID == nil || awaited.conversationID == conversationID
     }
 
     /// The run answers the last stored message. While a sent message is not stored yet, the run
     /// (if its state came in first) is that message's: its answer goes after the pending bubble.
     /// Between the message's stored turn and its run's state (two observations, either first), the
-    /// hand-over still going on (`isSending`) keeps the skeleton in place.
+    /// hand-over (`awaitsRun`) keeps the skeleton in place.
     private var answersLast: Bool {
-        pending == nil && (isRunning || (model.isSending && transcript.awaitsAnswer))
+        pending == nil && (isRunning || (awaitsRun && transcript.awaitsAnswer))
     }
 
+    /// The message sent and not stored yet: shown until its stored turn (or, on the phone, its
+    /// request) is read, in the same update (never drawn twice for a frame).
     private var pending: PendingPanelMessage? {
         guard let pending = model.pending, pending.conversationID == conversationID else { return nil }
+        if transcript.turnCount > pending.afterTurns { return nil }
+        if style == .sheet, Self.requestTookOver(pending, requests: requestsQuery.wrappedValue) { return nil }
         return pending
+    }
+
+    /// M7, the sheet: the message just sent is stored as its request, whose bubble takes over.
+    private static func requestTookOver(_ pending: PendingPanelMessage, requests: [AgentRequest]) -> Bool {
+        let earliest = pending.sentAt.addingTimeInterval(-5)
+        return requests.contains { $0.text == pending.text && $0.createdAt >= earliest }
     }
 
     private var check: CitationCheck { CitationCheck(rows: rows, webPages: transcript.webPages) }
 
+    /// Try again's hand-over: the unsaved text of the answer it replaces stays hidden until the
+    /// run starts (it comes back when the retry could not go).
+    private var replaced: [ChatLiveReply] {
+        awaitsRun ? model.awaitingRun?.replaces ?? [] : []
+    }
+
     var body: some View {
-        let exchanges = PanelThread.exchanges(transcript)
+        let hidden = replaced
+        let exchanges = PanelThread.exchanges(transcript, unsaved: live.unsaved.filter { !hidden.contains($0) })
         let items = PanelThread.items(
             exchanges: exchanges,
             tasks: tasksQuery.wrappedValue.filter { $0.state != .succeeded || ($0.result ?? "").isEmpty == false },
-            window: isWindowed ? model.shown : nil, current: context
+            window: model.shown, current: context
         )
         let requests = PanelThread.openRequests(requestsQuery.wrappedValue, exchanges: exchanges)
         // ONE answer being written: the last exchange's (in `exchangeView`), or after the pending
         // bubble, or here alone for a run with no exchange to answer. (Before, the last exchange
         // and the thread's end both drew it: two skeletons for one message, the answer twice.)
         let working = isRunning && pending == nil && exchanges.isEmpty && requests.isEmpty
-        let state = stateLine
+        let state = stateLine(exchanges)
         let isEmpty = items.isEmpty && requests.isEmpty && pending == nil && !working && state == nil
         observing(Group {
             if isEmpty {
@@ -298,29 +350,45 @@ struct AgentThreadView: View {
             .onChange(of: turnsQuery.wrappedValue, initial: true) { _, turns in
                 transcript = ChatTranscript(turns: turns, cache: turnCache)
                 model.turnCount = turns.count
-                if let sent = pending, transcript.turnCount > sent.afterTurns { model.pending = nil }
-                pinPickedWindow()
-            }
-            .onChange(of: model.shown, initial: true) {
-                pinPickedWindow()
+                // The pending bubble already gave way in this update (`pending`); the composer may
+                // send again.
+                if let sent = model.pending, sent.conversationID == conversationID, transcript.turnCount > sent.afterTurns {
+                    model.pending = nil
+                }
             }
             .onChange(of: requestsQuery.wrappedValue, initial: true) { _, requests in
                 // M7, the sheet: the message just sent is stored as its request, whose bubble
                 // takes over from the pending one.
-                if let sent = pending, requests.contains(where: { $0.text == sent.text && $0.createdAt >= sent.sentAt.addingTimeInterval(-5) }) {
+                if style == .sheet, let sent = model.pending, sent.conversationID == conversationID,
+                   Self.requestTookOver(sent, requests: requests) {
                     model.pending = nil
                 }
             }
             .onChange(of: conversation?.state, initial: true) { _, state in
                 model.isRunning = state == .running
+                settleAwaitedRun()
+            }
+            .onChange(of: conversation?.updatedAt) {
+                settleAwaitedRun()
             }
             .task(id: conversationID) {
                 guard let conversationID else { return }
-                if live.sawMarker { live.sawMarker = false }
+                let box = model.liveBox(for: conversationID)
                 for await reply in actions.liveReply(conversationID) {
-                    live.reply = reply
+                    // The end of the stream (nil) leaves the last text: a finished run's text
+                    // stays until its stored turn is read (`LiveSource` shows a reply only after
+                    // exactly the stored turns).
+                    guard let reply else { continue }
                     // Set once (each set re-renders the thread): the citation rows are read for it.
-                    if !live.sawMarker, reply?.text.contains("[[") == true { live.sawMarker = true }
+                    if !box.sawMarker, reply.text.contains("[[") { box.sawMarker = true }
+                    if reply.isUnsaved {
+                        // A stopped, failed or cut-off run's text: it stays under the message it
+                        // answered, also once later messages are sent and answered.
+                        if !box.unsaved.contains(reply) { box.unsaved.append(reply) }
+                        if box.reply?.afterTurns == reply.afterTurns { box.reply = nil }
+                        continue
+                    }
+                    box.reply = reply
                 }
             }
             .task(id: citesLectures) {
@@ -335,40 +403,172 @@ struct AgentThreadView: View {
             .environment(\.openURL, OpenURLAction { url in open(url) })
     }
 
+    /// The hand-over ends once this conversation's run is seen starting, or ending after it; Try
+    /// again's run then replaces the unsaved text it answers anew.
+    private func settleAwaitedRun() {
+        guard let awaited = model.awaitingRun, let conversation, awaited.conversationID == conversation.id else { return }
+        let started = conversation.state == .running
+        let endedSince = conversation.state != .running && conversation.updatedAt >= awaited.sentAt
+        guard started || endedSince else { return }
+        model.awaitingRun = nil
+        guard !awaited.replaces.isEmpty else { return }
+        let box = model.liveBox(for: conversation.id)
+        box.unsaved.removeAll { awaited.replaces.contains($0) }
+        if let reply = box.reply, awaited.replaces.contains(reply) { box.reply = nil }
+    }
+
     /// Compact: as tall as the thread up to `maxHeight` (sized in the same layout pass as its
     /// rows, so it grows and shrinks with them without a frame's lag), then it scrolls under a
-    /// faded top edge. Expanded: the whole column, anchored to the bottom.
+    /// faded top edge, and a 14 pt faded bottom edge while more is below (as Review's rail and
+    /// transcript). Expanded and the sheet: the whole height, the rows at its bottom.
     @ViewBuilder
     private func scroll(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
         if style == .compact {
             let overflows = contentHeight > maxHeight + 0.5
             UpToHeight(maxHeight: maxHeight) {
-                ScrollView {
-                    threadContent(items: items, requests: requests, working: working, state: state)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded() } action: { contentHeight = $0 }
-                }
-                .defaultScrollAnchor(.bottom)
-                .defaultScrollAnchor(.bottom, for: .sizeChanges)
-                .scrollIndicators(.automatic)
+                scrollView(items: items, requests: requests, working: working, state: state)
             }
             .mask {
                 VStack(spacing: 0) {
                     if overflows {
                         LinearGradient(colors: [.black.opacity(0), .black], startPoint: .top, endPoint: .bottom)
-                            .frame(height: 40)
+                            .frame(height: Self.topFade)
                     }
                     Rectangle()
+                    if overflows, hidesEnd {
+                        LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 14)
+                    }
                 }
             }
         } else {
+            scrollView(items: items, requests: requests, working: working, state: state)
+                .frame(maxHeight: .infinity)
+        }
+    }
+
+    /// The thread's scroll view: opened on the latest question (at the end while an answer is
+    /// written or a message waits), following the end only while scrolled to it, and brought to
+    /// the end when the student sends.
+    private func scrollView(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
+        let lastExchange = Self.lastExchangeID(items)
+        let writing = isRunning || pending != nil || awaitsRun
+        let follows = isAtBottom && writing
+        return ScrollViewReader { proxy in
             ScrollView {
                 threadContent(items: items, requests: requests, working: working, state: state)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded() } action: { height in
+                        // Only the compact thread's faded edge reads it (a write re-renders the thread).
+                        if style == .compact { contentHeight = height }
+                        // Rows that load after the first layout (change rows, chips) never push
+                        // the opening place away.
+                        replace(proxy, lastExchange: lastExchange)
+                    }
             }
-            .defaultScrollAnchor(.bottom)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.bottom, for: .alignment)
+            .defaultScrollAnchor(follows ? .bottom : nil, for: .sizeChanges)
             .scrollIndicators(.automatic)
-            .frame(maxHeight: .infinity)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY < 24
+            } action: { _, atBottom in
+                isAtBottom = atBottom
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                // Only the thread's bottom padding (12 pt) may be out of sight without the fade.
+                geometry.contentSize.height - geometry.visibleRect.maxY > 12
+            } action: { _, hides in
+                if style == .compact { hidesEnd = hides }
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.containerSize.height.rounded()
+            } action: { _, height in
+                viewportHeight = height
+            }
+            .onScrollPhaseChange { _, phase in
+                if phase == .interacting || phase == .tracking { settled = true }
+            }
+            .onChange(of: lastExchange, initial: true) {
+                place(proxy, lastExchange: lastExchange)
+            }
+            .onChange(of: model.pending?.id) { _, id in
+                // ↩: the new bubble and its skeleton come into view.
+                guard id != nil else { return }
+                settled = true
+                isAtBottom = true
+                Task { @MainActor in
+                    await Task.yield()
+                    withAnimation(reduceMotion ? nil : .snappy) {
+                        proxy.scrollTo(Self.endID, anchor: .bottom)
+                    }
+                }
+            }
         }
+    }
+
+    /// The thread's end (`scrollTo`).
+    private static let endID = "end"
+    /// The compact thread's faded top edge.
+    private static let topFade: CGFloat = 40
+    /// The room kept above a placed question: in compact clear of the whole faded edge, so its
+    /// context line reads at its own tertiary and the bubble is never dimmed.
+    private var topClear: CGFloat { style == .compact ? Self.topFade + 4 : 8 }
+
+    private static func lastExchangeID(_ items: [PanelThreadItem]) -> String? {
+        for item in items.reversed() {
+            if case .exchange = item { return item.id }
+        }
+        return nil
+    }
+
+    /// A message sent in `context` carries a context line (AppAgent's rule): the screen changed
+    /// since the conversation's last exchange (a new chat's first message has none).
+    private static func screenChanged(since items: [PanelThreadItem], to context: AgentContext?) -> Bool {
+        guard let context else { return false }
+        for item in items.reversed() {
+            if case .exchange(let exchange, _, _) = item {
+                return exchange.context?.context?.settled != context
+            }
+        }
+        return false
+    }
+
+    /// Once per thread view (opening, picking, ⌥⌘J, the sheet's heights), when it first holds
+    /// exchanges: at the end while an answer is written or a message waits, else the latest
+    /// question at the top (a latest exchange that fits lands at the end: the scroll view clamps).
+    private func place(_ proxy: ScrollViewProxy, lastExchange: String?) {
+        guard placedAt == nil, let lastExchange else { return }
+        placedAt = Date()
+        scroll(proxy, to: lastExchange)
+    }
+
+    /// The opening place again while the thread's rows load (its first second), until the student
+    /// scrolls or sends.
+    private func replace(_ proxy: ScrollViewProxy, lastExchange: String?) {
+        guard let placedAt, !settled, let lastExchange, Date().timeIntervalSince(placedAt) < 1.5 else { return }
+        scroll(proxy, to: lastExchange)
+    }
+
+    private func scroll(_ proxy: ScrollViewProxy, to lastExchange: String) {
+        let toEnd = isRunning || pending != nil || awaitsRun
+        // The anchor's top goes `topClear` below the visible top: a unit point aligns the same
+        // fraction of the 1 pt anchor and of the scroll view (compact: as tall as `maxHeight` once
+        // the thread scrolls at all).
+        let visible = viewportHeight > 1 ? viewportHeight : (style == .compact ? maxHeight : 0)
+        let anchor = visible > topClear ? UnitPoint(x: 0.5, y: topClear / visible) : UnitPoint.top
+        Task { @MainActor in
+            await Task.yield()
+            if toEnd {
+                proxy.scrollTo(Self.endID, anchor: .bottom)
+            } else {
+                proxy.scrollTo(Self.questionID(lastExchange), anchor: anchor)
+            }
+        }
+    }
+
+    /// An exchange's place for `scrollTo`: a 1 pt line at its top.
+    private static func questionID(_ itemID: String) -> String {
+        "q" + itemID
     }
 
     private func threadContent(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
@@ -377,6 +577,11 @@ struct AgentThreadView: View {
                 switch item {
                 case .exchange(let exchange, let showsLine, let isLast):
                     exchangeView(exchange, showsLine: showsLine, isLast: isLast)
+                        .overlay(alignment: .top) {
+                            Color.clear
+                                .frame(height: 1)
+                                .id(Self.questionID(item.id))
+                        }
                 case .task(let task):
                     if task.state == .succeeded {
                         TaskResultBlock(task: task, rows: rows, now: model.now)
@@ -396,12 +601,15 @@ struct AgentThreadView: View {
                 }
             }
             if let pending {
+                if let line = pending.line, Self.screenChanged(since: items, to: pending.context) {
+                    FaintLine(glyph: line.glyph, label: line.label)
+                }
                 PanelStudentMessage(text: pending.text, attachments: pending.attachments, maxWidth: bubbleWidth)
             }
             if pending != nil || working {
                 // After a pending message nothing streams yet (its run is not this one's).
                 LiveAnswerText(
-                    live: pending == nil ? liveSource : nil, stored: nil, running: true, check: check,
+                    live: pending == nil ? liveSource : nil, parts: [], unsaved: [], running: true, check: check,
                     openLecture: context.lectureID, now: model.now
                 )
             }
@@ -413,6 +621,11 @@ struct AgentThreadView: View {
         .padding(.top, style == .expanded ? 14 : 2)
         .padding(.bottom, style == .expanded ? 14 : 12)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) {
+            Color.clear
+                .frame(height: 1)
+                .id(Self.endID)
+        }
     }
 
     private var bubbleWidth: CGFloat {
@@ -431,37 +644,25 @@ struct AgentThreadView: View {
                 FaintLine(glyph: exchange.context?.glyph ?? "bubble.left", label: label)
             }
             PanelStudentMessage(text: exchange.text, attachments: exchange.context?.attachments ?? [], maxWidth: bubbleWidth)
-            // The live text follows exactly the stored turns, so it is the last exchange's.
+            // The live text follows exactly the stored turns, so it is the last exchange's; text a
+            // run wrote and never stored stays with the message it answered.
             LiveAnswerText(
-                live: isLast && pending == nil ? liveSource : nil, stored: exchange.answer, running: running, check: check,
-                openLecture: exchange.context?.context?.lectureID ?? context.lectureID, now: model.now
+                live: isLast && pending == nil ? liveSource : nil, parts: exchange.parts, unsaved: exchange.unsaved, running: running,
+                check: check, openLecture: exchange.context?.context?.lectureID ?? context.lectureID, now: model.now
             )
         }
     }
 
     /// The live reply as the last answer reads it.
     private var liveSource: LiveSource {
-        LiveSource(box: live, afterTurns: transcript.turnCount, isShown: showsLive)
-    }
-
-    /// A conversation picked in the title menu opens on its last exchange; from then on the
-    /// compact panel shows that one and every follow-up (`.since` its time).
-    private func pinPickedWindow() {
-        guard model.shown == .last, let last = PanelThread.exchanges(transcript).last else { return }
-        model.shown = .since(last.sentAt)
-    }
-
-    static func joined(_ text: String?, _ live: String?) -> String? {
-        guard let live else { return text }
-        guard let text, !text.isEmpty else { return live }
-        return text + "\n\n" + live
+        LiveSource(box: live, afterTurns: transcript.turnCount, isShown: showsLive, hidden: replaced)
     }
 
     /// Some answer (or the one being written) has a marker: the rows are read (again when the
     /// conversation grows).
     private var citesLectures: Int {
         let hasMarker = transcript.entries.contains { entry in
-            if case .answer(_, let text) = entry { return text.contains("[[") }
+            if case .answer(_, let parts) = entry { return parts.contains { $0.text.contains("[[") } }
             return false
         } || live.sawMarker || tasksQuery.wrappedValue.contains { ($0.result ?? "").contains("[[") }
         return hasMarker ? transcript.turnCount : -1
@@ -477,53 +678,111 @@ struct AgentThreadView: View {
         return .systemAction(url)
     }
 
-    /// Why the last message has no answer: a usage pause ("Paused until 17:20"), or "Not answered"
-    /// with the reason on hover. A run the student stopped needs no line.
-    private var stateLine: AnyView? {
-        // Not while a new message is handed over (the last run's state until the new one's lands).
-        guard let conversation, conversation.state == .failed, pending == nil, !model.isSending else { return nil }
+    /// Why the last message has no answer: a usage pause ("Paused until 17:20", ending by itself
+    /// at the reset), else the triangle with the stored sentence ("Not answered" above it when
+    /// nothing was written) and Try again. A run the student stopped keeps its text, no line.
+    private func stateLine(_ exchanges: [PanelExchange]) -> AnyView? {
+        // Not while a new message (or Try again) is handed over: the last run's state stays until
+        // the new run's lands.
+        guard let conversation, conversation.state == .failed, pending == nil, !awaitsRun else { return nil }
         let error = conversation.error ?? ""
-        guard error != "Stopped." else { return nil }
-        if let until = actions.pausedUntil, until > Date() {
-            let time = Text(DayText.time(until, timeZone: .current)).font(.mono(12))
-            return AnyView(
-                Text("Paused until \(time)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            )
-        }
-        if style == .sheet {
-            // No hover on the phone: the reason under the line.
-            return AnyView(NotAnsweredLine(reason: error))
-        }
+        guard error != ReadableError.stopped else { return nil }
+        let storedAnswer = exchanges.last?.answer != nil
+        let wrote = storedAnswer || liveSource.text != nil
+        let position = exchanges.last?.position ?? -1
+        let retry: (() -> Void)? = actions.retry == nil ? nil : { retryLast(after: position) }
+        let failed = NotAnsweredLine(reason: error, showsTitle: !wrote, retry: retry)
+        guard let until = actions.pausedUntil, until > Date() else { return AnyView(failed) }
         return AnyView(
-            Label("Not answered", systemImage: "exclamationmark.triangle")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .help(Text(verbatim: error))
+            TimelineView(.explicit([until])) { timeline in
+                if timeline.date < until {
+                    PausedLine(until: until)
+                } else {
+                    failed
+                }
+            }
         )
+    }
+
+    /// Try again: the conversation's last message (stored at `position`) is answered again (its
+    /// run hands over as a sent message does). What the failed run wrote stays until the new run
+    /// is seen starting (`settleAwaitedRun`), and comes back when Try again could not go.
+    private func retryLast(after position: Int) {
+        guard let conversationID, let retry = actions.retry else { return }
+        let box = model.liveBox(for: conversationID)
+        var replaces = box.unsaved.filter { $0.afterTurns > position }
+        if let reply = box.reply, reply.afterTurns > position { replaces.append(reply) }
+        model.notice = nil
+        model.awaitingRun = AwaitedRun(conversationID: conversationID, sentAt: Date(), replaces: replaces)
+        let model = model
+        Task {
+            do {
+                try await retry(conversationID)
+            } catch {
+                ChatUILog.ui.error("Trying an answer again failed: \(String(describing: error), privacy: .public)")
+                model.awaitingRun = nil
+                model.notice = (error as? AgentSendFailure)?.sentence ?? String(localized: "Not sent")
+            }
+        }
     }
 }
 
-/// "Not answered" (a secondary warning triangle) with the reason under it: the sheet (no hover).
-struct NotAnsweredLine: View {
-    let reason: String
+/// "Paused until 17:20" (the clock in SF Mono), 12 pt secondary; the sheet's footnote.
+struct PausedLine: View {
+    let until: Date
+
+    @Environment(\.agentThreadMetrics) private var metrics
 
     var body: some View {
+        let size: CGFloat = metrics == .sheet ? 13 : 12
+        let time = Text(verbatim: DayText.time(until, timeZone: .current)).font(.mono(size))
+        Text("Paused until \(time)")
+            .font(.system(size: size))
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// An answer that did not come: a secondary warning triangle with "Not answered" (left out when
+/// some of the answer was written), the stored sentence under it in tertiary, then Try again
+/// (12 pt; the sheet's footnote).
+struct NotAnsweredLine: View {
+    let reason: String
+    var showsTitle = true
+    var retry: (() -> Void)?
+
+    @Environment(\.agentThreadMetrics) private var metrics
+
+    var body: some View {
+        let font: Font = metrics == .sheet ? .footnote : .system(size: 12)
         VStack(alignment: .leading, spacing: 2) {
-            Label("Not answered", systemImage: "exclamationmark.triangle")
-                .font(.footnote)
-            if !reason.isEmpty {
-                Text(verbatim: reason)
-                    .font(.footnote)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+            if showsTitle {
+                Label("Not answered", systemImage: "exclamationmark.triangle")
+                if !reason.isEmpty {
+                    Text(verbatim: reason)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if !reason.isEmpty {
+                Label {
+                    Text(verbatim: reason)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
+                }
+            }
+            if let retry {
+                Button("Try again", action: retry)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.tint)
+                    .padding(.top, 2)
             }
         }
+        .font(font)
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -666,7 +925,7 @@ private struct RequestFileTile: View {
             guard let pages else { return nil }
             return pages == 1 ? String(localized: "1 page") : String(localized: "\(pages) pages")
         case .text:
-            return ByteCountFormatter.string(fromByteCount: Int64(file.byteCount), countStyle: .file)
+            return ByteCountFormatter.string(fromByteCount: Int64(file.byteCount), countStyle: .memory)
         default:
             return nil
         }
@@ -678,6 +937,10 @@ private struct RequestFileTile: View {
 struct FaintLine: View {
     let glyph: String
     let label: String
+    /// A task that failed: a secondary warning triangle after the label.
+    var warns = false
+    /// A task the student cancelled: the label struck through.
+    var isStruck = false
 
     @Environment(\.agentThreadMetrics) private var metrics
 
@@ -687,8 +950,15 @@ struct FaintLine: View {
                 .font(.system(size: metrics.contextGlyph))
                 .accessibilityHidden(true)
             Text(verbatim: label)
+                .strikethrough(isStruck)
                 .lineLimit(1)
                 .layoutPriority(1)
+            if warns {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: metrics.contextLine))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Text("Not answered"))
+            }
             Rectangle()
                 .fill(.separator)
                 .frame(height: 0.5)
@@ -785,21 +1055,32 @@ private struct TaskResultBlock: View {
     }
 }
 
-/// A sub-agent task that failed or was cancelled: one quiet line, "Research QEMU didn't finish:
-/// the usage limit was reached." (the whole reason on hover).
+/// A sub-agent task that failed or was cancelled, as a result's header: the faint `checklist`
+/// line with its title. Failed: a secondary warning triangle after the title, the reason on hover
+/// (under the line on the phone). Cancelled by the student: the title struck through.
 private struct TaskUnfinishedLine: View {
     let task: AgentTask
 
+    @Environment(\.agentThreadMetrics) private var metrics
+
     var body: some View {
         let reason = (task.error ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let line = reason.isEmpty ? String(localized: "\(task.title) didn’t finish.") : String(localized: "\(task.title) didn’t finish: \(reason)")
-        Text(verbatim: line)
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .help(Text(verbatim: line))
-            .frame(maxWidth: .infinity, alignment: .leading)
+        if task.state == .cancelled {
+            FaintLine(glyph: "checklist", label: task.title, isStruck: true)
+        } else if metrics == .sheet {
+            VStack(alignment: .leading, spacing: 2) {
+                FaintLine(glyph: "checklist", label: task.title, warns: true)
+                if !reason.isEmpty {
+                    Text(verbatim: reason)
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else {
+            FaintLine(glyph: "checklist", label: task.title, warns: true)
+                .help(Text(verbatim: reason))
+        }
     }
 }
 
@@ -809,20 +1090,25 @@ private struct TaskUnfinishedLine: View {
 @Observable
 final class LiveReplyBox {
     var reply: ChatLiveReply?
+    /// What runs wrote and never stored (stopped, failed, cut off), in order: each stays under
+    /// the message it answered for as long as the panel lives (`PanelThread.exchanges`).
+    var unsaved: [ChatLiveReply] = []
     /// Some live text had a marker: the thread reads its citation rows.
     var sawMarker = false
 }
 
 /// The live reply as one answer may show it: after exactly `afterTurns` stored turns, while
-/// `isShown` (the run lasts, or finished until its stored turn lands).
+/// `isShown` (the run lasts, or finished until its stored turn lands), unless Try again is
+/// replacing it (`hidden`).
 struct LiveSource {
     let box: LiveReplyBox
     let afterTurns: Int
     let isShown: Bool
+    var hidden: [ChatLiveReply] = []
 
     @MainActor
     var text: String? {
-        guard isShown, let reply = box.reply, reply.afterTurns == afterTurns, !reply.text.isEmpty else { return nil }
+        guard isShown, let reply = box.reply, reply.afterTurns == afterTurns, !reply.text.isEmpty, !hidden.contains(reply) else { return nil }
         return reply.text
     }
 }
@@ -833,7 +1119,9 @@ struct LiveSource {
 private struct LiveAnswerText: View {
     /// Nil: no live text goes here.
     let live: LiveSource?
-    let stored: String?
+    /// The stored answer's turns, and what runs wrote after them and never stored.
+    let parts: [ChatTranscript.AnswerPart]
+    let unsaved: [String]
     /// The run answers this exchange.
     let running: Bool
     let check: CitationCheck
@@ -842,7 +1130,8 @@ private struct LiveAnswerText: View {
 
     var body: some View {
         let streamed = live?.text
-        let answer = AgentThreadView.joined(stored, streamed)
+        // One rule for narration before tool calls, with the live text as with the stored turn.
+        let answer = ChatTranscript.answerText(parts, following: unsaved + (streamed.map { [$0] } ?? []))
         if let answer, !answer.isEmpty {
             PanelAnswer(
                 text: answer, isWorking: running && streamed == nil, isStreaming: running || streamed != nil, check: check,
@@ -880,7 +1169,7 @@ struct PanelAnswer: View {
         VStack(alignment: .leading, spacing: 8) {
             if blocks.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    AIMark()
+                    AnswerSparkle()
                     skeleton
                 }
             }
@@ -900,6 +1189,7 @@ struct PanelAnswer: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(AnswerCopyMenu(text: shown, check: check, isActive: !isStreaming && shown.contains("[[")))
     }
 
     /// The line's final size, redacted, no shimmer.
@@ -909,6 +1199,32 @@ struct PanelAnswer: View {
             .foregroundStyle(.secondary)
             .redacted(reason: .placeholder)
             .accessibilityHidden(true)
+    }
+}
+
+/// Copy for an answer with chips (its text cannot be selected: the chips are drawn over it): the
+/// whole answer, each chip as its label ("S13", "37:59", the domain).
+private struct AnswerCopyMenu: ViewModifier {
+    let text: String
+    let check: CitationCheck
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        if isActive {
+            content.contextMenu {
+                Button("Copy") {
+                    let copied = AnswerText(text, check: check, logs: false).copyText
+                    #if os(macOS)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(copied, forType: .string)
+                    #else
+                    UIPasteboard.general.string = copied
+                    #endif
+                }
+            }
+        } else {
+            content
+        }
     }
 }
 
@@ -937,6 +1253,13 @@ enum PanelAnswerBlock: Hashable {
         }
         func emit() {
             guard !pending.isEmpty else { return }
+            // A list item that carries change markers is the rows themselves: its words would say
+            // each change twice (bullet, row, bullet, row). A plain sentence keeps its words.
+            var lines = buffer.split(separator: "\n", omittingEmptySubsequences: false)
+            if let last = lines.last, Self.isListItem(last) {
+                lines.removeLast()
+                buffer = lines.joined(separator: "\n")
+            }
             flush()
             if case .changes(let keys)? = blocks.last {
                 blocks[blocks.count - 1] = .changes(keys + pending.filter { !keys.contains($0) })
@@ -978,6 +1301,17 @@ enum PanelAnswerBlock: Hashable {
         emit()
         flush()
         return blocks
+    }
+
+    /// "- …", "* …", "+ …", "1. …" or "1) …" after optional spaces.
+    static func isListItem(_ line: Substring) -> Bool {
+        let rest = line.drop { $0 == " " || $0 == "\t" }
+        if let first = rest.first, "-*+".contains(first), rest.dropFirst().first == " " { return true }
+        let digits = rest.prefix { $0.isASCII && $0.isNumber }
+        guard (1...9).contains(digits.count) else { return false }
+        let after = rest.dropFirst(digits.count)
+        guard let delimiter = after.first, delimiter == "." || delimiter == ")" else { return false }
+        return after.dropFirst().first == " "
     }
 
     /// The text so far ends inside a table (its last line is a row) or an open code fence.

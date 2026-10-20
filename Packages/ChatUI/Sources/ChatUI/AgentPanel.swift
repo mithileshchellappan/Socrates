@@ -123,8 +123,8 @@ enum AgentPanelMetrics {
 }
 
 /// What one window's panel shows and holds: its size, the conversation, the composer's text and
-/// files, the message sent but not stored yet, and which part of the thread the compact panel
-/// shows.
+/// files, the message sent but not stored yet. Every size shows the whole conversation;
+/// only a render may show some of its exchanges.
 @MainActor
 @Observable
 final class AgentPanelModel {
@@ -132,17 +132,6 @@ final class AgentPanelModel {
         case closed
         case compact
         case expanded
-    }
-
-    /// Which exchanges the compact panel shows.
-    enum ThreadWindow: Hashable {
-        /// Those sent since it opened (and task results since then), and always at least the
-        /// conversation's latest exchange: an answer never hides behind ⤢ (2026-10-18).
-        case since(Date)
-        /// A conversation picked in the title menu: its last exchange.
-        case last
-        /// Renders: these exchanges.
-        case exchanges(Range<Int>)
     }
 
     var mode: Mode
@@ -155,6 +144,9 @@ final class AgentPanelModel {
     /// Files being read (drop, paste, paperclip).
     var reading = 0
     var pending: PendingPanelMessage?
+    /// A message (or Try again) handed over whose run the thread has not seen starting yet: its
+    /// skeleton stays and the last run's state line waits (no blink, no stale "Not answered").
+    var awaitingRun: AwaitedRun?
     var isSending = false
     /// The conversation on screen is answering (its thread reports it).
     var isRunning = false
@@ -166,10 +158,18 @@ final class AgentPanelModel {
     var composerFocused = false
     /// Bumped to put the caret in the composer.
     var focusRequests = 0
-    /// Why the last message or file did not go ("Couldn't send.", "Lecture3.pdf can't be read."):
-    /// one secondary line under the composer until the next edit.
+    /// Why the last message or file did not go ("Claude Code is signed out.", "Lecture3.pdf can't
+    /// be read."): one secondary line under the composer until the next edit.
     var notice: String?
-    var shown: ThreadWindow
+    /// Renders only (`AgentPanelLaunch.exchanges`): the exchanges shown. Nil: the whole
+    /// conversation.
+    let shown: Range<Int>?
+    /// The answers being written, one box per conversation, kept across the thread's views (⌥⌘J,
+    /// reopening, picking): the text so far shows in their first frame, and a stopped run's text
+    /// stays.
+    @ObservationIgnored private var liveBoxes: [AgentConversation.ID: LiveReplyBox] = [:]
+    /// Bumped by New Chat and a pick: a hand-over that ends after one leaves the student's choice.
+    @ObservationIgnored var choices = 0
     /// What the screen on display publishes (`.agentContext`).
     var source: AgentContextSource?
     /// The expanded column has its room in the window: decided when the panel expands, then while
@@ -198,10 +198,23 @@ final class AgentPanelModel {
         draft = launch.draft
         attachments = launch.attachments
         fixedNow = launch.now
-        shown = launch.exchanges.map(ThreadWindow.exchanges) ?? .since(Date())
+        shown = launch.exchanges
+        if let text = launch.pendingText {
+            // Renders: a message just sent (its stored turn never comes).
+            pending = PendingPanelMessage(text: text, attachments: [], conversationID: launch.conversationID, afterTurns: .max)
+            askedSinceOpen = true
+        }
     }
 
     var now: Date { fixedNow ?? Date() }
+
+    /// The answer being written in `id` (one box per conversation, for this window's panel).
+    func liveBox(for id: AgentConversation.ID) -> LiveReplyBox {
+        if let box = liveBoxes[id] { return box }
+        let box = LiveReplyBox()
+        liveBoxes[id] = box
+        return box
+    }
     var isOpen: Bool { mode != .closed }
 
     /// A message may go now: none is being handed over or waiting for its stored turn, the agent
@@ -215,10 +228,9 @@ final class AgentPanelModel {
     }
 
     /// ⌘J, the launcher, Calendar's [+]: opens compact (or expanded) with the caret in the
-    /// composer; a compact panel opened again shows the conversation's latest exchange.
+    /// composer, on the whole conversation (its latest question in sight).
     func open(expanded: Bool = false) {
         if mode == .closed {
-            shown = .since(Date())
             askedSinceOpen = false
         }
         let wasExpanded = mode == .expanded
@@ -280,31 +292,33 @@ final class AgentPanelModel {
         selected = nil
         pending = nil
         askedSinceOpen = false
-        shown = .since(Date())
+        choices += 1
         focusRequests += 1
     }
 
-    /// A conversation from the title menu: it opens on its last exchange, and follow-ups gather
-    /// under it (the thread pins `.last` to `.since` that exchange's time once it has read it).
+    /// A conversation from the title menu: the whole conversation, its latest question in sight.
     func pick(_ id: AgentConversation.ID) {
+        choices += 1
         startsNew = false
         selected = id
         pending = nil
         askedSinceOpen = false
-        shown = .last
         notice = nil
         focusRequests += 1
     }
 
     /// The context a message carries: the app's, with the screen's publication (and its
-    /// `refine`, the playhead) merged over it.
+    /// `refine`, the playhead) merged over it, only while it is about the screen the app is on (a
+    /// stale or foreign publication never names another screen: "Ask about your mail" on Mail).
     func sendContext(app: AgentContext) -> AgentContext {
-        source.map { app.merging($0.current()) } ?? app
+        guard let source, source.context.screen == app.screen else { return app }
+        return app.merging(source.current())
     }
 
     /// The context as the panel shows it (prompt, context lines): settled, no playhead.
     func shownContext(app: AgentContext) -> AgentContext {
-        (source.map { app.merging($0.context) } ?? app).settled
+        guard let source, source.context.screen == app.screen else { return app.settled }
+        return app.merging(source.context).settled
     }
 
     // MARK: Files
@@ -364,7 +378,6 @@ final class AgentPanelModel {
             return String(localized: "\(fileName) can’t be read.")
         }
         switch refusal {
-        case .unsupportedType: return String(localized: "\(fileName) isn’t an image, a PDF or a text file.")
         case .tooLarge: return String(localized: "\(fileName) is too large.")
         case .unreadableText, .unreadablePDF: return String(localized: "\(fileName) can’t be read.")
         default: return String(localized: "\(fileName) can’t be attached.")
@@ -411,6 +424,8 @@ final class AgentPanelModel {
 
 /// The student's message between ↩ and its stored turn.
 struct PendingPanelMessage: Equatable {
+    /// This hand-over (its bubble, its context line, the scroll to the end on ↩).
+    var id = UUID()
     var text: String
     var attachments: [AgentAttachment]
     /// The conversation it went to (nil: a new one, until `send` returns).
@@ -419,6 +434,21 @@ struct PendingPanelMessage: Equatable {
     var afterTurns: Int
     /// When ↩ sent it (M7, the sheet: its request row, written after this, takes over).
     var sentAt = Date()
+    /// The context it went with, settled (nil: renders).
+    var context: AgentContext?
+    /// Its faint context line (the screen's glyph and label), once known; drawn only when the
+    /// screen changed since the last exchange, as the stored turn will draw it.
+    var line: AgentContextLine?
+}
+
+/// A run asked for (↩, Try again) and not seen starting yet.
+struct AwaitedRun: Equatable {
+    /// Nil: a new conversation, until `send` returns its id.
+    var conversationID: AgentConversation.ID?
+    var sentAt: Date
+    /// Try again: the unsaved text of the answer it replaces (hidden meanwhile, dropped once the
+    /// run starts, back when it could not go).
+    var replaces: [ChatLiveReply] = []
 }
 
 extension EnvironmentValues {
@@ -644,6 +674,8 @@ struct CompactAgentPanel: View {
 
     @State private var move = PanelMove()
     @State private var size = CGSize(width: AgentPanelMetrics.compactWidth, height: 90)
+    /// The height the window's toasts keep clear of.
+    @State private var reserved: CGFloat = 90
     @State private var isDropTargeted = false
 
     var body: some View {
@@ -652,7 +684,7 @@ struct CompactAgentPanel: View {
         let move = move
         AgentPanelView(
             style: .compact, model: model, context: context, sendContext: sendContext,
-            maxThreadHeight: Self.maxThreadHeight(windowHeight: windowSize.height),
+            maxHeight: Self.maxHeight(windowHeight: windowSize.height),
             move: move,
             moveEnded: { translation in
                 position = Self.format(bounds.clamp(stored, adding: translation))
@@ -661,18 +693,26 @@ struct CompactAgentPanel: View {
         )
         .modifier(CompactPanelChrome(isDropTargeted: isDropTargeted))
         .agentFileDrop(model: model, isTargeted: $isDropTargeted)
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
+            size = newSize
+            // The toasts' room follows a streaming answer in steps of a line or more, and
+            // exactly once it ends.
+            if abs(newSize.height - reserved) >= 17 || !model.isRunning { reserved = newSize.height }
+        }
+        .onChange(of: model.isRunning) { _, running in
+            if !running { reserved = size.height }
+        }
         // The stored place, not the drag: the toasts' room changes once, when the drag ends.
-        .reservesPanelSpace(size.height + AgentPanelMetrics.margin + 8, isActive: stored.height < 1)
+        .reservesPanelSpace(reserved + AgentPanelMetrics.margin + 8, isActive: stored.height < 1)
         .modifier(PanelPlacement(move: move, stored: stored, bounds: bounds))
         .padding(.trailing, AgentPanelMetrics.margin)
         .padding(.bottom, AgentPanelMetrics.margin)
         .transition(.opacity)
     }
 
-    /// The thread's room: the panel is at most half the window (title row and composer included).
-    static func maxThreadHeight(windowHeight: CGFloat) -> CGFloat {
-        max(80, (windowHeight > 0 ? windowHeight : 740) / 2 - 110)
+    /// The panel is at most half the window (title row, task line and composer included).
+    static func maxHeight(windowHeight: CGFloat) -> CGFloat {
+        (windowHeight > 0 ? windowHeight : 740) / 2
     }
 
     static func parse(_ text: String) -> CGSize {
@@ -730,22 +770,37 @@ private struct PanelPlacement: ViewModifier {
 
 /// The compact panel's surface, edge and shadow (the window's panel and its render). The shadow
 /// is the surface shape's (the panel is opaque): drawn from a plain shape, not from the panel's
-/// contents, so moving the panel only moves it.
+/// contents, so moving the panel only moves it. As the mockup's `--panel-shadow` (0 18 40, spread
+/// −14 / −12): cast by an inset copy of the shape, so it falls below the panel and never clouds
+/// the rows above or beside it; a 0.5 pt ring at black 12 % (white 14 % in dark).
 struct CompactPanelChrome: ViewModifier {
     var isDropTargeted = false
+    /// Renders: AppKit's `cacheDisplay` (the off-screen composite) draws a layer's shadow offset
+    /// upside down, so the render's panel casts it up to look as the window's does.
+    var isCachedDisplay = false
+
+    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: AgentPanelMetrics.radius, style: .continuous)
+        let isDark = colorScheme == .dark
+        let shadow = isDark ? Color.black.opacity(0.70) : Color(red: 20 / 255, green: 30 / 255, blue: 50 / 255).opacity(0.38)
+        let ring = isDark ? Color.white.opacity(0.14) : Color.black.opacity(0.12)
+        let drop: CGFloat = isCachedDisplay ? -18 : 18
         content
             .frame(width: AgentPanelMetrics.compactWidth)
             .clipShape(shape)
             .background {
-                shape
-                    .fill(PanelSurface())
-                    .shadow(color: .black.opacity(0.22), radius: 20, y: 12)
+                ZStack {
+                    shape
+                        .inset(by: isDark ? 12 : 14)
+                        .fill(PanelSurface())
+                        .shadow(color: shadow, radius: 20, y: drop)
+                    shape.fill(PanelSurface())
+                }
             }
             .overlay {
-                shape.strokeBorder(.separator, lineWidth: 0.5)
+                shape.strokeBorder(ring, lineWidth: 0.5)
             }
             .overlay {
                 if isDropTargeted {
@@ -778,10 +833,12 @@ struct ExpandedAgentPanel: View {
     @Binding var width: Double
 
     @State private var isDropTargeted = false
+    /// The width the student is dragging the column to (stored in `width` once it rests).
+    @State private var dragged: Double?
 
     var body: some View {
         AgentPanelView(
-            style: .expanded, model: model, context: context, sendContext: sendContext, maxThreadHeight: .infinity,
+            style: .expanded, model: model, context: context, sendContext: sendContext, maxHeight: .infinity,
             headerPlacement: .toolbar
         )
         // No minimum and a fixed ideal of its own: a long answer's one-line width (a table, a code
@@ -799,7 +856,14 @@ struct ExpandedAgentPanel: View {
             // sidebar shown or hidden, or a narrower opening the window allowed.
             guard Self.isDraggingColumn else { return }
             let rounded = Double(newWidth.rounded())
-            if rounded >= Double(AgentPanelMetrics.minWidth), abs(rounded - width) >= 1 { width = rounded }
+            if rounded >= Double(AgentPanelMetrics.minWidth), abs(rounded - width) >= 1 { dragged = rounded }
+        }
+        .task(id: dragged) {
+            // Stored once the drag rests (300 ms), not on every frame of it.
+            guard let dragged else { return }
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, abs(dragged - width) >= 1 else { return }
+            width = dragged
         }
     }
 
@@ -815,14 +879,15 @@ struct ExpandedAgentPanel: View {
     }
 }
 
-/// As Review's and Calendar's inspectors: the system's column, lifted by white 2.5 % in dark mode.
+/// The column's opaque surface, as the compact panel's (mockup `.agent { background: var(--inspector) }`,
+/// #f8f8fa / #222225), with a 0.5 pt hairline on its leading edge: nothing of the screen beside it
+/// (Calendar's all-day band) shows through.
 struct ExpandedPanelBackground: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     var body: some View {
-        if colorScheme == .dark {
-            Rectangle().fill(.white.opacity(0.025)).ignoresSafeArea()
-        }
+        Rectangle()
+            .fill(PanelSurface())
+            .overlay(alignment: .leading) { Hairline(.vertical) }
+            .ignoresSafeArea()
     }
 }
 
@@ -895,17 +960,16 @@ public struct AgentPanelSnapshot: View {
         case .compact:
             AgentPanelView(
                 style: .compact, model: model, context: context.settled, sendContext: { context },
-                maxThreadHeight: CompactAgentPanel.maxThreadHeight(windowHeight: windowHeight)
+                maxHeight: CompactAgentPanel.maxHeight(windowHeight: windowHeight)
             )
-            .modifier(CompactPanelChrome())
+            .modifier(CompactPanelChrome(isCachedDisplay: true))
         case .expanded:
             AgentPanelView(
-                style: .expanded, model: model, context: context.settled, sendContext: { context }, maxThreadHeight: .infinity,
+                style: .expanded, model: model, context: context.settled, sendContext: { context }, maxHeight: .infinity,
                 headerPlacement: .inline
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(.background.secondary)
-            .overlay(alignment: .leading) { Hairline(.vertical) }
+            .background { ExpandedPanelBackground() }
         }
     }
 }

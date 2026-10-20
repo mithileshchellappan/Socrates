@@ -217,7 +217,10 @@ actor AgentTaskQueue {
             await finishRow(task.id, .failed, error: "The study pass could not be started.")
             return
         }
-        await finishRow(task.id, .succeeded, result: "The study pass runs again (\(units) parts); its notes update as they are done.")
+        // No result line: the thread hides a succeeded task with an empty result (the study pass's
+        // notes update by themselves; nothing to say about the app).
+        AppAgentModule.log.info("Study pass rerun queued (\(units, privacy: .public) parts)")
+        await finishRow(task.id, .succeeded, result: "")
     }
 
     // MARK: The study coach's tasks (mc)
@@ -323,7 +326,8 @@ actor AgentTaskQueue {
         if stopping || quit.isSet { return }
         if ended?.state == .finished {
             let result = (try? await lastAnswer(conversation)) ?? ""
-            await finishRow(task.id, .succeeded, result: result.isEmpty ? "Done." : result)
+            // A task that wrote nothing shows nothing (the thread hides an empty result).
+            await finishRow(task.id, .succeeded, result: result)
             return
         }
         if await isCancelled(task.id) { return }

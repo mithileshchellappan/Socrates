@@ -9,10 +9,14 @@ import SwiftUI
 public struct ChatLiveReply: Hashable, Sendable {
     public var afterTurns: Int
     public var text: String
+    /// The run ended without storing this text (stopped, failed, cut off): the thread keeps it
+    /// under the message it answered.
+    public var isUnsaved: Bool
 
-    public init(afterTurns: Int, text: String) {
+    public init(afterTurns: Int, text: String, isUnsaved: Bool = false) {
         self.afterTurns = afterTurns
         self.text = text
+        self.isUnsaved = isUnsaved
     }
 }
 

@@ -70,6 +70,8 @@ public actor AgentRuntime {
         case busy
         case emptyText
         case unknownKind(String)
+        /// Try again on a conversation whose last turn is a finished answer.
+        case nothingToRetry
 
         public var description: String {
             switch self {
@@ -77,6 +79,7 @@ public actor AgentRuntime {
             case .unknownConversation: "no such conversation"
             case .busy: "the agent is still working on this conversation"
             case .emptyText: "nothing to send"
+            case .nothingToRetry: "the last message was answered"
             }
         }
     }
@@ -230,6 +233,87 @@ public actor AgentRuntime {
         }
     }
 
+    /// ma: answers a conversation's last message again after its run failed (the panel's Try
+    /// again). Calls the failed run left open get "interrupted" results first. When nothing after
+    /// the last answer turn is text, an image or a document (a run that failed after a tool call,
+    /// an answer that stopped early), the same user turn carries a `<retry>` block that restates
+    /// the student's last words: Claude Code takes only those as a prompt, and the thread never
+    /// shows the block. A finished conversation has nothing to retry.
+    ///
+    /// `readUntrustedContent`: as `send`'s (the caller's own knowledge of untrusted text in the
+    /// history: files sent as text, task results), OR'd with what the stored turns show.
+    public func retry(_ id: AgentConversation.ID, readUntrustedContent: Bool = false) async throws {
+        guard tasks[id] == nil, !sending.contains(id) else { throw RuntimeError.busy }
+        sending.insert(id)
+        defer { sending.remove(id) }
+        guard let conversation = try await services.records.fetch(AgentConversation.self, id: id) else {
+            throw RuntimeError.unknownConversation
+        }
+        guard conversation.state != .finished else { throw RuntimeError.nothingToRetry }
+        let spec = try await spec(for: conversation.kind, conversationID: id)
+        let stored = try await conversations.turns(id)
+        var history = try Self.history(stored)
+        guard !history.isEmpty else { throw RuntimeError.nothingToRetry }
+        let readUntrusted = readUntrustedContent || Self.readUntrustedContent(stored, history: history, tools: spec.tools)
+        let message = try Self.lastStudentMessage(stored)
+        var blocks: [ContentBlock] = []
+        if let last = history.last, last.role == .assistant {
+            blocks = last.content.blocks.compactMap(\.toolUse).map { call in
+                .toolResult(ToolResultBlock(toolUseID: call.id, content: .text("interrupted"), isError: true))
+            }
+        }
+        if !Self.hasPrompt(afterLastAnswer: history) {
+            blocks.append(.text(TextBlock(text: Self.retryBlock(words: message.text))))
+        }
+        if !blocks.isEmpty {
+            let turn = MessageParam.user(blocks)
+            try await conversations.append(to: id, role: .user, message: try Self.encode(turn), context: nil)
+            history.append(turn)
+        }
+        try await conversations.setState(id, .running)
+        launch(conversation, spec: spec, history: history, studentText: message.text, turnContext: message.context, readUntrusted: readUntrusted)
+    }
+
+    /// The tag of Try again's block (`retryBlock`).
+    static let retryTag = "<retry>"
+
+    /// Try again's block when the turns since the last answer have nothing Claude Code can take as
+    /// a prompt: the instruction to answer the student's last message again, with its words.
+    static func retryBlock(words: String) -> String {
+        var lines = [retryTag, "The last answer did not finish. Answer the student's last message again."]
+        if !words.isEmpty { lines.append("The student's last message: \(words)") }
+        lines.append("</retry>")
+        return lines.joined(separator: "\n")
+    }
+
+    /// Some user turn after the last assistant turn has text, an image or a document (tool results
+    /// alone are not a prompt).
+    static func hasPrompt(afterLastAnswer history: [MessageParam]) -> Bool {
+        let start = history.lastIndex { $0.role == .assistant }.map { $0 + 1 } ?? history.startIndex
+        return history[start...].filter { $0.role == .user }.flatMap(\.content.blocks).contains { block in
+            switch block {
+            case .text, .image, .document: true
+            default: false
+            }
+        }
+    }
+
+    /// The student's words in the conversation's last message (its last text block, after the
+    /// context blocks; empty for files alone) and the context stored with it. Try again's own
+    /// turns are not messages.
+    static func lastStudentMessage(_ stored: [AgentTurn]) throws -> (text: String, context: AgentTurnContext?) {
+        for turn in stored.reversed() where turn.role == .user {
+            let message = try MessageParam(json: JSONValue.parse(turn.message))
+            let texts = message.content.blocks.compactMap(\.textValue)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.hasPrefix(retryTag) }
+            // A turn of tool results only is not a message.
+            guard let words = texts.last else { continue }
+            return (words.hasPrefix("<") ? "" : words, turn.context)
+        }
+        return ("", nil)
+    }
+
     /// Stops a running conversation (it ends `failed`).
     public func stop(_ id: AgentConversation.ID) async {
         guard let task = tasks[id] else { return }
@@ -300,6 +384,8 @@ public actor AgentRuntime {
         // ma: an open mail in the turn's context is untrusted content this run has read, as is
         // what an earlier turn of the conversation read (`readUntrusted`).
         let trace = RunTrace(readUntrustedContent: readUntrusted || turnContext?.context?.mailMessageID != nil)
+        // The last run's unsaved text is not handed to panels opened from now on.
+        live.clear(conversation.id)
         let context = ToolContext(
             conversationID: conversation.id, studentText: studentText, now: now(), trace: trace, turnContext: turnContext
         )
@@ -346,19 +432,28 @@ public actor AgentRuntime {
             case .truncated:
                 try await conversations.setState(id, .failed, error: "The answer was cut off.")
             case .iterationLimit:
-                try await conversations.setState(id, .failed, error: "Stopped after \(spec.maxIterations) calls.")
+                AgentModule.log.notice("Run stopped after \(spec.maxIterations, privacy: .public) calls")
+                try await conversations.setState(id, .failed, error: String(localized: "Stopped after too many steps."))
             case .other(let reason):
-                try await conversations.setState(id, .failed, error: "Stopped: \(reason?.rawValue ?? "unknown").")
+                // The raw stop reason goes to the log only.
+                AgentModule.log.notice("Run stopped early: \(reason?.rawValue ?? "unknown", privacy: .public)")
+                try await conversations.setState(id, .failed, error: String(localized: "The answer stopped early."))
             }
         } catch {
             // One readable sentence is stored and shown; the error itself goes to the log only.
+            // Only a task's run is tried again by itself (the queue): an answer's says "busy".
             if (error as? ClaudeError)?.isServiceTrouble == true { serviceTrouble.insert(id) }
-            let message = ReadableError.sentence(for: error, otherwise: String(localized: "The answer could not be saved."), now: now())
+            let message = ReadableError.sentence(
+                for: error, otherwise: String(localized: "The answer could not be saved."), retrying: conversation.kind == .task, now: now()
+            )
             AgentModule.log.error(
                 "Conversation failed: \(ReadableError.kind(of: error), privacy: .public): \(String(describing: error), privacy: .private)"
             )
             _ = try? await conversations.setState(id, .failed, error: message)
         }
+        // What the call in flight wrote and no stored turn holds (a stop, a failure, a cut-off
+        // answer) stays under the message it answered.
+        await recorder.publishUnsaved()
     }
 
     /// Whether the conversation's last run in this process ended on trouble with the service
@@ -412,6 +507,12 @@ actor TurnRecorder {
         self.purpose = purpose
         self.live = live
         self.storedTurns = storedTurns
+    }
+
+    /// The run ended: the text of the call in flight, if any, was never stored.
+    func publishUnsaved() {
+        guard !liveText.isEmpty else { return }
+        live.publish(conversationID, LiveReply(afterTurns: storedTurns, text: liveText, unsaved: true))
     }
 
     private func publishLive(force: Bool) {
