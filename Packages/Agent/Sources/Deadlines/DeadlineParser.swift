@@ -6,7 +6,7 @@ import StudyCore
 /// Deterministic, no network, well under 5 ms (the caller caches the courses).
 ///
 /// "DC sheet 1 due next Tuesday 12:00" on Fri 16 Oct 2026 → exercise "DC sheet 1", Cloud
-/// Computing, Tue 20 Oct 12:00. "Klausur CL am 12.02." → exam "Klausur CL", all-day 12 Feb 2027.
+/// Concepts, Tue 20 Oct 12:00. "Klausur CL am 12.02." → exam "Klausur CL", all-day 12 Feb 2027.
 /// Nil without a date.
 public enum DeadlineParser {
     public static func parse(

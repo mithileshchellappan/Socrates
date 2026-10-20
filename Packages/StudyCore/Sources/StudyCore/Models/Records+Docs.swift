@@ -66,7 +66,7 @@ public struct DocumentFact: Hashable, Sendable, Codable {
     }
 }
 
-/// A date the document states ("Exam registration in the exam portal, 14 Dec – 8 Jan"), kept only when its page
+/// A date the document states ("Exam registration online, 14 Dec – 8 Jan"), kept only when its page
 /// mentions that day (checked in code).
 public struct DocumentDate: Hashable, Sendable, Codable {
     public var day: CalendarDay

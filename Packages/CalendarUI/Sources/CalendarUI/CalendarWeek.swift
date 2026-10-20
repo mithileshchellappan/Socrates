@@ -132,7 +132,7 @@ enum CalendarText {
     }
 
     /// A room as it is stored, split into the short room and the full location when it holds one:
-    /// "B1-0101 (Room 104) Sample Street 1, …" → ("Room 104", "Sample Street 1, …");
+    /// "B1-0101 (Room 101) Sample Street 1, …" → ("Room 101", "Sample Street 1, …");
     /// "Room 5" → ("Room 5", nil). Several rooms (" / ") give one location per line.
     static func place(_ stored: String) -> (room: String, location: String?) {
         let parts = stored.components(separatedBy: " / ")
@@ -159,8 +159,8 @@ enum CalendarText {
         return short + item.title[range.upperBound...]
     }
 
-    /// "B1-0101 (Room 101) Sample Street 1, Lecture Building (L | 01)" → "Sample Street 1,
-    /// Lecture Building": the address without the room number, the room and the building code.
+    /// "B1-0101 (Room 101) Sample Street 1, Lecture Building (L | 01)" → "Sample Street 1, Lecture
+    /// Building": the address without the room number, the room and the building code.
     static func locationLine(_ location: String) -> String {
         var text = location
         if let match = text.firstMatch(of: /\(([^()]+)\)/) {

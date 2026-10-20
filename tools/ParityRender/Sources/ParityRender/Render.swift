@@ -120,7 +120,7 @@ struct RenderOptions {
                 let text = try value()
                 guard let day = CalendarDay(rawValue: String(text.prefix(10))) else { throw RenderFailure("--now takes 2026-10-16T15:02 or 2027-01-19T09:13:55") }
                 let parts = text.dropFirst(11).split(separator: ":").compactMap { Int($0) }
-                let zone = TimeZone(identifier: "Europe/Lisbon") ?? .current
+                let zone = UniversityProfile.current.zone
                 // HH:MM, or HH:MM:SS (mc: the practice exam's clock at 09:13:55).
                 now = day.date(minute: parts.count >= 2 ? parts[0] * 60 + parts[1] : 0, in: zone)
                     .addingTimeInterval(parts.count == 3 ? Double(parts[2]) : 0)
@@ -233,8 +233,8 @@ struct ParityRender {
         if options.sweep {
             shots = try await sweepShots(services: services, newestMail: newestMail, now: options.now)
         } else {
-            let cc = try ParityMode.course("Data Centers", services: services)
-            let (_, dcLecture2) = try ParityMode.lecture("Data Centers", 2, services: services)
+            let cc = try ParityMode.course("DC", services: services)
+            let (_, dcLecture2) = try ParityMode.lecture("DC", 2, services: services)
             // M6 (`--m6-sample`): mockup 04's open note, the DC L2 note (titled in its first block).
             let dcL2Note = try await services.database.read { db in
                 try Note
@@ -296,13 +296,13 @@ struct ParityRender {
             ]
             // CL L1 (36 slides, a 44:42 recording, aligned) where review left off: the sidebar
             // on a lecture's screen, and with `--review-layout` the student's collapsed panes.
-            if let (_, clLecture1) = try? ParityMode.lecture("Computational Linguistics", 1, services: services) {
+            if let (_, clLecture1) = try? ParityMode.lecture("CL", 1, services: services) {
                 shots.append(RenderShot(name: "03-review-cl", window: .main(ParityMode.Launch(selection: .lecture(clLecture1.id)))))
             }
             // mr (a copy of .data/parity/mr/library, seeded with `--mr-sample`): one 88-page deck, two
             // lectures' ranges. DC L3 shows slides 38–88 (no recording: opens on 38); DC L2 keeps 1–37
             // (mockup 03's moment, "16 / 88").
-            if let (_, dcLecture3) = try? ParityMode.lecture("Data Centers", 3, services: services) {
+            if let (_, dcLecture3) = try? ParityMode.lecture("DC", 3, services: services) {
                 shots.append(RenderShot(name: "mr-review-l3", window: .main(ParityMode.Launch(selection: .lecture(dcLecture3.id)))))
                 shots.append(RenderShot(name: "mr-review-l2", window: .main(ParityMode.Launch(
                     selection: .lecture(dcLecture2.id),
@@ -322,7 +322,7 @@ struct ParityRender {
 
         for shot in shots {
             if case .live = shot.window {
-                let capture = try await ParityMode.livePreview("Data Centers", 2, slide: 17, services: services)
+                let capture = try await ParityMode.livePreview("DC", 2, slide: 17, services: services)
                 model.showPreviewCapture(capture)
             }
             for scheme in options.schemes {
@@ -442,21 +442,21 @@ struct ParityRender {
     /// writes them (an item added on its own, its source the file with the description and date),
     /// and the study pass's counts for DC Lecture 2. Synthetic text; no model call.
     static func seedCalendar(services: StudyServices) async throws {
-        let berlin = TimeZone(identifier: "Europe/Lisbon") ?? .current
-        let cl = try ParityMode.course("Computational Linguistics", services: services)
-        let cc = try ParityMode.course("Data Centers", services: services)
+        let zone = UniversityProfile.current.zone
+        let cl = try ParityMode.course("CL", services: services)
+        let cc = try ParityMode.course("DC", services: services)
         let samples: [(TrackedItem, file: String, quote: String)] = [
             (TrackedItem(
                 courseID: cl.id, kind: .event, title: "Computational Linguistics exam review", details: "Room 204",
-                dueAt: CalendarDay(year: 2026, month: 10, day: 20).date(minute: 14 * 60, in: berlin),
-                room: "B2-0204 (Room 204) Sample Street 3, Seminar Building (S | 02)", inCalendar: true
+                dueAt: CalendarDay(year: 2026, month: 10, day: 20).date(minute: 14 * 60, in: zone),
+                room: "B2-0204 (Room 204) Sample Street 3, Seminar Building (S | 03)", inCalendar: true
             ), "timetable (7).ics", "Computational Linguistics - Klausureinsicht · 19.10.2026 11:00"),
             (TrackedItem(
                 courseID: cc.id, kind: .exam, title: "Data Centers exam", details: "Room 102 / Hall A",
-                dueAt: CalendarDay(year: 2026, month: 10, day: 23).date(minute: 9 * 60, in: berlin),
+                dueAt: CalendarDay(year: 2026, month: 10, day: 23).date(minute: 9 * 60, in: zone),
                 room: "B1-0102 (Room 102) Sample Street 1, Lecture Building (L | 01) / B0-0001 (Hall A) Example Road 2, Main Hall (M | 02)",
                 inCalendar: true
-            ), "timetable13.ics", "Klausurtermin 1 · 23.10.2026 09:00")
+            ), "timetable 13.ics", "Klausurtermin 1 · 23.10.2026 09:00")
         ]
         for (item, file, quote) in samples {
             let saved = try await services.records.save(item)
@@ -464,7 +464,7 @@ struct ParityRender {
                 trackedItemID: saved.id, kind: .timetable, rfcMessageID: file, quote: quote, calendarAdded: true
             ))
         }
-        let (_, lecture) = try ParityMode.lecture("Data Centers", 2, services: services)
+        let (_, lecture) = try ParityMode.lecture("DC", 2, services: services)
         let highlights = (1...5).map { index in
             Annotation(lectureID: lecture.id, layer: .professor, kind: .highlight, body: "Sample highlight \(index)")
         }

@@ -54,7 +54,7 @@ public struct DeckImporter: Sendable {
     }
 
     /// A title from a slide file's name when the PDF has none: "02_Virtualization_Basics_
-    /// Virtualization-IaaS_v1.pdf" → "Virtualization Basics IaaS" (no
+    /// IaaS_v1.pdf" → "Virtualization Basics IaaS" (no
     /// underscores, no leading number, no version suffix).
     public static func title(fromFileName fileName: String) -> String {
         let stem = (fileName as NSString).deletingPathExtension

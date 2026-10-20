@@ -82,7 +82,7 @@ struct LiveFilingSheet: View {
     }
 }
 
-/// "Lecture 3 · Mon 19 Oct 12:15 · Room 115", a checkmark on the current one.
+/// "Lecture 3 · Mon 19 Oct 12:15 · Room 101", a checkmark on the current one.
 private struct LiveSessionRow: View {
     let session: LectureSession
     let isCurrent: Bool

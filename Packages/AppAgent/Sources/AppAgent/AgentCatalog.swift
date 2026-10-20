@@ -12,7 +12,7 @@ import StudyPass
 /// as `<catalog revision="…">` in the user turn only when it changed (the system prompt never
 /// changes, so the CLI session caches). Courses (token, name, lecturers, facts; a course the agent
 /// just made shows here from its next turn), each course's weekly slots with their keys
-/// ("lecture Mon 12:15–13:45 · Room 115 [slot 1a2b3c4d]"), each course's
+/// ("lecture Mon 12:15–13:45 · Room 101 [slot 1a2b3c4d]"), each course's
 /// lectures ("L2 · Virtualization Basics · Tue 13 Oct · transcribed · study pass done (3 exam
 /// hints, 5 said in class)"), notes per course (count + 3 newest titles), the next sessions (this
 /// and next week), mail folders with unread counts, open items (next 6 weeks, nearest 12, then

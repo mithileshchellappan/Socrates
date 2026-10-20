@@ -25,7 +25,7 @@ struct MailListItem: Hashable, Sendable, Identifiable {
 enum MailListExtra: Hashable, Sendable {
     /// A room change or cancellation waiting for Confirm ("Move to Room 5?").
     case proposal(itemID: TrackedItem.ID, kind: TrackedItemKind, room: String?, title: String)
-    /// An LMS "New file" mail whose file smart import filed: the lecture, as a menu.
+    /// A learning platform's "New file" mail whose file smart import filed: the lecture, as a menu.
     case filed(filingID: Filing.ID, lectureID: Lecture.ID, number: Int?, title: String, date: Date?)
     /// A draft whose sending failed, with the reason.
     case failed(String)
@@ -198,7 +198,7 @@ struct MailListRequest: FetchKeyRequest {
         return result
     }
 
-    /// The file name of an LMS "New file" notification ("[Data Centers] New file: 02_….pdf").
+    /// The file name of a learning platform's "New file" notification ("[Data Centers] New file: 02_….pdf").
     static func newFileName(in subject: String) -> String? {
         for marker in ["new file:", "neue datei:", "datei hinzugefügt:", "file added:"] {
             if let range = subject.range(of: marker, options: [.caseInsensitive, .diacriticInsensitive]) {

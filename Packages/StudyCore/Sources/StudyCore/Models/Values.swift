@@ -174,7 +174,7 @@ public struct SourceRef: Hashable, Sendable, Codable {
         public static let web: Self = "web"
         public static let chat: Self = "chat"
         public static let note: Self = "note"
-        /// A timetable file the student dropped (a campus system `.ics`): exam dates.
+        /// A timetable file the student dropped (a campus management system's `.ics`): exam dates.
         public static let timetable: Self = "timetable"
     }
 

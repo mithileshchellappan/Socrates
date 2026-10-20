@@ -44,9 +44,9 @@ sync.stop()
 1. Open the library with `StudyServices.live(syncContainer: CloudSyncConfiguration.containerIdentifier())`
    (nil today: unchanged) and start `CloudSync(services:)` at launch on both platforms when it is
    non-nil; pass `cloudSync?.isRunning ?? false` to the phone's agent relay.
-2. A phone configured for sync does not seed the three courses (the Mac's come down).
+2. A phone configured for sync opens its own synced library file (the Mac's courses come down).
 3. Turning sync on (later, the user's): an "Apple Development" identity, the iCloud capability
-   with a container (e.g. `iCloud.com.example.studyportal`) on the app (Mac and iOS),
+   with a container (e.g. `iCloud.com.yourname.studyportal`) on the app (Mac and iOS),
    `StudyPortalCloudKitContainer` in the Info.plist of that build, automatic signing with
    `-allowProvisioningUpdates`. Then check SQLiteData's schema validation once on a copy of the
    library (it rejects tables that break its CloudKit rules, see docs/schema.md).

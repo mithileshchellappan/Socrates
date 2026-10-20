@@ -280,7 +280,7 @@ public enum StudyStart: Hashable, Sendable {
     case lecture(Lecture.ID, page: Int?, time: Double?)
     /// An item (its source mail, else its course).
     case item(TrackedItem.ID)
-    /// Outside the app (an LMS quiz, a reading's URL).
+    /// Outside the app (an online quiz, a reading's URL).
     case url(URL)
     /// The practice exam sheet of a course.
     case examSheet(Course.ID)
