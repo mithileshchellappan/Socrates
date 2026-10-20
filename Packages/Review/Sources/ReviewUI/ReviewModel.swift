@@ -19,6 +19,9 @@ final class ReviewModel {
     /// backup recorder); the screen shows one at a time.
     let recordings: [Recording]
     let deckID: Deck.ID?
+    /// mr: the lecture's pages of the deck (`LectureSlides.current`); nil without a link (a
+    /// capture's stamped deck, shown whole).
+    let range: LectureSlideRange?
     /// Nil without a deck (or when its PDF cannot be read): no rail, no slide.
     let deck: SlideDeck?
     let session: ReviewSession
@@ -59,14 +62,16 @@ final class ReviewModel {
     @ObservationIgnored private var flagWrite: Task<Void, Never>?
 
     init(
-        lecture: Lecture, course: Course?, recording: Recording?, recordings: [Recording] = [], deckID: Deck.ID?, deck: SlideDeck?,
-        session: ReviewSession, services: StudyServices, realign: @escaping AnchorEditor.Realign
+        lecture: Lecture, course: Course?, recording: Recording?, recordings: [Recording] = [], deckID: Deck.ID?,
+        range: LectureSlideRange? = nil, deck: SlideDeck?, session: ReviewSession, services: StudyServices,
+        realign: @escaping AnchorEditor.Realign
     ) {
         self.lecture = lecture
         self.course = course
         self.recording = recording
         self.recordings = recordings.isEmpty ? recording.map { [$0] } ?? [] : recordings
         self.deckID = deckID
+        self.range = range
         self.deck = deck
         self.session = session
         self.services = services
@@ -104,9 +109,9 @@ final class ReviewModel {
             let recordings = RecordingRepository(store: store)
             let all = try await recordings.recordings(lectureID: lectureID)
             let recording = target.recordingID.flatMap { id in all.first { $0.id == id } } ?? all.first
-            let deckID = try await deckID(lectureID: lectureID, database: services.database)
+            let found = try await slides(lectureID: lectureID, database: services.database)
             var deckRow: Deck?
-            if let deckID { deckRow = try await store.fetch(Deck.self, id: deckID) }
+            if let deckID = found.deckID { deckRow = try await store.fetch(Deck.self, id: deckID) }
             let deck = await openDeck(deckRow, services: services)
 
             var player: LecturePlayer?
@@ -131,10 +136,11 @@ final class ReviewModel {
                 inkPages = try await SlideInkRepository(store: store).pages(deckID: deckRow.id)
             }
             guard !Task.isCancelled else { return nil }
-            let session = ReviewSession(player: player, pageCount: deck?.pageCount ?? 0, timeline: timeline)
+            let range = found.range
+            let session = ReviewSession(player: player, pageCount: deck?.pageCount ?? 0, pages: range?.pages, timeline: timeline)
             let model = ReviewModel(
-                lecture: lecture, course: course, recording: recording, recordings: all, deckID: deckRow?.id, deck: deck,
-                session: session, services: services, realign: realign
+                lecture: lecture, course: course, recording: recording, recordings: all, deckID: deckRow?.id, range: range,
+                deck: deck, session: session, services: services, realign: realign
             )
             model.inkPages = inkPages
             let resume = recording?.id == all.first?.id ? lecture.reviewPosition : nil
@@ -146,16 +152,32 @@ final class ReviewModel {
         }
     }
 
-    /// The lecture's deck: the newest coarse span's (the lecture ↔ deck link alignment reads), else
-    /// any span's.
-    static func deckID(lectureID: Lecture.ID, database: any DatabaseReader) async throws -> Deck.ID? {
+    /// The lecture's slides (mr): its current range of a deck (`LectureSlides.current`, what
+    /// alignment reads), else the deck of a timed span (a capture's stamped deck without a link),
+    /// whole.
+    static func slides(lectureID: Lecture.ID, database: any DatabaseReader) async throws -> (deckID: Deck.ID?, range: LectureSlideRange?) {
         try await database.read { db in
-            let spans = try LectureDeckSpan
-                .where { $0.lectureID.eq(lectureID) }
+            if let range = try LectureSlides.current(lectureID: lectureID, in: db) {
+                return (range.deckID, range)
+            }
+            let timed = try LectureDeckSpan
+                .where { $0.lectureID.eq(lectureID) && $0.startTime.isNot(nil) && $0.firstPage.isNot(nil) }
                 .order(by: \.updatedAt)
                 .fetchAll(db)
-            return spans.last(where: { !$0.isTimed })?.deckID ?? spans.last?.deckID
+            return (timed.last?.deckID, nil)
         }
+    }
+
+    /// The page is one of the lecture's slides (its range; every page without one).
+    func shows(page: Int) -> Bool {
+        session.pages.contains(page)
+    }
+
+    /// "slides 38–88 of 88" when the lecture shows part of the deck (DESIGN 9 "Range"); nil for
+    /// the whole deck.
+    var rangeText: String? {
+        guard let range, !range.isWholeDeck else { return nil }
+        return "\(range.pagesText) of \(range.pageCount)"
     }
 
     /// Opens the deck's PDF off the main actor; nil when there is none or it cannot be read.

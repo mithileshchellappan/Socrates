@@ -104,7 +104,11 @@ public struct LectureReviewView: View {
     }
 
     private var loadKey: LoadKey {
-        LoadKey(lectureID: lectureID, recordingID: recordingID, recordingCount: recordings.count, deckID: deckLinks.last?.deckID)
+        let link = deckLinks.last
+        return LoadKey(
+            lectureID: lectureID, recordingID: recordingID, recordingCount: recordings.count, deckID: link?.deckID,
+            firstPage: link?.firstPage, lastPage: link?.lastPage
+        )
     }
 
     /// Where a load opens: the target the first time; after that (a deck or recording filed into
@@ -122,12 +126,15 @@ public struct LectureReviewView: View {
         return ReviewTarget(recordingID: recordingID)
     }
 
-    /// A new recording or deck (filing, Change), or another recording picked, reloads the screen.
+    /// A new recording or deck (filing, Change), another range of it (mr: the agent's
+    /// link_deck_pages, continuation detection), or another recording picked, reloads the screen.
     private struct LoadKey: Hashable {
         var lectureID: Lecture.ID
         var recordingID: Recording.ID?
         var recordingCount: Int
         var deckID: Deck.ID?
+        var firstPage: Int?
+        var lastPage: Int?
     }
 }
 
@@ -222,11 +229,21 @@ struct ReviewScreen: View {
         model.lecture.title.isEmpty ? String(localized: "Lecture") : model.lecture.title
     }
 
+    /// "Data Centers · Tue 13 Oct", then (mr) " · slides 38–88 of 88" when the lecture shows
+    /// part of its deck.
     private var subtitle: Text {
         let course = model.course?.name ?? ""
-        guard let held = model.lecture.heldAt else { return Text(course) }
-        let date = Text(held, format: DayText.style())
-        return course.isEmpty ? date : Text("\(course) · \(date)")
+        var meta: Text
+        if let held = model.lecture.heldAt {
+            let date = Text(held, format: DayText.style())
+            meta = course.isEmpty ? date : Text("\(course) · \(date)")
+        } else {
+            meta = Text(course)
+        }
+        guard let range = model.rangeText else { return meta }
+        let separator: String = course.isEmpty && model.lecture.heldAt == nil ? "" : " · "
+        meta = Text("\(meta)\(separator)\(range)")
+        return meta
     }
 
     /// The player's distance from the bottom edge.

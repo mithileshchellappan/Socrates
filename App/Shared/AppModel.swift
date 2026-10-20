@@ -255,14 +255,21 @@ final class AppModel {
             let coach: CoachEngine? = CoachEngine(services: services)
             #endif
             self.coach = coach
+            // mr: a deck link, unlink or their Undo queues alignment; the processor runs it.
+            let wakeProcessing: @Sendable () async -> Void = { [weak processor] in await processor?.wake() }
             // ma: the `app` conversation (every domain's tools) and the sub-agents' `task`
             // conversations (their tool groups fixed at spawn). md: the document bank's tools.
             #if os(macOS)
             let documentBank = DocumentBank(services: services)
             self.documentBank = documentBank
-            let specs = AppAgent.specs(services: services, search: engine, drafter: drafter, memory: memory, coach: coach, documents: documentBank)
+            let specs = AppAgent.specs(
+                services: services, search: engine, drafter: drafter, memory: memory, coach: coach, documents: documentBank,
+                wakeProcessing: wakeProcessing
+            )
             #else
-            let specs = AppAgent.specs(services: services, search: engine, drafter: drafter, memory: memory, coach: coach)
+            let specs = AppAgent.specs(
+                services: services, search: engine, drafter: drafter, memory: memory, coach: coach, wakeProcessing: wakeProcessing
+            )
             #endif
             let agent = AgentRuntime(
                 services: services, client: claude, memory: memory,
@@ -281,7 +288,7 @@ final class AppModel {
             let appAgent = startsProcessing ? AppAgent(
                 services: services, client: claude, runtime: agent, memory: memory,
                 schedule: CourseSchedule(services: services), studyPass: studyPass, coach: coach, specs: specs,
-                filing: service, advisor: advisor, documents: documentBank
+                filing: service, advisor: advisor, documents: documentBank, wakeProcessing: wakeProcessing
             ) : nil
             self.appAgent = appAgent
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
@@ -444,6 +451,14 @@ final class AppModel {
                 try await processor.recover()
             } catch {
                 Log.jobs.error("Job recovery failed: \(error.localizedDescription, privacy: .public)")
+            }
+            // mr: recordings whose lecture has no slides get one continuation check each (the
+            // on-device aligner against the course's recent decks, a deck_link change with Undo).
+            do {
+                let queued = try await processor.queueContinuationChecks()
+                Log.jobs.notice("Continuation checks queued: \(queued)")
+            } catch {
+                Log.jobs.error("Queueing continuation checks failed: \(error.localizedDescription, privacy: .public)")
             }
         }
         if let filing, let filingCenter {

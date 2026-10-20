@@ -55,11 +55,14 @@ extension FilingService {
         try Lecture.find(lectureID).update { $0.heldAt = prior; $0.updatedAt = stamp }.execute(db)
     }
 
-    /// Puts a deck the filing moved back into its earlier course, unless it was moved since.
+    /// Puts a deck the filing moved back into its earlier course, unless it was moved since or
+    /// (mr) other lectures of its course use it now (they keep it where it is).
     static func restorePriorDeckCourse(_ filing: Filing, deckID: Deck.ID, in db: Database, stamp: Date) throws {
         guard let prior = filing.priorDeckCourseID,
               let deck = try Deck.find(deckID).fetchOne(db), deck.courseID == filing.courseID
         else { return }
+        let users = try LectureSlides.lectures(usingDeck: deckID, in: db).filter { $0.lectureID != filing.lectureID }
+        guard users.isEmpty else { return }
         try Deck.find(deckID).update { $0.courseID = prior; $0.updatedAt = stamp }.execute(db)
     }
 }

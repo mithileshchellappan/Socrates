@@ -175,16 +175,29 @@ struct LectureMaterial: Sendable {
         guard !mainSegments.isEmpty else { return nil }
 
         let spans = try LectureDeckSpan.where { $0.lectureID.eq(lectureID) }.fetchAll(db)
+        // mr: the lecture's slides are its range of a deck (`LectureSlides.current`): the pass
+        // reads only those pages, so its input hash changes with the range. Without a range (a
+        // capture's stamped deck), the deck most of the recording's slide spans are on, whole.
+        let range = try LectureSlides.current(lectureID: lectureID, in: db)
         var timedPerDeck: [Deck.ID: Int] = [:]
         for span in spans where span.isTimed && span.firstPage != nil && (span.recordingID == nil || span.recordingID == recordingID) {
             timedPerDeck[span.deckID, default: 0] += 1
         }
-        let deckID = timedPerDeck.max(by: { $0.value == $1.value ? $0.key.uuidString > $1.key.uuidString : $0.value < $1.value })?.key
-            ?? spans.first(where: { !$0.isTimed })?.deckID
+        let mostTimed: Deck.ID? = timedPerDeck.max(by: { $0.value == $1.value ? $0.key.uuidString > $1.key.uuidString : $0.value < $1.value })?.key
+        let deckID: Deck.ID? = range?.deckID ?? mostTimed
         let deck = try deckID.flatMap { try Deck.find($0).fetchOne(db) }
-        let deckPages = try deck.map { deck in try DeckPage.where { $0.deckID.eq(deck.id) }.order(by: \.pageNumber).fetchAll(db) } ?? []
-        let timed = spans.filter {
-            $0.isTimed && $0.deckID == deck?.id && ($0.recordingID == nil || $0.recordingID == recordingID)
+        var deckPages: [DeckPage] = []
+        if let range {
+            deckPages = try LectureSlides.pages(of: range, in: db)
+        } else if let deck {
+            let id = deck.id
+            deckPages = try DeckPage.where { $0.deckID.eq(id) }.order(by: \.pageNumber).fetchAll(db)
+        }
+        let inRange: ClosedRange<Int>? = range?.pages
+        let timed = spans.filter { span in
+            guard span.isTimed, span.deckID == deck?.id, span.recordingID == nil || span.recordingID == recordingID else { return false }
+            guard let inRange, let page = span.firstPage else { return true }
+            return inRange.contains(page)
         }
         let outline = LectureOutline(segments: mainSegments, spans: timed, pages: deckPages)
 
@@ -221,10 +234,8 @@ struct LectureMaterial: Sendable {
         }
 
         var covered = Set(sections.compactMap(\.page))
-        for span in spans where !span.isTimed && span.deckID == deck?.id {
-            if let first = span.firstPage, let last = span.lastPage, first <= last, last - first < 1_000 {
-                covered.formUnion(first...last)
-            }
+        if let range {
+            covered.formUnion(range.pages)
         }
         let pages = Dictionary(deckPages.map { ($0.pageNumber, $0) }, uniquingKeysWith: { first, _ in first })
         covered = covered.filter { pages[$0] != nil || deckPages.isEmpty }

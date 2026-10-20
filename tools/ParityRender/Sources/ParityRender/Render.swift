@@ -59,6 +59,10 @@ import SwiftUI
 // (the right sidebar: the whole Weekend plan with the 7 change rows) and `ma-today-files`
 // (compact on Today, the QEMU conversation with its file tiles).
 //
+// mr (a copy of .data/parity/mr/library, `tools/parity/seed --mr-sample`: DC Lecture 3 uses slides
+// 38–88 of DC Lecture 2's 88-page deck, DC Lecture 2 keeps 1–37): `mr-review-l3` (DC L3's Review,
+// no recording) and `mr-review-l2` (DC L2's Review on slide 16 at 37:27, as `03-review`).
+//
 // `--calendar-sample` (a library with mockup 06's rows, e.g. .data/parity/m3/library): adds an
 // exam review from a timetable file (Mon 19 Oct, 11:00), a Data Centers exam (Fri 23 Oct,
 // 09:00, two rooms) and study-pass rows for DC Lecture 2 to the clone, and the shots
@@ -294,6 +298,16 @@ struct ParityRender {
             // on a lecture's screen, and with `--review-layout` the student's collapsed panes.
             if let (_, clLecture1) = try? ParityMode.lecture("Computational Linguistics", 1, services: services) {
                 shots.append(RenderShot(name: "03-review-cl", window: .main(ParityMode.Launch(selection: .lecture(clLecture1.id)))))
+            }
+            // mr (a copy of .data/parity/mr/library, seeded with `--mr-sample`): one 88-page deck, two
+            // lectures' ranges. DC L3 shows slides 38–88 (no recording: opens on 38); DC L2 keeps 1–37
+            // (mockup 03's moment, "16 / 88").
+            if let (_, dcLecture3) = try? ParityMode.lecture("Data Centers", 3, services: services) {
+                shots.append(RenderShot(name: "mr-review-l3", window: .main(ParityMode.Launch(selection: .lecture(dcLecture3.id)))))
+                shots.append(RenderShot(name: "mr-review-l2", window: .main(ParityMode.Launch(
+                    selection: .lecture(dcLecture2.id),
+                    reviewTarget: (dcLecture2.id, ReviewTarget(page: 16, time: 2247, request: UUID()))
+                ))))
             }
             shots += try await mdShots(services: services)
             if options.mc { shots = try mcShots(cc: cc, services: services) }

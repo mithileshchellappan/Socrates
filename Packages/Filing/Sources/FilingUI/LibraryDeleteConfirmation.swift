@@ -37,7 +37,7 @@ struct LibraryDeleteConfirmationModifier: ViewModifier {
                 Button("Delete", role: .destructive) { confirm(pending) }
                 Button("Cancel", role: .cancel) {}
             } message: { pending in
-                if let message = LibraryDeleteText.message(pending.item, pending.summary) {
+                if let message = LibraryDeleteText.message(pending.item, pending.summary, lectures: pending.lectures) {
                     Text(verbatim: message)
                 }
             }
@@ -70,8 +70,10 @@ enum LibraryDeleteText {
         return String(localized: "Delete “\(summary.title)”?")
     }
 
-    /// What goes with it besides the item itself; nil when nothing of the student's does.
-    static func message(_ item: StudyCore.LibraryItem, _ summary: DeletionSummary) -> String? {
+    /// What goes with it besides the item itself; nil when nothing of the student's does. mr: a
+    /// deck several lectures use names them first ("DC Lecture 2 and DC Lecture 3 lose these
+    /// slides.").
+    static func message(_ item: StudyCore.LibraryItem, _ summary: DeletionSummary, lectures: [String] = []) -> String? {
         var parts: [(text: String, isSingular: Bool)] = []
         switch item {
         case .deck:
@@ -83,7 +85,12 @@ enum LibraryDeleteText {
             if summary.practisedQuestions > 0 {
                 parts.append((counted(summary.practisedQuestions, "practised question"), summary.practisedQuestions == 1))
             }
-            return sentence(parts)
+            let work = sentence(parts)
+            guard lectures.count > 1 else { return work }
+            let names = lectures.formatted(.list(type: .and))
+            let losing = String(localized: "\(names) lose these slides.")
+            guard let work else { return losing }
+            return losing + " " + work
         case .lecture:
             if summary.slides > 0 { parts.append((counted(summary.slides, "slide"), summary.slides == 1)) }
             if summary.recordings > 0 {

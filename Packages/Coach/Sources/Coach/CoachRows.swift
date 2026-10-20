@@ -34,7 +34,8 @@ public struct CoachRows: Sendable {
     /// Active `plan` memories.
     public var planMemories: [AgentMemory]
     public var rules: PlanRules
-    /// Timed spans of lectures with a review position (where review left off → its slide).
+    /// Timed spans of lectures with a review position (where review left off → its slide); mr:
+    /// only those on the lecture's slides (its `LectureSlides` range).
     public var spans: [LectureDeckSpan]
 
     public var timeZone: TimeZone { CoachModule.timeZone }
@@ -76,10 +77,34 @@ public struct CoachRows: Sendable {
             sessionsByID: Dictionary(studySessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
             planMemories: memories,
             rules: PlanRules(memories: memories),
-            spans: reviewing.isEmpty ? [] : try LectureDeckSpan
-                .where { $0.lectureID.in(reviewing) && $0.startTime.isNot(nil) && $0.firstPage.isNot(nil) }
-                .fetchAll(db)
+            spans: reviewing.isEmpty ? [] : try onSlides(
+                LectureDeckSpan
+                    .where { $0.lectureID.in(reviewing) && $0.startTime.isNot(nil) && $0.firstPage.isNot(nil) }
+                    .fetchAll(db),
+                in: db
+            )
         )
+    }
+
+    /// mr: the timed spans on their lecture's slides: its current range of a deck
+    /// (`LectureSlides.current`); a lecture without a range keeps all of them (a capture's
+    /// stamped deck).
+    static func onSlides(_ spans: [LectureDeckSpan], in db: Database) throws -> [LectureDeckSpan] {
+        var ranges: [Lecture.ID: LectureSlideRange?] = [:]
+        var kept: [LectureDeckSpan] = []
+        for span in spans {
+            let lectureID = span.lectureID
+            if ranges[lectureID] == nil {
+                ranges[lectureID] = .some(try LectureSlides.current(lectureID: lectureID, in: db))
+            }
+            guard let range = ranges[lectureID] ?? nil else {
+                kept.append(span)
+                continue
+            }
+            guard span.deckID == range.deckID, let page = span.firstPage, range.contains(page) else { continue }
+            kept.append(span)
+        }
+        return kept
     }
 
     /// The semester the coach plans in: the latest whose lectures began (its break and exam

@@ -66,6 +66,8 @@ public struct AttachedDeck: Sendable, Hashable {
     /// `previousDeckCourseID` is that course (what Undo puts back).
     public var movedDeck: Bool = false
     public var previousDeckCourseID: Course.ID?
+    /// mr (`linkDeck`): false when the lecture had exactly this link already (nothing written).
+    public var linkedNow: Bool = true
 }
 
 /// Brings a lecture into the library and queues its processing.
@@ -381,6 +383,43 @@ public struct LectureImporter: Sendable {
             let attached = AttachedDeck(
                 lecture: lecture, deck: stampedDeck, span: span, createdLecture: created, alignJobs: jobs,
                 movedDeck: previousCourse != deckCourse, previousDeckCourseID: previousCourse
+            )
+            try companion?(db, attached)
+            return attached
+        }
+    }
+
+    /// mr: a deck already in the library (its course's) linked to one more lecture, the whole
+    /// deck, `manual` (`LectureSlides.link`): the lectures that use it keep it, nothing is copied.
+    /// The lecture `target` names is created when needed (a session without one). One
+    /// transaction with `then`; `align` is queued for the lecture's transcribed recordings.
+    /// Throws `DeckLinkError.otherCourse` for a lecture of another course.
+    @concurrent
+    public func linkDeck(
+        _ deck: Deck,
+        to target: LectureTarget,
+        then companion: (@Sendable (Database, AttachedDeck) throws -> Void)? = nil
+    ) async throws -> AttachedDeck {
+        let targetCourse = try await targetCourseID(target)
+        guard let course = try await fetchCourse(targetCourse ?? deck.courseID) else { throw LectureImportError.courseMissing }
+        let plan = try await lecturePlan(for: target, course: course, newID: nil, title: deck.title, heldAt: nil)
+        let store = store
+        let now = now()
+        let deckID = deck.id
+        return try await services.database.write { db in
+            let committed = try Self.commit(plan, target: target, in: db, store: store)
+            let lecture = committed.lecture
+            let stored: Deck? = try Deck.find(deckID).fetchOne(db)
+            let pageCount: Int = max(stored?.pageCount ?? deck.pageCount, 1)
+            let result = try LectureSlides.link(
+                lectureID: lecture.id, deckID: deckID, firstPage: 1, lastPage: pageCount, source: .manual, in: db, store: store, now: now
+            )
+            guard let range = result.after, let span = try LectureDeckSpan.find(range.spanID).fetchOne(db),
+                  let current = try Deck.find(deckID).fetchOne(db)
+            else { throw LectureImportError.lectureMissing }
+            let attached = AttachedDeck(
+                lecture: lecture, deck: current, span: span, createdLecture: committed.created, alignJobs: result.alignJobs,
+                linkedNow: result.changed
             )
             try companion?(db, attached)
             return attached
