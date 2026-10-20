@@ -48,15 +48,15 @@ public struct MailAccount: StudyRecord {
         displayName: String = "",
         emailAddress: String = "",
         username: String,
-        imapHost: String = MailAccount.exampleIMAPHost,
+        imapHost: String = "",
         imapPort: Int = 993,
         imapSecurity: MailSecurity = .tls,
-        smtpHost: String = MailAccount.exampleSMTPHost,
+        smtpHost: String = "",
         smtpPort: Int = 587,
         smtpSecurity: MailSecurity = .startTLS,
-        smtpFallbackHost: String? = MailAccount.exampleSMTPFallbackHost,
-        smtpFallbackPort: Int? = 465,
-        smtpFallbackSecurity: MailSecurity? = .tls,
+        smtpFallbackHost: String? = nil,
+        smtpFallbackPort: Int? = nil,
+        smtpFallbackSecurity: MailSecurity? = nil,
         keychainItem: String? = nil,
         syncSince: CalendarDay? = nil,
         isEnabled: Bool = true,
@@ -86,13 +86,6 @@ public struct MailAccount: StudyRecord {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
-
-    /// Exampleton student mail (Dovecot, AUTH=PLAIN, IDLE).
-    public static let exampleIMAPHost = "imap.students.example.org"
-    /// Exampleton student submission server (587, STARTTLS).
-    public static let exampleSMTPHost = "smtp.students.example.org"
-    /// The university's general SMTP (465, TLS), when the students' server cannot be reached.
-    public static let exampleSMTPFallbackHost = "smtp.example.org"
 
     /// The Keychain item holding the password.
     public var passwordKey: SecretKey { SecretKey(rawValue: keychainItem) }

@@ -39,13 +39,13 @@ public struct MailCredentials: Sendable, CustomStringConvertible, CustomDebugStr
 }
 
 extension MailAccount {
-    /// The IMAP server (Exampleton: imap.students.example.org:993, TLS).
+    /// The IMAP server (usually port 993, TLS).
     public var imapEndpoint: MailEndpoint { MailEndpoint(host: imapHost, port: imapPort, security: imapSecurity) }
 
-    /// The submission server (Exampleton: smtp.students.example.org:587, STARTTLS).
+    /// The submission server (usually port 587, STARTTLS).
     public var smtpEndpoint: MailEndpoint { MailEndpoint(host: smtpHost, port: smtpPort, security: smtpSecurity) }
 
-    /// Tried only when `smtpEndpoint` cannot be reached (Exampleton: smtp.example.org:465, TLS).
+    /// Tried only when `smtpEndpoint` cannot be reached (e.g. a general server on 465, TLS).
     public var smtpFallbackEndpoint: MailEndpoint? {
         guard let host = smtpFallbackHost, !host.isEmpty, let port = smtpFallbackPort else { return nil }
         return MailEndpoint(host: host, port: port, security: smtpFallbackSecurity ?? .tls)

@@ -3,8 +3,9 @@ import StudyUI
 import SwiftUI
 
 /// Mail account settings (Settings ▸ Accounts, next to the Claude key): name, email address, uni
-/// account name, password, and the servers (the university's, disclosed on demand). Section content: put
-/// it in the settings' grouped `Form`.
+/// account name, password, and the servers (the university's, as the student enters them; open
+/// while a host is missing, else disclosed on demand). Section content: put it in the settings'
+/// grouped `Form`.
 ///
 /// Save logs in first (`MailActions.verifyAccount`, which sends nothing), then puts the password
 /// in the Keychain (`services.secrets`, item `account.passwordKey`) and saves the row, which never
@@ -117,6 +118,7 @@ public struct MailAccountSettingsView: View {
         let previous = filledFrom.map(MailAccountForm.init) ?? MailAccountForm()
         if form == previous { form = account.map(MailAccountForm.init) ?? MailAccountForm() }
         filledFrom = account
+        if form.imapHost.isEmpty || form.smtpHost.isEmpty { showsServers = true }
         if let account, let services {
             hasStoredPassword = services.secrets.hasSecret(for: account.passwordKey)
         } else {
@@ -182,18 +184,19 @@ private struct ServerRow: View {
     }
 }
 
-/// The settings form's fields; defaults are the university's student servers.
+/// The settings form's fields; a new account starts without hosts (the student enters their
+/// university's), with the standard ports (IMAP 993 TLS, submission 587 STARTTLS) and no fallback.
 struct MailAccountForm: Equatable, Sendable {
     var displayName = ""
     var emailAddress = ""
     var username = ""
-    var imapHost = MailAccount.exampleIMAPHost
+    var imapHost = ""
     var imapPort = 993
     var imapSecurity: MailSecurity = .tls
-    var smtpHost = MailAccount.exampleSMTPHost
+    var smtpHost = ""
     var smtpPort = 587
     var smtpSecurity: MailSecurity = .startTLS
-    var smtpFallbackHost = MailAccount.exampleSMTPFallbackHost
+    var smtpFallbackHost = ""
     var smtpFallbackPort = 465
     var smtpFallbackSecurity: MailSecurity = .tls
 
