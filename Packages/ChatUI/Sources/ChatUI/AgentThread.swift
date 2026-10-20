@@ -508,7 +508,8 @@ struct AgentThreadView: View {
     }
 
     private func threadContent(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
-        VStack(alignment: .leading, spacing: metrics.spacing) {
+        let clear: CGFloat = topClear
+        return VStack(alignment: .leading, spacing: metrics.spacing) {
             ForEach(items) { item in
                 switch item {
                 case .exchange(let exchange, let showsLine, let isLast):
@@ -516,7 +517,7 @@ struct AgentThreadView: View {
                         .overlay(alignment: .top) {
                             Color.clear
                                 .frame(height: 1)
-                                .alignmentGuide(.top) { _ in topClear }
+                                .alignmentGuide(.top) { _ in clear }
                                 .id(Self.questionID(item.id))
                         }
                 case .task(let task):
