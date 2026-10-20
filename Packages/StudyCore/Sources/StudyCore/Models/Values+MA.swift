@@ -274,6 +274,9 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     public var firstPage: Int?
     public var lastPage: Int?
     public var spanSource: SpanSource?
+    /// The coarse span's `updated_at` (which of the lecture's decks is current): Undo puts it
+    /// back, so a restored link of a deck that was not current does not become the current one.
+    public var spanUpdatedAt: Date?
 
     public init(
         exists: Bool? = nil,
@@ -307,7 +310,8 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         deckID: Deck.ID? = nil,
         firstPage: Int? = nil,
         lastPage: Int? = nil,
-        spanSource: SpanSource? = nil
+        spanSource: SpanSource? = nil,
+        spanUpdatedAt: Date? = nil
     ) {
         self.exists = exists
         self.startsAt = startsAt
@@ -341,6 +345,7 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         self.firstPage = firstPage
         self.lastPage = lastPage
         self.spanSource = spanSource
+        self.spanUpdatedAt = spanUpdatedAt
     }
 
     /// The values of a session's changeable columns.

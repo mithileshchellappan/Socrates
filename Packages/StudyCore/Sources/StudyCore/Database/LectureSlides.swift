@@ -158,7 +158,7 @@ public enum LectureSlides {
 
     /// Removes `lectureID`'s link to `deckID`: its coarse span and the timed spans of its
     /// recordings on that deck. The deck stays (other lectures' ranges too). Alignment is queued
-    /// again only when the lecture still has slides.
+    /// again only when the lecture's current slides changed and it still has slides.
     public static func unlink(lectureID: Lecture.ID, deckID: Deck.ID, in db: Database, store: RecordStore, now: Date) throws -> DeckLinkResult {
         guard let lecture = try Lecture.find(lectureID).fetchOne(db) else { throw DeckLinkError.missingLecture }
         guard let deck = try Deck.find(deckID).fetchOne(db) else { throw DeckLinkError.missingDeck }
@@ -167,8 +167,9 @@ public enum LectureSlides {
             .order(by: \.updatedAt)
             .fetchAll(db)
         guard let before = existing.last.flatMap({ LectureSlideRange(span: $0, deck: deck) }) else { throw DeckLinkError.notLinked }
+        let previous = try current(lectureID: lectureID, in: db)
         try removeLink(lectureID: lectureID, deckID: deckID, in: db)
-        let jobs = try queueAlignmentIfSlides(lectureID: lectureID, in: db, store: store, now: now)
+        let jobs = try queueAlignmentIfCurrentChanged(lectureID: lectureID, from: previous, in: db, store: store, now: now)
         let text = try text(lecture: lecture, deck: deck, range: before, linked: false, in: db)
         return DeckLinkResult(
             lectureID: lectureID, deckID: deckID, before: before, after: nil, changed: true, alignJobs: jobs, title: text.title,
@@ -178,8 +179,11 @@ public enum LectureSlides {
 
     /// Undo of a `deck_link` / `deck_unlink` change, only while the link is still what the change
     /// made of it (else `DeckLinkError.changedSince`): a link the change made is removed, a range
-    /// it changed goes back, a link it removed comes back with its range. Returns the `align`
-    /// jobs queued. The caller marks the change undone in the same transaction.
+    /// it changed goes back, a link it removed comes back with its range. A link that comes back
+    /// keeps the `updated_at` it had (`spanUpdatedAt`), so a deck that was not the lecture's
+    /// current one does not become it; rows without that value get now. Alignment is queued only
+    /// when the lecture's current slides changed. Returns the `align` jobs queued. The caller
+    /// marks the change undone in the same transaction.
     @discardableResult
     public static func undo(_ change: AgentChange, in db: Database, store: RecordStore, now: Date) throws -> [Job] {
         guard change.targetTable == .deckSpan, let before = change.before, let after = change.after,
@@ -194,12 +198,14 @@ public enum LectureSlides {
             .fetchAll(db)
             .last
             .flatMap { LectureSlideRange(span: $0, deck: deck) }
+        let previous = try current(lectureID: lectureID, in: db)
+        let restoredAt: Date = before.spanUpdatedAt ?? now
         switch change.kind {
         case .deckLink:
             guard let link, link.firstPage == after.firstPage, link.lastPage == after.lastPage else { throw DeckLinkError.changedSince }
             if before.exists == false {
                 try removeLink(lectureID: lectureID, deckID: deckID, in: db)
-                return try queueAlignmentIfSlides(lectureID: lectureID, in: db, store: store, now: now)
+                return try queueAlignmentIfCurrentChanged(lectureID: lectureID, from: previous, in: db, store: store, now: now)
             }
             guard let first = before.firstPage, let last = before.lastPage else { throw DeckLinkError.changedSince }
             let source = before.spanSource ?? link.source
@@ -207,18 +213,19 @@ public enum LectureSlides {
                 $0.firstPage = Int?.some(first)
                 $0.lastPage = Int?.some(last)
                 $0.source = source
-                $0.updatedAt = now
+                $0.updatedAt = restoredAt
             }
             .execute(db)
-            return try queueAlignment(lectureID: lectureID, in: db, store: store, now: now)
+            return try queueAlignmentIfCurrentChanged(lectureID: lectureID, from: previous, in: db, store: store, now: now)
         case .deckUnlink:
             guard link == nil, let first = before.firstPage, let last = before.lastPage else { throw DeckLinkError.changedSince }
-            let span = store.stamp(LectureDeckSpan(
+            var span = store.stamp(LectureDeckSpan(
                 id: change.targetID ?? UUID(), lectureID: lectureID, deckID: deckID, firstPage: first, lastPage: last,
                 source: before.spanSource ?? .manual
             ))
+            span.updatedAt = restoredAt
             try LectureDeckSpan.upsert { span }.execute(db)
-            return try queueAlignment(lectureID: lectureID, in: db, store: store, now: now)
+            return try queueAlignmentIfCurrentChanged(lectureID: lectureID, from: previous, in: db, store: store, now: now)
         default:
             throw DeckLinkError.changedSince
         }
@@ -237,10 +244,16 @@ public enum LectureSlides {
         return jobs
     }
 
-    /// Alignment again only when the lecture still has slides (else continuation detection
-    /// would run on it).
-    static func queueAlignmentIfSlides(lectureID: Lecture.ID, in db: Database, store: RecordStore, now: Date) throws -> [Job] {
-        guard try current(lectureID: lectureID, in: db) != nil else { return [] }
+    /// Alignment again only when the lecture's current slides are no longer `previous` (another
+    /// deck or range) and it still has slides (else continuation detection would run on it): a
+    /// change to a deck that is not current leaves its recordings' alignment as it is.
+    static func queueAlignmentIfCurrentChanged(
+        lectureID: Lecture.ID, from previous: LectureSlideRange?, in db: Database, store: RecordStore, now: Date
+    ) throws -> [Job] {
+        guard let slides = try current(lectureID: lectureID, in: db) else { return [] }
+        if let previous, previous.deckID == slides.deckID, previous.firstPage == slides.firstPage, previous.lastPage == slides.lastPage {
+            return []
+        }
         return try queueAlignment(lectureID: lectureID, in: db, store: store, now: now)
     }
 

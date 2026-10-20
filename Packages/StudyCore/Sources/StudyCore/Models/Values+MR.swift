@@ -17,7 +17,8 @@ extension AgentChangeKind {
 
 extension AgentChangeTarget {
     /// A coarse `lecture_deck_span` row (a lecture's page range of a deck). `before` / `after`
-    /// hold `lectureID`, `deckID`, `firstPage`, `lastPage`, `spanSource`; `exists: false` = no link.
+    /// hold `lectureID`, `deckID`, `firstPage`, `lastPage`, `spanSource`, `spanUpdatedAt`; `exists:
+    /// false` = no link.
     public static let deckSpan: Self = "lecture_deck_span"
 }
 
@@ -144,7 +145,7 @@ public struct DeckLinkResult: Sendable {
         guard let range else { return AgentChangeValues(exists: false, lectureID: lectureID, deckID: deckID) }
         return AgentChangeValues(
             exists: true, lectureID: lectureID, deckID: deckID, firstPage: range.firstPage, lastPage: range.lastPage,
-            spanSource: range.source
+            spanSource: range.source, spanUpdatedAt: range.updatedAt
         )
     }
 

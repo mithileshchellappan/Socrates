@@ -56,6 +56,13 @@ public struct AgentAction: Sendable {
         summaryWords = Set(TextFolding.words(summary))
     }
 
+    /// The sources `run_action` takes now: `sources`, only `chat` once the run has read untrusted
+    /// content (mail, a document, a web task's result), as `ActionRegistry.run` checks; find_actions
+    /// lists these, so the model never tries a mail quote it would refuse.
+    public func sources(readUntrusted: Bool) -> [String] {
+        readUntrusted ? sources.filter { $0 == "chat" } : sources
+    }
+
     /// The keys `run_action` takes at its top level (they win over the same keys in `params`).
     static let sourceKeys: Set<String> = ["quote", "source", "source_id"]
 
@@ -174,7 +181,7 @@ public struct ActionRegistry: Sendable {
         let source = (source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if context.trace.hasReadUntrustedContent, source != "chat" {
             return .error(
-                "This conversation read mail, a document or a web result, so run_action takes only source chat: quote = the student's own words asking for it (at least 3 words)."
+                "This conversation read mail, a document or a web result, so run_action takes only source chat: quote = the student's own words asking for it (at least 3 words, a date in them when the action needs one). If their message lacks them, ask the student to say what to change."
             )
         }
         if action.studentOnly, source != "chat" {

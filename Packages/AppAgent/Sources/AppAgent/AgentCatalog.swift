@@ -85,12 +85,15 @@ public struct AgentCatalog: Sendable, Hashable {
         // Per-lecture facts in a few grouped reads.
         let lectures = try Lecture.all.fetchAll(db)
         // mr: each lecture's slides (its newest coarse span, as `LectureSlides.current` reads it)
-        // and each deck's lectures with their ranges.
-        let decks = try Deck.order(by: \.importedAt).fetchAll(db)
+        // and each deck's lectures with their ranges: the panel's only (`actions`), triage's
+        // catalog stays as it was.
+        let panel = actions != nil
+        let decks: [Deck] = try panel ? Deck.order(by: \.importedAt).fetchAll(db) : []
         let deckByID = Dictionary(decks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var slides: [Lecture.ID: LectureSlideRange] = [:]
         var deckUsers: [Deck.ID: [LectureSlideRange]] = [:]
-        for span in try LectureDeckSpan.where({ $0.startTime.is(nil) }).order(by: \.updatedAt).fetchAll(db) {
+        let spans: [LectureDeckSpan] = try panel ? LectureDeckSpan.where({ $0.startTime.is(nil) }).order(by: \.updatedAt).fetchAll(db) : []
+        for span in spans {
             guard let deck = deckByID[span.deckID], let range = LectureSlideRange(span: span, deck: deck) else { continue }
             slides[span.lectureID] = range
             var users = deckUsers[span.deckID] ?? []
@@ -133,6 +136,9 @@ public struct AgentCatalog: Sendable, Hashable {
         let notes = try Note.order { $0.updatedAt.desc() }.fetchAll(db)
         let lectureCourse = Dictionary(lectures.map { ($0.id, $0.courseID) }, uniquingKeysWith: { first, _ in first })
         let slots = try WeeklySlot.order { ($0.weekday, $0.startMinute) }.fetchAll(db)
+        // mr: one line per course of the decks a lecture reference cannot name, after the open
+        // items (the 8,000 cut drops them first).
+        var deckLines: [String] = []
 
         for course in courses {
             let token = tokens.token(course.id)
@@ -147,14 +153,18 @@ public struct AgentCatalog: Sendable, Hashable {
             if !weekly.isEmpty {
                 lines.append("  weekly: " + weekly.map { "\(ChangeLog.slotText($0)) [slot \(ChatCitation.key($0.id))]" }.joined(separator: "; "))
             }
-            // mr: its slide decks with their keys and each lecture's range (link_deck_pages, unlink_deck).
+            // mr: its slide decks with their keys and each lecture's range (link_deck_pages,
+            // unlink_deck), newest first, only those a lecture reference cannot name.
             let courseID = course.id
-            let courseDecks = decks.filter { deck in Self.course(of: deck, users: deckUsers[deck.id] ?? [], lectures: lectureByID) == courseID }
+            let courseDecks: [Deck] = decks.reversed().filter { deck in
+                let users = deckUsers[deck.id] ?? []
+                return Self.course(of: deck, users: users, lectures: lectureByID) == courseID && Self.needsKey(deck, users: users, slides: slides)
+            }
             if !courseDecks.isEmpty {
                 let shown: [String] = courseDecks.prefix(6).map { deck in Self.deckText(deck, users: deckUsers[deck.id] ?? [], lectures: lectureByID) }
-                var deckLine = "  decks: " + shown.joined(separator: "; ")
-                if courseDecks.count > 6 { deckLine += "; +\(courseDecks.count - 6) more" }
-                lines.append(deckLine)
+                var deckLine = "decks \(token): " + shown.joined(separator: "; ")
+                if courseDecks.count > 6 { deckLine += "; +\(courseDecks.count - 6) older" }
+                deckLines.append(deckLine)
             }
             let own = lectures.filter { $0.courseID == course.id }.sorted { ($0.number ?? Int.max, $0.heldAt ?? .distantFuture) < ($1.number ?? Int.max, $1.heldAt ?? .distantFuture) }
             for lecture in own.suffix(14) {
@@ -256,6 +266,7 @@ public struct AgentCatalog: Sendable, Hashable {
         if undated > 0 { counts.append("\(undated) without a date (tasks, announcements)") }
         if overdue > 0 { counts.append("\(overdue) past their date") }
         if !counts.isEmpty { lines.append("more items: " + counts.joined(separator: ", ") + " (query_items)") }
+        lines += deckLines
 
         var text = lines.joined(separator: "\n")
         if text.count > limit - 200 {
@@ -271,6 +282,13 @@ public struct AgentCatalog: Sendable, Hashable {
             text = kept.joined(separator: "\n")
         }
         return text
+    }
+
+    /// mr: whether the catalog lists the deck's key: a lecture reference names it otherwise
+    /// (`deckNamed`: the one lecture whose current slides are the whole deck).
+    static func needsKey(_ deck: Deck, users: [LectureSlideRange], slides: [Lecture.ID: LectureSlideRange]) -> Bool {
+        guard users.count == 1, let only = users.first else { return true }
+        return !only.isWholeDeck || slides[only.lectureID]?.deckID != deck.id
     }
 
     /// mr: a deck's course: its own, else the course of a lecture that links it.

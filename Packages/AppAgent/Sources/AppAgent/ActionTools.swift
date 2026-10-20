@@ -29,8 +29,9 @@ struct ActionTools: Sendable {
                 ])
             ),
             effect: .read
-        ) { call, _ in
+        ) { call, context in
             let query = call.text("query") ?? ""
+            let readUntrusted = context.trace.hasReadUntrustedContent
             let limit = min(Self.maxLimit, max(1, call.integer("limit") ?? Self.defaultLimit))
             let found = registry.find(query, limit: limit)
             guard !found.isEmpty else {
@@ -41,7 +42,8 @@ struct ActionTools: Sendable {
                 return .json(["total": .int(registry.count), "actions": .array(all)])
             }
             let rows: [JSONValue] = found.map { action in
-                let sources: [JSONValue] = action.sources.map(JSONValue.string)
+                // Only chat once this run read mail, a document or a web result (run_action's rule).
+                let sources: [JSONValue] = action.sources(readUntrusted: readUntrusted).map(JSONValue.string)
                 return [
                     "name": .string(action.name),
                     "summary": .string(action.summary),
