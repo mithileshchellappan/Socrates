@@ -129,8 +129,25 @@ public struct CourseSettingsView: View {
             .padding(.bottom, 22)
         }
         .background(Color.fieldBackground)
-        .onGeometryChange(for: Bool.self) { $0.size.width >= 760 } action: { isWide = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            // A band between the two thresholds, so a width near them never flips the layout on
+            // every pass.
+            let wide: Bool
+            if isWide {
+                wide = width >= Self.oneColumnBelow
+            } else {
+                wide = width >= Self.twoColumnsFrom
+            }
+            if wide != isWide { isWide = wide }
+        }
     }
+
+    /// A column's narrowest: the Language row (label, two pop-ups and "admin parts in") and the
+    /// weekly slots' fixed cells; every other row truncates or wraps.
+    static let columnMin: CGFloat = 380
+    /// Two columns need both at their narrowest, the 18 pt gap and the 22 pt margins (822 pt).
+    static let oneColumnBelow: CGFloat = 2 * columnMin + 18 + 2 * 22
+    static let twoColumnsFrom: CGFloat = 850
 
     @ViewBuilder
     private func leftGroups(_ course: Binding<Course>) -> some View {

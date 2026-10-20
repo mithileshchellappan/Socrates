@@ -179,11 +179,15 @@ extension View {
     }
 
     /// A text field's box outside a Form: window background, 0.5 pt border, radius 6, 22 pt high;
-    /// the accent border with a focus ring while it is focused.
+    /// the accent border with a focus ring while it is focused. `width` is its width when there is
+    /// room; a narrow column shrinks it to 140 pt rather than pushing the row past its edge.
     func fieldChrome(isFocused: Bool, width: CGFloat? = 236) -> some View {
         textFieldStyle(.plain)
             .padding(.horizontal, 8)
-            .frame(width: width, height: 22)
+            .frame(
+                minWidth: width.map { min($0, 140) }, idealWidth: width, maxWidth: width,
+                minHeight: 22, maxHeight: 22
+            )
             .background(Color.fieldBackground, in: .rect(cornerRadius: 6))
             .focusRing(isFocused, cornerRadius: 6)
     }

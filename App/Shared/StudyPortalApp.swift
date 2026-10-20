@@ -63,6 +63,11 @@ struct StudyPortalApp: App {
             #endif
         }
         .defaultSize(width: 1180, height: 760)
+        #if os(macOS)
+        // The window's minimum is its columns' declared minimums (RootView's `WindowColumns`),
+        // never a screen's content; never `.contentSize`, which pins it to the content's ideal.
+        .windowResizability(.contentMinSize)
+        #endif
         #if DEBUG && os(macOS)
         .restorationBehavior(ParityMode.options == nil ? .automatic : .disabled)
         #endif

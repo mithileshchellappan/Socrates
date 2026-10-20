@@ -35,7 +35,8 @@ struct AgentPanelView: View {
     @Environment(\.agentPanelActions) private var actions
     private let historyQuery: FetchAll<AgentConversation>
     private let openTasksQuery: FetchAll<AgentTask>
-    @State private var columnWidth: CGFloat = CGFloat(AgentPanelMetrics.idealWidth)
+    /// Memory… from the expanded header's title menu (a toolbar item).
+    @State private var showsMemory = false
 
     init(
         style: Style,
@@ -75,17 +76,29 @@ struct AgentPanelView: View {
 
     var body: some View {
         if headerPlacement == .toolbar {
+            // The header as the toolbar's own items over the column (title, flexible space, ⤡ and
+            // Close), laid out by the toolbar: nothing measures the column, so dragging its edge
+            // or resizing the window never rebuilds a toolbar item.
             panel
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
                 .toolbar {
-                    // Only while shown: SwiftUI keeps a hidden inspector's content (and this item) alive.
+                    // Only while shown: SwiftUI keeps a hidden inspector's content (and these) alive.
                     if model.mode == .expanded {
                         ToolbarItem(placement: .automatic) {
-                            header
-                                .frame(width: max(0, columnWidth - AgentPanelMetrics.toolbarTrailingInset))
+                            AgentTitleMenu(model: model, history: history, conversationID: conversationID, showsMemory: $showsMemory)
+                                .frame(maxWidth: AgentPanelMetrics.toolbarTitleWidth, alignment: .leading)
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                        ToolbarSpacer(.flexible)
+                        ToolbarItem(placement: .automatic) {
+                            AgentPanelHeaderButtons(model: model, isExpanded: true)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
                         }
                         .sharedBackgroundVisibility(.hidden)
                     }
+                }
+                .sheet(isPresented: $showsMemory) {
+                    ChatMemorySheet()
                 }
         } else {
             // No toolbar content from the compact panel: its updates never touch the window's toolbar.
@@ -236,27 +249,7 @@ private struct AgentPanelHeader: View {
         HStack(spacing: 2) {
             titleMenu
             Spacer(minLength: 4)
-            Button {
-                model.toggleExpanded()
-            } label: {
-                Label(
-                    isExpanded ? "Shrink Chat" : "Expand Chat",
-                    systemImage: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
-                )
-                .labelStyle(.iconOnly)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-            }
-            .help(isExpanded ? Text("Shrink Chat") : Text("Expand Chat"))
-            Button {
-                model.close()
-            } label: {
-                Label("Hide Chat", systemImage: "xmark")
-                    .labelStyle(.iconOnly)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .help(Text("Hide Chat"))
+            AgentPanelHeaderButtons(model: model, isExpanded: isExpanded)
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
@@ -281,6 +274,39 @@ private struct AgentPanelHeader: View {
 
     private var titleMenu: some View {
         AgentTitleMenu(model: model, history: history, conversationID: conversationID, showsMemory: $showsMemory)
+    }
+}
+
+/// ⤢ Expand Chat / ⤡ Shrink Chat and Close, 28 pt each (the title row's trailing end; the expanded
+/// header's toolbar item).
+struct AgentPanelHeaderButtons: View {
+    let model: AgentPanelModel
+    let isExpanded: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button {
+                model.toggleExpanded()
+            } label: {
+                Label(
+                    isExpanded ? "Shrink Chat" : "Expand Chat",
+                    systemImage: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
+                )
+                .labelStyle(.iconOnly)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+            }
+            .help(isExpanded ? Text("Shrink Chat") : Text("Expand Chat"))
+            Button {
+                model.close()
+            } label: {
+                Label("Hide Chat", systemImage: "xmark")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .help(Text("Hide Chat"))
+        }
     }
 }
 

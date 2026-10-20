@@ -181,10 +181,10 @@ struct ReviewScreen: View {
                         ToolbarSpacer(.flexible)
                         ReviewToolbar(model: model, isPanelExpanded: agentPanelExpanded)
                     }
-                    .inspector(isPresented: inspectorShown) {
+                    .modifier(ReviewInspectorColumn(isPanelExpanded: agentPanelExpanded, isPresented: inspectorShown) {
                         ReviewInspector(model: model, isShown: !agentPanelExpanded)
                             .inspectorColumnWidth(min: 260, ideal: ReviewInspector.width, max: 440)
-                    }
+                    })
             case .snapshot:
                 SnapshotChrome(model: model, title: title, subtitle: subtitle) {
                     ReviewContent(model: model, timeline: timeline)
@@ -234,6 +234,24 @@ struct ReviewScreen: View {
     /// Room under the rail and transcript: the player, its distance from the bottom edge and 8 pt
     /// above it.
     static let playerClearance: CGFloat = PlayerBar.height + playerBottom + 8
+}
+
+/// The notes inspector, left out entirely while the agent panel is expanded into the window's
+/// trailing column (as Calendar's Deadlines): a hidden inspector still kept its column's room, so
+/// beside the sidebar and the agent's column the review took that room on one pass and gave it
+/// back on the next, a layout loop that AppKit ends by raising an exception.
+private struct ReviewInspectorColumn<Inspector: View>: ViewModifier {
+    let isPanelExpanded: Bool
+    let isPresented: Binding<Bool>
+    @ViewBuilder let inspector: () -> Inspector
+
+    func body(content: Content) -> some View {
+        if isPanelExpanded {
+            content
+        } else {
+            content.inspector(isPresented: isPresented, content: inspector)
+        }
+    }
 }
 
 /// ma: tells the agent panel what the review shows (the lecture, the recording, the slide on
