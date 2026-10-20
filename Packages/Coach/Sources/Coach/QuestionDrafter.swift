@@ -19,7 +19,8 @@ import StudyPass
 ///   recall questions each.
 /// - Slides and transcript go in as delimited data.
 /// - A re-run study pass: questions are relinked to the new topic rows by `TopicKey`; a vanished
-///   topic's questions are retired; nothing is deleted. Only topics without questions are drafted.
+///   topic's questions are retired; nothing is deleted. Only topics without questions are drafted
+///   (ln: nor topics whose lecture notes already ask two Check yourself questions).
 public struct QuestionDrafter: Sendable {
     public static let model: ClaudeModel = .haiku55
     public static let effort: Effort = .low
@@ -29,6 +30,8 @@ public struct QuestionDrafter: Sendable {
     static let readingsPerLecture = 3
     /// Part of every unit's input hash: bump it when the prompt or schema changes.
     static let promptVersion = 1
+    /// ln: a topic with this many unretired questions from its lecture's notes is not drafted.
+    static let notesQuestionsPerTopic = 2
 
     let services: StudyServices
     let client: ClaudeClient
@@ -166,7 +169,13 @@ public struct QuestionDrafter: Sendable {
 
     /// The lecture's topic groups: ≤ 4 topics each, in slide order ("t1-4", "t5-8").
     func groups(_ loaded: Loaded) -> [Group] {
-        let drafted = Set(loaded.questions.filter { $0.retiredAt == nil && $0.origin == .generated && $0.readingID == nil }.compactMap(\.topicKey))
+        var drafted = Set(loaded.questions.filter { $0.retiredAt == nil && $0.origin == .generated && $0.readingID == nil }.compactMap(\.topicKey))
+        // ln: a topic whose lecture notes already ask two questions (Check yourself) is not drafted.
+        var fromNotes: [TopicKey: Int] = [:]
+        for question in loaded.questions where question.retiredAt == nil && question.origin == .notes {
+            if let key = question.topicKey { fromNotes[key, default: 0] += 1 }
+        }
+        drafted.formUnion(fromNotes.filter { $0.value >= Self.notesQuestionsPerTopic }.keys)
         let agentReadings = loaded.readings.filter { $0.hiddenAt == nil && $0.createdBy == .agent }.count
         let indexed = loaded.topics.enumerated().map { (id: "t\($0.offset + 1)", row: $0.element) }
         var groups: [Group] = []
