@@ -47,11 +47,14 @@ public enum AppAgentChat {
         public var coach: CoachEngine?
         /// md: the app's document bank (`keep_document`; nil: none).
         public var documents: DocumentBank?
+        /// mr: the lecture processor's `wake()` (a deck linked or unlinked queued alignment).
+        public var wakeProcessing: @Sendable () async -> Void
         public var now: @Sendable () -> Date
 
         public init(
             services: StudyServices, search: SearchEngine, drafter: ReplyDrafter?, memory: DeadlineMemory, coach: CoachEngine? = nil,
-            documents: DocumentBank? = nil, now: @escaping @Sendable () -> Date = { Date() }
+            documents: DocumentBank? = nil, wakeProcessing: @escaping @Sendable () async -> Void = {},
+            now: @escaping @Sendable () -> Date = { Date() }
         ) {
             self.services = services
             self.search = search
@@ -59,10 +62,13 @@ public enum AppAgentChat {
             self.memory = memory
             self.coach = coach
             self.documents = documents
+            self.wakeProcessing = wakeProcessing
             self.now = now
         }
 
-        var changeLog: ChangeLog { ChangeLog(services: services, memory: memory, documents: documents, now: now) }
+        var changeLog: ChangeLog {
+            ChangeLog(services: services, memory: memory, documents: documents, wakeProcessing: wakeProcessing, now: now)
+        }
         /// md: the document bank's tools (`DocumentTools.swift`).
         var documentTools: DocumentTools { DocumentTools(services: services, search: lectureSearch, bank: documents, changeLog: changeLog) }
         /// The search engine without its planner (the model writes German and English terms).

@@ -81,6 +81,7 @@ public actor AppAgent {
         filing: FilingService? = nil,
         advisor: (any FilingAdvisor)? = nil,
         documents: DocumentBank? = nil,
+        wakeProcessing: @escaping @Sendable () async -> Void = {},
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
@@ -94,7 +95,9 @@ public actor AppAgent {
         self.advisor = advisor
         self.documents = documents
         self.now = now
-        let changeLog = ChangeLog(services: services, memory: memory, filing: filing, documents: documents, now: now)
+        let changeLog = ChangeLog(
+            services: services, memory: memory, filing: filing, documents: documents, wakeProcessing: wakeProcessing, now: now
+        )
         self.changeLog = changeLog
         let quit = QuitSignal()
         self.quit = quit
@@ -123,12 +126,16 @@ public actor AppAgent {
     /// deadline memory (its `onChange` syncs the calendar after the agent's writes). `coach` (mc):
     /// the study coach the plan tools replan through. `documents` (md): the app's document bank
     /// (`keep_document`; nil: the panel cannot keep files, the read tools still work).
+    /// `wakeProcessing` (mr): the lecture processor's `wake()`, after link_deck_pages / unlink_deck
+    /// or their Undo queued alignment.
     public static func specs(
         services: StudyServices, search: SearchEngine, drafter: ReplyDrafter?, memory: DeadlineMemory, coach: CoachEngine? = nil,
-        documents: DocumentBank? = nil, now: @escaping @Sendable () -> Date = { Date() }
+        documents: DocumentBank? = nil, wakeProcessing: @escaping @Sendable () async -> Void = {},
+        now: @escaping @Sendable () -> Date = { Date() }
     ) -> Specs {
         let deps = AppAgentChat.Services(
-            services: services, search: search, drafter: drafter, memory: memory, coach: coach, documents: documents, now: now
+            services: services, search: search, drafter: drafter, memory: memory, coach: coach, documents: documents,
+            wakeProcessing: wakeProcessing, now: now
         )
         return Specs(
             additional: [.app: { try AppAgentChat.spec(deps) }],
