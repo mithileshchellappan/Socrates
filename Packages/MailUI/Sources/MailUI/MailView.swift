@@ -229,6 +229,7 @@ public struct MailView: View {
                 } set: { _ in
                     translations.toggle(id)
                 })
+                .help(translateHelp(id))
             }
         }
         ToolbarSpacer(.fixed, placement: .primaryAction)
@@ -240,6 +241,12 @@ public struct MailView: View {
 
     private var canArchive: Bool {
         selectedMessage != nil && scope != .sent && scope != .drafts
+    }
+
+    /// The Translate toggle's help: "Couldn’t finish" after a translation of this message failed.
+    private func translateHelp(_ id: MailMessage.ID) -> LocalizedStringKey {
+        if translations.failed.contains(id) { return "Couldn’t finish" }
+        return "Translate"
     }
 
     /// nil: the selected message does not offer Translate; else whether it is shown translated.

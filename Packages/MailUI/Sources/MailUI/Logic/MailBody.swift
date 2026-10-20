@@ -61,6 +61,8 @@ struct MailBlock: Hashable, Sendable, Identifiable {
     var indent: Int = 0
     /// Part of earlier mail quoted in a reply.
     var isQuoted: Bool = false
+    /// Machine-translated text (Translate): shown `.secondary`, as machine-written sentences are.
+    var isTranslated: Bool = false
 }
 
 /// Marks the text of a quote an item was read from (the reader underlines it dotted in the AI

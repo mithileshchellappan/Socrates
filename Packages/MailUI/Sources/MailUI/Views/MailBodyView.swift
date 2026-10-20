@@ -77,6 +77,21 @@ private struct MailBlockView: View {
         .lineSpacing(3)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.leading, CGFloat(block.indent) * 18)
+        .modifier(TranslatedBlockStyle(isTranslated: block.isTranslated))
+    }
+}
+
+/// A translated block is grey (machine-written sentences, DESIGN §5.1); any other block keeps the
+/// style around it (quoted mail is grey too).
+private struct TranslatedBlockStyle: ViewModifier {
+    let isTranslated: Bool
+
+    func body(content: Content) -> some View {
+        if isTranslated {
+            content.foregroundStyle(.secondary)
+        } else {
+            content
+        }
     }
 }
 

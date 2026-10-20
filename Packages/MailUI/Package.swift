@@ -13,14 +13,17 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../StudyCore"),
-        .package(path: "../StudyUI")
+        .package(path: "../StudyUI"),
+        // Translate: local-translate's OPUS-MT models on the device (docs/plan-translation.md).
+        .package(path: "../LocalTranslation")
     ],
     targets: [
         .target(
             name: "MailUI",
             dependencies: [
                 .product(name: "StudyCore", package: "StudyCore"),
-                .product(name: "StudyUI", package: "StudyUI")
+                .product(name: "StudyUI", package: "StudyUI"),
+                .product(name: "LocalTranslation", package: "LocalTranslation")
             ]
         ),
     ],

@@ -1,80 +1,22 @@
 import Foundation
+import LocalTranslation
 import Observation
 import StudyCore
 import SwiftUI
-import Translation
 
-/// Translates mail text on the device. The app uses Apple's Translation framework
-/// (`SystemMailTranslator`, with the session `.translationTask` hands the reader); tests and
-/// snapshots set a fake through `\.mailTranslator`. The mail never leaves the device and no model
-/// of ours is asked.
-protocol MailTranslating {
-    /// `texts` in the student's language, in the same order.
-    func translate(_ texts: [AttributedString]) async throws -> [AttributedString]
-}
-
-/// Apple's on-device translation through a session from `.translationTask`. When the language
-/// pair is not installed yet, the session shows the system's own download prompt first. The
-/// session is not `Sendable`: it stays in the nonisolated task `MailTranslationRunner` starts.
-struct SystemMailTranslator: MailTranslating {
-    let session: TranslationSession
-
-    func translate(_ texts: [AttributedString]) async throws -> [AttributedString] {
-        if #available(macOS 26.4, iOS 26.4, *) {
-            do {
-                // Styled requests keep the links (and emphasis) of the original where they can.
-                let responses = try await session.translations(from: texts.enumerated().map { offset, text in
-                    TranslationSession.Request(sourceText: text, clientIdentifier: String(offset))
-                })
-                return try Self.inOrder(responses, count: texts.count) { $0.attributedTargetText ?? AttributedString($0.targetText) }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                // Only with the languages installed (no second download prompt): try the plain text.
-                guard let source = session.sourceLanguage,
-                      await LanguageAvailability().status(from: source, to: session.targetLanguage) == .installed else { throw error }
-                Log.mail.error("Styled translation failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
-        let responses = try await session.translations(from: texts.enumerated().map { offset, text in
-            TranslationSession.Request(sourceText: String(text.characters), clientIdentifier: String(offset))
-        })
-        return try Self.inOrder(responses, count: texts.count) { AttributedString($0.targetText) }
-    }
-
-    /// Whether the system translates `source` into the student's language (a pair still to
-    /// download counts).
-    static func supports(_ source: Locale.Language, to target: Locale.Language) async -> Bool {
-        await LanguageAvailability().status(from: source, to: target) != .unsupported
-    }
-
-    private static func inOrder(
-        _ responses: [TranslationSession.Response], count: Int, _ text: (TranslationSession.Response) -> AttributedString
-    ) throws -> [AttributedString] {
-        var ordered = [AttributedString?](repeating: nil, count: count)
-        for response in responses {
-            guard let index = response.clientIdentifier.flatMap({ Int($0) }), ordered.indices.contains(index) else { continue }
-            ordered[index] = text(response)
-        }
-        let texts = ordered.compactMap { $0 }
-        guard texts.count == count else { throw MailTranslationFailure.incomplete }
-        return texts
-    }
-}
-
-enum MailTranslationFailure: Error {
-    /// The translator returned fewer texts than it was given.
-    case incomplete
-}
-
-/// How the reader translates: into which language, and with which translator.
+/// How the reader translates: into which language. The translation itself is local-translate's
+/// OPUS-MT models on the device (`LocalTranslator`): the mail never leaves the device and no model
+/// of Claude's is asked.
 struct MailTranslator: Sendable {
     /// The student's language: a mail in another one offers Translate.
     var target: Locale.Language
-    /// nil: Apple's Translation through `.translationTask` (the app). Tests and snapshots set a fake.
-    var custom: (any MailTranslating & Sendable)?
 
-    static let system = MailTranslator(target: MailLanguage.preferred, custom: nil)
+    static let system = MailTranslator(target: MailLanguage.preferred)
+
+    /// The code `LocalTranslator` takes ("de", "en", "zh-Hant").
+    static func code(_ language: Locale.Language) -> String {
+        language.minimalIdentifier
+    }
 }
 
 extension EnvironmentValues {
@@ -83,7 +25,7 @@ extension EnvironmentValues {
 
 /// The reader's translations for this session, in memory only (nothing is written): per message,
 /// the language it can be translated from, whether it is shown translated (the toolbar's
-/// Translate is on), and the translation once it landed.
+/// Translate is on), and the translation so far (the subject first, then each block as it lands).
 @MainActor
 @Observable
 final class MailTranslations {
@@ -93,14 +35,19 @@ final class MailTranslations {
         var subject: String
         var body: MailBody
         var translated: MailTranslatedMail
+        /// Every text is back; nil `job` from now on.
+        var isComplete: Bool
     }
 
     /// The language each message can be translated from (only messages that offer Translate).
     private(set) var sources: [MailMessage.ID: Locale.Language] = [:]
     /// Messages shown translated.
     private(set) var shown: Set<MailMessage.ID> = []
+    /// Messages whose model is downloading: 0…1.
+    private(set) var downloads: [MailMessage.ID: Double] = [:]
+    /// Messages whose last translation could not be made (Translate turned off).
+    private(set) var failed: Set<MailMessage.ID> = []
     private var entries: [MailMessage.ID: Entry] = [:]
-    @ObservationIgnored private var supported: [String: Bool] = [:]
 
     func canTranslate(_ id: MailMessage.ID) -> Bool {
         sources[id] != nil
@@ -112,7 +59,10 @@ final class MailTranslations {
 
     /// Translate / Show Original.
     func toggle(_ id: MailMessage.ID) {
-        if shown.remove(id) == nil { shown.insert(id) }
+        if shown.remove(id) == nil {
+            shown.insert(id)
+            failed.remove(id)
+        }
     }
 
     /// The reader found the message's language: `source` when it offers Translate, else nil.
@@ -122,38 +72,52 @@ final class MailTranslations {
         if source == nil { shown.remove(id) }
     }
 
-    /// The translation to show for this version of the message; nil shows the original (not asked
-    /// for, or not landed yet).
+    /// The translation to show for this version of the message, complete or partial; nil shows
+    /// the original (not asked for, or nothing back yet).
     func translation(for id: MailMessage.ID, subject: String, body: MailBody) -> MailTranslatedMail? {
         guard shown.contains(id), let entry = entries[id], entry.subject == subject, entry.body == body else { return nil }
         return entry.translated
     }
 
-    /// What still has to be translated for this version of the message, if anything.
+    /// What still has to be translated for this version of the message, if anything. The same
+    /// job while its entry is partial, so partial results do not restart it.
     func job(for id: MailMessage.ID, subject: String, body: MailBody, target: Locale.Language) -> MailTranslationJob? {
         guard shown.contains(id), let source = sources[id] else { return nil }
-        if let entry = entries[id], entry.subject == subject, entry.body == body { return nil }
+        if let entry = entries[id], entry.subject == subject, entry.body == body, entry.isComplete { return nil }
         return MailTranslationJob(messageID: id, source: source, target: target, subject: subject, body: body)
     }
 
-    func store(_ translated: MailTranslatedMail, for job: MailTranslationJob) {
-        entries[job.messageID] = Entry(subject: job.subject, body: job.body, translated: translated)
+    /// The translation so far (`complete`: every text is back).
+    func update(_ translated: MailTranslatedMail, complete: Bool, for job: MailTranslationJob) {
+        entries[job.messageID] = Entry(subject: job.subject, body: job.body, translated: translated, isComplete: complete)
+        if complete { downloads[job.messageID] = nil }
     }
 
-    /// The translation could not be made (the download was declined, an error): the original
-    /// stays and Translate turns off.
+    /// The route's model is downloading (`fraction` 0…1), or not any more (nil).
+    func setDownload(_ fraction: Double?, for job: MailTranslationJob) {
+        guard downloads[job.messageID] != fraction else { return }
+        downloads[job.messageID] = fraction
+    }
+
+    /// The job was cancelled (another message, Translate off): a partial translation goes, so
+    /// the next job starts clean (finished sentences come back from the translator's cache).
+    func discard(_ job: MailTranslationJob) {
+        downloads[job.messageID] = nil
+        guard let entry = entries[job.messageID], !entry.isComplete, entry.subject == job.subject, entry.body == job.body else { return }
+        entries[job.messageID] = nil
+    }
+
+    /// The translation could not be made (no network for the first download, an error): the
+    /// original stays, Translate turns off, and its help says so.
     func fail(_ job: MailTranslationJob) {
+        discard(job)
         shown.remove(job.messageID)
+        failed.insert(job.messageID)
     }
 
-    /// Whether `translator` translates `source` (the system's answer is kept per language).
-    func supports(_ source: Locale.Language, with translator: MailTranslator) async -> Bool {
-        if translator.custom != nil { return true }
-        let key = source.minimalIdentifier
-        if let known = supported[key] { return known }
-        let answer = await SystemMailTranslator.supports(source, to: translator.target)
-        supported[key] = answer
-        return answer
+    /// Whether a model route exists from `source` into the student's language.
+    func supports(_ source: Locale.Language, with translator: MailTranslator) -> Bool {
+        LocalTranslator.canTranslate(from: MailTranslator.code(source), to: MailTranslator.code(translator.target))
     }
 }
 
@@ -166,71 +130,81 @@ struct MailTranslationJob: Hashable, Sendable {
     var subject: String
     var body: MailBody
 
-    /// The message translated by `translator`, off the main actor (splitting the text, checking
-    /// each line's language, translating).
+    /// Translates on the device and hands the results to `translations` as they land: the
+    /// subject, then each block once all its lines are back. Blocks are built here, off the main
+    /// actor; the main actor gets a new value only when something changed.
     @concurrent
-    func translated(with translator: some MailTranslating) async throws -> MailTranslatedMail {
+    func run(into translations: MailTranslations) async {
         let input = MailTranslationInput(subject: subject, body: body, source: source, target: target)
-        guard !input.texts.isEmpty else { return MailTranslatedMail(subject: subject, body: body) }
-        let output = try await translator.translate(input.texts)
-        guard let translated = input.applying(output, subject: subject, body: body) else { throw MailTranslationFailure.incomplete }
-        return translated
-    }
-
-    /// Translates and hands the result to `translations` (on the main actor).
-    @concurrent
-    func run(with translator: some MailTranslating, into translations: MailTranslations) async {
+        var mail = MailTranslatedMail(subject: subject, body: body)
+        guard !input.texts.isEmpty else {
+            await translations.update(mail, complete: true, for: self)
+            return
+        }
+        let stream = LocalTranslator.shared.translations(
+            of: input.texts, from: MailTranslator.code(source), to: MailTranslator.code(target)
+        )
+        var texts: [Int: String] = [:]
+        var isDownloading = false
         do {
-            let translated = try await translated(with: translator)
-            await translations.store(translated, for: self)
+            for try await event in stream {
+                switch event {
+                case .downloading(let fraction):
+                    isDownloading = fraction < 1
+                    await translations.setDownload(isDownloading ? fraction : nil, for: self)
+                case .translated(let index, let text):
+                    texts[index] = text
+                    if isDownloading {
+                        isDownloading = false
+                        await translations.setDownload(nil, for: self)
+                    }
+                    if apply(index, input: input, texts: texts, to: &mail) {
+                        await translations.update(mail, complete: false, for: self)
+                    }
+                }
+            }
+            // A cancelled consumer ends the stream without an error.
+            guard !Task.isCancelled else {
+                await translations.discard(self)
+                return
+            }
+            await translations.update(mail, complete: true, for: self)
+        } catch is CancellationError {
+            await translations.discard(self)
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                await translations.discard(self)
+                return
+            }
             Log.mail.error("Translation failed: \(error.localizedDescription, privacy: .public)")
             await translations.fail(self)
         }
     }
+
+    /// Puts text `index` in place: the subject, or its block once every line of the block is
+    /// back. Whether the mail changed.
+    private func apply(_ index: Int, input: MailTranslationInput, texts: [Int: String], to mail: inout MailTranslatedMail) -> Bool {
+        if index == input.subjectIndex {
+            mail.subject = texts[index] ?? subject
+            return true
+        }
+        guard let block = input.blockOf[index], body.blocks.indices.contains(block) else { return false }
+        guard let translated = input.translatedBlock(block, original: body.blocks[block], texts: texts) else { return false }
+        mail.body.blocks[block] = translated
+        return true
+    }
 }
 
-/// Runs the translation the reader asks for: through `.translationTask` (Apple's Translation,
-/// which shows the system's download prompt when the languages are missing), or the custom
-/// translator. The reader keeps showing the original until the translation lands.
+/// Runs the translation the reader asks for. The reader shows the original until the subject
+/// and the blocks land; switching messages or turning Translate off cancels it.
 struct MailTranslationRunner: ViewModifier {
     let job: MailTranslationJob?
-    let translator: MailTranslator
     let translations: MailTranslations
-    @State private var configuration: TranslationSession.Configuration?
 
     func body(content: Content) -> some View {
-        if let custom = translator.custom {
-            content
-                .task(id: job) {
-                    guard let job else { return }
-                    await job.run(with: custom, into: translations)
-                }
-        } else {
-            content
-                .translationTask(configuration, action: Self.action(job, into: translations))
-                .onChange(of: job, initial: true) { _, job in
-                    guard let job else { return }
-                    if configuration?.source == job.source {
-                        configuration?.invalidate()
-                    } else {
-                        // Always an explicit target: with none, the system picks one from the Mac's
-                        // region, not the student's language.
-                        configuration = TranslationSession.Configuration(source: job.source, target: job.target)
-                    }
-                }
-        }
-    }
-
-    /// The `.translationTask` action, made outside the main actor: the session it is handed is not
-    /// `Sendable`, so it is used only in this nonisolated task and never crosses to the main actor.
-    private nonisolated static func action(
-        _ job: MailTranslationJob?, into translations: MailTranslations
-    ) -> (TranslationSession) async -> Void {
-        { session in
-            guard let job else { return }
-            await job.run(with: SystemMailTranslator(session: session), into: translations)
-        }
+        content
+            .task(id: job) {
+                await job?.run(into: translations)
+            }
     }
 }

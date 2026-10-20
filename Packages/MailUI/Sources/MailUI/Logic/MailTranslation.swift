@@ -75,7 +75,8 @@ struct MailTranslatedMail: Hashable, Sendable {
 /// continues on the next, so a sentence is translated whole; the lines are joined again with the
 /// same breaks. Lines without letters, a bare link or address, and lines already in the target
 /// language (the other half of a bilingual mail) stay as they are, as do quoted mail and rules.
-/// The found block, attachments and drafts are not part of the body.
+/// The found block, attachments and drafts are not part of the body. Texts are plain (Marian
+/// takes plain text); links are detected again in the translation.
 struct MailTranslationInput: Hashable, Sendable {
     /// One line of a block in the translated mail.
     enum Line: Hashable, Sendable {
@@ -89,11 +90,13 @@ struct MailTranslationInput: Hashable, Sendable {
     static let wrapLength = 60
 
     /// The texts to translate, in order: the subject (when it has letters), then the body's lines.
-    private(set) var texts: [AttributedString] = []
+    private(set) var texts: [String] = []
     /// Where the subject's translation is in `texts`.
     private(set) var subjectIndex: Int?
     /// The lines of each body block (by index in `MailBody.blocks`) that has something to translate.
     private(set) var blocks: [Int: [Line]] = [:]
+    /// The block (index in `MailBody.blocks`) each body text belongs to, by text index.
+    private(set) var blockOf: [Int: Int] = [:]
 
     /// - Parameters:
     ///   - source: The mail's language; with `target`, lines already in `target` are kept.
@@ -106,7 +109,7 @@ struct MailTranslationInput: Hashable, Sendable {
         let trimmedSubject = subject.trimmingCharacters(in: .whitespacesAndNewlines)
         if translatable(trimmedSubject) {
             subjectIndex = texts.count
-            texts.append(AttributedString(trimmedSubject))
+            texts.append(trimmedSubject)
         }
         for (index, block) in body.blocks.enumerated() where !block.isQuoted && block.kind != .rule {
             var lines: [Line] = []
@@ -115,7 +118,8 @@ struct MailTranslationInput: Hashable, Sendable {
                 let plain = String(line.characters)
                 if !Self.isBareLink(line), translatable(plain) {
                     lines.append(.translated(texts.count))
-                    texts.append(Self.translationText(line))
+                    blockOf[texts.count] = index
+                    texts.append(plain)
                     translates = true
                 } else {
                     lines.append(.kept(line))
@@ -125,27 +129,27 @@ struct MailTranslationInput: Hashable, Sendable {
         }
     }
 
-    /// The mail with `translated` (one per text, in order) in place of the original; nil when the
-    /// count does not match.
-    func applying(_ translated: [AttributedString], subject: String, body: MailBody) -> MailTranslatedMail? {
-        guard translated.count == texts.count else { return nil }
+    /// Block `index` with its translated lines (`texts`, by text index) in place of the original
+    /// ones, marked translated; nil until every line of the block is back. The block keeps the
+    /// original's id, kind, indent and quoting; links are detected again in each translated line.
+    func translatedBlock(_ index: Int, original: MailBlock, texts: [Int: String]) -> MailBlock? {
+        guard let lines = blocks[index] else { return nil }
         let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
-        var body = body
-        for (index, lines) in blocks where body.blocks.indices.contains(index) {
-            var text = AttributedString()
-            for (number, line) in lines.enumerated() {
-                if number > 0 { text.append(AttributedString("\n")) }
-                switch line {
-                case .translated(let position):
-                    text.append(MailBodyRenderer.detectingLinks(in: translated[position], detector: detector))
-                case .kept(let original):
-                    text.append(original)
-                }
+        var text = AttributedString()
+        for (number, line) in lines.enumerated() {
+            if number > 0 { text.append(AttributedString("\n")) }
+            switch line {
+            case .translated(let position):
+                guard let translated = texts[position] else { return nil }
+                text.append(MailBodyRenderer.detectingLinks(in: AttributedString(translated), detector: detector))
+            case .kept(let kept):
+                text.append(kept)
             }
-            body.blocks[index].text = text
         }
-        let translatedSubject = subjectIndex.map { String(translated[$0].characters) } ?? subject
-        return MailTranslatedMail(subject: translatedSubject, body: body)
+        var block = original
+        block.text = text
+        block.isTranslated = true
+        return block
     }
 
     /// A block's lines, with the sender's wrapped lines joined into one (by a space). Empty lines
@@ -186,17 +190,5 @@ struct MailTranslationInput: Hashable, Sendable {
         if line.runs.contains(where: { $0.link != nil }) { return true }
         let lowered = plain.lowercased()
         return lowered.contains("://") || lowered.hasPrefix("www.") || lowered.contains("@")
-    }
-
-    /// The line as the translator gets it: links and emphasis only (no reader styling).
-    static func translationText(_ line: AttributedString) -> AttributedString {
-        var text = AttributedString()
-        for run in line.runs {
-            var attributes = AttributeContainer()
-            if let link = run.link { attributes.link = link }
-            if let intent = run.inlinePresentationIntent { attributes.inlinePresentationIntent = intent }
-            text.append(AttributedString(String(line[run.range].characters), attributes: attributes))
-        }
-        return text
     }
 }

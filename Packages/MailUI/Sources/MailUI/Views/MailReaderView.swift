@@ -9,10 +9,11 @@ import SwiftUI
 /// Observes only this message's rows; the body is rendered once per message version (a sync
 /// burst touching other mail re-reads the rows without parsing HTML again).
 ///
-/// Translated (the toolbar's Translate, `MailTranslations`): the subject and the body's text in
-/// the student's language, the body grey (machine-written sentences, DESIGN §5.1); the original
-/// stays up until the translation lands. The found block, attachments and the draft stay as they
-/// are.
+/// Translated (the toolbar's Translate, `MailTranslations`): the subject lands first, then each
+/// paragraph replaces its original in place, grey (machine-written sentences, DESIGN §5.1); a
+/// paragraph still waiting shows the original. While the language pair's model downloads (once),
+/// a thin determinate line runs along the reader's top edge. The found block, attachments and
+/// the draft stay as they are.
 struct MailReaderView: View {
     let messageID: MailMessage.ID
     let now: Date
@@ -58,7 +59,6 @@ struct MailReaderView: View {
                         FoundBlock(rows: data.found, dates: dates)
                     }
                     MailBodyView(mailBody: translated?.body ?? data.body)
-                        .foregroundStyle(translated == nil ? .primary : .secondary)
                     if !data.attachments.isEmpty {
                         FlowLayout(spacing: 8, lineSpacing: 8) {
                             ForEach(data.attachments) { attachment in
@@ -73,9 +73,13 @@ struct MailReaderView: View {
                 .padding(.bottom, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .overlay(alignment: .top) {
+                if let fraction = translations.downloads[message.id] {
+                    ModelDownloadLine(fraction: fraction)
+                }
+            }
             .modifier(MailTranslationRunner(
                 job: translations.job(for: message.id, subject: message.subject, body: data.body, target: translator.target),
-                translator: translator,
                 translations: translations
             ))
             .task(id: LanguageKey(messageID: message.id, html: message.htmlSHA256, text: message.bodyText.count)) {
@@ -92,14 +96,30 @@ struct MailReaderView: View {
         var text: Int
     }
 
-    /// Offers Translate when the mail is in another language than the student's (one the system
-    /// translates). The recognizer runs off the main actor; the reader never waits for it.
+    /// Offers Translate when the mail is in another language than the student's (one a model
+    /// route covers). The recognizer runs off the main actor; the reader never waits for it.
     private func findLanguage(subject: String, body: MailBody) async {
         let language = await MailLanguage.dominant(subject: subject, body: body)
         var source = MailLanguage.translationSource(of: language, for: translator.target)
-        if let candidate = source, await !translations.supports(candidate, with: translator) { source = nil }
+        if let candidate = source, !translations.supports(candidate, with: translator) { source = nil }
         guard !Task.isCancelled else { return }
         translations.setSource(source, for: messageID)
+    }
+}
+
+/// The language pair's model downloading (once): a thin determinate line along the reader's top
+/// edge. No copy and no spinner; its help and label are the phase.
+private struct ModelDownloadLine: View {
+    let fraction: Double
+
+    var body: some View {
+        ProgressView(value: fraction)
+            .progressViewStyle(.linear)
+            .controlSize(.mini)
+            .tint(.accentColor)
+            .frame(maxWidth: .infinity)
+            .help("Downloading model")
+            .accessibilityLabel(Text("Downloading model"))
     }
 }
 
