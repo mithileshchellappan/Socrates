@@ -2,11 +2,14 @@ import Courses
 import Foundation
 import StudyCore
 
-/// Mirrors lecture sessions into the app's own "Study Portal" calendar (PRD #36).
+/// Mirrors lecture sessions into the app's own "Socrates" calendar (PRD #36).
 ///
 /// - Writes only to that calendar, found by the identifier remembered in `UserDefaults`, else an
-///   existing writable calendar with its title (iCloud first), else a new one in the iCloud
-///   source (falling back to the default calendar's source, then a local one).
+///   existing writable calendar with its title (iCloud first), else one with the title it had
+///   before the app was renamed ("Study Portal"), else a new one in the iCloud source (falling
+///   back to the default calendar's source, then a local one).
+/// - A calendar it writes to that still has the old title is renamed in place (same identifier,
+///   same events); a calendar the student renamed to anything else keeps its title.
 /// - One event per visible session: title = course name (+ " · Exercise" …), location = room,
 ///   `url = studyportal://session/<uuid>`, no notes. The event's identifier is stored in
 ///   `lecture_session.calendar_event_id`.
@@ -20,7 +23,9 @@ import StudyCore
 /// - Without full access it does nothing and throws nothing; nothing is recorded, so the work
 ///   waits for the next sync.
 public actor CalendarMirror {
-    public static let defaultCalendarTitle = "Study Portal"
+    public static let defaultCalendarTitle = "Socrates"
+    /// The app's calendar's title before the app was renamed; such a calendar is renamed in place.
+    public static let legacyCalendarTitle = "Study Portal"
     public static let urlScheme = "studyportal"
     public static let urlPrefix = "studyportal://session/"
     /// Deadlines and other tracked items (from mail): `studyportal://item/<uuid>`.
@@ -29,15 +34,18 @@ public actor CalendarMirror {
     private let services: StudyServices
     let store: any CalendarStore
     let defaults: any CalendarMirrorDefaults
-    /// The app's own calendar's title ("Study Portal").
+    /// The app's own calendar's title ("Socrates").
     let title: String
+    /// The title that calendar had before the app was renamed ("Study Portal"); nil for a title
+    /// given by the caller.
+    let legacyTitle: String?
     private let scope: String
     private var running: Task<CalendarSyncReport, any Error>?
 
     /// - Parameters:
-    ///   - calendarTitle: nil = "Study Portal" for the real library, "Study Portal (<folder>)"
-    ///     for a library relocated with `STUDYPORTAL_DATA_ROOT`, so a throwaway library never
-    ///     touches the real calendar.
+    ///   - calendarTitle: nil = "Socrates" for the real library, "Socrates (<folder>)" for a
+    ///     library relocated with `SOCRATES_DATA_ROOT`, so a throwaway library never touches the
+    ///     real calendar.
     ///   - defaults: where the calendar identifier is remembered (device-local).
     public init(
         services: StudyServices,
@@ -49,6 +57,7 @@ public actor CalendarMirror {
         self.store = store
         self.defaults = defaults
         title = calendarTitle ?? Self.calendarTitle(for: services.paths)
+        legacyTitle = calendarTitle == nil ? Self.calendarTitle(for: services.paths, base: Self.legacyCalendarTitle) : nil
         scope = Self.scope(for: services.paths)
     }
 
@@ -361,10 +370,10 @@ public actor CalendarMirror {
             let reroomed = (current.location ?? "").trimmingCharacters(in: .whitespaces) != (draft.location ?? "")
             guard moved || reroomed, !current.isAllDay else { return false }
             let now = Self.describe(start: current.startsAt, end: current.endsAt, location: current.location ?? "", zone: zone)
-            detail = "The student changed the Study Portal event of \(name) (session \(session.id.uuidString.lowercased())) in the Calendar app: was \(was), now \(now)."
+            detail = "The student changed the Socrates event of \(name) (session \(session.id.uuidString.lowercased())) in the Calendar app: was \(was), now \(now)."
             version = "\(Int(current.startsAt.timeIntervalSince1970))-\(Int(current.endsAt.timeIntervalSince1970))-\(current.location ?? "")"
         } else {
-            detail = "The student deleted the Study Portal event of \(name) (session \(session.id.uuidString.lowercased())), \(was), in the Calendar app."
+            detail = "The student deleted the Socrates event of \(name) (session \(session.id.uuidString.lowercased())), \(was), in the Calendar app."
             version = "deleted"
         }
         let key = "calendar:\(eventID):\(version)"
@@ -466,14 +475,18 @@ public actor CalendarMirror {
     private func resolveCalendar(_ report: inout CalendarSyncReport) async throws -> (id: String, changed: Bool) {
         let calendars = await store.calendars()
         let saved = defaults.string(forKey: key("calendar"))
-        if let saved, calendars.contains(where: { $0.id == saved && $0.allowsModifications }) {
+        if let saved, let own = calendars.first(where: { $0.id == saved && $0.allowsModifications }) {
+            await renameIfLegacy(own)
             return (saved, false)
         }
         let sources = await store.sources()
         let preferred = Self.preferredSource(sources, defaultSourceID: await store.defaultSourceID())
         let named = calendars.filter { $0.title == title && $0.allowsModifications }
-        if let adopted = named.first(where: { $0.sourceID == preferred?.id }) ?? named.first {
+        let legacy = calendars.filter { $0.title == legacyTitle && $0.allowsModifications }
+        if let adopted = named.first(where: { $0.sourceID == preferred?.id }) ?? named.first
+            ?? legacy.first(where: { $0.sourceID == preferred?.id }) ?? legacy.first {
             defaults.set(adopted.id, forKey: key("calendar"))
+            await renameIfLegacy(adopted)
             return (adopted.id, true)
         }
         guard let source = preferred else { throw CalendarMirrorError.noCalendarSource }
@@ -482,6 +495,19 @@ public actor CalendarMirror {
         report.calendarCreated = true
         Log.calendar.info("Created the \(self.title, privacy: .public) calendar in \(source.title, privacy: .public)")
         return (created.id, true)
+    }
+
+    /// The app's own calendar still titled as before the rename ("Study Portal") gets the new
+    /// title in place: same identifier, same events. Any other title (the student's own) stays.
+    /// A failure leaves the old title; the next sync tries again.
+    private func renameIfLegacy(_ calendar: CalendarInfo) async {
+        guard let legacyTitle, calendar.title == legacyTitle, calendar.title != title else { return }
+        do {
+            try await store.renameCalendar(id: calendar.id, title: title)
+            Log.calendar.info("Renamed the \(legacyTitle, privacy: .public) calendar to \(self.title, privacy: .public)")
+        } catch {
+            Log.calendar.error("Renaming the \(legacyTitle, privacy: .public) calendar failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Rules
@@ -536,12 +562,12 @@ public actor CalendarMirror {
         return (start, end)
     }
 
-    public static func calendarTitle(for paths: AppPaths) -> String {
-        guard let live = try? AppPaths.live(environment: [:]) else { return defaultCalendarTitle }
+    public static func calendarTitle(for paths: AppPaths, base: String = defaultCalendarTitle) -> String {
+        guard let live = try? AppPaths.live(environment: [:]) else { return base }
         if paths.root.standardizedFileURL.path(percentEncoded: false) == live.root.standardizedFileURL.path(percentEncoded: false) {
-            return defaultCalendarTitle
+            return base
         }
-        return "\(defaultCalendarTitle) (\(paths.root.lastPathComponent))"
+        return "\(base) (\(paths.root.lastPathComponent))"
     }
 
     static func scope(for paths: AppPaths) -> String {

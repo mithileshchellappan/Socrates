@@ -67,6 +67,13 @@ public actor EventKitCalendarStore: CalendarStore {
         return Self.info(calendar)
     }
 
+    public func renameCalendar(id calendarID: String, title: String) throws {
+        guard let calendar = store.calendar(withIdentifier: calendarID) else { throw CalendarStoreError.calendarNotFound }
+        guard calendar.title != title else { return }
+        calendar.title = title
+        try store.saveCalendar(calendar, commit: true)
+    }
+
     public func event(id: String, calendarID: String) -> CalendarEvent? {
         ekEvent(id: id, calendarID: calendarID).map(Self.value)
     }

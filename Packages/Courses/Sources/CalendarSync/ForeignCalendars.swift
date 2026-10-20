@@ -1,7 +1,7 @@
 import Foundation
 import StudyCore
 
-/// One of the student's other calendars (not the app's own "Study Portal" calendar), shown
+/// One of the student's other calendars (not the app's own "Socrates" calendar), shown
 /// read-only in the Calendar screen when its checkbox is on (PRD #36, docs/DESIGN.md §8.3).
 public struct ForeignCalendar: Hashable, Sendable, Identifiable {
     public var id: String
@@ -105,14 +105,16 @@ extension CalendarMirror: ForeignCalendarSource {
         return events.sorted { ($0.startsAt, $0.id) < ($1.startsAt, $1.id) }
     }
 
-    /// The calendar the mirror writes to: the one it remembers, else one with its title.
+    /// The calendar the mirror writes to: the one it remembers, else one with its title, else one
+    /// with its title from before the rename (which the next sync renames).
     private func ownCalendar(in calendars: [CalendarInfo]) -> CalendarInfo? {
         let saved = defaults.string(forKey: key("calendar"))
         return calendars.first { $0.id == saved } ?? calendars.first { $0.title == title }
+            ?? calendars.first { $0.title == legacyTitle }
     }
 
-    /// The app's own calendar (or one with its title, which the mirror would adopt).
+    /// The app's own calendar (or one with its title, old or new, which the mirror would adopt).
     private func isOwn(_ calendar: CalendarInfo, ownID: String?) -> Bool {
-        calendar.id == ownID || calendar.title == title
+        calendar.id == ownID || calendar.title == title || calendar.title == legacyTitle
     }
 }
