@@ -603,7 +603,7 @@ struct ParityRender {
     static func overlayCompactPanel(
         on png: Data, launch: ParityMode.Launch, scheme: ColorScheme, model: AppModel, windowSize: CGSize, settle: Duration
     ) async throws -> Data {
-        // Room for the panel's shadow (radius 20, 12 down).
+        // Room for the panel's shadow (radius 20, 18 down).
         let pad: CGFloat = 40
         let margin: CGFloat = 12
         var shown = panelContext(launch)
