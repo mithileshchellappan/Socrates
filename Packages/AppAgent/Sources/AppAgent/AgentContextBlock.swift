@@ -28,23 +28,39 @@ public struct AgentContextBlock: Sendable, Hashable {
 
     static let opening = "<context "
 
+    /// What the context block reads in one transaction.
+    private struct Rows: Sendable {
+        var courses: [Course] = []
+        var lecture: Lecture?
+        var mail: MailMessage?
+        var note: Note?
+        var item: TrackedItem?
+        var session: LectureSession?
+        var document: StudyDocument?
+        var firstRecording: Recording?
+    }
+
     public static func build(_ context: AgentContext, services: StudyServices) async throws -> AgentContextBlock {
-        let rows = try await services.database.read { db in
-            (
-                courses: try Course.order(by: \.sortOrder).fetchAll(db),
-                lecture: try context.lectureID.flatMap { try Lecture.find($0).fetchOne(db) },
-                mail: try context.mailMessageID.flatMap { try MailMessage.find($0).fetchOne(db) },
-                note: try context.noteID.flatMap { try Note.find($0).fetchOne(db) },
-                item: try context.itemID.flatMap { try TrackedItem.find($0).fetchOne(db) },
-                session: try context.sessionID.flatMap { try LectureSession.find($0).fetchOne(db) },
-                document: try context.documentID.flatMap { try StudyDocument.find($0).fetchOne(db) },
-                firstRecording: try context.lectureID.flatMap { id in
-                    try Recording.where { $0.lectureID.eq(Lecture.ID?.some(id)) }.order(by: \.startedAt).fetchOne(db)
-                }
-            )
+        // One statement per row: the tuple of optional lookups this replaced did not type-check in
+        // reasonable time with Xcode 27's compiler.
+        let rows: Rows = try await services.database.read { db -> Rows in
+            var rows = Rows()
+            rows.courses = try Course.order(by: \.sortOrder).fetchAll(db)
+            if let id = context.lectureID {
+                rows.lecture = try Lecture.find(id).fetchOne(db)
+                let lectureID: Lecture.ID? = id
+                rows.firstRecording = try Recording.where { $0.lectureID.eq(lectureID) }.order(by: \.startedAt).fetchOne(db)
+            }
+            if let id = context.mailMessageID { rows.mail = try MailMessage.find(id).fetchOne(db) }
+            if let id = context.noteID { rows.note = try Note.find(id).fetchOne(db) }
+            if let id = context.itemID { rows.item = try TrackedItem.find(id).fetchOne(db) }
+            if let id = context.sessionID { rows.session = try LectureSession.find(id).fetchOne(db) }
+            if let id = context.documentID { rows.document = try StudyDocument.find(id).fetchOne(db) }
+            return rows
         }
         let tokens = AgentCatalog.Tokens(rows.courses)
-        let course = (context.courseID ?? rows.lecture?.courseID).flatMap { id in rows.courses.first { $0.id == id } }
+        let courseID: Course.ID? = context.courseID ?? rows.lecture?.courseID
+        let course: Course? = courseID.flatMap { id in rows.courses.first { $0.id == id } }
         var lines: [String] = []
         var label = "Today"
         var glyph = "sun.max"
@@ -134,13 +150,16 @@ public struct AgentContextBlock: Sendable, Hashable {
             lines.append("open note: \"\(AgentXML.escape(ToolJSON.clip(title, 60)))\" (note \(note.id.uuidString.lowercased()))")
         }
         if let item = rows.item {
-            lines.append("selected item: \(item.kind.rawValue) \"\(AgentXML.escape(item.title))\" (item \(item.id.uuidString.lowercased()))"
-                + (item.dueAt.map { " · \(ChangeSummary.dayTime($0, allDay: item.isAllDay))" } ?? ""))
+            var line = "selected item: \(item.kind.rawValue) \"\(AgentXML.escape(item.title))\" (item \(item.id.uuidString.lowercased()))"
+            if let due = item.dueAt { line += " · \(ChangeSummary.dayTime(due, allDay: item.isAllDay))" }
+            lines.append(line)
         }
         if let session = rows.session {
-            lines.append("selected session: \(tokens.token(session.courseID)) \(session.kind.rawValue) \(ChangeSummary.dayTime(session.startsAt))"
-                + (session.room.isEmpty ? "" : " \(AgentXML.escape(session.room))") + (session.isCancelled ? " (cancelled)" : "")
-                + " (session \(session.id.uuidString.lowercased()))")
+            var line = "selected session: \(tokens.token(session.courseID)) \(session.kind.rawValue) \(ChangeSummary.dayTime(session.startsAt))"
+            if !session.room.isEmpty { line += " \(AgentXML.escape(session.room))" }
+            if session.isCancelled { line += " (cancelled)" }
+            line += " (session \(session.id.uuidString.lowercased()))"
+            lines.append(line)
         }
         if context.screen != .lecture, context.screen != .course, let course {
             lines.append("course: \(tokens.token(course.id)) \(AgentXML.escape(course.name))")
