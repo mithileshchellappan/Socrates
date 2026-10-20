@@ -202,9 +202,15 @@ public struct TranslationModelStore: Sendable {
             try Task.checkCancellation()
             let destination = folder.appending(path: file.path, directoryHint: .notDirectory)
             if let size = Self.fileSize(destination), size == file.size {
-                completed += file.size
-                report(0)
-                continue
+                // Already there (an invalidated or interrupted download): keep it if it verifies.
+                var verifier = FileVerifier(file)
+                try verifier.absorb(contentsOf: destination)
+                if verifier.matches() {
+                    completed += file.size
+                    report(0)
+                    continue
+                }
+                try? FileManager.default.removeItem(at: destination)
             }
             try await Self.withRetry {
                 try await fetch(file, repository: repository, revision: revision, to: destination, onBytes: report)
