@@ -26,7 +26,8 @@ import StudyPass
 ///                          schedule: CourseSchedule(services: s), studyPass: studyPassPipeline,
 ///                          coach: coach,   // mc: the CoachEngine (queue runners); also AppAgent.specs(…, coach:)
 ///                          specs: specs,   // the queue starts `task` conversations with `specs.task`
-///                          documents: bank) // md
+///                          documents: bank, // md
+///                          notesWriter: NotesWriter(services: s, client: client, figureCheck: <StudyPage's checker>)) // ln
 ///     await agent.start()           // startBackgroundWork, after the pipelines
 ///     await agent.wake()            // new mail, finished transcriptions, study pass units, imports,
 ///                                   // calendar changes, Claude Code turning available
@@ -81,6 +82,7 @@ public actor AppAgent {
         filing: FilingService? = nil,
         advisor: (any FilingAdvisor)? = nil,
         documents: DocumentBank? = nil,
+        notesWriter: NotesWriter? = nil,
         wakeProcessing: @escaping @Sendable () async -> Void = {},
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -102,8 +104,8 @@ public actor AppAgent {
         let quit = QuitSignal()
         self.quit = quit
         queue = AgentTaskQueue(
-            services: services, client: client, runtime: runtime, studyPass: studyPass, coach: coach, taskSpec: specs.task, quit: quit,
-            now: now
+            services: services, client: client, runtime: runtime, studyPass: studyPass, coach: coach, notesWriter: notesWriter,
+            taskSpec: specs.task, quit: quit, now: now
         )
         triage = FactTriage(services: services, client: client, changeLog: changeLog, quit: quit, now: now)
         reminders = ReminderCenter(services: services, changeLog: changeLog, now: now)

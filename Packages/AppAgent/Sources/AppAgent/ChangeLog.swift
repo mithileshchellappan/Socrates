@@ -117,6 +117,11 @@ public struct ChangeLog: Sendable {
         /// oss: the university profile as it is to be, and the semester row as it is to be (nil:
         /// unchanged), from `set_profile` (`ProfileTools.swift`).
         case profile(UniversityProfile, semester: Semester?)
+        /// ln: the student's length for lecture notes, kept as a `preference` memory with its
+        /// `notes_rule` (`set_notes_length`); the older rule of the same scope is forgotten.
+        case notesRule(NotesRule, text: String)
+        /// ln: an answer kept on a lecture's notes (`keep_notes_answer`): the mark as it is to be.
+        case notesAnswer(LectureNotesMark)
     }
 
     /// What `apply` did.
@@ -225,6 +230,8 @@ public struct ChangeLog: Sendable {
             if change.kind == .courseRemove { return try await undoCourseRemoval(change, at: date) }
             if change.kind == .courseAdd { return try await undoCourseAdd(change, at: date) }
             if change.kind == .documentAdd { return try await undoDocumentAdd(change, at: date) }
+            // ln: a version of a lecture's notes the agent queued.
+            if change.targetTable == .lectureNotes { return try await undoLectureNotes(change, at: date) }
         }
         let undone = try await services.database.write { db in try Self.undo(id, db: db, store: store, now: date) }
         if undone { await onChange() }
@@ -431,6 +438,10 @@ public struct ChangeLog: Sendable {
             return try applyDeck(request, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now).outcome
         case .profile(let profile, let semester):
             return try setProfile(profile, semester: semester, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now)
+        case .notesRule(let rule, let text):
+            return try rememberNotesRule(rule, text: text, quote: quote, origin: origin, db: db, store: store, now: now)
+        case .notesAnswer(let mark):
+            return try keepNotesAnswer(mark, quote: quote, origin: origin, db: db, store: store, now: now)
         }
     }
 
@@ -1233,6 +1244,9 @@ public struct ChangeLog: Sendable {
             // oss: the profile and the semester as they were, each only while it is still as the
             // change left it.
             if current { try undoProfile(change, db: db, store: store, now: now) }
+        case .lectureNotesMark:
+            // ln: a kept answer is removed.
+            try undoNotesMark(change, db: db, now: now)
         default:
             break
         }

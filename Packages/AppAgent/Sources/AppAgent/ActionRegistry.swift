@@ -227,14 +227,16 @@ public struct ActionRegistry: Sendable {
 }
 
 extension ActionRegistry {
-    /// The `app` conversation's actions (docs/plan-actions.md §4 "Registered"): 23, 22 without the
-    /// document bank (`keep_document`); oss adds set_profile. Their tools are the instances `AppAgentChat.spec` builds
+    /// The `app` conversation's actions (docs/plan-actions.md §4 "Registered"): 26, 25 without the
+    /// document bank (`keep_document`); oss adds set_profile; ln adds write_lecture_notes,
+    /// set_notes_length and keep_notes_answer. Their tools are the instances `AppAgentChat.spec` builds
     /// for its direct writes (the student's words and mail are sources).
     public static func app(_ deps: AppAgentChat.Services) throws -> ActionRegistry {
         let writes = WriteTools(services: deps.services, changeLog: deps.changeLog, chatSource: true, mailSource: true)
         let plan = PlanTools(services: deps.services, changeLog: deps.changeLog, coach: deps.coach, writes: writes)
         let delegate = DelegateTools(services: deps.services)
         let documents = deps.documentTools
+        let notes = LectureNotesTools(writes: writes)
         let any = writes.sources
         let chat = ["chat"]
         var actions: [AgentAction] = [
@@ -391,10 +393,32 @@ extension ActionRegistry {
                 keywords: ["slides", "Folien", "deck", "pdf", "unlink", "remove", "entfernen", "wrong", "falsch", "detach"],
                 sources: chat, studentOnly: true
             ),
+            // ln: lecture notes.
+            AgentAction(
+                notes.writeLectureNotes, summary: "Writes a lecture's notes again as a new version (optionally with what to change).",
+                keywords: [
+                    "notes", "lecture", "write", "again", "rewrite", "regenerate", "redo", "version", "Mitschrift", "Skript",
+                    "Zusammenfassung", "summary", "neu", "nochmal", "erneut", "more", "mehr",
+                ],
+                sources: chat, studentOnly: true
+            ),
+            AgentAction(
+                notes.setNotesLength, summary: "Sets how long lecture notes are written: concise, standard or thorough (a course or all).",
+                keywords: [
+                    "notes", "length", "shorter", "longer", "concise", "thorough", "detailed", "brief", "kürzer", "länger", "ausführlich",
+                    "knapp", "Mitschrift", "Länge",
+                ],
+                sources: chat, studentOnly: true
+            ),
+            AgentAction(
+                notes.keepNotesAnswer, summary: "Keeps an answer on a lecture's notes under the passage it explains.",
+                keywords: ["keep", "add", "notes", "answer", "save", "behalten", "hinzufügen", "speichern", "Antwort", "Mitschrift", "passage"],
+                sources: chat, studentOnly: true
+            ),
         ]
         return try ActionRegistry(actions)
     }
 
-    /// How many actions `app` registers (the catalog's "actions" line).
-    static func appCount(documents: Bool) -> Int { documents ? 23 : 22 }
+    /// How many actions `app` registers (the catalog's "actions" line); ln added three.
+    static func appCount(documents: Bool) -> Int { documents ? 26 : 25 }
 }

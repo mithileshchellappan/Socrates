@@ -19,9 +19,9 @@ struct ActionTools: Sendable {
                 name: "find_actions",
                 description: """
                     Finds the writes that are not direct tools (sessions, course facts, courses, weekly classes, the plan, \
-                    credits, keeping a document, a study pass, a lecture's slides) by a few words of what to do ("room \
-                    change", "link slides", "Folien zuordnen"): each with its parameters for run_action, the sources its \
-                    quote may have and whether only the student may ask for it.
+                    credits, keeping a document, a study pass, a lecture's slides, a lecture's notes) by a few words of \
+                    what to do ("room change", "link slides", "Folien zuordnen"): each with its parameters for \
+                    run_action, the sources its quote may have and whether only the student may ask for it.
                     """,
                 inputSchema: Schema.object([
                     "query": Schema.string("A few words of what to do, English or German."),
