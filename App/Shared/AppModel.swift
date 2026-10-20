@@ -401,8 +401,8 @@ final class AppModel {
 
     // MARK: - Background work
 
-    /// Runs once per launch (started by `launch()`): creates the student's courses in an empty
-    /// library, keeps the search index current, re-queues interrupted jobs, files captures a crash
+    /// Runs once per launch (started by `launch()`): keeps the search index current, re-queues
+    /// interrupted jobs, files captures a crash
     /// (or a failed filing) left behind through smart import, names decks stored under their file
     /// name, starts processing, gives unsure recordings their look by what was said, and brings
     /// the calendar up to date. Only the processing steps need the transcription engine.
@@ -419,16 +419,6 @@ final class AppModel {
         #endif
         // Conversations a quit left running end as failed.
         await agent?.recoverInterrupted()
-        // A phone that syncs gets the Mac's courses; it never creates its own (its library from
-        // before sync stays in another file, `AppPaths.syncedDatabase`, and never uploads).
-        if !(Self.isPhone && cloudSync != nil) {
-            do {
-                let seeded = try await StudentCourses.seedIfEmpty(services: services)
-                if !seeded.isEmpty { Log.app.notice("Created \(seeded.count) courses") }
-            } catch {
-                Log.app.error("Creating the courses failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
 
         if let searchIndexer {
             let semanticIndex = semanticIndex

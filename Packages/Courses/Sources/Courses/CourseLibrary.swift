@@ -148,23 +148,9 @@ public struct CourseLibrary: Sendable {
         }
     }
 
-    /// Creates `drafts` in one transaction, but only in a library without courses (a first
-    /// launch). Consent, when a draft records, is dated `consentAt`. Returns the courses created
-    /// (none when the library already had some).
-    @discardableResult
-    public func seedIfEmpty(_ drafts: [CourseDraft], consentAt: Date, now: Date = Date()) async throws -> [Course] {
-        let store = store
-        return try await services.database.write { db in
-            guard try Course.all.fetchCount(db) == 0 else { return [] }
-            return try drafts.filter(\.isValid).map { draft in
-                try Self.insert(draft, now: now, consentAt: consentAt, store: store, db: db)
-            }
-        }
-    }
-
-    /// Saves a new course from `draft` inside the caller's transaction (`create`, the first-launch
-    /// seed, AppAgent's change log for `add_course`): the same semester, colour, order and mail
-    /// rules as the New Course sheet.
+    /// Saves a new course from `draft` inside the caller's transaction (`create`, AppAgent's
+    /// change log for `add_course`): the same semester, colour, order and mail rules as the New
+    /// Course sheet.
     public static func insert(_ draft: CourseDraft, now: Date, consentAt: Date, store: RecordStore, db: Database) throws -> Course {
         let courses = try Course.all.fetchAll(db)
         let semester: Semester
