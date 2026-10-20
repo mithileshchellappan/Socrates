@@ -387,6 +387,40 @@ public struct LectureImporter: Sendable {
         }
     }
 
+    /// mr: a deck already in the library (its course's) linked to one more lecture, the whole
+    /// deck, `manual` (`LectureSlides.link`): the lectures that use it keep it, nothing is copied.
+    /// The lecture `target` names is created when needed (a session without one). One
+    /// transaction with `then`; `align` is queued for the lecture's transcribed recordings.
+    /// Throws `DeckLinkError.otherCourse` for a lecture of another course.
+    @concurrent
+    public func linkDeck(
+        _ deck: Deck,
+        to target: LectureTarget,
+        then companion: (@Sendable (Database, AttachedDeck) throws -> Void)? = nil
+    ) async throws -> AttachedDeck {
+        let targetCourse = try await targetCourseID(target)
+        guard let course = try await fetchCourse(targetCourse ?? deck.courseID) else { throw LectureImportError.courseMissing }
+        let plan = try await lecturePlan(for: target, course: course, newID: nil, title: deck.title, heldAt: nil)
+        let store = store
+        let now = now()
+        let deckID = deck.id
+        return try await services.database.write { db in
+            let committed = try Self.commit(plan, target: target, in: db, store: store)
+            let lecture = committed.lecture
+            let stored: Deck? = try Deck.find(deckID).fetchOne(db)
+            let pageCount: Int = max(stored?.pageCount ?? deck.pageCount, 1)
+            let result = try LectureSlides.link(
+                lectureID: lecture.id, deckID: deckID, firstPage: 1, lastPage: pageCount, source: .manual, in: db, store: store, now: now
+            )
+            guard let range = result.after, let span = try LectureDeckSpan.find(range.spanID).fetchOne(db),
+                  let current = try Deck.find(deckID).fetchOne(db)
+            else { throw LectureImportError.lectureMissing }
+            let attached = AttachedDeck(lecture: lecture, deck: current, span: span, createdLecture: committed.created, alignJobs: result.alignJobs)
+            try companion?(db, attached)
+            return attached
+        }
+    }
+
     /// `align` jobs (not saved) for the lecture's recordings that have a transcript and no queued
     /// or running transcription or alignment: the deck/recording pairing changed, so alignment
     /// must run again. Recordings still waiting for their transcript get alignment queued by
