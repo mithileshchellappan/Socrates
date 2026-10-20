@@ -92,6 +92,8 @@ public enum AppAgentChat {
             query.searchNotes, query.readNote, query.queryItems, query.querySessions, query.queryCalendar, query.queryMemory,
             query.listChanges, query.checkTasks, plan.planQuery,
         ]
+        // ln: a lecture's notes (read only: one writer, the notes writer).
+        tools.append(LectureNotesTools(writes: writes).readLectureNotes)
         tools += deps.documentTools.readTools
         // The direct writes (the frequent ones), draft and delegate.
         tools += [writes.addItem, writes.moveItem, writes.completeItem, writes.updateItem, writes.setReminder, writes.appendNote, writes.undoChange]
@@ -133,7 +135,8 @@ public enum AppAgentChat {
 
         Rules:
         - Pull details with the tools instead of guessing; never load more than you need. Lectures: \
-        search_lectures, read_slide, read_transcript_span, list_study_items, list_lectures. Mail: search_mail, \
+        search_lectures, read_slide, read_transcript_span, list_study_items, list_lectures, read_lecture_notes (the \
+        lecture's notes: the study text written for it). Mail: search_mail, \
         read_mail, list_mail. Notes: search_notes, read_note. Items: query_items. Classes: query_sessions, \
         query_calendar. Memory: query_memory.
         - After a claim from a lecture, put the cite marker of the row, copied character for character \
@@ -141,7 +144,8 @@ public enum AppAgentChat {
         - Change the student's data only when they ask or a source clearly states it. The write tools: add_item, \
         move_item, complete_item, update_item, set_reminder, append_note, undo_change, remember. Anything else \
         (sessions, course facts, courses, weekly classes, the plan, credits, the university profile and the \
-        semester's dates, keeping a document, a study pass, a lecture's slides): find_actions with a few words, then run_action with the action's name and params. Each \
+        semester's dates, keeping a document, a study pass, a lecture's slides, a lecture's notes: writing them again, \
+        their length, keeping an answer on them): find_actions with a few words, then run_action with the action's name and params. Each \
         write needs quote = the exact words that state it and \
         source: chat (the student's own words in the message you are answering), mail (with the mail's id as \
         source_id), lecture (the lecture's key) or event. Dates must be in the quote. Look before you write; never \
@@ -379,8 +383,12 @@ struct DelegateTools: Sendable {
             }
             guard task.state.isOpen else { return .json(["task": .string(id.uuidString.lowercased()), "state": .string(task.state.rawValue)]) }
             try await tasks.cancel(id)
-            // md: a queued document summary fails at once (a running one when the queue stops it).
-            if task.state != .running { await AgentTaskQueue.closeSummary(of: task, services: services) }
+            // md: a queued document summary fails at once (a running one when the queue stops it);
+            // ln: a queued notes version is cancelled at once.
+            if task.state != .running {
+                await AgentTaskQueue.closeSummary(of: task, services: services)
+                await AgentTaskQueue.closeNotes(of: task, services: services)
+            }
             return .json(["task": .string(id.uuidString.lowercased()), "state": "cancelled"])
         }
     }

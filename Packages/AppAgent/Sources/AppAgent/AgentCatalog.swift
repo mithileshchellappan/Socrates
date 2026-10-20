@@ -14,7 +14,7 @@ import StudyPass
 /// just made shows here from its next turn), each course's weekly slots with their keys
 /// ("lecture Mon 12:15–13:45 · Room 101 [slot 1a2b3c4d]"), each course's
 /// lectures ("L2 · Virtualization Basics · Tue 13 Oct · transcribed · study pass done (3 exam
-/// hints, 5 said in class)"), notes per course (count + 3 newest titles), the next sessions (this
+/// hints, 5 said in class) · notes · 2,140 words"), notes per course (count + 3 newest titles), the next sessions (this
 /// and next week), mail folders with unread counts, open items (next 6 weeks, nearest 12, then
 /// counts), the calendar range; (mc) the study coach: one line per course (credits · budget · Ready
 /// · this week · exam) and today's plan in one line (`CoachCatalog.lines`). Never whole lectures,
@@ -133,6 +133,18 @@ public struct AgentCatalog: Sendable, Hashable {
             """) {
             if let id: UUID = row["lecture_id"], let kind: String = row["kind"], let count: Int = row["n"] { studyItems[id, default: [:]][kind] = count }
         }
+        // ln: each lecture's current notes ("notes · 2,140 words", or while they are written).
+        var lectureNotes: [UUID: String] = [:]
+        let versions = try LectureNotes.where { $0.discardedAt.is(nil) }.fetchAll(db)
+        for (lectureID, own) in Dictionary(grouping: versions, by: \.lectureID) {
+            guard let current = LectureNotes.current(of: own) else { continue }
+            switch current.state {
+            case .done: lectureNotes[lectureID] = "notes · \(Self.grouped(NotesWords.count(current.body))) words"
+            case .queued, .generating, .paused: lectureNotes[lectureID] = "notes being written"
+            case .failed: lectureNotes[lectureID] = "notes failed"
+            default: break
+            }
+        }
         let notes = try Note.order { $0.updatedAt.desc() }.fetchAll(db)
         let lectureCourse = Dictionary(lectures.map { ($0.id, $0.courseID) }, uniquingKeysWith: { first, _ in first })
         let slots = try WeeklySlot.order { ($0.weekday, $0.startMinute) }.fetchAll(db)
@@ -191,6 +203,7 @@ public struct AgentCatalog: Sendable, Hashable {
                     if !shown.isEmpty { pass += " (" + shown.joined(separator: ", ") + ")" }
                     parts.append(pass)
                 }
+                if let notes = lectureNotes[lecture.id] { parts.append(notes) }
                 lines.append("  " + parts.joined(separator: " · "))
             }
             if own.count > 14 { lines.append("  (\(own.count - 14) older lectures: list_lectures)") }
@@ -282,6 +295,11 @@ public struct AgentCatalog: Sendable, Hashable {
             text = kept.joined(separator: "\n")
         }
         return text
+    }
+
+    /// "2,140".
+    static func grouped(_ number: Int) -> String {
+        number.formatted(.number.locale(Locale(identifier: "en_US")))
     }
 
     /// mr: whether the catalog lists the deck's key: a lecture reference names it otherwise

@@ -116,3 +116,19 @@ synthesis's slide list are only the range's pages, with the deck's numbers. The 
 those pages, so every unit's input hash changes with the range (a new range re-runs the pass; an
 unchanged one never calls again). Without a range (a capture's stamped deck whose link is gone):
 the deck most of the recording's slide spans are on, whole, as before.
+
+## Lecture notes (ln, workstream A; docs/plan-lecture-notes.md)
+
+`Sources/StudyPass/Notes/`: the engine of one study text per lecture. No UI, no tests.
+
+| Type | What |
+|---|---|
+| `NotesWriter(services:client:figureCheck:now:)` | `run(notesID:) async -> NotesWriteOutcome` (`.done`, `.waiting(until:)`, `.failed(sentence)`): `begin`, one streamed Opus 5.5 call at effort medium (`notes.write`, background, no schema) into `lecture_notes.body` at most every 100 ms, a resume of the missing sections after a pause, a quit or a cut-off answer (once), validation in code (`NotesValidator`), one Haiku repair call (`notes.repair`, `--json-schema`) for figures that fail the injected `NotesFigureChecking` (nil: structural checks), then `finish` with the outline and the Check yourself questions (`study_question`, origin `notes`, pool `round`). A usage limit or service trouble pauses the version; a refusal fails it. Run by AppAgent's task queue (`lecture_notes` tasks). |
+| `NotesAsker(services:client:now:)` | `LectureNotesAsking`: one streamed Opus 5.5 call at effort low (`notes.ask`, interactive priority, 2,000 tokens) grounded in the section's material; updates about ten times a second, `isWaiting` until the first words, `pausedUntil` on a usage limit, chips checked at the end. Writes nothing. |
+| `NotesMaterial` | the writer's input (§5.3) and the sections: the topics, or for a lecture with slides only the deck's own groups of slides (divider slides, else runs of one title, ≤ 8 groups); word budgets of §2.3 times the student's `NotesRule` (`NotesRules.length`). |
+| `NotesPrompt` | the format of `LectureNotesFormat`, the keys in order, the typed fences, all material delimited as data; `promptVersion` (part of `input_hash`). |
+| `NotesWords.count(_:)`, `NotesChipCheck.checked(_:courseID:in:)` | public helpers for AppAgent (the catalog's word count, keep_notes_answer's chips). |
+
+Pipeline hook: after a synthesis unit is written, `LectureNotesRepository.queueAfterStudyPass(lectureID:)`; after `rerun(lectureID:)`, the same with `rerun: true` once its synthesis lands.
+
+Wiring (integrator): `NotesWriter(services:, client: .studyPortal, figureCheck: <StudyPage's checker>)` into `AppAgent(…, notesWriter:)`; `NotesAsker(services:, client:)` as `\.lectureNotesAsker` on the Mac's main window.

@@ -483,6 +483,11 @@ public actor CoachEngine: StudyCoaching {
                 if courses.isEmpty, let readingID = scope.readingID, let reading = try StudyReading.find(readingID).fetchOne(db) {
                     courses = [reading.courseID]
                 }
+            case .lecture:
+                // ln: one lecture's round (Practice on its notes page).
+                if courses.isEmpty, let lectureID = scope.lectureID, let lecture = rows.lectures.first(where: { $0.id == lectureID }) {
+                    courses = [lecture.courseID]
+                }
             default:
                 break
             }

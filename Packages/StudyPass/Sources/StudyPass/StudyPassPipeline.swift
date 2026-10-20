@@ -106,6 +106,9 @@ public actor StudyPassPipeline {
     /// Units (lecture/stage/key) that reached `done` since launch, and how often.
     private var completedRuns: [String: Int] = [:]
     static let maximumRunsPerLaunch = 5
+    /// ln: lectures whose study pass the student re-ran (`rerun`): their next synthesis queues a
+    /// new version of their notes (`queueAfterStudyPass(rerun: true)`).
+    private var rerunNotes: Set<Lecture.ID> = []
 
     public init(services: StudyServices, client: ClaudeClient?, now: @escaping @Sendable () -> Date = { Date() }) {
         self.services = services
@@ -207,6 +210,7 @@ public actor StudyPassPipeline {
         transient.remove(lectureID)
         generationStart[lectureID] = stamp
         completedRuns = completedRuns.filter { !$0.key.hasPrefix(lectureID.uuidString) }
+        rerunNotes.insert(lectureID)
         preferred = lectureID
         Task { await self.wake() }
         return reset
@@ -517,6 +521,9 @@ public actor StudyPassPipeline {
                     StudyPass.log.notice("\(purpose, privacy: .public) \(unit.key, privacy: .public): inputs changed during the call; not written")
                     return .discarded
                 }
+                // ln: the lecture's notes are written after its synthesis (the first time, once more
+                // when they came from the slides alone, or after the student re-ran the pass).
+                if case .synthesize = spec.work { await queueNotes(material.lecture.id) }
                 // ma: a synthesis with said-in-class admin or deadline rows is a new fact for the
                 // app agent's triage (dates, rooms, rules said in class); one event per version.
                 if case .synthesize = spec.work,
@@ -578,6 +585,18 @@ public actor StudyPassPipeline {
                 }
                 return .failed
             }
+        }
+    }
+
+    /// ln: `LectureNotesRepository.queueAfterStudyPass` once a synthesis unit is written.
+    private func queueNotes(_ lectureID: Lecture.ID) async {
+        let rerun = rerunNotes.remove(lectureID) != nil
+        do {
+            if try await LectureNotesRepository(store: services.records).queueAfterStudyPass(lectureID: lectureID, rerun: rerun) != nil {
+                StudyPass.log.info("Lecture notes queued after the study pass")
+            }
+        } catch {
+            StudyPass.log.error("Queueing lecture notes failed: \(ReadableError.kind(of: error), privacy: .public)")
         }
     }
 

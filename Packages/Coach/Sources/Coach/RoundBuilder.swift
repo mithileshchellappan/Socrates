@@ -88,6 +88,12 @@ public enum RoundBuilder {
             limit = .questions(max(1, pool.count))
         case .topic:
             pool = questions.filter { $0.topicKey == scope.topic && ($0.readingID.map(readings.contains) ?? true) && $0.pool == .round }
+        case .lecture:
+            // ln: Practice on a lecture's notes page: that lecture's round questions (its notes'
+            // Check yourself and the coach's drafts).
+            pool = questions.filter {
+                $0.lectureID != nil && $0.lectureID == scope.lectureID && ($0.readingID.map(readings.contains) ?? true) && $0.pool == .round
+            }
         default:
             let courses = Set(scope.courseIDs)
             pool = questions.filter {

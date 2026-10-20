@@ -31,6 +31,9 @@ final class QuitSignal: Sendable {
 ///   claimed without it); a usage pause or no Claude Code → `paused` (queued again later).
 /// - md: a `document` task runs in code: `DocumentSummarizer.run(documentID:)` (one Haiku call),
 ///   one at a time, only with Claude Code, quiet (`DocumentTaskRunner.swift`).
+/// - ln: a `lecture_notes` task runs in code: `NotesWriter.run(notesID:)` (one streamed Opus
+///   call), one at a time, only with Claude Code, quiet unless the agent queued it from the chat
+///   (`LectureNotesTaskRunner.swift`). Without a writer (nil) it fails.
 /// - Result ≤ 4,000 characters into `result` (the task's last answer); the panel shows it at once;
 ///   the parent's next user turn carries it as `<task_result>` (`AppAgent.send`).
 /// - A usage limit → `paused` until the reset (it queues again then); cancel → its process is
@@ -42,6 +45,8 @@ actor AgentTaskQueue {
     let runtime: AgentRuntime
     let studyPass: StudyPassPipeline?
     let coach: CoachEngine?
+    /// ln: writes lecture notes (`lecture_notes` tasks); nil: they fail ("do not run on this device").
+    let notesWriter: NotesWriter?
     /// A task's spec from its row (`AppAgentChat.taskSpec(_:task:)`): its conversation starts
     /// with it, before the row is linked to the conversation.
     let taskSpec: @Sendable (AgentTask) async throws -> ConversationSpec
@@ -62,13 +67,15 @@ actor AgentTaskQueue {
 
     init(
         services: StudyServices, client: ClaudeClient, runtime: AgentRuntime, studyPass: StudyPassPipeline?, coach: CoachEngine?,
-        taskSpec: @escaping @Sendable (AgentTask) async throws -> ConversationSpec, quit: QuitSignal, now: @escaping @Sendable () -> Date
+        notesWriter: NotesWriter? = nil, taskSpec: @escaping @Sendable (AgentTask) async throws -> ConversationSpec, quit: QuitSignal,
+        now: @escaping @Sendable () -> Date
     ) {
         self.services = services
         self.client = client
         self.runtime = runtime
         self.studyPass = studyPass
         self.coach = coach
+        self.notesWriter = notesWriter
         self.taskSpec = taskSpec
         self.quit = quit
         self.now = now
@@ -121,8 +128,10 @@ actor AgentTaskQueue {
         let kinds: [AgentTaskKind]? = availability.isReady ? nil : [.studyPass]
         let claimed: [AgentTask]
         do {
-            // md: one document summary at a time (ten dropped files are read one after another).
-            claimed = try await tasks.claim(slots: limit, now: now(), kinds: kinds, oneAtATime: [.document]).filter { running[$0.id] == nil }
+            // md: one document summary at a time (ten dropped files are read one after another);
+            // ln: one lecture's notes at a time.
+            claimed = try await tasks.claim(slots: limit, now: now(), kinds: kinds, oneAtATime: [.document, .lectureNotes])
+                .filter { running[$0.id] == nil }
         } catch {
             AppAgentModule.log.error("Claiming tasks failed: \(String(describing: error), privacy: .public)")
             return
@@ -144,9 +153,11 @@ actor AgentTaskQueue {
             await cancelRow(id)
             // A task run in code stops between its calls.
             running[id]?.work.cancel()
-            // md: a document's summary that never started fails at once (a running one when it stops).
+            // md: a document's summary that never started fails at once (a running one when it stops);
+            // ln: a lecture's notes version that never started is cancelled.
             if running[id] == nil, let task = try? await services.records.fetch(AgentTask.self, id: id) {
                 await Self.closeSummary(of: task, services: services)
+                await Self.closeNotes(of: task, services: services)
             }
         }
     }
@@ -174,9 +185,9 @@ actor AgentTaskQueue {
     // MARK: - Running
 
     /// Tasks that run in code, not as a conversation: a study pass, (mc) question drafting, an
-    /// old exam to read, (md) a kept document to summarise.
+    /// old exam to read, (md) a kept document to summarise, (ln) a lecture's notes.
     static func runsInCode(_ task: AgentTask) -> Bool {
-        task.kind == .studyPass || task.kind == .questionDraft || task.kind == .document
+        task.kind == .studyPass || task.kind == .questionDraft || task.kind == .document || task.kind == .lectureNotes
             || (task.kind == .practiceExam && OldExamReader.input(of: task) != nil)
     }
 
@@ -190,6 +201,8 @@ actor AgentTaskQueue {
                 await self.runDrafting(task)
             } else if task.kind == .document {
                 await self.runDocument(task)
+            } else if task.kind == .lectureNotes {
+                await self.runLectureNotes(task)
             } else if inCode {
                 await self.runOldExam(task)
             } else {
@@ -387,9 +400,9 @@ actor AgentTaskQueue {
                 let newest = try AgentConversation.where { $0.kind.eq(app) }.order { $0.createdAt.desc() }.fetchOne(db)
                 if let newest {
                     let parent = AgentConversation.ID?.some(newest.id)
-                    // The coach's own bookkeeping (drafting, a study pass) and (md) a document's
-                    // summary are no news for the thread.
-                    let quiet: [AgentTaskKind] = [.questionDraft, .studyPass, .document]
+                    // The coach's own bookkeeping (drafting, a study pass), (md) a document's summary
+                    // and (ln) lecture notes written in the background are no news for the thread.
+                    let quiet: [AgentTaskKind] = [.questionDraft, .studyPass, .document, .lectureNotes]
                     try AgentTask
                         .where {
                             $0.parentConversationID.is(nil) && $0.reportedAt.is(nil) && $0.finishedAt.gte(Date?.some(since))
