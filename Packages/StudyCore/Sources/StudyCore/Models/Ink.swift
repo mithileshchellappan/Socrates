@@ -14,8 +14,15 @@ import Foundation
 /// points as one flat array `[x0, y0, x1, y1, …]` rounded to 0.1. Missing fields decode to
 /// defaults, so `{}` (the column's default) is an empty 16:9 slide drawing.
 public struct InkDrawing: Hashable, Sendable, Codable {
-    /// Uniform type identifier of a sketch blob (`NoteAttachment.contentType`).
-    public static let contentType = "com.example.studyportal.ink"
+    /// The content type of a sketch blob (`NoteAttachment.contentType`).
+    public static let contentType = "socrates.ink"
+
+    /// True for a sketch attachment's content type: none, `contentType`, or the one sketches
+    /// stored before the app was renamed had (`<prefix>.studyportal.ink`, kept in their rows).
+    public static func isInk(contentType type: String?) -> Bool {
+        guard let type else { return true }
+        return type == contentType || type.hasSuffix(".studyportal.ink")
+    }
     /// File extension of a sketch blob in the BlobStore.
     public static let fileExtension = "json"
     /// Width of a slide drawing's coordinate space.

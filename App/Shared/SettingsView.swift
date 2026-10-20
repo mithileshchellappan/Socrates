@@ -10,7 +10,7 @@ enum SettingsTab: String, Hashable {
     case semester
     case accounts
 
-    static let storageKey = "StudyPortal.settingsTab"
+    static let storageKey = "Socrates.settingsTab"
 }
 
 /// Account settings: Claude Code (the AI runs on the student's Claude Code subscription; one quiet

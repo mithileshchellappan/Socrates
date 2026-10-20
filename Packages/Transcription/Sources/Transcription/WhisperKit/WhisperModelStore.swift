@@ -30,7 +30,7 @@ public struct WhisperModel: Hashable, Sendable, Codable {
 
 /// Where Whisper models live on disk and how they get there.
 ///
-/// Models are always stored under `…/Application Support/StudyPortal/Models` (WhisperKit's
+/// Models are always stored under `…/Application Support/Socrates/Models` (WhisperKit's
 /// default, `~/Documents/huggingface`, syncs to iCloud on the Mac and is backed up on iOS). The
 /// folder is excluded from backups. Layout (Hugging Face hub cache):
 ///
@@ -44,15 +44,13 @@ public struct WhisperModelStore: Hashable, Sendable {
         self.directory = directory
     }
 
-    /// `~/Library/Application Support/StudyPortal/Models` (iOS: the app container's equivalent).
+    /// `~/Library/Application Support/Socrates/Models` (iOS: the app container's equivalent; the
+    /// `StudyPortal` folder of a library the Mac has not moved yet, `AppPaths.sharedRoot()`).
     ///
     /// Deliberately ignores `SOCRATES_DATA_ROOT`: models are a shared, re-downloadable cache,
     /// not library data, so throwaway libraries reuse the one 1.6 GB copy.
     public static func shared(fileManager: FileManager = .default) throws -> WhisperModelStore {
-        let support = try fileManager.url(
-            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        )
-        let paths = AppPaths(root: support.appending(path: AppPaths.folderName, directoryHint: .isDirectory))
+        let paths = AppPaths(root: try AppPaths.sharedRoot(fileManager: fileManager))
         return WhisperModelStore(directory: paths.models)
     }
 

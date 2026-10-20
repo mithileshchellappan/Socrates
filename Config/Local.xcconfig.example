@@ -2,24 +2,25 @@
 // `xcodegen generate`. Signing.xcconfig includes it last, so these values win.
 
 // Your Apple developer team ID (Xcode > Settings > Accounts, or developer.apple.com).
-STUDYPORTAL_TEAM = ABCDE12345
+SOCRATES_TEAM = ABCDE12345
 
-// Your own reverse-DNS prefix: the app becomes com.yourname.studyportal.
+// Your own reverse-DNS prefix: the app becomes com.yourname.socrates.
 BUNDLE_ID_PREFIX = com.yourname
 
 // The Mac app with your Apple Development certificate, signed automatically:
-// STUDYPORTAL_MAC_SIGN_IDENTITY = Apple Development
-// STUDYPORTAL_MAC_SIGN_STYLE = Automatic
+// SOCRATES_MAC_SIGN_IDENTITY = Apple Development
+// SOCRATES_MAC_SIGN_STYLE = Automatic
 
 // Or with a Developer ID certificate, signed manually (the signature stays the same across
-// rebuilds, so Keychain and privacy permissions stick; no provisioning profile is needed):
-// STUDYPORTAL_MAC_SIGN_IDENTITY = Developer ID Application
-// STUDYPORTAL_MAC_SIGN_STYLE = Manual
+// rebuilds, so Keychain and privacy permissions stick; no provisioning profile is needed, but
+// then there is no iCloud sync unless you make a Developer ID profile with iCloud by hand and
+// name it in SOCRATES_MAC_PROFILE):
+// SOCRATES_MAC_SIGN_IDENTITY = Developer ID Application
+// SOCRATES_MAC_SIGN_STYLE = Manual
 
-// iCloud sync of the library between your Mac and iPhone (off by default). First create the
-// CloudKit container iCloud.com.yourname.studyportal in your developer account (Certificates,
-// IDs & Profiles > Identifiers > iCloud Containers) and tick it, with Push Notifications, on the
-// App ID com.yourname.studyportal. The Mac app then needs the Apple Development identity above
-// (Automatic: Xcode makes the profiles; build once with -allowProvisioningUpdates). Both devices
-// use CloudKit's Development environment. See README ("iCloud sync").
-// STUDYPORTAL_ICLOUD = YES
+// iCloud sync of the library between your Mac and iPhone (off by default). Needs the Apple
+// Development identity above on the Mac. Build once with -allowProvisioningUpdates
+// -allowProvisioningDeviceRegistration: Xcode registers the App ID com.yourname.socrates, the
+// CloudKit container iCloud.com.yourname.socrates and Push Notifications, and makes the profiles.
+// Both devices use CloudKit's Development environment. See README ("iCloud sync").
+// SOCRATES_ICLOUD = YES

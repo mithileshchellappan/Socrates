@@ -18,7 +18,7 @@ import os
 /// Guards (docs/decisions.md, 2026-10-20):
 /// - An iCloud sign-out or account switch stops syncing and keeps every row
 ///   (`AccountChangeGuard`); SQLiteData's default would delete all synced rows on the device.
-/// - The Mac copies its library once, before its first sync (`backupFileName`, next to it).
+/// - The Mac copies its library once, before its first sync (`AppPaths.preSyncBackup`, next to it).
 /// - Every later start queues again the rows iCloud has not received (`SyncedTables.queueUnsent`)
 ///   and rows written while no engine noted them (`SyncedTables.queueUntracked`), so a first
 ///   upload that a quit, a crash or a lost network interrupted resumes where it stopped.
@@ -35,9 +35,6 @@ public final class CloudSync {
         /// Readable, no secrets.
         case failed(String)
     }
-
-    /// The Mac's one copy of its library from before the first sync, in the database folder.
-    public static let backupFileName = "StudyPortal-before-sync.sqlite"
 
     public let services: StudyServices
     public let container: String
@@ -101,7 +98,7 @@ public final class CloudSync {
             // The only full copy of the library is on the Mac: one copy of it before its first
             // sync, against anything a sync could do to it (a deleted zone deletes its rows).
             if !hasSynced {
-                try await Self.backUp(database, to: services.paths.databaseDirectory.appending(path: Self.backupFileName))
+                try await Self.backUp(database, to: services.paths.preSyncBackup)
             }
             #endif
             do {

@@ -26,5 +26,5 @@ public enum TranslationError: Error, Sendable, LocalizedError {
 }
 
 enum TranslationLog {
-    static let logger = Logger(subsystem: "com.example.studyportal", category: "translation")
+    static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "socrates", category: "translation")
 }

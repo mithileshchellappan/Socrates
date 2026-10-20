@@ -7,43 +7,49 @@
 
 // Your Apple developer team ID (empty: none). iPhone device builds need one; a free personal team
 // works. Simulator builds and the ad-hoc Mac build do not.
-STUDYPORTAL_TEAM =
+SOCRATES_TEAM =
 
-// The bundle ID prefix: the app is $(BUNDLE_ID_PREFIX).studyportal, its widget extension
-// $(BUNDLE_ID_PREFIX).studyportal.widgets.
+// The bundle ID prefix: the app is $(BUNDLE_ID_PREFIX).socrates, its widget extension
+// $(BUNDLE_ID_PREFIX).socrates.widgets, its document types $(BUNDLE_ID_PREFIX).socrates.lecture
+// and .lecture-bundle.
 BUNDLE_ID_PREFIX = com.example
 
 // The Mac app's signing identity and style. "-" with Automatic signs to run locally; macOS may
 // ask for permissions again after a rebuild because the signature changes every build.
-STUDYPORTAL_MAC_SIGN_IDENTITY = -
-STUDYPORTAL_MAC_SIGN_STYLE = Automatic
+SOCRATES_MAC_SIGN_IDENTITY = -
+SOCRATES_MAC_SIGN_STYLE = Automatic
 // A manually signed Mac app's provisioning profile (its name), when it needs one: a Developer ID
 // build with iCloud. Empty: none (automatic signing finds its own).
-STUDYPORTAL_MAC_PROFILE =
+SOCRATES_MAC_PROFILE =
 
-// iCloud sync (M7) of the library between the Mac and the iPhone: YES signs both apps with the
-// iCloud (CloudKit) and push entitlements for the container iCloud.$(BUNDLE_ID_PREFIX).studyportal
-// and names it in their Info.plist (the app syncs only when both are there). Needs a team whose
-// App ID $(BUNDLE_ID_PREFIX).studyportal has iCloud with that container, and Push Notifications;
-// on the Mac an Apple Development identity with Automatic signing (or a Developer ID profile in
-// STUDYPORTAL_MAC_PROFILE). NO: no entitlement, no container, the app never touches iCloud.
-// Simulator builds never sync.
-STUDYPORTAL_ICLOUD = NO
+// iCloud sync of the library between the Mac and the iPhone: YES signs both apps with the iCloud
+// (CloudKit) and push entitlements for the container iCloud.$(BUNDLE_ID_PREFIX).socrates and
+// names it in their Info.plist (the app syncs only when both are there). Needs a team; build once
+// with -allowProvisioningUpdates and Xcode registers the App ID, the container and the profiles.
+// On the Mac it needs an Apple Development identity with Automatic signing (or a Developer ID
+// profile in SOCRATES_MAC_PROFILE). NO: no entitlement, no container, the app never touches
+// iCloud. Simulator builds never sync.
+SOCRATES_ICLOUD = NO
 
-STUDYPORTAL_CLOUDKIT_CONTAINER_YES = iCloud.$(BUNDLE_ID_PREFIX).studyportal
-STUDYPORTAL_CLOUDKIT_CONTAINER = $(STUDYPORTAL_CLOUDKIT_CONTAINER_$(STUDYPORTAL_ICLOUD))
-STUDYPORTAL_SYNC_CONTAINER = $(STUDYPORTAL_CLOUDKIT_CONTAINER)
-STUDYPORTAL_SYNC_CONTAINER[sdk=iphonesimulator*] =
-STUDYPORTAL_MAC_ENTITLEMENTS_NO = App/macOS/StudyPortal.entitlements
-STUDYPORTAL_MAC_ENTITLEMENTS_YES = App/macOS/Socrates-iCloud.entitlements
-STUDYPORTAL_MAC_ENTITLEMENTS = $(STUDYPORTAL_MAC_ENTITLEMENTS_$(STUDYPORTAL_ICLOUD))
-STUDYPORTAL_IOS_ENTITLEMENTS_YES = App/iOS/Socrates-iCloud.entitlements
-STUDYPORTAL_IOS_ENTITLEMENTS = $(STUDYPORTAL_IOS_ENTITLEMENTS_$(STUDYPORTAL_ICLOUD))
+SOCRATES_CLOUDKIT_CONTAINER_YES = iCloud.$(BUNDLE_ID_PREFIX).socrates
+SOCRATES_CLOUDKIT_CONTAINER = $(SOCRATES_CLOUDKIT_CONTAINER_$(SOCRATES_ICLOUD))
+SOCRATES_SYNC_CONTAINER = $(SOCRATES_CLOUDKIT_CONTAINER)
+SOCRATES_SYNC_CONTAINER[sdk=iphonesimulator*] =
+SOCRATES_MAC_ENTITLEMENTS_NO = App/macOS/Socrates.entitlements
+SOCRATES_MAC_ENTITLEMENTS_YES = App/macOS/Socrates-iCloud.entitlements
+SOCRATES_MAC_ENTITLEMENTS = $(SOCRATES_MAC_ENTITLEMENTS_$(SOCRATES_ICLOUD))
+SOCRATES_IOS_ENTITLEMENTS_YES = App/iOS/Socrates-iCloud.entitlements
+SOCRATES_IOS_ENTITLEMENTS = $(SOCRATES_IOS_ENTITLEMENTS_$(SOCRATES_ICLOUD))
+
+// The bundle ID an earlier build of this app had on this machine, when it was different (the app
+// was called Study Portal). The Mac app then takes over what that build left once: the library
+// folder, its preferences and its Keychain items (docs/decisions.md). Empty: none.
+SOCRATES_LEGACY_BUNDLE_ID =
 
 // A university profile as one line of JSON (`UniversityProfile`'s keys; no "//" in it), which a
 // library that has courses but no profile takes once when it opens: for a library set up by a
 // build that had its university built in. Empty: none (a student sets their profile by telling
 // the agent).
-STUDYPORTAL_UNIVERSITY_PROFILE =
+SOCRATES_UNIVERSITY_PROFILE =
 
 #include? "Local.xcconfig"

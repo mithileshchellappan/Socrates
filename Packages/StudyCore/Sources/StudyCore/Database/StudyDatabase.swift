@@ -68,7 +68,7 @@ public enum StudyDatabase {
     public static func configuration() -> Configuration {
         var configuration = Configuration()
         configuration.foreignKeysEnabled = true
-        configuration.label = "StudyPortal"
+        configuration.label = "Socrates"
         return configuration
     }
 }

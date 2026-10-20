@@ -53,10 +53,10 @@ public struct UniversityProfileRecord: StudyRecord {
     // MARK: - Carry-over
 
     /// The Info.plist key a build sets to a university profile as one line of JSON
-    /// (`STUDYPORTAL_UNIVERSITY_PROFILE`, from a git-ignored `Config/Local.xcconfig`): the
+    /// (`SOCRATES_UNIVERSITY_PROFILE`, from a git-ignored `Config/Local.xcconfig`): the
     /// university values a library set up before the profile was data was used with. Empty in a
     /// build without it.
-    public static let carryOverInfoKey = "StudyPortalUniversityProfile"
+    public static let carryOverInfoKey = "SocratesUniversityProfile"
 
     /// The profile this build carries over (`carryOverInfoKey`), nil when it sets none.
     public static func carryOverProfile(bundle: Bundle = .main) -> UniversityProfile? {

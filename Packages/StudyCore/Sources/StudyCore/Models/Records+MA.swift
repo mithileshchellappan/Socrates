@@ -357,5 +357,5 @@ public struct AgentReminder: StudyRecord {
     }
 
     /// The notification request's identifier.
-    public var notificationID: String { "studyportal.reminder." + id.uuidString.lowercased() }
+    public var notificationID: String { "socrates.reminder." + id.uuidString.lowercased() }
 }

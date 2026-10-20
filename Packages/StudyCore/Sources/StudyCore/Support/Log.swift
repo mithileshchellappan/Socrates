@@ -1,10 +1,12 @@
+import Foundation
 import os
 
 /// `os.Logger`s, one category per module. Use these instead of `print`.
 ///
 /// Never log secrets, mail bodies or transcript text at `.public` privacy.
 public enum Log {
-    public static let subsystem = "com.example.studyportal"
+    /// The app's bundle ID (`AppIdentity.bundleID`; "socrates" in a command-line tool).
+    public static let subsystem = AppIdentity.bundleID
 
     public static func logger(category: String) -> Logger {
         Logger(subsystem: subsystem, category: category)

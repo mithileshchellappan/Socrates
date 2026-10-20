@@ -45,7 +45,7 @@ public final class PhoneRecorder {
     /// Activity updates run one after another, so a quick run of taps never shows an old slide.
     @ObservationIgnored private var activityTask: Task<Void, Never>?
     @ObservationIgnored private let defaults: UserDefaults
-    private static let lastCourseKey = "StudyPortal.PhoneRecorder.lastCourseID"
+    private static let lastCourseKey = "Socrates.PhoneRecorder.lastCourseID"
 
     public init(services: StudyServices, defaults: UserDefaults = .standard) {
         self.services = services

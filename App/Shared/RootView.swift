@@ -668,7 +668,8 @@ struct RootView: View {
         }
     }
 
-    /// `studyportal://` links from the Socrates calendar: a session opens its lecture (else its
+    /// `socrates://` (and, on events written before the rename, `studyportal://`) links from the
+    /// Socrates calendar: a session opens its lecture (else its
     /// course), a deadline the mail it was read from (else its course). M7, the Mac: an opened
     /// capture (a `.lecturebundle` AirDropped from the iPhone, or a `.lecture` package) is filed by
     /// smart import like a drop (a bundle is unpacked, never changed; one already in the library is

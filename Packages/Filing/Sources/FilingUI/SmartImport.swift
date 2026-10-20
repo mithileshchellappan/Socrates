@@ -46,10 +46,11 @@ enum FilingTypes {
         url.pathExtension.lowercased() == "ics"
     }
 
-    /// `.lecture` packages (declared by the app).
-    static let lecturePackage = UTType("com.example.studyportal.lecture")
+    /// `.lecture` packages (declared by the app as `$(BUNDLE_ID_PREFIX).socrates.lecture`; found
+    /// by the extension).
+    static let lecturePackage = UTType(filenameExtension: "lecture", conformingTo: .package)
     /// `.lecturebundle` files, one package shared from the iPhone (M7; declared by the app).
-    static let lectureBundle = UTType("com.example.studyportal.lecture-bundle")
+    static let lectureBundle = UTType(filenameExtension: "lecturebundle", conformingTo: .archive)
 }
 
 struct SmartImportModifier: ViewModifier {

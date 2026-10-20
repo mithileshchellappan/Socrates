@@ -66,7 +66,7 @@ public struct ClaudeClient: Sendable {
     private let sleep: @Sendable (Duration) async throws -> Void
     private let random: @Sendable () -> Double
 
-    static let logger = Logger(subsystem: "com.example.studyportal", category: "claude")
+    static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "socrates", category: "claude")
 
     public init(
         configuration: ClaudeConfiguration = ClaudeConfiguration(),

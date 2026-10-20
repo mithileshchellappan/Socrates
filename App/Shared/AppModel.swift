@@ -181,6 +181,9 @@ final class AppModel {
     init(services: StudyServices?, launchError: String? = nil, startsProcessing: Bool = true) {
         self.services = services
         self.launchError = launchError
+        // M7: the sync engine first (real library of a build signed for iCloud only), so
+        // SQLiteData's change triggers note every write from here on.
+        cloudSync = startsProcessing ? services.flatMap { CloudSync(services: $0) } : nil
         let (transcribed, finishedTranscription) = AsyncStream.makeStream(of: Recording.ID.self)
         self.transcribed = transcribed
         let (processed, finishedProcessing) = AsyncStream.makeStream(of: Lecture.ID.self)
@@ -209,7 +212,7 @@ final class AppModel {
         }
         self.processor = processor
         if let services {
-            let claude = ClaudeClient.studyPortal(services: services)
+            let claude = ClaudeClient.socrates(services: services)
             self.claude = claude
             // The services exist before the model: they reach it through `owner`.
             let owner = ModelReference()
@@ -279,7 +282,6 @@ final class AppModel {
             self.agent = agent
             transcriptItems = TranscriptItemPipeline(services: services, client: claude, memory: memory)
             self.owner = owner
-            cloudSync = startsProcessing ? CloudSync(services: services) : nil
             #if os(iOS)
             phoneRecorder = Self.isPhone ? PhoneRecorder(services: services) : nil
             #endif
@@ -321,7 +323,6 @@ final class AppModel {
             studyPass = nil
             coach = nil
             owner = ModelReference()
-            cloudSync = nil
             #if os(macOS)
             mailEngine = nil
             mailSender = nil
@@ -381,9 +382,14 @@ final class AppModel {
             }
         }
         #endif
+        #if os(macOS)
+        // The build from before the rename (another bundle ID) left preferences and a library
+        // folder: taken over once, before anything reads them.
+        LegacyTakeover.run()
+        #endif
         do {
-            // M7: a build signed for CloudKit opens the library with SQLiteData's sync metadata
-            // (nil today: the database opens exactly as before).
+            // M7: a build signed for CloudKit (`SOCRATES_ICLOUD = YES`) opens the real library with
+            // SQLiteData's sync metadata; any other build opens it exactly as before.
             let model = AppModel(services: try StudyServices.live(syncContainer: CloudSyncConfiguration.containerIdentifier()))
             // App-lifetime work belongs to the app, not to a window: it runs even when the window
             // closes during launch, and a view's cancelled task never stops it halfway. It starts

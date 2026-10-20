@@ -4,21 +4,24 @@ import StudyCore
 
 /// Mirrors lecture sessions into the app's own "Socrates" calendar (PRD #36).
 ///
-/// - Writes only to that calendar, found by the identifier remembered in `UserDefaults`, else an
-///   existing writable calendar with its title (iCloud first), else one with the title it had
-///   before the app was renamed ("Study Portal"), else a new one in the iCloud source (falling
-///   back to the default calendar's source, then a local one).
+/// - Writes only to that calendar, found by the identifier remembered in `UserDefaults` (for the
+///   real library also under the key its folder had before the app was renamed, which the Mac
+///   took over with the earlier build's preferences, `LegacyDefaults`), else an existing writable
+///   calendar with its title (iCloud first), else one with the title it had before the app was
+///   renamed ("Study Portal"), else a new one in the iCloud source (falling back to the default
+///   calendar's source, then a local one). Never a second calendar.
 /// - A calendar it writes to that still has the old title is renamed in place (same identifier,
 ///   same events); a calendar the student renamed to anything else keeps its title.
 /// - One event per visible session: title = course name (+ " · Exercise" …), location = room,
-///   `url = studyportal://session/<uuid>`, no notes. The event's identifier is stored in
+///   `url = socrates://session/<uuid>`, no notes. The event's identifier is stored in
 ///   `lecture_session.calendar_event_id`.
 /// - `sync()` writes sessions that changed, removes events of cancelled sessions and hidden
 ///   courses, and removes events carrying our URL prefix that no session owns any more. Events
-///   without our prefixes (anything the user added) are never touched.
+///   without our prefixes (anything the user added) are never touched. Events written before the
+///   app was renamed carry `studyportal://`: still ours, and rewritten in place with the new link.
 /// - Tracked items that want an event (`TrackedItem.wantsCalendarEvent`: deadlines from mail with
 ///   a verified date, or added with Add to Calendar) get one too: the item's title at its due time
-///   (all-day without a time), `url = studyportal://item/<uuid>`, the exact quote as notes. Undo,
+///   (all-day without a time), `url = socrates://item/<uuid>`, the exact quote as notes. Undo,
 ///   done or dismissed items lose it.
 /// - Without full access it does nothing and throws nothing; nothing is recorded, so the work
 ///   waits for the next sync.
@@ -26,10 +29,12 @@ public actor CalendarMirror {
     public static let defaultCalendarTitle = "Socrates"
     /// The app's calendar's title before the app was renamed; such a calendar is renamed in place.
     public static let legacyCalendarTitle = "Study Portal"
-    public static let urlScheme = "studyportal"
-    public static let urlPrefix = "studyportal://session/"
-    /// Deadlines and other tracked items (from mail): `studyportal://item/<uuid>`.
-    public static let itemURLPrefix = "studyportal://item/"
+    public static let urlScheme = "socrates"
+    public static let urlPrefix = "socrates://session/"
+    /// Deadlines and other tracked items (from mail): `socrates://item/<uuid>`.
+    public static let itemURLPrefix = "socrates://item/"
+    /// The scheme of events written before the app was renamed (still registered and read).
+    public static let legacyURLScheme = "studyportal"
 
     private let services: StudyServices
     let store: any CalendarStore
@@ -40,6 +45,9 @@ public actor CalendarMirror {
     /// given by the caller.
     let legacyTitle: String?
     private let scope: String
+    /// The real library's scope before the app was renamed (its `StudyPortal` folder); nil for
+    /// another library.
+    private let legacyScope: String?
     private var running: Task<CalendarSyncReport, any Error>?
 
     /// - Parameters:
@@ -59,28 +67,39 @@ public actor CalendarMirror {
         title = calendarTitle ?? Self.calendarTitle(for: services.paths)
         legacyTitle = calendarTitle == nil ? Self.calendarTitle(for: services.paths, base: Self.legacyCalendarTitle) : nil
         scope = Self.scope(for: services.paths)
+        legacyScope = Self.legacyScope(for: services.paths)
     }
 
-    /// The `studyportal://session/<uuid>` link an event carries.
+    /// The `socrates://session/<uuid>` link an event carries.
     public static func url(for sessionID: LectureSession.ID) -> URL? {
         URL(string: urlPrefix + sessionID.uuidString.lowercased())
     }
 
-    /// The session an event URL points to, when it is one of ours.
+    /// The session an event URL points to, when it is one of ours (also `studyportal://session/`).
     public static func sessionID(from url: URL?) -> LectureSession.ID? {
-        guard let text = url?.absoluteString, text.lowercased().hasPrefix(urlPrefix) else { return nil }
-        return UUID(uuidString: String(text.dropFirst(urlPrefix.count)))
+        id(in: url, kind: "session")
     }
 
-    /// The `studyportal://item/<uuid>` link a deadline's event carries.
+    /// The `socrates://item/<uuid>` link a deadline's event carries.
     public static func url(forItem itemID: TrackedItem.ID) -> URL? {
         URL(string: itemURLPrefix + itemID.uuidString.lowercased())
     }
 
-    /// The tracked item an event URL points to, when it is one of ours.
+    /// The tracked item an event URL points to, when it is one of ours (also `studyportal://item/`).
     public static func itemID(from url: URL?) -> TrackedItem.ID? {
-        guard let text = url?.absoluteString, text.lowercased().hasPrefix(itemURLPrefix) else { return nil }
-        return UUID(uuidString: String(text.dropFirst(itemURLPrefix.count)))
+        id(in: url, kind: "item")
+    }
+
+    /// The UUID after `<scheme>://<kind>/` for our scheme or the one from before the rename.
+    private static func id(in url: URL?, kind: String) -> UUID? {
+        guard let text = url?.absoluteString else { return nil }
+        for scheme in [urlScheme, legacyURLScheme] {
+            let prefix = "\(scheme)://\(kind)/"
+            if text.lowercased().hasPrefix(prefix) {
+                return UUID(uuidString: String(text.dropFirst(prefix.count)))
+            }
+        }
+        return nil
     }
 
     /// The event a tracked item should have (no identifier): its title at the due time (all-day
@@ -192,7 +211,7 @@ public actor CalendarMirror {
         // Nothing wants an event and nothing of ours can be in a calendar: no calendar to find,
         // and above all none to create (a deleted calendar is not brought back empty).
         let wantsAny = sessions.contains { Self.wantsEvent($0, course: courses[$0.courseID]) } || items.contains(where: \.wantsCalendarEvent)
-        let knowsCalendar = defaults.string(forKey: key("calendar")) != nil
+        let knowsCalendar = savedCalendarID() != nil
         let holdsAny = sessions.contains { $0.calendarEventID != nil } || items.contains { $0.calendarEventID != nil }
         if !wantsAny, !knowsCalendar, !holdsAny {
             try await markSynced(sessions.filter { dirty.contains($0.id) }.map { ($0, nil) })
@@ -474,9 +493,10 @@ public actor CalendarMirror {
     /// created now: the remembered one was deleted, or there was none).
     private func resolveCalendar(_ report: inout CalendarSyncReport) async throws -> (id: String, changed: Bool) {
         let calendars = await store.calendars()
-        let saved = defaults.string(forKey: key("calendar"))
+        let saved = savedCalendarID()
         if let saved, let own = calendars.first(where: { $0.id == saved && $0.allowsModifications }) {
             await renameIfLegacy(own)
+            if defaults.string(forKey: key("calendar")) != saved { defaults.set(saved, forKey: key("calendar")) }
             return (saved, false)
         }
         let sources = await store.sources()
@@ -574,9 +594,33 @@ public actor CalendarMirror {
         fnv1a(paths.root.standardizedFileURL.path(percentEncoded: false))
     }
 
+    /// The scope the real library had in its folder from before the rename, when `paths` is
+    /// the real library now in another folder.
+    static func legacyScope(for paths: AppPaths) -> String? {
+        guard AppPaths.rootOverride() == nil,
+              let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
+        else { return nil }
+        let legacy = support.appending(path: AppPaths.legacyFolderName, directoryHint: .isDirectory).standardizedFileURL
+        let root = paths.root.standardizedFileURL
+        guard root.path(percentEncoded: false) == AppPaths.liveRoot(in: support).standardizedFileURL.path(percentEncoded: false),
+              root.path(percentEncoded: false) != legacy.path(percentEncoded: false)
+        else { return nil }
+        return fnv1a(legacy.path(percentEncoded: false))
+    }
+
     /// A device-local key of this library's mirror ("calendar": the own calendar's identifier).
     func key(_ name: String) -> String {
-        "StudyPortal.calendarMirror.\(scope).\(name)"
+        "Socrates.calendarMirror.\(scope).\(name)"
+    }
+
+    /// The own calendar's identifier remembered for this library: under `key("calendar")`, else,
+    /// for the real library, under the key of the folder it had before the app was renamed
+    /// (`AppPaths.legacyFolderName`; the Mac took that key over with the earlier build's
+    /// preferences), so a moved library keeps writing to the same calendar.
+    func savedCalendarID() -> String? {
+        if let saved = defaults.string(forKey: key("calendar")) { return saved }
+        guard let legacyScope else { return nil }
+        return defaults.string(forKey: "Socrates.calendarMirror.\(legacyScope).calendar")
     }
 
     private static func fnv1a(_ text: String) -> String {

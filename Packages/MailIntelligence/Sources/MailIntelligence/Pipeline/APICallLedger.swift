@@ -31,7 +31,7 @@ extension ClaudeClient {
     ///
     /// Each call makes a new engine, and the engine is the one-process queue: the app calls this
     /// once and shares the client.
-    public static func studyPortal(services: StudyServices) -> ClaudeClient {
+    public static func socrates(services: StudyServices) -> ClaudeClient {
         #if os(macOS)
         let backend: any ClaudeBackend = ClaudeCodeEngine(configuration: ClaudeCodeConfiguration(directory: services.paths.agent))
         #else

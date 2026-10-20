@@ -36,13 +36,13 @@ extension Color {
     /// The live window's canvas behind the slide, the filing line and the toolbar (the mockups'
     /// win2, #f6f6f8 and #252528 in dark mode): a shade off the inspector, so the two columns read
     /// as two zones.
-    static let liveCanvasBackground = dynamic(light: (0xf6, 0xf6, 0xf8), dark: (0x25, 0x25, 0x28), name: "StudyPortal.liveCanvas")
+    static let liveCanvasBackground = dynamic(light: (0xf6, 0xf6, 0xf8), dark: (0x25, 0x25, 0x28), name: "Socrates.liveCanvas")
 
     /// The live inspector: a flat, opaque panel a shade off the window background, like the
     /// canvas beside it (the mockups' inspector colour, #f8f8fa and #222225 in dark mode). The
     /// system's own inspector is glass, which shows the main column through it and tints in dark
     /// mode; `.background` inside an inspector resolves to an elevated grey (#4b4a4a dark).
-    static let inspectorBackground = dynamic(light: (0xf8, 0xf8, 0xfa), dark: (0x22, 0x22, 0x25), name: "StudyPortal.liveInspector")
+    static let inspectorBackground = dynamic(light: (0xf8, 0xf8, 0xfa), dark: (0x22, 0x22, 0x25), name: "Socrates.liveInspector")
 
     /// One sRGB colour in light appearance, another in dark.
     private static func dynamic(light: (Int, Int, Int), dark: (Int, Int, Int), name: String) -> Color {

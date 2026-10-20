@@ -6,7 +6,7 @@
 	<string>development</string>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
-		<string>$(STUDYPORTAL_CLOUDKIT_CONTAINER)</string>
+		<string>$(SOCRATES_CLOUDKIT_CONTAINER)</string>
 	</array>
 	<key>com.apple.developer.icloud-services</key>
 	<array>

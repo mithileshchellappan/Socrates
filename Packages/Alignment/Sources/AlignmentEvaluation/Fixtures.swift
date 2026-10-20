@@ -3,7 +3,7 @@ import Foundation
 
 /// The git-ignored lecture fixtures in `.data/fixtures` (see SOURCES.md there).
 ///
-/// Located via `STUDYPORTAL_FIXTURES`, else by walking up from a source file until a directory
+/// Located via `SOCRATES_FIXTURES`, else by walking up from a source file until a directory
 /// containing `.data/fixtures/SOURCES.md` is found (works from git worktrees inside the repo).
 public struct FixtureLibrary: Sendable {
     public let root: URL
@@ -14,7 +14,7 @@ public struct FixtureLibrary: Sendable {
 
     public static func locate(from filePath: String = #filePath) -> FixtureLibrary? {
         let fileManager = FileManager.default
-        if let override = ProcessInfo.processInfo.environment["STUDYPORTAL_FIXTURES"], !override.isEmpty {
+        if let override = ProcessInfo.processInfo.environment["SOCRATES_FIXTURES"], !override.isEmpty {
             let url = URL(filePath: override, directoryHint: .isDirectory)
             return fileManager.fileExists(atPath: url.path(percentEncoded: false)) ? FixtureLibrary(root: url) : nil
         }

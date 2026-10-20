@@ -16,8 +16,8 @@ import SwiftUI
 /// the real window can be captured and compared with the approved mockups (`tools/parity/shoot`).
 ///
 ///     Socrates.app/Contents/MacOS/Socrates \
-///         -StudyPortalDataRoot <library copy> -StudyPortalRoute <route> \
-///         [-StudyPortalAppearance light|dark] [-StudyPortalReadyMarker <file>] [-StudyPortalSettle <seconds>] \
+///         -SocratesDataRoot <library copy> -SocratesRoute <route> \
+///         [-SocratesAppearance light|dark] [-SocratesReadyMarker <file>] [-SocratesSettle <seconds>] \
 ///         -ApplePersistenceIgnoreState YES
 ///
 /// Routes: `today`; `calendar?week=YYYY-MM-DD` (Calendar on that day's week, else this week);
@@ -35,7 +35,7 @@ import SwiftUI
 /// newest selected) and `documents/<title>?page=N` (that document, the page a hit named). Path
 /// parts may be percent-encoded.
 ///
-/// The library comes from `-StudyPortalDataRoot` (or `SOCRATES_DATA_ROOT`); without either,
+/// The library comes from `-SocratesDataRoot` (or `SOCRATES_DATA_ROOT`); without either,
 /// or pointed at the real library, the app opens nothing. Nothing runs in the background (no
 /// transcription, no calendar, no first-launch courses), the Keychain is not read, the window is
 /// 1440×900 points and nothing is restored. Once the routed screen has rendered, the marker file
@@ -118,25 +118,25 @@ enum ParityMode {
         var index = arguments.startIndex
         while index < arguments.endIndex {
             let argument = arguments[index]
-            if argument.hasPrefix("-StudyPortal"), arguments.index(after: index) < arguments.endIndex {
+            if argument.hasPrefix("-Socrates"), arguments.index(after: index) < arguments.endIndex {
                 values[String(argument.dropFirst())] = arguments[arguments.index(after: index)]
                 index = arguments.index(index, offsetBy: 2)
             } else {
                 index = arguments.index(after: index)
             }
         }
-        let keys = ["StudyPortalRoute", "StudyPortalDataRoot", "StudyPortalAppearance", "StudyPortalReadyMarker", "StudyPortalSettle"]
+        let keys = ["SocratesRoute", "SocratesDataRoot", "SocratesAppearance", "SocratesReadyMarker", "SocratesSettle"]
         guard keys.contains(where: { values[$0] != nil }) else { return nil }
-        let text = values["StudyPortalRoute"] ?? "today"
+        let text = values["SocratesRoute"] ?? "today"
         var options = Options(
             route: Route(text),
             routeText: text,
-            dataRoot: values["StudyPortalDataRoot"].map { URL(filePath: $0, directoryHint: .isDirectory).standardizedFileURL },
+            dataRoot: values["SocratesDataRoot"].map { URL(filePath: $0, directoryHint: .isDirectory).standardizedFileURL },
             appearance: nil,
-            readyMarker: values["StudyPortalReadyMarker"].map { URL(filePath: $0) },
-            settle: .seconds(values["StudyPortalSettle"].flatMap(Double.init) ?? 2.5)
+            readyMarker: values["SocratesReadyMarker"].map { URL(filePath: $0) },
+            settle: .seconds(values["SocratesSettle"].flatMap(Double.init) ?? 2.5)
         )
-        switch values["StudyPortalAppearance"]?.lowercased() {
+        switch values["SocratesAppearance"]?.lowercased() {
         case "dark": options.appearance = .darkAqua
         case "light": options.appearance = .aqua
         default: break
@@ -147,12 +147,15 @@ enum ParityMode {
     /// The library to open: never the real one.
     static func services(_ options: Options) throws -> StudyServices {
         guard let root = options.dataRoot ?? AppPaths.rootOverride() else {
-            throw Failure("Parity mode needs -StudyPortalDataRoot <library copy>")
+            throw Failure("Parity mode needs -SocratesDataRoot <library copy>")
         }
-        let real = try AppPaths.live(environment: [:]).root.standardizedFileURL.resolvingSymlinksInPath()
         let chosen = root.standardizedFileURL.resolvingSymlinksInPath()
-        if chosen.path(percentEncoded: false).hasPrefix(real.path(percentEncoded: false)) {
-            throw Failure("Parity mode never opens the real library (\(real.path(percentEncoded: false)))")
+        // The real library under either folder name (`Socrates`, `StudyPortal` from before the rename).
+        for candidate in try AppPaths.liveRootCandidates() {
+            let real = candidate.standardizedFileURL.resolvingSymlinksInPath()
+            if chosen.path(percentEncoded: false).hasPrefix(real.path(percentEncoded: false)) {
+                throw Failure("Parity mode never opens the real library (\(real.path(percentEncoded: false)))")
+            }
         }
         let paths = AppPaths(root: chosen)
         try paths.createDirectories()
@@ -165,12 +168,12 @@ enum ParityMode {
     }
 
     /// Before any window exists: the appearance. (`tools/parity/shoot` runs a copy of the app as
-    /// com.example.studyportal.parity and clears its defaults before each launch, so no window
-    /// frame or column width is remembered from an earlier shot.)
+    /// `<bundle ID>.parity` and clears its defaults before each launch, so no window frame or
+    /// column width is remembered from an earlier shot.)
     static func prepareApp() {
         // The parity copy (`tools/parity/shoot`) only ever opens a library copy: launched without
         // parity arguments it would open the real library, so it quits instead.
-        if options == nil, Bundle.main.bundleIdentifier == "com.example.studyportal.parity" {
+        if options == nil, Bundle.main.bundleIdentifier?.hasSuffix(".parity") == true {
             exit(0)
         }
         if let appearance = options?.appearance {
@@ -206,8 +209,8 @@ enum ParityMode {
         if quiet { window.orderBack(nil) } else { window.makeKeyAndOrderFront(nil) }
     }
 
-    /// `-StudyPortalQuiet YES`: parity shots must not take the focus from whatever the user is doing.
-    private static var quiet: Bool { UserDefaults.standard.bool(forKey: "StudyPortalQuiet") }
+    /// `-SocratesQuiet YES`: parity shots must not take the focus from whatever the user is doing.
+    private static var quiet: Bool { UserDefaults.standard.bool(forKey: "SocratesQuiet") }
 
     // MARK: - Run
 

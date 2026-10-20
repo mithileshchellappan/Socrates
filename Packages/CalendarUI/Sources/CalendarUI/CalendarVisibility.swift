@@ -19,8 +19,8 @@ public final class CalendarVisibility {
 
     @ObservationIgnored private let defaults: UserDefaults
 
-    static let ownCalendarKey = "StudyPortal.calendar.showsStudyPortal"
-    static let checkedKey = "StudyPortal.calendar.checkedCalendars"
+    static let ownCalendarKey = "Socrates.calendar.showsSocrates"
+    static let checkedKey = "Socrates.calendar.checkedCalendars"
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults

@@ -1,3 +1,4 @@
+import Foundation
 import os
 
 /// Transcript <-> slide alignment: stamps snapped to pauses plus a DP aligner with an off-slide state.
@@ -11,4 +12,4 @@ public enum AlignmentModule {
 }
 
 /// Same subsystem and category as `StudyCore.Log.alignment`; this package has no StudyCore dependency.
-let alignmentLog = Logger(subsystem: "com.example.studyportal", category: "alignment")
+let alignmentLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "socrates", category: "alignment")

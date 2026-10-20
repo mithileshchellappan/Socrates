@@ -20,7 +20,7 @@ options:
 
 settings:
   base:
-    DEVELOPMENT_TEAM: $(STUDYPORTAL_TEAM)
+    DEVELOPMENT_TEAM: $(SOCRATES_TEAM)
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
@@ -120,21 +120,26 @@ targets:
         NSCameraUsageDescription: Takes a photo to ask about.
         NSSpeechRecognitionUsageDescription: Shows live captions while a lecture is recorded.
         NSCalendarsFullAccessUsageDescription: Shows your classes and deadlines and keeps the Socrates calendar up to date.
-        # studyportal://session/<id> and studyportal://item/<id>: links on the Socrates
-        # calendar's events open the lecture or the mail a deadline was read from.
+        # socrates://session/<id> and socrates://item/<id>: links on the Socrates calendar's
+        # events open the lecture or the mail a deadline was read from. studyportal:// is what
+        # events written before the app was renamed carry; it stays registered.
         CFBundleURLTypes:
           - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
-            CFBundleURLSchemes: [studyportal]
+            CFBundleURLSchemes: [socrates, studyportal]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
         UILaunchScreen: {}
         # A university profile a library with courses but none takes once (Config/Signing.xcconfig;
         # empty unless a local Config/Local.xcconfig sets it). StudyCore's UniversityProfileRecord.
-        StudyPortalUniversityProfile: $(STUDYPORTAL_UNIVERSITY_PROFILE)
+        SocratesUniversityProfile: $(SOCRATES_UNIVERSITY_PROFILE)
         # M7: the CloudKit container this build syncs the library to (StudyCore's
-        # CloudSyncConfiguration). Set only with STUDYPORTAL_ICLOUD = YES, which also adds the
+        # CloudSyncConfiguration). Set only with SOCRATES_ICLOUD = YES, which also adds the
         # iCloud entitlement (Config/Signing.xcconfig); empty in simulator builds.
-        StudyPortalCloudKitContainer: $(STUDYPORTAL_SYNC_CONTAINER)
+        SocratesCloudKitContainer: $(SOCRATES_SYNC_CONTAINER)
+        # The bundle ID an earlier build had on this machine (Config/Signing.xcconfig; empty in
+        # public builds): the Mac app takes over its library folder, preferences and Keychain
+        # items once (StudyCore's AppIdentity).
+        SocratesLegacyBundleID: $(SOCRATES_LEGACY_BUNDLE_ID)
         # audio: recording with the screen locked; remote-notification: iCloud sync's silent pushes.
         UIBackgroundModes: [audio, remote-notification]
         # M7: the recording's Live Activity (Lock Screen + Dynamic Island), from SocratesWidgets.
@@ -144,14 +149,14 @@ targets:
         # Live capture writes `<uuid>.lecture` folders; declared as a package so Finder and the
         # import dialog treat one as a single item.
         UTExportedTypeDeclarations:
-          - UTTypeIdentifier: com.example.studyportal.lecture
+          - UTTypeIdentifier: $(BUNDLE_ID_PREFIX).socrates.lecture
             UTTypeDescription: Socrates Lecture
             UTTypeConformsTo: [com.apple.package, public.composite-content]
             UTTypeTagSpecification:
               public.filename-extension: [lecture]
           # M7: one `.lecture` package as a single file (Apple Archive), shared from the iPhone
           # by Share / AirDrop; the Mac's smart import unpacks and files it.
-          - UTTypeIdentifier: com.example.studyportal.lecture-bundle
+          - UTTypeIdentifier: $(BUNDLE_ID_PREFIX).socrates.lecture-bundle
             UTTypeDescription: Socrates Recording
             UTTypeConformsTo: [public.data, public.archive]
             UTTypeTagSpecification:
@@ -161,7 +166,7 @@ targets:
           - CFBundleTypeName: Socrates Recording
             CFBundleTypeRole: Viewer
             LSHandlerRank: Owner
-            LSItemContentTypes: [com.example.studyportal.lecture-bundle, com.example.studyportal.lecture]
+            LSItemContentTypes: [$(BUNDLE_ID_PREFIX).socrates.lecture-bundle, $(BUNDLE_ID_PREFIX).socrates.lecture]
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
@@ -170,10 +175,8 @@ targets:
     settings:
       base:
         PRODUCT_NAME: Socrates
-        # The bundle IDs, UTType IDs, URL schemes and the library folder keep the app's earlier name
-        # "studyportal" so an existing install keeps its data, permissions and Keychain items
-        # (docs/decisions.md, 2026-10-20).
-        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).studyportal
+        # $(BUNDLE_ID_PREFIX) comes from Config/Signing.xcconfig (com.example) or Config/Local.xcconfig.
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).socrates
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
@@ -182,23 +185,23 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         # macOS: unsandboxed personal build, hardened runtime with mic + calendars. M7: with
-        # STUDYPORTAL_ICLOUD = YES both apps take the iCloud entitlements files (CloudKit, push);
+        # SOCRATES_ICLOUD = YES both apps take the iCloud entitlements files (CloudKit, push);
         # the iPhone app has no entitlements file otherwise (Config/Signing.xcconfig).
         ENABLE_APP_SANDBOX: NO
         "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": YES
-        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": $(STUDYPORTAL_MAC_ENTITLEMENTS)
-        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": $(STUDYPORTAL_IOS_ENTITLEMENTS)
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": $(SOCRATES_MAC_ENTITLEMENTS)
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": $(SOCRATES_IOS_ENTITLEMENTS)
         "COMBINE_HIDPI_IMAGES[sdk=macosx*]": YES
         # The macOS identity and style come from Config/Signing.xcconfig ("-", Automatic: signed to
-        # run locally) or Config/Local.xcconfig. A Developer ID identity keeps the designated
-        # requirement the same across rebuilds, so the Keychain's "Always Allow" and the privacy
-        # grants stick (ad-hoc signing changes it on every build). Without iCloud no provisioning
-        # profile is needed: the app uses no restricted entitlements. With iCloud (M7) the Mac app
-        # needs one: Apple Development with Automatic signing makes its own; a manually signed
-        # Developer ID build names its profile in STUDYPORTAL_MAC_PROFILE. See docs/decisions.md.
-        "CODE_SIGN_IDENTITY[sdk=macosx*]": $(STUDYPORTAL_MAC_SIGN_IDENTITY)
-        "CODE_SIGN_STYLE[sdk=macosx*]": $(STUDYPORTAL_MAC_SIGN_STYLE)
-        "PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]": $(STUDYPORTAL_MAC_PROFILE)
+        # run locally) or Config/Local.xcconfig. Apple Development (Automatic) and Developer ID keep
+        # the designated requirement the same across rebuilds, so the Keychain's "Always Allow" and
+        # the privacy grants stick (ad-hoc signing changes it on every build). Without iCloud no
+        # provisioning profile is needed: the app uses no restricted entitlements. With iCloud (M7)
+        # the Mac app needs one: Apple Development with Automatic signing makes its own; a manually
+        # signed Developer ID build names its profile in SOCRATES_MAC_PROFILE. See docs/decisions.md.
+        "CODE_SIGN_IDENTITY[sdk=macosx*]": $(SOCRATES_MAC_SIGN_IDENTITY)
+        "CODE_SIGN_STYLE[sdk=macosx*]": $(SOCRATES_MAC_SIGN_STYLE)
+        "PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]": $(SOCRATES_MAC_PROFILE)
     dependencies:
       - package: StudyCore
       - package: Capture
@@ -269,7 +272,7 @@ targets:
       - package: Coach
         product: CoachUI
       # M7 (docs/plan-m7.md): the iPhone recorder, its Live Activity and the phone's shell (iOS);
-      # iCloud sync (both, off unless STUDYPORTAL_ICLOUD = YES signs the build for CloudKit).
+      # iCloud sync (both, off unless SOCRATES_ICLOUD = YES signs the build for CloudKit).
       - package: Recorder
         product: RecorderActivity
         destinationFilters: [iOS]
@@ -315,7 +318,7 @@ targets:
     settings:
       base:
         PRODUCT_NAME: SocratesWidgets
-        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).studyportal.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).socrates.widgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES
     dependencies:
