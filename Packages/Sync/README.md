@@ -1,65 +1,86 @@
 # Sync
 
-iCloud sync of the library (M7): `CloudSync`, SQLiteData's `SyncEngine`
-over the library tables, behind `CloudSyncConfiguration` (StudyCore): it exists only in a build
-signed with the iCloud entitlement that names its container in the Info.plist
-(`StudyPortalCloudKitContainer`). A build without an "Apple Development"
-identity has none, so sync is compiled but never runs, and no CloudKit call is made.
+iCloud sync of the library (M7): `CloudSync`, SQLiteData's `SyncEngine` over the library tables,
+behind `CloudSyncConfiguration` (StudyCore). It exists only in a build signed with the iCloud
+entitlement that names its container in the Info.plist (`SocratesCloudKitContainer`), and only
+for the real library. Both come from one build setting, `SOCRATES_ICLOUD = YES` (in a machine's
+ignored `Config/Local.xcconfig`; `Config/Signing.xcconfig` defaults to NO): the container
+`iCloud.$(BUNDLE_ID_PREFIX).socrates`, the Info.plist key (empty in simulator builds) and the
+iCloud entitlements files (`App/macOS/Socrates-iCloud.entitlements`,
+`App/iOS/Socrates-iCloud.entitlements`), so the key never ships without the entitlement (with the
+key and no entitlement `CKContainer(identifier:)` traps). A build without it compiles sync but
+never runs it, and makes no CloudKit call.
 
 ## Entry points
 
 ```swift
-// Launch, on the Mac and the iPhone, only in a configured build:
-if let container = CloudSyncConfiguration.containerIdentifier() {
-    let services = try StudyServices.live(syncContainer: container)   // attaches the metadatabase
-    let sync = CloudSync(services: services, container: container)   // non-nil here
-    Task { await sync?.start() }
-}
-sync.status      // .idle, .starting, .running, .unavailable(reason), .failed(reason)
-sync.isRunning   // the phone's agent sheet shows only while true
+// Launch, on the Mac and the iPhone:
+let services = try StudyServices.live(syncContainer: CloudSyncConfiguration.containerIdentifier())
+// services.syncContainer: the container for the real library of a configured build, else nil
+// (a SOCRATES_DATA_ROOT library never syncs); the metadatabase is attached when set.
+let sync = CloudSync(services: services)   // nil without services.syncContainer; builds the engine
+Task { await sync?.start() }               // ~2 s after launch (AppModel.startBackgroundWork)
+sync.status          // .idle, .starting, .running, .unavailable(reason), .failed(reason)
+sync.isRunning       // the phone's agent sheet shows only while true
+sync.isSynchronizing // sending or fetching right now
+sync.unsentCount     // rows iCloud has not received (refreshUnsent()); Settings ▸ Accounts
 sync.stop()
 ```
 
-`CloudSync(services:container:)` is nil without a container (the default argument reads
-`CloudSyncConfiguration.containerIdentifier()`), so nothing about sync is reachable otherwise.
-
 ## Rules
 
+- **The engine is built at launch, before anything writes** (`CloudSync.init`, not started, no
+  CloudKit call): SQLiteData's change triggers are temporary, per connection, and note only
+  writes made after they exist. The app makes `CloudSync` first in `AppModel.init`.
 - **The account first**: `start()` asks `CKContainer(identifier:).accountStatus()`; anything but
   available is `.unavailable` with a readable reason ("Not signed in to iCloud", "iCloud is
-  restricted", "iCloud is unavailable", "iCloud status unknown"). `start()` again retries.
+  restricted", "iCloud is unavailable", "iCloud status unknown"). The next launch asks again.
+- **A sign-out or an account switch keeps every row** (`AccountChangeGuard`, SQLiteData's
+  `SyncEngineDelegate`): sync stops ("Not signed in to iCloud", "Another iCloud account").
+  SQLiteData's default would delete every row of the synced tables on the device.
+- **The first sync is additive.** Deletes reach iCloud only from the DELETE triggers of the device
+  that deleted, so a phone that starts empty never deletes the Mac's rows; each device's first
+  start marks its own rows for upload, then fetches. Conflicts are settled per field, the later
+  edit wins.
+- **The Mac's first upload is batched and resumable.** CKSyncEngine sends in batches; its pending
+  list lives in its serialized state, which a quit or a crash can lose, so every later start
+  queues again the rows iCloud has not received (`SyncedTables.queueUnsent`: metadata without a
+  server record) and rows no engine noted (`queueUntracked`: rows without metadata, e.g. written
+  by a build without sync). Settings ▸ Accounts' iCloud row shows "12,480 to upload" until it is
+  "Up to date".
+- **One copy before the first sync** (Mac): `VACUUM INTO Database/Socrates-before-sync.sqlite`
+  (`AppPaths.preSyncBackup`), kept and never overwritten. A zone deleted on the server (CloudKit
+  Console's Reset Development Environment, Delete Data in iCloud settings) deletes synced rows on
+  every device, and SQLiteData has no hook to refuse it.
+- **A new synced library on the iPhone** (`Database/Socrates-synced.sqlite`) drops the semester
+  the migrations seeded (fixed id) before its first sync, so it can never overwrite the Mac's.
 - **Tables** (`SyncedTables`): every table of `Schema.tableNames` except `job` (device-local
-  processing state: each device runs its own jobs). The search index (`Schema.localTableNames`,
-  `Schema.virtualTableNames`) is rebuilt per device and never syncs. The record types are listed
-  twice (a checked list and the engine's parameter pack); a table of the schema missing from the
-  list fails the start ("Sync doesn’t cover …") instead of leaving its rows on one device.
+  processing state) and the Mac-only `document` / `document_page`. The search index
+  (`Schema.localTableNames`, `Schema.virtualTableNames`) is rebuilt per device and never syncs. The
+  record types are listed twice (a checked list and the engine's parameter pack); a table of the
+  schema missing from the list fails the start ("Sync doesn’t cover …") instead of leaving its rows
+  on one device.
 - **Blobs do not sync** in M7 (decks, audio, images are files in the BlobStore, not rows): a
-  synced row whose blob is missing shows as not on this device (the phone's recorder shows a
-  deck only when its blob is there).
+  synced row whose blob is missing shows as not on this device. Rows over CloudKit's 1 MB record
+  size stay on their device ("3 not uploaded").
 - **Failures** are readable (`.failed(localizedDescription)`), logged under `sync`, and never
   crash; the library keeps working without sync.
+- **One writer per library**: the triggers live in the syncing app's own connections, so another
+  process writing the library (an older copy of the app) makes changes that never sync. Keep one
+  copy of the Mac app.
 
-## Requests for the integrator
+## Turning it on (a machine's `Config/Local.xcconfig`)
 
-1. Open the library with `StudyServices.live(syncContainer: CloudSyncConfiguration.containerIdentifier())`
-   (nil today: unchanged) and start `CloudSync(services:)` at launch on both platforms when it is
-   non-nil; pass `cloudSync?.isRunning ?? false` to the phone's agent relay.
-2. A phone configured for sync opens its own synced library file (the Mac's courses come down).
-3. Turning sync on (later): an "Apple Development" identity, the iCloud capability
-   with a container (e.g. `iCloud.com.yourname.studyportal`) on the app (Mac and iOS),
-   `StudyPortalCloudKitContainer` in the Info.plist of that build, automatic signing with
-   `-allowProvisioningUpdates`. Then check SQLiteData's schema validation once on a copy of the
-   library (it rejects tables that break its CloudKit rules, see docs/schema.md).
-4. Not built (later, if wanted): re-checking on `CKAccountChanged`, a sync line in Settings.
+```
+SOCRATES_TEAM = <team ID>
+BUNDLE_ID_PREFIX = <your reverse-DNS prefix>
+SOCRATES_MAC_SIGN_IDENTITY = Apple Development
+SOCRATES_MAC_SIGN_STYLE = Automatic
+SOCRATES_ICLOUD = YES
+```
 
-## Design notes for the integrator
-
-**decisions.md** rows to add:
-
-| Date | Decision | Why |
-|---|---|---|
-| 2026-10-19 | Sync, when configured: the iCloud account is checked first (`.unavailable` with the reason otherwise), then SQLiteData's `SyncEngine` over `Schema.tableNames` except `job`; the search index never syncs; a schema table the sync list lacks fails the start | `job` is each device's own processing; derived tables are rebuilt; a forgotten table must not silently stay on one device |
-| 2026-10-19 | Blobs (decks, audio, images) do not sync in M7; a row whose blob is missing shows as not on this device | CloudKit assets for 500 MB recordings and decks need their own design (CKAsset records or iCloud Drive), later |
-
-**Strings** (DESIGN 9, only where the status is shown): "Not signed in to iCloud", "iCloud is
-restricted", "iCloud is unavailable", "iCloud status unknown", "Sync doesn’t cover …".
+Build both apps once with `-allowProvisioningUpdates -allowProvisioningDeviceRegistration`: Xcode
+registers the App ID `<prefix>.socrates` (and `.widgets`), the container
+`iCloud.<prefix>.socrates`, Push Notifications, and makes the development profiles. Both devices
+use CloudKit's Development environment (just-in-time schema: a migration that adds a table or a
+column needs no CloudKit Console deploy).

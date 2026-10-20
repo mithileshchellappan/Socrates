@@ -57,10 +57,25 @@ public protocol KeychainOperations: Sendable {
 /// Strategy: use the data-protection keychain when the build is entitled to it (always on iOS;
 /// on macOS when signed with a development/distribution profile). On macOS, if it reports
 /// `errSecMissingEntitlement`, fall back to the login keychain and remember that for the
-/// process. When a later, provisioned build finds the data-protection keychain empty, it moves
-/// an existing login-keychain item over. Items are never synchronized to iCloud.
+/// process. Items are never synchronized to iCloud.
+///
+/// A read that finds nothing looks for an older copy and moves it here once: the same item in
+/// the login keychain (written by a build without a profile), then the item under a service the
+/// app used before it was renamed (`legacyServices`: the earlier bundle ID). The copy is written
+/// under `service` first; the old item is deleted only after that write succeeded. Reading a
+/// login-keychain item another signature wrote is what makes macOS ask once (Always Allow).
 public final class KeychainSecretStore: SecretStore {
+    /// The Keychain service of the app's items.
+    public static let defaultService = "Socrates"
+
+    /// The services the app's items had before, newest first: the earlier bundle ID
+    /// (`AppIdentity.legacyBundleID()`), which was the Keychain service of Study Portal builds.
+    public static var defaultLegacyServices: [String] {
+        AppIdentity.legacyBundleID().map { [$0] } ?? []
+    }
+
     public let service: String
+    public let legacyServices: [String]
     private let operations: any KeychainOperations
     private let candidates: [KeychainBackend]
     private let resolved = Mutex<KeychainBackend?>(nil)
@@ -74,11 +89,13 @@ public final class KeychainSecretStore: SecretStore {
     }
 
     public init(
-        service: String = Log.subsystem,
+        service: String = KeychainSecretStore.defaultService,
+        legacyServices: [String] = KeychainSecretStore.defaultLegacyServices,
         operations: any KeychainOperations = SystemKeychain(),
         candidates: [KeychainBackend] = KeychainSecretStore.platformCandidates
     ) {
         self.service = service
+        self.legacyServices = legacyServices.filter { $0 != service }
         self.operations = operations
         self.candidates = candidates
     }
@@ -99,19 +116,12 @@ public final class KeychainSecretStore: SecretStore {
             settle(on: backend)
             return try decode(data)
         }
-        guard backend == .dataProtection, candidates.contains(.fileBased),
-            let legacy = try? operations.read(item, backend: .fileBased)
-        else { return nil }
-        do {
-            try operations.write(legacy, to: item, backend: .dataProtection)
-            try? operations.delete(item, backend: .fileBased)
-            settle(on: .dataProtection)
-            // The key name can hold the uni login name; keep it out of the readable log.
-            Log.keychain.info("Moved \(key.rawValue, privacy: .private(mask: .hash)) to the data-protection keychain")
-        } catch KeychainError.missingEntitlement {
-            settle(on: .fileBased)
+        for (source, sourceBackend) in olderCopies(of: item, after: backend) {
+            guard let legacy = try? operations.read(source, backend: sourceBackend) else { continue }
+            moveOlderCopy(legacy, from: source, backend: sourceBackend, to: item, key: key)
+            return try decode(legacy)
         }
-        return try decode(legacy)
+        return nil
     }
 
     public func setSecret(_ value: String, for key: SecretKey) throws {
@@ -126,8 +136,9 @@ public final class KeychainSecretStore: SecretStore {
         try perform { backend in
             try operations.delete(item, backend: backend)
         }
-        if activeBackend == .dataProtection, candidates.contains(.fileBased) {
-            try? operations.delete(item, backend: .fileBased)
+        // Older copies go too, so a removed secret never comes back from one.
+        for (source, sourceBackend) in olderCopies(of: item, after: activeBackend) {
+            try? operations.delete(source, backend: sourceBackend)
         }
     }
 
@@ -135,6 +146,50 @@ public final class KeychainSecretStore: SecretStore {
 
     private func item(for key: SecretKey) -> KeychainItem {
         KeychainItem(service: service, account: key.rawValue)
+    }
+
+    /// Where an older copy of `item` can be, in the order they are tried: the same item in the
+    /// login keychain (when `backend`, the one just read, is the data-protection keychain), then
+    /// the item under each legacy service in every backend this platform has.
+    private func olderCopies(of item: KeychainItem, after backend: KeychainBackend?) -> [(KeychainItem, KeychainBackend)] {
+        var copies: [(KeychainItem, KeychainBackend)] = []
+        if backend == .dataProtection, candidates.contains(.fileBased) {
+            copies.append((item, .fileBased))
+        }
+        for legacy in legacyServices {
+            let source = KeychainItem(service: legacy, account: item.account)
+            for candidate in candidates.reversed() {
+                copies.append((source, candidate))
+            }
+        }
+        return copies
+    }
+
+    /// Writes an older copy under `item` (the data-protection keychain when this build may use
+    /// it, else the login keychain), then deletes the older copy, only once that write succeeded
+    /// and only when it is another item than the one written. A failed write keeps the old copy
+    /// where it is (read from there next time).
+    private func moveOlderCopy(
+        _ data: Data, from source: KeychainItem, backend sourceBackend: KeychainBackend, to item: KeychainItem, key: SecretKey
+    ) {
+        let written: KeychainBackend
+        do {
+            written = try perform { backend in
+                try operations.write(data, to: item, backend: backend)
+                return backend
+            }
+        } catch {
+            Log.keychain.error("Moving a Keychain item failed: \(String(describing: error), privacy: .public)")
+            return
+        }
+        guard source != item || sourceBackend != written else { return }
+        do {
+            try operations.delete(source, backend: sourceBackend)
+        } catch {
+            Log.keychain.error("Deleting the older Keychain item failed: \(String(describing: error), privacy: .public)")
+        }
+        // The key name can hold the uni login name; keep it out of the readable log.
+        Log.keychain.info("Moved \(key.rawValue, privacy: .private(mask: .hash)) to the \(written.rawValue, privacy: .public) keychain under \(item.service, privacy: .public)")
     }
 
     private func decode(_ data: Data) throws -> String {

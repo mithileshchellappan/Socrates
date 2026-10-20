@@ -12,7 +12,7 @@ public struct InstalledTranslationModel: Hashable, Sendable {
 
 /// Where the OPUS-MT models live and how they get there.
 ///
-/// `~/Library/Application Support/StudyPortal/Models/Translation/<owner>/<repo>/` (iOS: the app
+/// `~/Library/Application Support/Socrates/Models/Translation/<owner>/<repo>/` (iOS: the app
 /// container's equivalent), excluded from backups. Like `WhisperModelStore.shared()`, it ignores
 /// `SOCRATES_DATA_ROOT`: models are a shared, re-downloadable cache, not library data. Each repo
 /// folder holds the six files the engine reads, `manifest.json` (the revision and each file's
@@ -25,10 +25,23 @@ public struct TranslationModelStore: Sendable {
     }
 
     public static var sharedDirectory: URL {
-        URL.applicationSupportDirectory
-            .appending(path: "StudyPortal", directoryHint: .isDirectory)
+        libraryFolder(in: URL.applicationSupportDirectory)
             .appending(path: "Models", directoryHint: .isDirectory)
             .appending(path: "Translation", directoryHint: .isDirectory)
+    }
+
+    /// The real library's folder, by StudyCore's rule (`AppPaths.liveRoot(in:)`; this package
+    /// has no StudyCore): `Socrates`, or `StudyPortal` (the name before the app was renamed)
+    /// while only that one holds a database, so models never land in a folder the library is not in.
+    static func libraryFolder(in support: URL) -> URL {
+        func hasDatabase(_ folder: URL) -> Bool {
+            ["Socrates", "StudyPortal"].contains { name in
+                FileManager.default.fileExists(atPath: folder.appending(path: "Database/\(name).sqlite").path(percentEncoded: false))
+            }
+        }
+        let current = support.appending(path: "Socrates", directoryHint: .isDirectory)
+        let legacy = support.appending(path: "StudyPortal", directoryHint: .isDirectory)
+        return !hasDatabase(current) && hasDatabase(legacy) ? legacy : current
     }
 
     public static let shared = TranslationModelStore(directory: sharedDirectory)

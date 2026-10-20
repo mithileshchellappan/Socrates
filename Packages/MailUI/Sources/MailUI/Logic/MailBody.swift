@@ -69,7 +69,7 @@ struct MailBlock: Hashable, Sendable, Identifiable {
 /// colour).
 enum FoundQuoteAttribute: AttributedStringKey {
     typealias Value = Bool
-    static let name = "StudyPortal.MailUI.foundQuote"
+    static let name = "Socrates.MailUI.foundQuote"
 }
 
 /// Builds `MailBody` from the sanitized HTML (docs/plan-m2.md §2.8) or from `body_text`.

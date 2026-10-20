@@ -83,7 +83,7 @@ public enum NoteMedia {
     /// The drawing a sketch attachment stores; nil when the blob is missing or not ink (an older
     /// PencilKit drawing is shown as an empty canvas and kept as it is).
     public static func drawing(of attachment: NoteAttachment, blobs: BlobStore) -> InkDrawing? {
-        guard attachment.contentType == nil || attachment.contentType == InkDrawing.contentType,
+        guard InkDrawing.isInk(contentType: attachment.contentType),
               let data = try? blobs.data(for: attachment.blob)
         else { return nil }
         return try? InkDrawing.decode(data)

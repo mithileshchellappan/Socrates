@@ -91,7 +91,7 @@ public enum SearchTarget: Hashable, Sendable {
 /// Marks the matched words in a `SearchHit.snippet`; SearchUI highlights these runs.
 public enum SearchMatchAttribute: AttributedStringKey {
     public typealias Value = Bool
-    public static let name = "StudyPortal.SearchMatch"
+    public static let name = "Socrates.SearchMatch"
 }
 
 /// One search result: a transcript line, a slide or a note.

@@ -59,7 +59,7 @@ static void lt_init(void) {
         return;
     }
     OrtEnv *env = NULL;
-    char *error = lt_status_error(lt_api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "StudyPortal", &env));
+    char *error = lt_status_error(lt_api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "Socrates", &env));
     if (error != NULL) {
         lt_init_error = error;
         return;

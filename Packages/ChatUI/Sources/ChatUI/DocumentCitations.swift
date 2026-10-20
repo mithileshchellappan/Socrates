@@ -53,7 +53,7 @@ enum DocumentCitations {
         return String(trimmed.prefix(titleLimit - 1)).trimmingCharacters(in: .whitespaces) + "…"
     }
 
-    /// "studyportal-cite://doc/<document>/12" ("-" without a page).
+    /// "socrates-cite://doc/<document>/12" ("-" without a page).
     static func link(id: StudyDocument.ID, page: Int?) -> URL? {
         URL(string: "\(AnswerText.linkScheme)://doc/\(id.uuidString.lowercased())/\(page.map(String.init) ?? "-")")
     }

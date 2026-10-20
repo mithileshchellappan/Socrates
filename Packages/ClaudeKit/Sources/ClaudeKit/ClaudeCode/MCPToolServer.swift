@@ -10,6 +10,9 @@ final class MCPToolServer: Sendable {
     /// What `tools/call` runs: the bare tool name and its arguments.
     typealias CallTool = @Sendable (_ name: String, _ arguments: JSONValue) async -> ToolOutput
 
+    /// Kept from before the app was renamed: the tool names in stored agent turns
+    /// (`mcp__studyportal__…`, `ClaudeCodeConfiguration.toolNamePrefix`) carry it, and the
+    /// app reads them back (bare names, the untrusted-content trace).
     static let serverName = "studyportal"
     /// Protocol versions echoed in `initialize`; anything else gets the newest of these.
     static let protocolVersions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]

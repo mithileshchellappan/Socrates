@@ -108,7 +108,8 @@ final class AppModel {
     let coach: CoachEngine?
     /// M7: iCloud sync of the library (SQLiteData's `SyncEngine`), on the Mac and the iPhone. Nil
     /// unless this build is signed for CloudKit and names its container
-    /// (`CloudSyncConfiguration.containerIdentifier()`): nothing about sync runs otherwise.
+    /// (`CloudSyncConfiguration.containerIdentifier()`) and the library is the real one
+    /// (`services.syncContainer`): nothing about sync runs otherwise.
     let cloudSync: CloudSync?
     #if os(iOS)
     /// M7, the iPhone: the recorder (mockup 09) and its Live Activity, owned for the app's life so
@@ -180,6 +181,9 @@ final class AppModel {
     init(services: StudyServices?, launchError: String? = nil, startsProcessing: Bool = true) {
         self.services = services
         self.launchError = launchError
+        // M7: the sync engine first (real library of a build signed for iCloud only), so
+        // SQLiteData's change triggers note every write from here on.
+        cloudSync = startsProcessing ? services.flatMap { CloudSync(services: $0) } : nil
         let (transcribed, finishedTranscription) = AsyncStream.makeStream(of: Recording.ID.self)
         self.transcribed = transcribed
         let (processed, finishedProcessing) = AsyncStream.makeStream(of: Lecture.ID.self)
@@ -208,7 +212,7 @@ final class AppModel {
         }
         self.processor = processor
         if let services {
-            let claude = ClaudeClient.studyPortal(services: services)
+            let claude = ClaudeClient.socrates(services: services)
             self.claude = claude
             // The services exist before the model: they reach it through `owner`.
             let owner = ModelReference()
@@ -278,7 +282,6 @@ final class AppModel {
             self.agent = agent
             transcriptItems = TranscriptItemPipeline(services: services, client: claude, memory: memory)
             self.owner = owner
-            cloudSync = startsProcessing ? CloudSync(services: services) : nil
             #if os(iOS)
             phoneRecorder = Self.isPhone ? PhoneRecorder(services: services) : nil
             #endif
@@ -320,7 +323,6 @@ final class AppModel {
             studyPass = nil
             coach = nil
             owner = ModelReference()
-            cloudSync = nil
             #if os(macOS)
             mailEngine = nil
             mailSender = nil
@@ -380,9 +382,14 @@ final class AppModel {
             }
         }
         #endif
+        #if os(macOS)
+        // The build from before the rename (another bundle ID) left preferences and a library
+        // folder: taken over once, before anything reads them.
+        LegacyTakeover.run()
+        #endif
         do {
-            // M7: a build signed for CloudKit opens the library with SQLiteData's sync metadata
-            // (nil today: the database opens exactly as before).
+            // M7: a build signed for CloudKit (`SOCRATES_ICLOUD = YES`) opens the real library with
+            // SQLiteData's sync metadata; any other build opens it exactly as before.
             let model = AppModel(services: try StudyServices.live(syncContainer: CloudSyncConfiguration.containerIdentifier()))
             // App-lifetime work belongs to the app, not to a window: it runs even when the window
             // closes during launch, and a view's cancelled task never stops it halfway. It starts
@@ -417,8 +424,11 @@ final class AppModel {
         // md: returns at once (reading resumes after 20 s at utility, file removal after 60 s).
         await documentBank?.start()
         #endif
-        // Conversations a quit left running end as failed.
-        await agent?.recoverInterrupted()
+        // Conversations a quit left running end as failed (only where the agent runs: on a
+        // synced iPhone this would fail the conversation the Mac is answering).
+        if runsLibraryPasses {
+            await agent?.recoverInterrupted()
+        }
 
         if let searchIndexer {
             let semanticIndex = semanticIndex
@@ -451,7 +461,7 @@ final class AppModel {
                 Log.jobs.error("Queueing continuation checks failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        if let filing, let filingCenter {
+        if runsLibraryPasses, let filing, let filingCenter {
             // Captures that never reached a filing go through smart import like a Stop: session
             // match, a filing row, a toast with Change….
             let recording = live?.session.package.map { Set([$0.url]) } ?? []
@@ -467,14 +477,16 @@ final class AppModel {
         }
         await processor?.wake()
 
-        if let filing {
+        if runsLibraryPasses, let filing {
             for changed in await filing.fileUnsureRecordingsBySpokenContent() {
                 await filingCenter?.refresh(changed)
             }
         }
         startMail(services: services)
         // Transcripts waiting for extraction are read in the background (only with Claude Code).
-        await transcriptItems?.start()
+        if runsLibraryPasses {
+            await transcriptItems?.start()
+        }
         // The study pass follows lectures from here on; a finished lecture wakes it at once.
         if let studyPass {
             await studyPass.start()
@@ -505,6 +517,18 @@ final class AppModel {
         // phone's coach is never started).
         #if os(macOS)
         await coach?.start()
+        #endif
+    }
+
+    /// M7: the launch passes that rewrite the library's rows (recovering the agent's interrupted
+    /// conversations, the filing passes, reading transcripts) run where the library's work is
+    /// done: the Mac, and an iPad without sync. The iPhone shows the Mac's rows (synced, they are
+    /// the Mac's own: a running conversation there is the Mac answering, not one a quit left).
+    private var runsLibraryPasses: Bool {
+        #if os(macOS)
+        true
+        #else
+        !Self.isPhone && cloudSync == nil
         #endif
     }
 

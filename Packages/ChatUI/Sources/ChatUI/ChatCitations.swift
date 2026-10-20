@@ -394,9 +394,11 @@ struct AnswerText: Equatable {
 
     // MARK: Drawing
 
-    /// The lecture chips' link scheme: "studyportal-cite://slide/<lecture>/13",
-    /// "studyportal-cite://moment/<lecture>/<recording or ->/2279". A web chip links its page.
-    static let linkScheme = "studyportal-cite"
+    /// The lecture chips' link scheme: "socrates-cite://slide/<lecture>/13",
+    /// "socrates-cite://moment/<lecture>/<recording or ->/2279". A web chip links its page.
+    static let linkScheme = "socrates-cite"
+    /// The scheme the app used before it was renamed, still read.
+    static let legacyLinkScheme = "studyportal-cite"
 
     static func link(_ citation: CheckedCitation) -> URL? {
         switch citation {
@@ -413,7 +415,7 @@ struct AnswerText: Equatable {
 
     /// Where a lecture chip's link goes (nil for anything else).
     static func destination(link url: URL) -> StudyDestination? {
-        guard url.scheme == linkScheme, let kind = url.host() else { return nil }
+        guard url.scheme == linkScheme || url.scheme == legacyLinkScheme, let kind = url.host() else { return nil }
         let parts = url.path(percentEncoded: false).split(separator: "/").map(String.init)
         switch kind {
         case "slide":

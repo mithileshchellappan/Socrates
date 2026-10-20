@@ -10,7 +10,7 @@ import os
 /// it is public so the next one can be read). Nothing is handled differently: the masks only log.
 nonisolated final class ExceptionLog: NSObject, Sendable {
     static let shared = ExceptionLog()
-    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "StudyPortal", category: "exceptions")
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "socrates", category: "exceptions")
 
     /// The exceptions worth a stack: bugs, not a framework's routine control flow.
     private static let names: Set<String> = [

@@ -628,7 +628,7 @@ enum ClaudeCodeRun {
             activity.toolCallStarted()
             defer { activity.toolCallEnded() }
             let id = await matcher.claim(name: ClaudeCodeCall.toolPrefix + name, input: arguments)
-            let use = ToolUseBlock(id: id ?? "toolu_studyportal_\(UUID().uuidString.lowercased())", name: name, input: arguments)
+            let use = ToolUseBlock(id: id ?? "toolu_socrates_\(UUID().uuidString.lowercased())", name: name, input: arguments)
             do {
                 return try await toolTurns.run(.interactive) {
                     await onEvent(.toolStarted(use))

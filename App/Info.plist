@@ -17,8 +17,8 @@
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>com.example.studyportal.lecture-bundle</string>
-				<string>com.example.studyportal.lecture</string>
+				<string>$(BUNDLE_ID_PREFIX).socrates.lecture-bundle</string>
+				<string>$(BUNDLE_ID_PREFIX).socrates.lecture</string>
 			</array>
 		</dict>
 	</array>
@@ -41,6 +41,7 @@
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>socrates</string>
 				<string>studyportal</string>
 			</array>
 		</dict>
@@ -61,8 +62,12 @@
 	<string>Shows live captions while a lecture is recorded.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
-	<key>StudyPortalUniversityProfile</key>
-	<string>$(STUDYPORTAL_UNIVERSITY_PROFILE)</string>
+	<key>SocratesCloudKitContainer</key>
+	<string>$(SOCRATES_SYNC_CONTAINER)</string>
+	<key>SocratesLegacyBundleID</key>
+	<string>$(SOCRATES_LEGACY_BUNDLE_ID)</string>
+	<key>SocratesUniversityProfile</key>
+	<string>$(SOCRATES_UNIVERSITY_PROFILE)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -71,6 +76,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>remote-notification</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
@@ -96,7 +102,7 @@
 			<key>UTTypeDescription</key>
 			<string>Socrates Lecture</string>
 			<key>UTTypeIdentifier</key>
-			<string>com.example.studyportal.lecture</string>
+			<string>$(BUNDLE_ID_PREFIX).socrates.lecture</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>
@@ -114,7 +120,7 @@
 			<key>UTTypeDescription</key>
 			<string>Socrates Recording</string>
 			<key>UTTypeIdentifier</key>
-			<string>com.example.studyportal.lecture-bundle</string>
+			<string>$(BUNDLE_ID_PREFIX).socrates.lecture-bundle</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>

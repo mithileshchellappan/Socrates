@@ -37,7 +37,7 @@ public enum StudyPass {
 /// Runs the study pass over eligible lectures, one unit at a time, every call
 /// `CallContext(purpose: stage.callPurpose, lectureID:, priority: .background)`. docs/plan-m4.md §3.
 ///
-/// Contract for the app (integrator, Mac only): one instance with `ClaudeClient.studyPortal`;
+/// Contract for the app (integrator, Mac only): one instance with `ClaudeClient.socrates`;
 /// `start()` in `startBackgroundWork` after the transcript pipeline; `wake()` when processing
 /// finishes a lecture, after `Realigner.realign` and when availability turns ready;
 /// `prefer(_:)` when a lecture opens in Review; `stop()` at quit. A nil client does nothing.

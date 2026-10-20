@@ -14,14 +14,14 @@ import SwiftUI
 
 extension NSAttributedString.Key {
     /// `BlockFormat`: the paragraph's block.
-    static let noteBlock = NSAttributedString.Key("StudyPortal.noteBlock")
-    static let noteBold = NSAttributedString.Key("StudyPortal.noteBold")
-    static let noteItalic = NSAttributedString.Key("StudyPortal.noteItalic")
-    static let noteUnderline = NSAttributedString.Key("StudyPortal.noteUnderline")
-    static let noteStrikethrough = NSAttributedString.Key("StudyPortal.noteStrikethrough")
-    static let noteHighlight = NSAttributedString.Key("StudyPortal.noteHighlight")
+    static let noteBlock = NSAttributedString.Key("Socrates.noteBlock")
+    static let noteBold = NSAttributedString.Key("Socrates.noteBold")
+    static let noteItalic = NSAttributedString.Key("Socrates.noteItalic")
+    static let noteUnderline = NSAttributedString.Key("Socrates.noteUnderline")
+    static let noteStrikethrough = NSAttributedString.Key("Socrates.noteStrikethrough")
+    static let noteHighlight = NSAttributedString.Key("Socrates.noteHighlight")
     /// Marks the editor shows nothing for (`code`, newer ones), kept as they were.
-    static let noteOtherMarks = NSAttributedString.Key("StudyPortal.noteOtherMarks")
+    static let noteOtherMarks = NSAttributedString.Key("Socrates.noteOtherMarks")
 }
 
 /// A paragraph's block: its kind, heading level or list indent, its box, and the block it was

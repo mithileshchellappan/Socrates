@@ -34,7 +34,7 @@ public enum MessageComposer {
 
     /// A new Message-ID (without brackets) in the sender's domain.
     public static func newMessageID(for sender: String) -> String {
-        let domain = sender.split(separator: "@").last.map(String.init).flatMap { $0.isEmpty ? nil : $0 } ?? "studyportal.invalid"
+        let domain = sender.split(separator: "@").last.map(String.init).flatMap { $0.isEmpty ? nil : $0 } ?? "socrates.invalid"
         return "\(UUID().uuidString.lowercased())@\(domain.lowercased())"
     }
 

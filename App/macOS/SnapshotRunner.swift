@@ -9,19 +9,19 @@ import SwiftUI
 /// Debug builds only: renders the wired main window of a library to PNGs and quits, so the app
 /// can be checked against the mockups without a screen.
 ///
-///     SOCRATES_DATA_ROOT=<library copy> STUDYPORTAL_SNAPSHOTS=<folder> Socrates.app/Contents/MacOS/Socrates
+///     SOCRATES_DATA_ROOT=<library copy> SOCRATES_SNAPSHOTS=<folder> Socrates.app/Contents/MacOS/Socrates
 ///
-/// Shots (light and dark): Today, Calendar (the week of `STUDYPORTAL_SNAPSHOT_WEEK`, YYYY-MM-DD, else
+/// Shots (light and dark): Today, Calendar (the week of `SOCRATES_SNAPSHOT_WEEK`, YYYY-MM-DD, else
 /// this week), Mail (Inbox with the newest message, its course, Drafts), Course
 /// Settings of DC, the review of DC lecture 2
 /// (slide 16, 37:27) and CL lecture 1 (slide 11, 7:25), Search for "paravirtualization" and
-/// "ELIZA", and the drop HUD over Today for the files in `STUDYPORTAL_SNAPSHOT_DROP` (paths
-/// separated by ":"), after filing those in `STUDYPORTAL_SNAPSHOT_FILE` (their toasts). Filing
+/// "ELIZA", and the drop HUD over Today for the files in `SOCRATES_SNAPSHOT_DROP` (paths
+/// separated by ":"), after filing those in `SOCRATES_SNAPSHOT_FILE` (their toasts). Filing
 /// writes to the library: point the app at a copy.
 @MainActor
 enum SnapshotRunner {
     static var directory: URL? {
-        ProcessInfo.processInfo.environment["STUDYPORTAL_SNAPSHOTS"].flatMap { $0.isEmpty ? nil : URL(filePath: $0, directoryHint: .isDirectory) }
+        ProcessInfo.processInfo.environment["SOCRATES_SNAPSHOTS"].flatMap { $0.isEmpty ? nil : URL(filePath: $0, directoryHint: .isDirectory) }
     }
 
     static func files(_ key: String) -> [URL] {
@@ -55,7 +55,7 @@ enum SnapshotRunner {
             if let indexer = model.searchIndexer { _ = try await indexer.catchUp() }
             // What a launch does to an older library before the window shows it.
             await model.filing?.repairDeckTitles()
-            let filed = files("STUDYPORTAL_SNAPSHOT_FILE")
+            let filed = files("SOCRATES_SNAPSHOT_FILE")
 
             let (courses, lectures) = try await services.database.read { db in
                 (try Course.all.fetchAll(db), try Lecture.all.fetchAll(db))
@@ -66,7 +66,7 @@ enum SnapshotRunner {
                 return lectures.first { $0.courseID == courseID && $0.number == number }?.id
             }
             var shots: [Shot] = [Shot(name: "01-today", item: .today), Shot(name: "06-calendar", item: .calendar)]
-            model.fixedCalendarWeek = ProcessInfo.processInfo.environment["STUDYPORTAL_SNAPSHOT_WEEK"].flatMap(CalendarDay.init(rawValue:))
+            model.fixedCalendarWeek = ProcessInfo.processInfo.environment["SOCRATES_SNAPSHOT_WEEK"].flatMap(CalendarDay.init(rawValue:))
             if let dc = courses.first(where: { $0.shortName == "DC" }) {
                 shots.append(Shot(name: "08-course-settings", item: .courseSettings(dc.id)))
             }
@@ -87,7 +87,7 @@ enum SnapshotRunner {
             shots.append(Shot(name: "05-mail-drafts", item: .mailScope(.drafts)))
             shots.append(Shot(name: "07-search-paravirtualization", item: .search, query: "paravirtualization"))
             shots.append(Shot(name: "07-search-eliza", item: .search, query: "ELIZA"))
-            let drop = files("STUDYPORTAL_SNAPSHOT_DROP")
+            let drop = files("SOCRATES_SNAPSHOT_DROP")
             if !drop.isEmpty || !filed.isEmpty {
                 shots.append(Shot(name: "10-import", item: .today, drop: drop, file: filed, settle: .seconds(1.5)))
             }

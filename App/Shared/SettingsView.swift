@@ -3,28 +3,38 @@ import MailUI
 import StudyCore
 import StudyUI
 import SwiftUI
+import Sync
 
 /// The Settings window's tabs; "Set Up Mail…" opens Accounts.
 enum SettingsTab: String, Hashable {
     case semester
     case accounts
 
-    static let storageKey = "StudyPortal.settingsTab"
+    static let storageKey = "Socrates.settingsTab"
 }
 
 /// Account settings: Claude Code (the AI runs on the student's Claude Code subscription; one quiet
-/// row, checked again on appear) and, on the Mac where mail syncs, the uni mail account (its
-/// password goes straight to the Keychain).
+/// row, checked again on appear), iCloud (M7: only in a build that syncs; what has not reached
+/// iCloud yet, counted every 5 s while the row shows) and, on the Mac where mail syncs, the uni
+/// mail account (its password goes straight to the Keychain).
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         Form {
-            if let value = claudeCodeValue {
+            if claudeCodeValue != nil || iCloudValue != nil {
                 Section {
-                    LabeledContent("Claude Code") {
-                        value
-                            .foregroundStyle(.secondary)
+                    if let value = claudeCodeValue {
+                        LabeledContent("Claude Code") {
+                            value
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if let value = iCloudValue {
+                        LabeledContent("iCloud") {
+                            value
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -35,6 +45,33 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .disabled(model.services == nil)
         .task { await model.refreshClaudeAvailability() }
+        .task(id: model.cloudSync?.isRunning) {
+            guard let sync = model.cloudSync, sync.isRunning else { return }
+            while !Task.isCancelled {
+                await sync.refreshUnsent()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    /// M7: "Up to date", "Syncing", "12,480 to upload" (the Mac's first upload), "3 not uploaded"
+    /// (rows iCloud refused, e.g. over its 1 MB record size), or why sync is off ("Not signed in
+    /// to iCloud"); nothing in a build without sync or before it started.
+    private var iCloudValue: Text? {
+        guard let sync = model.cloudSync else { return nil }
+        switch sync.status {
+        case .running:
+            let unsent = sync.unsentCount ?? 0
+            if unsent > 0 {
+                let count = Text(unsent, format: .number).font(.mono(13))
+                return sync.isSynchronizing ? Text("\(count) to upload") : Text("\(count) not uploaded")
+            }
+            return sync.isSynchronizing ? Text("Syncing") : Text("Up to date")
+        case .unavailable(let reason), .failed(let reason):
+            return Text(verbatim: reason)
+        case .idle, .starting:
+            return nil
+        }
     }
 
     /// The subscription when ready ("Team"), "Paused until 17:20" during a usage pause, "Not

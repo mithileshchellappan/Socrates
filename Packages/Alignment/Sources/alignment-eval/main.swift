@@ -2,7 +2,7 @@
 //
 //   swift run -c release --package-path Packages/Alignment alignment-eval [--timeline] [--set name=value ...]
 //
-// Fixtures are located via STUDYPORTAL_FIXTURES or by walking up from this file to `.data/fixtures`.
+// Fixtures are located via SOCRATES_FIXTURES or by walking up from this file to `.data/fixtures`.
 
 import Alignment
 import AlignmentEvaluation
@@ -189,7 +189,7 @@ if let library = FixtureLibrary.locate() {
         }
     }
 } else {
-    print("Fixtures not found (set STUDYPORTAL_FIXTURES).\n")
+    print("Fixtures not found (set SOCRATES_FIXTURES).\n")
 }
 
 // Synthetic: five stamps fix a deliberately misaligned run.

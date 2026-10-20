@@ -29,7 +29,7 @@ final class NoteTextView: NSTextView {
         }
     }
 
-    static let blocksType = NSPasteboard.PasteboardType("com.example.studyportal.note-blocks")
+    static let blocksType = NSPasteboard.PasteboardType((Bundle.main.bundleIdentifier ?? "socrates") + ".note-blocks")
     private static let jpegType = NSPasteboard.PasteboardType(UTType.jpeg.identifier)
     private static let heicType = NSPasteboard.PasteboardType(UTType.heic.identifier)
 

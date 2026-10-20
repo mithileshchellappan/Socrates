@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// One lecture package as a single file, for Share / AirDrop from the iPhone to the Mac (M7,
 /// docs/plan-m7.md §4): an uncompressed Apple Archive of exactly one `<uuid>.lecture` folder.
 ///
-///     DC Lecture 2.lecturebundle      (UTType com.example.studyportal.lecture-bundle)
+///     DC Lecture 2.lecturebundle      (UTType <bundle ID>.lecture-bundle)
 ///       <uuid>.lecture/                directory
 ///       <uuid>.lecture/manifest.json   first, so the Mac reads it without unpacking
 ///       <uuid>.lecture/events.json
@@ -23,11 +23,11 @@ import UniformTypeIdentifiers
 /// it writes into a fresh hidden folder first, so a refused bundle leaves nothing behind.
 public enum CaptureBundle {
     public static let pathExtension = "lecturebundle"
-    public static let typeIdentifier = "com.example.studyportal.lecture-bundle"
 
-    /// The bundle's type (declared by the app's Info.plist).
+    /// The bundle's type, declared by the app's Info.plist as `$(BUNDLE_ID_PREFIX).socrates.lecture-bundle`
+    /// for the extension `lecturebundle` (found by the extension, so no bundle ID is written here).
     public static var contentType: UTType {
-        UTType(exportedAs: typeIdentifier, conformingTo: .archive)
+        UTType(filenameExtension: pathExtension, conformingTo: .archive) ?? .archive
     }
 
     public enum BundleError: Error, Equatable, Sendable, LocalizedError {

@@ -6,7 +6,7 @@ Depends on StudyCore, ClaudeKit, Agent (`Deadlines` only: `TranscriptQuote`, `Te
 
 ## Entry points
 
-`actor StudyPassPipeline(services:client:now:)`, one instance in the app (Mac only), with the app's `ClaudeClient.studyPortal(services:)`. A nil client does nothing.
+`actor StudyPassPipeline(services:client:now:)`, one instance in the app (Mac only), with the app's `ClaudeClient.socrates(services:)`. A nil client does nothing.
 
 | Call | When (integrator) | What it does |
 |---|---|---|
