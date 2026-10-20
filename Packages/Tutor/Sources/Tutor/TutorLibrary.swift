@@ -73,7 +73,7 @@ struct TutorLibrary: Sendable {
             guard recordings.count == 1 else { return nil }
             return Reference(lecture: lecture, recording: recordings.first)
         }
-        // Course token + number: "DC 2", "DC L2", "CC2", "DC Lecture 2".
+        // Course token + number: "DC 2", "DC L2", "DC2", "DC Lecture 2".
         let digits = String(text.reversed().prefix { $0.isASCII && $0.isNumber }.reversed())
         guard let number = Int(digits) else { return nil }
         var head = text.dropLast(digits.count).trimmingCharacters(in: .whitespaces)

@@ -34,7 +34,7 @@ public struct TimetableEvent: Hashable, Sendable {
     public var uid: String
     /// The file's name ("timetable 13.ics").
     public var file: String
-    /// The course unit's number without "LV-" ("90-100-128"), when the title starts with one.
+    /// The course unit's number without "LV-" ("01-234-501"), when the title starts with one.
     public var number: String?
     /// SUMMARY without the number ("Übungen zu Data Centers").
     public var title: String
@@ -141,7 +141,7 @@ public enum TimetableText {
     /// The university's time zone (the profile's, else the system's): floating times are read in it.
     public static var zone: TimeZone { UniversityProfile.current.zone }
 
-    /// "LV-90-100-128 Data Centers" → ("90-100-128", "Data Centers").
+    /// "LV-01-234-501 Data Centers" → ("01-234-501", "Data Centers").
     static func splitNumber(_ summary: String) -> (String?, String) {
         let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         if let match = trimmed.wholeMatch(of: /(?:[A-Za-z]{1,4}-)?(\d+(?:-\d+)+)\s+(.+)/) {
@@ -219,8 +219,8 @@ public enum TimetableText {
     }
 
     /// The name of a new course: the English side of a bilingual title; for an exercise or
-    /// tutorial without its lecture, without the lead-in ("Recitation in Robotics I" →
-    /// "Robotics I").
+    /// tutorial without its lecture, without the lead-in ("Recitation in Robot Kinematics I" →
+    /// "Robot Kinematics I").
     static func courseName(fromTitle title: String, kind: SessionKind) -> String {
         let sides = sides(title)
         let name = sides.last { !isGerman($0) } ?? sides.last ?? title
@@ -336,7 +336,7 @@ public struct TimetableCourse: Hashable, Sendable, Identifiable {
     /// The existing course's id, or the new course's (kept when it is added).
     public var id: UUID
     public var existing: Course?
-    /// The existing course's name, or the cleaned title ("Robotics I").
+    /// The existing course's name, or the cleaned title ("Robot Kinematics I").
     public var name: String
     public var language: String
     public var slots: [TimetableSlot]
@@ -565,7 +565,7 @@ public enum Timetable {
         }
     }
 
-    /// An exercise or tutorial numbered right after a lecture ("90-100-129" after "90-100-128").
+    /// An exercise or tutorial numbered right after a lecture ("01-234-502" after "01-234-501").
     static func pairs(_ unit: Unit, lecture: Unit) -> Bool {
         guard unit.kind == .exercise || unit.kind == .tutorial, lecture.kind == .lecture,
               let number = unit.number, let lectureNumber = lecture.number else { return false }
