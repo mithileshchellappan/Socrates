@@ -15,6 +15,10 @@ struct StudyPortalApp: App {
     @State private var model: AppModel
 
     init() {
+        #if os(macOS)
+        // Reasons and frames of range and consistency exceptions AppKit catches itself.
+        ExceptionLog.install()
+        #endif
         #if DEBUG && os(macOS)
         ParityMode.prepareApp()
         #endif

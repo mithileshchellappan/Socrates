@@ -182,11 +182,16 @@ extension AgentPanelModel {
         pending = PendingPanelMessage(
             text: text, attachments: files, conversationID: conversationID, afterTurns: conversationID == nil ? 0 : turnCount
         )
-        draft = ""
+        let sent = draft
         attachments = []
         notice = nil
         isSending = true
         askedSinceOpen = true
+        // The field empties after AppKit has finished the ↩ that sent it: its field editor still
+        // holds the text's range inside the key event.
+        Task {
+            if draft == sent { draft = "" }
+        }
         Task {
             do {
                 let id = try await actions.send(text, context, files, conversationID)
@@ -195,7 +200,9 @@ extension AgentPanelModel {
                 if pending?.conversationID == nil { pending?.conversationID = id }
             } catch {
                 ChatUILog.ui.error("Sending to the agent failed: \(String(describing: error), privacy: .public)")
-                if draft.isEmpty { draft = text }
+                // Back into the composer unless the student is typing there (or composing a
+                // character): their text is never replaced under the caret.
+                if draft.isEmpty, !FieldEditor.isComposing { draft = text }
                 if attachments.isEmpty { attachments = files }
                 pending = nil
                 // The message is back in the composer; one line says why (a readable reason

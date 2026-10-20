@@ -64,7 +64,9 @@ extension DraftTextView: NSViewRepresentable {
         context.coordinator.parent = self
         view.isEditable = isEditable
         view.isSelectable = true
-        if view.string != text {
+        // Never under a composition (a dead key, an input method): its marked range would point
+        // into text that is gone. The text comes in after it commits.
+        if view.string != text, !view.hasMarkedText() {
             let selection = view.selectedRange()
             view.string = text
             let length = (text as NSString).length
@@ -110,7 +112,8 @@ extension DraftTextView: NSViewRepresentable {
 
         /// Colours by provenance and sets the first line's indent; text and selection unchanged.
         func recolor(_ view: NSTextView) {
-            guard let storage = view.textStorage else { return }
+            // A composition keeps its marked text's look; the commit recolours (`textDidChange`).
+            guard let storage = view.textStorage, !view.hasMarkedText() else { return }
             let string = storage.string
             let full = NSRange(location: 0, length: storage.length)
             let paragraph = NSMutableParagraphStyle()

@@ -150,9 +150,14 @@ struct SlotRow: View {
     }
 
     private func commitRoom() {
-        let trimmed = room.trimmingCharacters(in: .whitespacesAndNewlines)
-        room = trimmed
+        let typed = room
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         update { $0.room = trimmed }
+        guard trimmed != typed else { return }
+        // The field's own text is trimmed after AppKit has finished the key that committed it.
+        Task { @MainActor in
+            if room == typed { room = trimmed }
+        }
     }
 }
 

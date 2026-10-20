@@ -451,7 +451,14 @@ struct NamesField: View {
     private func commit() {
         let parsed = CourseDraft.names(from: text)
         if parsed != names { names = parsed }
-        text = parsed.joined(separator: ", ")
+        let typed = text
+        let tidy = parsed.joined(separator: ", ")
+        guard tidy != typed else { return }
+        // The field's text is tidied after AppKit has finished the ↩ (or the focus change) that
+        // committed it, never under its field editor.
+        Task { @MainActor in
+            if text == typed { text = tidy }
+        }
     }
 }
 

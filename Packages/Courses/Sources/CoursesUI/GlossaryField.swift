@@ -124,8 +124,8 @@ struct GlossaryField: View {
                 .padding(.trailing, 1)
                 .frame(minWidth: terms.isEmpty ? 72 : 12, alignment: .leading)
                 .overlay(alignment: .leading) { field }
-            if let suggestion, suggestion.term.count > text.count {
-                Text(verbatim: String(suggestion.term.dropFirst(text.count)))
+            if let suggestion, suggestion.term.count > typedCount {
+                Text(verbatim: String(suggestion.term.dropFirst(typedCount)))
                     .font(.callout)
                     .background(.tint.opacity(0.3), in: .rect(cornerRadius: 2))
                 Text(verbatim: "S\(suggestion.page)")
@@ -139,25 +139,52 @@ struct GlossaryField: View {
         .padding(.leading, 3)
     }
 
+    /// The typed word's length without the spaces before it (the completion matched it trimmed).
+    private var typedCount: Int {
+        text.trimmingCharacters(in: .whitespaces).count
+    }
+
+    private static func isSeparator(_ character: Character) -> Bool {
+        character == "," || character == ";" || character.isNewline
+    }
+
+    /// The field's text. A separator typed or pasted adds the term, after AppKit has finished the
+    /// key: the field is never emptied inside its own key event.
+    private var typing: Binding<String> {
+        Binding(
+            get: { text },
+            set: { typed in
+                text = typed
+                selection = nil
+                if typed.contains(where: Self.isSeparator) {
+                    Task { @MainActor in commit() }
+                }
+            }
+        )
+    }
+
     private var field: some View {
         // A prompt only while the glossary is empty; otherwise the field is a caret after the tokens.
-        TextField("Glossary term", text: $text, prompt: terms.isEmpty ? Text("Add term") : Text(verbatim: ""))
+        TextField("Glossary term", text: typing, prompt: terms.isEmpty ? Text("Add term") : Text(verbatim: ""))
             .labelsHidden()
             .textFieldStyle(.plain)
             .font(.callout)
             .focused($isTyping)
             .onSubmit {
-                if acceptSuggestion() { isTyping = true } else { commit() }
-            }
-            .onChange(of: text) {
-                selection = nil
-                if text.contains(",") || text.contains(";") || text.contains("\n") { commit() }
+                // After AppKit has finished the ↩.
+                Task { @MainActor in
+                    if acceptSuggestion() { isTyping = true } else { commit() }
+                }
             }
             .onKeyPress(.tab) {
-                acceptSuggestion() ? .handled : .ignored
+                // A dead key or an input method's composition keeps its keys.
+                guard !FieldEditor.isComposing, suggestion != nil else { return .ignored }
+                Task { @MainActor in _ = acceptSuggestion() }
+                return .handled
             }
             .onKeyPress(.delete) {
-                guard text.isEmpty, let last = terms.last else { return .ignored }
+                // ⌫ during a composition cancels it (the input method's), never a token.
+                guard !FieldEditor.isComposing, text.isEmpty, let last = terms.last else { return .ignored }
                 if selection == last {
                     remove(last)
                 } else {
