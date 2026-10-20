@@ -91,6 +91,33 @@ public enum MailTransportError: Error, Hashable, Sendable, LocalizedError {
         }
     }
 
+    /// The server cannot take a password login at all: retrying on a timer changes nothing, so
+    /// the engine stops like after a refused login (until the account is saved again).
+    public var isLoginUnsupported: Bool {
+        if case .missingCapability(let name) = self { return name == "password login" }
+        return false
+    }
+
+    /// The server answered NO or BAD to one command: the session itself is still good.
+    public var isRefusal: Bool {
+        if case .refused = self { return true }
+        return false
+    }
+
+    /// The case alone, for the log: never a host, a server reply or an address.
+    public var kind: String {
+        switch self {
+        case .unreachable: "unreachable"
+        case .tlsFailed: "tls"
+        case .authenticationFailed: "authentication"
+        case .noPassword: "noPassword"
+        case .missingCapability(let name): "missingCapability(\(name))"
+        case .connectionLost: "connectionLost"
+        case .refused: "refused"
+        case .unconfirmed: "unconfirmed"
+        }
+    }
+
     public var errorDescription: String? {
         switch self {
         case .unreachable(let host): "Can’t reach \(host)."
