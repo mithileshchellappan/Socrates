@@ -91,6 +91,8 @@ struct SlotRow: View {
             TextField("Room", text: $room, prompt: Text(verbatim: ""))
                 .labelsHidden()
                 .textFieldStyle(.plain)
+                // A long room ("B3-1020, Example Road 3") ends in … in a narrow column.
+                .truncationMode(.tail)
                 .background(alignment: .leading) {
                     if room.isEmpty {
                         Text("Add room")
@@ -150,9 +152,14 @@ struct SlotRow: View {
     }
 
     private func commitRoom() {
-        let trimmed = room.trimmingCharacters(in: .whitespacesAndNewlines)
-        room = trimmed
+        let typed = room
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         update { $0.room = trimmed }
+        guard trimmed != typed else { return }
+        // The field's own text is trimmed after AppKit has finished the key that committed it.
+        Task { @MainActor in
+            if room == typed { room = trimmed }
+        }
     }
 }
 

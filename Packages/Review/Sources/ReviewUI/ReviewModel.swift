@@ -61,6 +61,15 @@ final class ReviewModel {
     /// Flag writes and their undo and redo, one after another.
     @ObservationIgnored private var flagWrite: Task<Void, Never>?
 
+    /// The transcript as last read, kept across a rebuild of the screen's views: the expanded
+    /// agent panel leaves the notes inspector out (`ReviewInspectorColumn`), and its coming and
+    /// going makes the review a new view. A rebuilt transcript shows these lines at once (no blank
+    /// zone, no read of every segment again) and opens where the list was.
+    @ObservationIgnored var keptTranscript: (key: LoadedTranscript.Key, lines: LoadedTranscript)?
+    /// The first row on screen in the transcript (a slide divider's or a line's id), as last
+    /// scrolled; nil until the list has shown.
+    @ObservationIgnored var keptTranscriptTop: UUID?
+
     init(
         lecture: Lecture, course: Course?, recording: Recording?, recordings: [Recording] = [], deckID: Deck.ID?,
         range: LectureSlideRange? = nil, deck: SlideDeck?, session: ReviewSession, services: StudyServices,

@@ -66,7 +66,12 @@ struct AgentComposer: View {
                     .focused($isFocused)
                     .onSubmit(send)
                     .onKeyPress(.escape) {
-                        escape()
+                        // A dead key or an input method's composition: Esc is the input method's
+                        // (it cancels the composition).
+                        if FieldEditor.isComposing { return .ignored }
+                        // Clears or closes after AppKit has finished the key: the field's text never
+                        // changes, and the field never goes, inside its own key event.
+                        Task { @MainActor in escape() }
                         return .handled
                     }
                     .padding(.vertical, 4)
@@ -102,10 +107,14 @@ struct AgentComposer: View {
             .padding(4)
             .frame(minHeight: 36)
         }
-        .background(Color.contentBackground, in: shape)
-        .overlay { shape.strokeBorder(.separator, lineWidth: 0.5) }
-        .contentShape(shape)
-        .onTapGesture { isFocused = true }
+        .background {
+            // A click on the composer around the field puts the caret in it; a click in the field
+            // is the field's own (focus is never set again under the field editor).
+            shape
+                .fill(Color.contentBackground)
+                .onTapGesture { if !isFocused { isFocused = true } }
+        }
+        .overlay { shape.strokeBorder(.separator, lineWidth: 0.5).allowsHitTesting(false) }
         .onChange(of: isFocused) { _, focused in model.composerFocused = focused }
         .onChange(of: model.focusRequests) { focusSoon() }
         .onAppear {
@@ -125,7 +134,7 @@ struct AgentComposer: View {
     private func focusSoon() {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(60))
-            isFocused = true
+            if !isFocused { isFocused = true }
         }
     }
 

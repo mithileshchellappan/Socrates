@@ -222,6 +222,18 @@ struct MailSyncStore: Sendable {
         }
     }
 
+    /// Moves the server refused: the rows stay in the mailbox the server has them in.
+    func cancelMoves(_ ids: [MailMessage.ID]) async throws {
+        let stamp = now()
+        try await database.write { db in
+            for id in ids {
+                try MailMessage.find(id)
+                    .update { $0.moveToMailboxID = Mailbox.ID?.none; $0.updatedAt = stamp }
+                    .execute(db)
+            }
+        }
+    }
+
     /// A move done on the server: the row now lives in `destination` with its new UID (nil when
     /// the server gave none; the destination's next sync finds it by Message-ID).
     func recordMove(_ id: MailMessage.ID, to destination: Mailbox.ID, uid: UInt32?) async throws {

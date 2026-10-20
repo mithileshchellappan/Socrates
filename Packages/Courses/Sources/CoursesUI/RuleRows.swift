@@ -217,6 +217,8 @@ struct MailRuleRow: View {
                     TextField("Value", text: $value)
                         .labelsHidden()
                         .textFieldStyle(.plain)
+                        // A long LMS course keeps its start and its term ("Spanish A1.1 … (WS 2026/27)").
+                        .truncationMode(.middle)
                         .focused($focused)
                         .onSubmit(commit)
                 }
@@ -314,6 +316,7 @@ struct GhostMailRuleRow: View {
                 .frame(height: 22)
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator, lineWidth: 0.5))
                 Text(rule.pattern)
+                    .truncationMode(.middle)
                     .tokenStyle()
                 Spacer(minLength: 0)
                 Image(systemName: "plus")

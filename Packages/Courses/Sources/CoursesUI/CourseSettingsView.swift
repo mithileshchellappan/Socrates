@@ -38,6 +38,8 @@ public struct CourseSettingsView: View {
 
     @State private var draft: Course?
     @State private var saved: Course?
+    /// This view's saves not yet read back, oldest first (at most 8).
+    @State private var written: [Course] = []
     @State private var isWide = true
     @State private var newSlotID: WeeklySlot.ID?
     @State private var newRuleID: CourseRule.ID?
@@ -96,6 +98,10 @@ public struct CourseSettingsView: View {
         }
         .onAppear { adopt(course) }
         .onChange(of: course) { adopt(course) }
+        // A name stored by someone else while the field had focus comes in when it is left. Not
+        // while this view's own saves are on their way back: `course` may then be older than
+        // them (an echo already handled), and adopting it would put the old name back.
+        .onChange(of: nameFocused) { if !nameFocused, written.isEmpty { adopt(course) } }
         .task(id: draft) { await saveSoon() }
         .onDisappear(perform: saveNow)
     }
@@ -125,8 +131,25 @@ public struct CourseSettingsView: View {
             .padding(.bottom, 22)
         }
         .background(Color.fieldBackground)
-        .onGeometryChange(for: Bool.self) { $0.size.width >= 760 } action: { isWide = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            // A band between the two thresholds, so a width near them never flips the layout on
+            // every pass.
+            let wide: Bool
+            if isWide {
+                wide = width >= Self.oneColumnBelow
+            } else {
+                wide = width >= Self.twoColumnsFrom
+            }
+            if wide != isWide { isWide = wide }
+        }
     }
+
+    /// A column's narrowest: the Language row (label, two pop-ups and "admin parts in") and the
+    /// weekly slots' fixed cells; every other row truncates or wraps.
+    static let columnMin: CGFloat = 380
+    /// Two columns need both at their narrowest, the 18 pt gap and the 22 pt margins (822 pt).
+    static let oneColumnBelow: CGFloat = 2 * columnMin + 18 + 2 * 22
+    static let twoColumnsFrom: CGFloat = 850
 
     @ViewBuilder
     private func leftGroups(_ course: Binding<Course>) -> some View {
@@ -251,16 +274,20 @@ public struct CourseSettingsView: View {
         SettingsGroup("Mail") {
             Button("Add Rule", action: addMailRule)
         } content: {
-            ForEach(orderedMailRules) { rule in
-                MailRuleRow(rule: rule, save: saveMailRule, delete: deleteMailRule)
+            // One list for the stored rules and the new one: the new row keeps its identity (and
+            // its field's focus) when its stored row arrives.
+            let rules = displayedMailRules
+            ForEach(rules) { rule in
+                MailRuleRow(rule: rule, focusesOnAppear: rule.id == newMailRule?.id, save: saveMailRule, delete: deleteMailRule)
             }
-            if let newMailRule {
-                MailRuleRow(rule: newMailRule, focusesOnAppear: true, save: saveMailRule, delete: deleteMailRule)
-                    .id(newMailRule.id)
-            } else if orderedMailRules.isEmpty {
+            if rules.isEmpty {
                 let ghost = GhostMailRuleRow.rule(for: course.wrappedValue, sortOrder: 0)
                 GhostMailRuleRow(rule: ghost) { saveMailRule(ghost) }
             }
+        }
+        .onChange(of: mailRules) {
+            // The new rule is stored: its row is a stored one now.
+            if let newMailRule, mailRules.contains(where: { $0.id == newMailRule.id }) { self.newMailRule = nil }
         }
     }
 
@@ -321,6 +348,13 @@ public struct CourseSettingsView: View {
         mailRules.filter { $0.origin == .user } + mailRules.filter { $0.origin != .user }
     }
 
+    /// The stored rules, then the new one until it is stored.
+    private var displayedMailRules: [MailRule] {
+        var rules = orderedMailRules
+        if let newMailRule, !rules.contains(where: { $0.id == newMailRule.id }) { rules.append(newMailRule) }
+        return rules
+    }
+
     /// The course's rules, with "Exam form · Not announced" until it has one.
     private func displayedRules(of course: Course) -> [CourseRule] {
         course.rules.contains { $0.kind == .examForm } ? course.rules : course.rules + [examFormPlaceholder]
@@ -376,11 +410,8 @@ public struct CourseSettingsView: View {
 
     private func saveMailRule(_ rule: MailRule) {
         if rule.id == newMailRule?.id {
-            if rule.pattern.isEmpty {
-                newMailRule = rule
-                return
-            }
-            newMailRule = nil
+            // The new row stays (with its focused field) until its stored row replaces it.
+            newMailRule = rule
         }
         guard !rule.pattern.isEmpty else { return }
         actions.save(rule)
@@ -443,7 +474,10 @@ public struct CourseSettingsView: View {
 
     // MARK: - Saving
 
-    /// Takes the stored course unless the user has unsaved edits.
+    /// Takes the stored course unless the student has unsaved edits. This view's own saves coming
+    /// back are recognised (an older one arriving after a newer save is ignored, so the Name field
+    /// never jumps back), and a change from elsewhere (the agent) never rewrites the field the
+    /// student is typing in.
     private func adopt(_ fetched: Course?) {
         guard let fetched else { return }
         guard let draft, let saved else {
@@ -451,12 +485,31 @@ public struct CourseSettingsView: View {
             saved = fetched
             return
         }
+        if let index = written.firstIndex(where: { fetched.hasSameContent(as: $0) }) {
+            if index < written.count - 1 {
+                // An older save's echo: a newer one follows.
+                written.removeFirst(index + 1)
+                return
+            }
+            written.removeAll()
+            self.saved = fetched
+            return
+        }
         if fetched.hasSameContent(as: draft) {
             self.saved = fetched
-        } else if draft.hasSameContent(as: saved) {
-            self.draft = fetched
-            self.saved = fetched
+            return
         }
+        guard draft.hasSameContent(as: saved) else { return }
+        var merged = fetched
+        var base = fetched
+        if nameFocused, fetched.name != draft.name {
+            // The focused Name field keeps its text (nothing to save: the stored name comes in
+            // when the field is left).
+            merged.name = draft.name
+            base.name = draft.name
+        }
+        self.draft = merged
+        self.saved = base
     }
 
     private func saveSoon() async {
@@ -470,6 +523,8 @@ public struct CourseSettingsView: View {
         guard let draft, let saved, !draft.hasSameContent(as: saved) else { return }
         let calendarChanged = draft.showsInCalendar != saved.showsInCalendar || draft.name != saved.name
         self.saved = draft
+        written.append(draft)
+        if written.count > 8 { written.removeFirst() }
         actions.run("Saving a course", syncCalendar: calendarChanged) { services in
             try await CourseLibrary(services: services).save(draft)
         }

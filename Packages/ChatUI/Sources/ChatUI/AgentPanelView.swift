@@ -35,7 +35,8 @@ struct AgentPanelView: View {
     @Environment(\.agentPanelActions) private var actions
     private let historyQuery: FetchAll<AgentConversation>
     private let openTasksQuery: FetchAll<AgentTask>
-    @State private var columnWidth: CGFloat = CGFloat(AgentPanelMetrics.idealWidth)
+    /// Memory… from the expanded header's title menu (a toolbar item).
+    @State private var showsMemory = false
 
     init(
         style: Style,
@@ -75,17 +76,29 @@ struct AgentPanelView: View {
 
     var body: some View {
         if headerPlacement == .toolbar {
+            // The header as the toolbar's own items over the column (title, flexible space, ⤡ and
+            // Close), laid out by the toolbar: nothing measures the column, so dragging its edge
+            // or resizing the window never rebuilds a toolbar item.
             panel
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
                 .toolbar {
-                    // Only while shown: SwiftUI keeps a hidden inspector's content (and this item) alive.
+                    // Only while shown: SwiftUI keeps a hidden inspector's content (and these) alive.
                     if model.mode == .expanded {
                         ToolbarItem(placement: .automatic) {
-                            header
-                                .frame(width: max(0, columnWidth - AgentPanelMetrics.toolbarTrailingInset))
+                            AgentTitleMenu(model: model, history: history, conversationID: conversationID, showsMemory: $showsMemory)
+                                .frame(maxWidth: AgentPanelMetrics.toolbarTitleWidth, alignment: .leading)
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                        ToolbarSpacer(.flexible)
+                        ToolbarItem(placement: .automatic) {
+                            AgentPanelHeaderButtons(model: model, isExpanded: true)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
                         }
                         .sharedBackgroundVisibility(.hidden)
                     }
+                }
+                .sheet(isPresented: $showsMemory) {
+                    ChatMemorySheet()
                 }
         } else {
             // No toolbar content from the compact panel: its updates never touch the window's toolbar.
@@ -182,11 +195,16 @@ extension AgentPanelModel {
         pending = PendingPanelMessage(
             text: text, attachments: files, conversationID: conversationID, afterTurns: conversationID == nil ? 0 : turnCount
         )
-        draft = ""
+        let sent = draft
         attachments = []
         notice = nil
         isSending = true
         askedSinceOpen = true
+        // The field empties after AppKit has finished the ↩ that sent it: its field editor still
+        // holds the text's range inside the key event.
+        Task {
+            if draft == sent { draft = "" }
+        }
         Task {
             do {
                 let id = try await actions.send(text, context, files, conversationID)
@@ -195,7 +213,9 @@ extension AgentPanelModel {
                 if pending?.conversationID == nil { pending?.conversationID = id }
             } catch {
                 ChatUILog.ui.error("Sending to the agent failed: \(String(describing: error), privacy: .public)")
-                if draft.isEmpty { draft = text }
+                // Back into the composer unless the student is typing there (or composing a
+                // character): their text is never replaced under the caret.
+                if draft.isEmpty, !FieldEditor.isComposing { draft = text }
                 if attachments.isEmpty { attachments = files }
                 pending = nil
                 // The message is back in the composer; one line says why (a readable reason
@@ -229,27 +249,7 @@ private struct AgentPanelHeader: View {
         HStack(spacing: 2) {
             titleMenu
             Spacer(minLength: 4)
-            Button {
-                model.toggleExpanded()
-            } label: {
-                Label(
-                    isExpanded ? "Shrink Chat" : "Expand Chat",
-                    systemImage: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
-                )
-                .labelStyle(.iconOnly)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-            }
-            .help(isExpanded ? Text("Shrink Chat") : Text("Expand Chat"))
-            Button {
-                model.close()
-            } label: {
-                Label("Hide Chat", systemImage: "xmark")
-                    .labelStyle(.iconOnly)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .help(Text("Hide Chat"))
+            AgentPanelHeaderButtons(model: model, isExpanded: isExpanded)
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
@@ -274,6 +274,39 @@ private struct AgentPanelHeader: View {
 
     private var titleMenu: some View {
         AgentTitleMenu(model: model, history: history, conversationID: conversationID, showsMemory: $showsMemory)
+    }
+}
+
+/// ⤢ Expand Chat / ⤡ Shrink Chat and Close, 28 pt each (the title row's trailing end; the expanded
+/// header's toolbar item).
+struct AgentPanelHeaderButtons: View {
+    let model: AgentPanelModel
+    let isExpanded: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button {
+                model.toggleExpanded()
+            } label: {
+                Label(
+                    isExpanded ? "Shrink Chat" : "Expand Chat",
+                    systemImage: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
+                )
+                .labelStyle(.iconOnly)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+            }
+            .help(isExpanded ? Text("Shrink Chat") : Text("Expand Chat"))
+            Button {
+                model.close()
+            } label: {
+                Label("Hide Chat", systemImage: "xmark")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .help(Text("Hide Chat"))
+        }
     }
 }
 

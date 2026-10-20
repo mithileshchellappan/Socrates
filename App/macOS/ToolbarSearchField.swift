@@ -34,7 +34,8 @@ struct ToolbarSearchField: View {
                 if text.isEmpty {
                     focused.wrappedValue = false
                 } else {
-                    text = ""
+                    // After AppKit has finished the Esc: never under the field editor's key event.
+                    Task { @MainActor in text = "" }
                 }
             }
             .background(alignment: .leading) {

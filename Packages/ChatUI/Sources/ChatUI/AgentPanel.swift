@@ -1,3 +1,6 @@
+#if os(macOS)
+import AppKit
+#endif
 import StudyCore
 import StudyUI
 import SwiftUI
@@ -23,13 +26,25 @@ extension View {
     ///   - launch: how the panel starts (renders); closed by default.
     ///   - floatingLauncher: draws the launcher's floating form at the window's bottom-left corner
     ///     (while the sidebar, whose footer holds `AgentPanelLauncher`, is collapsed).
-    ///   - minContentWidth: the narrowest the window's columns may get; while the panel is the
-    ///     right sidebar, the window's minimum adds its narrowest width, so resizing never
-    ///     squeezes a column under its own minimum (the window grows when the sidebar opens).
+    ///   - room: what the window keeps beside the expanded panel: the screen's minimum and the
+    ///     sidebar while it shows (nil: no limit, iOS). The panel opens no wider than the rest. Its
+    ///     column shows only while the window has its 300 pt beside them (the app hides its
+    ///     sidebar for it, `expandedChanged`); where it never can, even without the sidebar, the
+    ///     panel stays compact. Showing the sidebar in a window too narrow for the sidebar, the
+    ///     screen and the column turns the panel compact (the student's latest action wins).
+    ///   - expandedChanged: the panel became, or stopped being, the window's right sidebar (the
+    ///     app hides its sidebar while the window cannot hold both, and brings it back after).
     public func agentPanel(
-        context: AgentContext, launch: AgentPanelLaunch = AgentPanelLaunch(), floatingLauncher: Bool = false, minContentWidth: CGFloat? = nil
+        context: AgentContext,
+        launch: AgentPanelLaunch = AgentPanelLaunch(),
+        floatingLauncher: Bool = false,
+        room: AgentPanelRoom? = nil,
+        expandedChanged: ((Bool) -> Void)? = nil
     ) -> some View {
-        modifier(AgentPanelModifier(context: context, launch: launch, floatingLauncher: floatingLauncher, minContentWidth: minContentWidth))
+        modifier(AgentPanelModifier(
+            context: context, launch: launch, floatingLauncher: floatingLauncher,
+            room: room, expandedChanged: expandedChanged
+        ))
     }
 
     /// Reads what the screen in this column publishes (`.agentContext`) for the window's panel.
@@ -37,6 +52,53 @@ extension View {
     /// preferences may stop at the column: apply this to the detail column's root as well.
     public func agentPanelContextReader() -> some View {
         modifier(AgentContextReader())
+    }
+}
+
+/// The expanded panel's column, for the app's window layout.
+///
+/// The column is the split view's `.inspector` (full height, its header in the toolbar), and the
+/// window's minimum is the other columns' minimums plus the column's current width (the app
+/// declares the split view's minimum itself: on macOS 26 the split view runs under the column, and
+/// measured from its content the column's width counted twice). So the column opens, and may be
+/// dragged, no wider than the window has beside the screen's minimum and the sidebar, and it shows
+/// only while the window holds its 300 there.
+public enum AgentPanelLayout {
+    /// The right sidebar's narrowest width: the app keeps room for it beside the sidebar and the
+    /// screen, or hides its sidebar for it.
+    public static let minWidth: CGFloat = AgentPanelMetrics.minWidth
+
+    /// A window `windowWidth` wide holds the column beside `reserved` (the screen's minimum, and
+    /// the sidebar while it shows).
+    public static func fits(windowWidth: CGFloat, beside reserved: CGFloat) -> Bool {
+        windowWidth - reserved >= minWidth
+    }
+
+    /// The widest the column may be beside `reserved`: the rest of the window, 300–560.
+    static func widest(windowWidth: CGFloat, beside reserved: CGFloat) -> CGFloat {
+        let rest = (windowWidth - reserved).rounded(.down)
+        return min(max(rest, minWidth), AgentPanelMetrics.maxWidth)
+    }
+
+    /// The window holds the column beside the screen's minimum (and the sidebar). Always without a
+    /// `room` (iOS) and before the window is measured.
+    static func hasRoom(window: CGFloat, room: AgentPanelRoom?, withSidebar: Bool) -> Bool {
+        guard let room, window > 0 else { return true }
+        let reserved = withSidebar ? room.screen + room.sidebar : room.screen
+        return fits(windowWidth: window, beside: reserved)
+    }
+}
+
+/// What the window keeps beside the expanded panel: the app's other columns at their narrowest.
+public struct AgentPanelRoom: Equatable, Sendable {
+    /// The screen's declared minimum width.
+    public var screen: CGFloat
+    /// The sidebar's width while it shows; 0 while it is hidden.
+    public var sidebar: CGFloat
+
+    public init(screen: CGFloat, sidebar: CGFloat) {
+        self.screen = screen
+        self.sidebar = sidebar
     }
 }
 
@@ -55,8 +117,9 @@ enum AgentPanelMetrics {
     static let maxWidth: CGFloat = 560
     /// The window toolbar's height (the compact panel never goes under it).
     static let toolbarHeight: CGFloat = 52
-    /// The toolbar's inset from the window's trailing edge (the expanded header's toolbar item).
-    static let toolbarTrailingInset: CGFloat = 11
+    /// The expanded header's title menu in the toolbar: a long title truncates, so the column's
+    /// toolbar section holds the title, ⤡ and Close even at the column's narrowest.
+    static let toolbarTitleWidth: CGFloat = 200
 }
 
 /// What one window's panel shows and holds: its size, the conversation, the composer's text and
@@ -109,6 +172,19 @@ final class AgentPanelModel {
     var shown: ThreadWindow
     /// What the screen on display publishes (`.agentContext`).
     var source: AgentContextSource?
+    /// The expanded column has its room in the window: decided when the panel expands, then while
+    /// the app makes room (it hides its sidebar); until then the column is not shown.
+    var columnFits = true
+    /// The window has been measured once (a panel launched expanded waits for it).
+    var measured = false
+    /// The widest the expanded column may be in this window (`AgentPanelLayout.widest`); read only
+    /// by the column's sizer, so a window resize re-renders nothing else.
+    var columnMax = AgentPanelMetrics.maxWidth
+    /// The window's width, for the width the expanded panel opens at. Not observed: written on
+    /// every frame of a window resize, it re-renders nothing.
+    @ObservationIgnored var windowWidth: CGFloat = 0
+    /// What the app keeps beside the expanded column, as of the last update (not observed).
+    @ObservationIgnored var room: AgentPanelRoom?
     let fixedNow: Date?
 
     init(launch: AgentPanelLaunch) {
@@ -145,7 +221,9 @@ final class AgentPanelModel {
             shown = .since(Date())
             askedSinceOpen = false
         }
-        mode = expanded ? .expanded : (mode == .expanded ? .expanded : .compact)
+        let wasExpanded = mode == .expanded
+        mode = expanded || wasExpanded ? .expanded : .compact
+        if mode == .expanded, !wasExpanded { measureColumn() }
         focusRequests += 1
     }
 
@@ -162,11 +240,39 @@ final class AgentPanelModel {
     /// ⌥⌘J and ⤢ / ⤡: closed or compact → expanded; expanded → compact.
     func toggleExpanded() {
         switch mode {
-        case .closed: open(expanded: true)
-        case .compact: mode = .expanded
-        case .expanded: mode = .compact
+        case .closed:
+            open(expanded: true)
+        case .compact:
+            mode = .expanded
+            measureColumn()
+        case .expanded:
+            mode = .compact
         }
         focusRequests += 1
+    }
+
+    /// In the same update as the panel expands (or another screen with another minimum shows):
+    /// the column shows now, or once the app has made room (`columnFits`), so the window never
+    /// holds more than it can for a frame.
+    func measureColumn() {
+        columnFits = AgentPanelLayout.hasRoom(window: windowWidth, room: room, withSidebar: true)
+    }
+
+    /// After the window's width or the app's columns changed: the column's widest for them. The
+    /// expanded panel turns compact in a window too narrow for the screen's minimum and the column
+    /// even without the sidebar (a tile, leaving full screen), and when its shown column no longer
+    /// fits beside the sidebar (the student showed or widened it there: their latest action wins).
+    /// While the app is still making room (`columnFits` false) the sidebar may show.
+    func fitColumn() {
+        guard let room, windowWidth > 0 else { return }
+        let reserved = room.screen + room.sidebar
+        let widest = AgentPanelLayout.widest(windowWidth: windowWidth, beside: reserved)
+        if widest != columnMax { columnMax = widest }
+        guard mode == .expanded else { return }
+        let fitsAlone = AgentPanelLayout.fits(windowWidth: windowWidth, beside: room.screen)
+        let fitsBeside = AgentPanelLayout.fits(windowWidth: windowWidth, beside: reserved)
+        let shown = measured && columnFits
+        if !fitsAlone || (shown && !fitsBeside) { mode = .compact }
     }
 
     func newChat() {
@@ -336,20 +442,22 @@ extension FocusedValues {
 struct AgentPanelModifier: ViewModifier {
     let context: AgentContext
     let floatingLauncher: Bool
-    let minContentWidth: CGFloat?
+    let room: AgentPanelRoom?
+    let expandedChanged: ((Bool) -> Void)?
 
     @Environment(\.agentPanelActions) private var actions
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
     @State private var model: AgentPanelModel
-    @State private var windowSize: CGSize = .zero
     /// The compact panel's place: its offset from the bottom-trailing corner, "x,y".
     @SceneStorage("agent.panel.position") private var position = ""
+    /// The expanded column's width as the student last dragged it.
     @AppStorage("agent.panel.width") private var width = AgentPanelMetrics.idealWidth
 
-    init(context: AgentContext, launch: AgentPanelLaunch, floatingLauncher: Bool, minContentWidth: CGFloat?) {
+    init(context: AgentContext, launch: AgentPanelLaunch, floatingLauncher: Bool, room: AgentPanelRoom?, expandedChanged: ((Bool) -> Void)?) {
         self.context = context
         self.floatingLauncher = floatingLauncher
-        self.minContentWidth = minContentWidth
+        self.room = room
+        self.expandedChanged = expandedChanged
         _model = State(initialValue: AgentPanelModel(launch: launch))
     }
 
@@ -357,13 +465,23 @@ struct AgentPanelModifier: ViewModifier {
         let available = actions.isAvailable
         let model = model
         let composing = available && model.composerFocused
+        let expanded = available && model.mode == .expanded
         let appContext = context
         let shown = model.shownContext(app: appContext)
         let sendContext: @MainActor () -> AgentContext = { model.sendContext(app: appContext) }
+        // The column shows once the window holds it beside the screen and the sidebar (the app
+        // hides its sidebar for it first), and gives way in the very update the sidebar shows or
+        // widens where they do not fit (`fitColumn` then turns the panel compact): never all
+        // three in a window too narrow for them, not even for a frame.
+        let fitsNow = AgentPanelLayout.hasRoom(window: model.windowWidth, room: room, withSidebar: true)
+        let measured = room == nil || model.measured
+        let presented = expanded && measured && model.columnFits && fitsNow
+        let stored: CGFloat = min(max(CGFloat(width), AgentPanelMetrics.minWidth), AgentPanelMetrics.maxWidth)
+        let widest: CGFloat = widestNow()
         content
             .environment(\.isSearchFieldFocused, isSearchFieldFocused || composing)
             .environment(\.isAgentComposerFocused, composing)
-            .environment(\.agentPanelExpanded, available && model.mode == .expanded)
+            .environment(\.agentPanelExpanded, expanded)
             .environment(\.openAgentPanel, OpenAgentPanelAction { expanded in
                 if available { model.open(expanded: expanded) }
             })
@@ -371,38 +489,109 @@ struct AgentPanelModifier: ViewModifier {
             .onPreferenceChange(AgentContextPreferenceKey.self) { value in
                 Task { @MainActor in model.source = value }
             }
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { windowSize = $0 }
             .overlay(alignment: .bottomLeading) {
                 if available, floatingLauncher {
                     AgentPanelLauncher(style: .floating)
                         .padding(AgentPanelMetrics.margin)
                 }
             }
-            .overlay(alignment: .bottomTrailing) {
+            .overlay {
                 if available, model.mode == .compact {
-                    CompactAgentPanel(model: model, context: shown, sendContext: sendContext, position: $position, windowSize: windowSize)
+                    CompactPanelHost(model: model, context: shown, sendContext: sendContext, position: $position)
+                        .transition(.opacity)
                 }
             }
             .inspector(isPresented: Binding(
-                get: { available && model.mode == .expanded },
+                get: { presented },
                 set: { isShown in if !isShown, model.mode == .expanded { model.close() } }
             )) {
-                Group {
-                    // SwiftUI keeps a hidden inspector's content alive: only while expanded, so its
+                // The student's width is the ideal, never a minimum: the column opens no wider than
+                // the window has room for beside the sidebar and the screen's minimum, and never
+                // gets wider than that (its sizer follows the window).
+                PanelColumnSizer(model: model, stored: stored, limit: widest) {
+                    // SwiftUI keeps a hidden inspector's content alive: only while shown, so its
                     // composer never takes the caret from the compact one.
-                    if model.mode == .expanded {
+                    if presented {
                         ExpandedAgentPanel(model: model, context: shown, sendContext: sendContext, width: $width)
                     } else {
                         Color.clear
                     }
                 }
-                .inspectorColumnWidth(min: AgentPanelMetrics.minWidth, ideal: width, max: AgentPanelMetrics.maxWidth)
             }
-            .frame(minWidth: minContentWidth.map { $0 + (available && model.mode == .expanded ? AgentPanelMetrics.minWidth : 0) })
+            // The whole window's width (after the inspector: its column included), into the
+            // model's unobserved width: a window resize re-renders nothing here (only the column's
+            // sizer, while its widest changes).
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                model.windowWidth = width
+                // The first measurement may come before the first `room` change is seen.
+                model.room = room
+                if !model.measured {
+                    // The first measurement: a panel launched expanded learns only now whether the
+                    // window holds its column, and shows it at once.
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        if model.mode == .expanded {
+                            model.columnFits = AgentPanelLayout.hasRoom(window: width, room: room, withSidebar: true)
+                        }
+                        model.measured = true
+                    }
+                }
+                model.fitColumn()
+            }
+            .onChange(of: room, initial: true) { old, new in
+                model.room = new
+                if model.mode == .expanded, old?.screen != new?.screen {
+                    // Another screen with another minimum (Mail's list and reader): as when the
+                    // panel expands, the column waits while the app makes room (its sidebar
+                    // hides); a screen change is not the student's choice of the sidebar.
+                    model.measureColumn()
+                }
+                if model.mode == .expanded, !model.columnFits,
+                   AgentPanelLayout.hasRoom(window: model.windowWidth, room: new, withSidebar: true) {
+                    // The app made room (its sidebar hid, at once): the column shows, at once too.
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { model.columnFits = true }
+                }
+                model.fitColumn()
+            }
+            .onChange(of: expanded, initial: true) { _, isExpanded in
+                expandedChanged?(isExpanded)
+                // A window too narrow for the screen's minimum and the column even without the
+                // sidebar keeps the panel compact.
+                if isExpanded { model.fitColumn() }
+            }
             .focusedSceneValue(\.agentPanel, available ? AgentPanelFocus(
                 isOpen: model.isOpen, isExpanded: model.mode == .expanded,
                 toggle: { model.toggle() }, toggleExpanded: { model.toggleExpanded() }
             ) : nil)
+    }
+
+    /// The widest the expanded column may be beside `room` in the window as last measured, in the
+    /// same update as the sidebar shows or hides (the window's minimum never holds the old width
+    /// beside the new sidebar for a frame).
+    private func widestNow() -> CGFloat {
+        guard let room, model.windowWidth > 0 else { return AgentPanelMetrics.maxWidth }
+        return AgentPanelLayout.widest(windowWidth: model.windowWidth, beside: room.screen + room.sidebar)
+    }
+}
+
+/// The expanded column's width: 300 to the window's widest (`limit`, and
+/// `AgentPanelModel.columnMax` while the window is resized), opening at the student's width.
+/// Its own view, so a change of the widest during a window resize re-renders only this.
+private struct PanelColumnSizer<Content: View>: View {
+    let model: AgentPanelModel
+    /// The student's width (`agent.panel.width`, 300–560).
+    let stored: CGFloat
+    let limit: CGFloat
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        let widest: CGFloat = min(limit, model.columnMax)
+        let ideal: CGFloat = min(stored, widest)
+        content
+            .inspectorColumnWidth(min: AgentPanelMetrics.minWidth, ideal: ideal, max: widest)
     }
 }
 
@@ -418,6 +607,26 @@ private struct AgentContextReader: ViewModifier {
 }
 
 // MARK: - Compact
+
+/// The compact panel's layer over the window: it measures the window itself, so a window resize
+/// re-renders the panel's placement only (not the modifier around the whole split view).
+struct CompactPanelHost: View {
+    let model: AgentPanelModel
+    let context: AgentContext
+    let sendContext: @MainActor () -> AgentContext
+    @Binding var position: String
+
+    @State private var windowSize: CGSize = .zero
+
+    var body: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { windowSize = $0 }
+            .overlay(alignment: .bottomTrailing) {
+                CompactAgentPanel(model: model, context: context, sendContext: sendContext, position: $position, windowSize: windowSize)
+            }
+    }
+}
 
 /// The floating panel: the inspector's opaque surface, radius 14, a soft panel shadow, 336 wide,
 /// as tall as its content up to half the window; moved by dragging its title row, kept inside
@@ -560,8 +769,8 @@ struct PanelSurface: ShapeStyle {
 // MARK: - Expanded
 
 /// The full-height trailing column: the panel at the inspector's place, its title row level with
-/// the toolbar (52 pt, a toolbar item while shown), resizable by its leading edge (300–560, the
-/// width kept).
+/// the toolbar (52 pt, toolbar items over the column while shown), resizable by its leading edge
+/// (300–560, the width the student dragged kept).
 struct ExpandedAgentPanel: View {
     let model: AgentPanelModel
     let context: AgentContext
@@ -575,7 +784,9 @@ struct ExpandedAgentPanel: View {
             style: .expanded, model: model, context: context, sendContext: sendContext, maxThreadHeight: .infinity,
             headerPlacement: .toolbar
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // No minimum and a fixed ideal of its own: a long answer's one-line width (a table, a code
+        // line) never becomes the column's, so `inspectorColumnWidth` alone sizes it.
+        .frame(minWidth: 0, idealWidth: CGFloat(AgentPanelMetrics.idealWidth), maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { ExpandedPanelBackground() }
         .overlay {
             if isDropTargeted {
@@ -584,10 +795,23 @@ struct ExpandedAgentPanel: View {
         }
         .agentFileDrop(model: model, isTargeted: $isDropTargeted)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
-            // The column's width as the student left it (dragging its leading edge).
+            // Only the student's drag of the column's leading edge is kept: not a window resize, a
+            // sidebar shown or hidden, or a narrower opening the window allowed.
+            guard Self.isDraggingColumn else { return }
             let rounded = Double(newWidth.rounded())
             if rounded >= Double(AgentPanelMetrics.minWidth), abs(rounded - width) >= 1 { width = rounded }
         }
+    }
+
+    /// The mouse is down and the window is not being resized: the column's divider is dragged.
+    private static var isDraggingColumn: Bool {
+        #if os(macOS)
+        guard NSEvent.pressedMouseButtons & 1 == 1 else { return false }
+        let resizing = NSApp.keyWindow?.inLiveResize ?? false
+        return !resizing
+        #else
+        return true
+        #endif
     }
 }
 

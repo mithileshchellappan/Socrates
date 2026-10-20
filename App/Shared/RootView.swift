@@ -56,6 +56,10 @@ struct RootView: View {
     @State private var practiceState: PracticeWindowState?
     /// The sidebar as it was before a round or an exam hid it (restored after).
     @State private var columnsBeforePractice: NavigationSplitViewVisibility?
+    /// The sidebar column's width (rounded up to 4 pt), for the room the agent's sidebar has.
+    @State private var sidebarWidth = SidebarView.idealWidth
+    /// The agent panel is the window's right sidebar.
+    @State private var agentExpanded = false
 
     init(
         selection: SidebarItem? = .today,
@@ -97,7 +101,10 @@ struct RootView: View {
                 // ma: ONE agent panel for the window (compact and movable, or the full-height right
                 // sidebar), inside the search field's focus value (the panel folds its composer's
                 // focus into it, so every screen's plain keys stand down while the student types).
-                .agentPanel(context: agentContext, launch: panel, floatingLauncher: columns == .detailOnly, minContentWidth: minContentWidth)
+                .agentPanel(
+                    context: agentContext, launch: panel, floatingLauncher: columns == .detailOnly,
+                    room: panelRoom, expandedChanged: { agentExpanded = $0 }
+                )
                 .environment(\.isSearchFieldFocused, searchFocused)
                 .focusedSceneValue(\.sidebarSelection, $selection)
                 // ⌘F would leave a practice exam being written: not while one is.
@@ -185,18 +192,35 @@ struct RootView: View {
                 .background { practiceWatcher }
                 #if os(macOS)
                 .background { MainWindowReader() }
+                .background {
+                    SidebarFit(
+                        columns: $columns, sidebarWidth: sidebarWidth, screenMin: screenMinWidth,
+                        agentExpanded: agentExpanded, isPaused: selection?.isPractice == true
+                    )
+                }
                 #endif
         }
     }
 
-    /// The narrowest the sidebar (its minimum) and a screen may get together: the window's minimum
-    /// width without the agent's sidebar. Only the Mac's window is resized.
-    private var minContentWidth: CGFloat? {
+    /// What the window keeps beside the agent's right sidebar: the screen's minimum, and the
+    /// sidebar while it shows (the Mac's window; iOS has no limit).
+    private var panelRoom: AgentPanelRoom? {
         #if os(macOS)
-        columns == .detailOnly ? 480 : 680
+        AgentPanelRoom(screen: screenMinWidth, sidebar: shownSidebarWidth)
         #else
         nil
         #endif
+    }
+
+    /// The screen on display's declared minimum (480; Mail's list and reader need more). From the
+    /// selection, so it changes in the same update as the screen.
+    private var screenMinWidth: CGFloat {
+        WindowColumns.detailMin(for: selection)
+    }
+
+    /// The sidebar's column while it shows (its glass inset included), else 0.
+    private var shownSidebarWidth: CGFloat {
+        columns == .detailOnly ? 0 : sidebarWidth + WindowColumns.sidebarInset
     }
 
     /// The sidebar and the screen, with the window's search field.
@@ -207,10 +231,18 @@ struct RootView: View {
             // A practice exam's results show as their course's Progress row (mockup 19).
             SidebarView(selection: Binding(get: { selection?.sidebarRow }, set: { selection = $0?.screen }), center: center)
                 #if os(macOS)
+                // Rounded up to 4 pt: dragging the sidebar's edge re-renders this view every few
+                // points, not on every frame. A hidden sidebar keeps its last width.
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    (proxy.size.width / 4).rounded(.up) * 4
+                } action: { width in
+                    if width > 10 { sidebarWidth = width }
+                }
                 // The toggle is the content toolbar's (`sidebarToggle`), as in mockups 01 and
-                // 10. Removing the system one drops the sidebar's column width: set it again.
+                // 10. Removing the system one (or measuring after the width) drops the sidebar's
+                // column width: set it again, last.
                 .toolbar(removing: .sidebarToggle)
-                .navigationSplitViewColumnWidth(min: 200, ideal: SidebarView.idealWidth, max: 320)
+                .navigationSplitViewColumnWidth(min: WindowColumns.sidebarMin, ideal: SidebarView.idealWidth, max: WindowColumns.sidebarMax)
                 #endif
         } detail: {
             NavigationStack {
@@ -241,6 +273,12 @@ struct RootView: View {
                 }
                 #endif
             }
+            #if os(macOS)
+            // The screen's minimum and ideal are declared, never measured from its content: a
+            // screen's rigid rows or one-line ideals never widen the window or push the sidebar
+            // and the agent's sidebar out of it (screens adapt to their declared minimum).
+            .frame(minWidth: screenMinWidth, idealWidth: max(WindowColumns.detailIdeal, screenMinWidth), maxWidth: .infinity)
+            #endif
             // A new stack per screen; the top-level screens share one, so the search field (and
             // its focus while typing on Today opens Search) stays.
             .id(selection.map(DetailIdentity.init) ?? .topLevel)
@@ -248,6 +286,18 @@ struct RootView: View {
             // What Review and Calendar publish (`.agentContext`) may stop at the column: read it here.
             .agentPanelContextReader()
         }
+        #if os(macOS)
+        // The split view's minimum is declared too: the sidebar while it shows and the screen's
+        // minimum (a frame with both bounds reports its own minimum, not its content's). On macOS 26
+        // the split view runs under the agent's right sidebar, so its own minimum (the detail's,
+        // which spans under both side columns) already holds that column's width, and the window
+        // added it once more (sidebar 236 + 480 + a 560 pt agent column needed 1836, not 1276): a
+        // window that cannot grow overflowed and cut the sidebar and the agent column off at its
+        // edges. Under the agent's column as before (AppKit still insets the detail's content by
+        // it), so the window's minimum counts that column once: sidebar + screen + its width.
+        .frame(minWidth: screenMinWidth + shownSidebarWidth, maxWidth: .infinity)
+        .ignoresSafeArea(.container, edges: .trailing)
+        #endif
         .onChange(of: query) { _, text in
             // Typing on Mail or Notes filters its list ("Search mail", "Search notes"); elsewhere
             // it opens Search.
@@ -729,6 +779,104 @@ private struct SearchFieldModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+#endif
+
+/// The main window's columns (DESIGN 3.3, 6.1): the sidebar 200–320, the screen at least 480 (Mail
+/// 700), the agent's right sidebar 300–560. The screen's minimum is declared per screen, never
+/// measured from its content, and the window's minimum is the sidebar's width while it shows + the
+/// screen's minimum + the agent column's width while it shows (`.windowResizability(.contentMinSize)`).
+enum WindowColumns {
+    static let sidebarMin: CGFloat = 200
+    static let sidebarMax: CGFloat = 320
+    /// The screen's narrowest: Course Settings, Notes, Calendar and the others adapt to it.
+    static let detailMin: CGFloat = 480
+    /// Mail's narrowest: its 318 pt list, the divider and the reader's rigid rows (a found row's
+    /// text, lecture chip, Add to Calendar and its 64 pt trailing action; the route menu), about
+    /// 380 pt with the reader's 26 pt margins. At 480 the list and reader were laid out wider than
+    /// the column, centred, and drawn over the sidebar and under the agent's column.
+    static let mailMin: CGFloat = 700
+    /// The screen's own ideal, so no one-line text ideal of a screen sizes the window.
+    static let detailIdeal: CGFloat = 720
+    /// macOS 26's floating sidebar sits this far in from the window's edge.
+    static let sidebarInset: CGFloat = 8
+    /// The room past the agent's minimum before a sidebar it hid comes back (no flicker at the edge).
+    static let sidebarReturn: CGFloat = 40
+
+    /// What `screen` declares as its narrowest: the detail column's minimum, the room the agent's
+    /// sidebar leaves it and `SidebarFit`'s measure.
+    static func detailMin(for screen: SidebarItem?) -> CGFloat {
+        switch screen {
+        case .mail?, .mailScope?: mailMin
+        default: detailMin
+        }
+    }
+}
+
+#if os(macOS)
+/// When the window cannot hold the sidebar, the screen's minimum and the agent's right sidebar
+/// together (a window as wide as the screen, full screen, a tile), the sidebar hides while the
+/// panel is expanded (the panel's column shows once it has), and comes back when the panel shrinks
+/// or closes or the window has room again, as Xcode and Finder collapse theirs; the window is never
+/// made wider. The student's own toggle (the toolbar's button, View ▸ Show Sidebar ⌃⌘S, dragging
+/// it shut) always wins, and a practice round or exam owns the sidebar while it runs.
+private struct SidebarFit: View {
+    @Binding var columns: NavigationSplitViewVisibility
+    let sidebarWidth: CGFloat
+    /// The screen on display's declared minimum (`WindowColumns.detailMin(for:)`).
+    let screenMin: CGFloat
+    let agentExpanded: Bool
+    let isPaused: Bool
+
+    /// Measured here, so a window resize re-renders only this view.
+    @State private var windowWidth: CGFloat = 0
+    /// The sidebar is hidden by this, not by the student.
+    @State private var hidSidebar = false
+    /// What this view last wrote (its own changes are not the student's).
+    @State private var wrote: NavigationSplitViewVisibility?
+
+    var body: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width.rounded() } action: { windowWidth = $0 }
+            .onChange(of: agentExpanded) { fit() }
+            .onChange(of: windowWidth) { fit() }
+            // Another screen (Mail needs more than 480): the sidebar makes room or comes back.
+            .onChange(of: screenMin) { fit() }
+            .onChange(of: columns) { _, visibility in
+                if visibility != wrote { hidSidebar = false }
+                wrote = nil
+            }
+    }
+
+    private func fit() {
+        guard !isPaused, windowWidth > 0 else { return }
+        let screen = screenMin
+        let sidebar = sidebarWidth + WindowColumns.sidebarInset
+        let showsSidebar = columns != .detailOnly
+        let fitsAlone = AgentPanelLayout.fits(windowWidth: windowWidth, beside: screen)
+        let fitsBeside = AgentPanelLayout.fits(windowWidth: windowWidth, beside: screen + sidebar)
+        if agentExpanded, showsSidebar, !fitsBeside, fitsAlone {
+            hidSidebar = true
+            // At once: the panel's column shows only after the sidebar has made room for it.
+            write(.detailOnly, animated: false)
+        } else if hidSidebar, !showsSidebar {
+            let returnsAt = screen + sidebar + WindowColumns.sidebarReturn
+            let roomReturned = AgentPanelLayout.fits(windowWidth: windowWidth, beside: returnsAt)
+            if !agentExpanded || roomReturned {
+                hidSidebar = false
+                write(.all, animated: true)
+            }
+        }
+    }
+
+    private func write(_ visibility: NavigationSplitViewVisibility, animated: Bool) {
+        guard columns != visibility else { return }
+        wrote = visibility
+        var transaction = Transaction(animation: animated ? .default : nil)
+        transaction.disablesAnimations = !animated
+        withTransaction(transaction) { columns = visibility }
     }
 }
 #endif

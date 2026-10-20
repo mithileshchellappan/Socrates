@@ -37,6 +37,8 @@ struct TranscriptZone: View {
             database: model.services.database
         )
         annotationsQuery = .studyItems(of: model)
+        // Rebuilt (the agent panel expanded or shrank): the lines already read.
+        _loaded = State(initialValue: model.keptTranscript?.lines)
     }
 
     var body: some View {
@@ -63,14 +65,18 @@ struct TranscriptZone: View {
             guard let recordingID = model.recording?.id else { return }
             guard key.revision.count > 0 else {
                 if loaded != nil { loaded = nil }
+                model.keptTranscript = nil
                 model.player?.setCues([])
                 return
             }
+            // The same revision and timeline as before a rebuild: nothing to read again.
+            if loaded != nil, model.keptTranscript?.key == key { return }
             guard let read = try? await LoadedTranscript.read(recordingID: recordingID, timeline: timeline, database: model.services.database),
                   !Task.isCancelled
             else { return }
             if read.cues != loaded?.cues { model.player?.setCues(read.cues) }
             loaded = read
+            model.keptTranscript = (key, read)
         }
     }
 }
@@ -148,6 +154,8 @@ private struct TranscriptList: View {
     var body: some View {
         let rate = model.recording?.sampleRate ?? 48_000
         let recordingID = model.recording?.id
+        // Read once, before this list reports its own first rows (a rebuilt list reopens there).
+        let reopenAt: UUID? = model.keptTranscriptTop
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -174,6 +182,11 @@ private struct TranscriptList: View {
                         }
                     }
                 }
+                .scrollTargetLayout()
+            }
+            // Where the list is, for a rebuilt one (kept in the model, nothing re-renders).
+            .onScrollTargetVisibilityChange(idType: UUID.self) { ids in
+                if let top = firstRow(of: ids) { model.keptTranscriptTop = top }
             }
             .scrollIndicators(.automatic)
             // The edge under the slide stays crisp (no blur band).
@@ -188,10 +201,21 @@ private struct TranscriptList: View {
             // highlight overhangs it (mockup 03).
             .padding(.horizontal, -8)
             .background {
-                TranscriptFollower(model: model, sections: lined, lineIDs: lineIDs, proxy: proxy)
+                TranscriptFollower(model: model, sections: lined, lineIDs: lineIDs, proxy: proxy, reopenAt: reopenAt)
             }
         }
         .accessibilityLabel(Text("Transcript"))
+    }
+
+    /// The first of `ids` in the list's order (a slide divider before its lines).
+    private func firstRow(of ids: [UUID]) -> UUID? {
+        guard !ids.isEmpty else { return nil }
+        let visible = Set(ids)
+        for item in lined {
+            if visible.contains(item.id) { return item.id }
+            if let line = item.lines.first(where: { visible.contains($0.id) }) { return line.id }
+        }
+        return nil
     }
 }
 
@@ -203,6 +227,8 @@ private struct TranscriptFollower: View {
     /// Each segment's line.
     let lineIDs: [UUID: UUID]
     let proxy: ScrollViewProxy
+    /// The row the list showed first before the screen's views were rebuilt; nil when it opens.
+    let reopenAt: UUID?
 
     var body: some View {
         let session = model.session
@@ -213,7 +239,10 @@ private struct TranscriptFollower: View {
                 // Opened at a moment (search hit, Today, saved position): go there once the list
                 // has laid out; a scroll asked for while it appears is dropped.
                 try? await Task.sleep(for: .milliseconds(60))
-                if !session.isFollowing, let visit = openingVisit(session) {
+                if let reopenAt {
+                    // Rebuilt (the agent panel expanded or shrank): where the student left it.
+                    proxy.scrollTo(reopenAt, anchor: .top)
+                } else if !session.isFollowing, let visit = openingVisit(session) {
                     // Opened on a slide the playhead is not in (yet): its divider is the first row.
                     proxy.scrollTo(visit, anchor: .top)
                 } else if let line = model.player?.currentSegmentID.flatMap({ lineIDs[$0] }) {

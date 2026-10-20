@@ -277,10 +277,16 @@ final class NoteTextView: NSTextView {
 
     // MARK: Inserting
 
-    /// Replaces the selection with `text` as one undo step and puts the caret after it.
+    /// Replaces the selection with `text` as one undo step and puts the caret after it. A
+    /// composition in progress (a dead key, an input method) is committed first, and the range is
+    /// clamped to the text (an image import finishing late may find it changed).
     func insert(_ text: NSAttributedString) {
         guard let storage = textStorage else { return }
-        let range = selectedRange()
+        if hasMarkedText() { unmarkText() }
+        let length = storage.length
+        let selection = selectedRange()
+        let location = min(selection.location, length)
+        let range = NSRange(location: location, length: min(selection.length, length - location))
         guard shouldChangeText(in: range, replacementString: text.string) else { return }
         storage.replaceCharacters(in: range, with: text)
         didChangeText()
@@ -590,6 +596,13 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
 
     func textDidChange(_ notification: Notification) {
         guard let textView else { return }
+        // While a character is being composed (a dead key, ⌥u, an input method) its marked text is
+        // left alone: the edited paragraphs are normalized, numbered and saved once it commits
+        // (which changes the text again).
+        guard !textView.hasMarkedText() else {
+            sizeChanged()
+            return
+        }
         normalizeEditedParagraphs(in: textView)
         if paragraphCountChanged {
             paragraphCountChanged = false
@@ -600,7 +613,7 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
-        guard let textView else { return }
+        guard let textView, !textView.hasMarkedText() else { return }
         // At the start of a paragraph, typing takes that paragraph's format (not the previous
         // paragraph's, whose newline is before the caret).
         let selection = textView.selectedRange()

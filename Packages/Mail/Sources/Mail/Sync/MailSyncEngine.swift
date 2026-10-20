@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import StudyCore
 #if os(macOS)
 import CoreServices
@@ -14,6 +15,11 @@ import CoreServices
 /// re-attaches rows by Message-ID. INBOX is watched with IDLE; everything is polled every 5
 /// minutes. Network errors back off from 2 s to 5 min; an authentication failure stops the
 /// engine after one attempt until `retry()` (repeated failed logins can lock a uni account).
+/// While the Mac has no network (Wi-Fi roaming, sleep and dark wake) no pass runs; one runs a
+/// moment after it is back. A short outage is not recorded on the account (its `last_error`),
+/// from the third failed pass in a row it is. A command the server refuses (NO/BAD) costs only
+/// its mailbox, move, flag change, sent copy or message, never the whole pass; a skipped mailbox or
+/// an undone move is still that pass's error (`last_error`, the back-off), never a success.
 ///
 /// The password is read from `services.secrets` right before each login and never kept.
 public actor MailSyncEngine {
@@ -72,6 +78,18 @@ public actor MailSyncEngine {
     /// Messages whose download failed, per mailbox: UID → failed attempts. They are fetched after
     /// the others and in parts; after `configuration.fetchAttempts` their headers are stored.
     private var fetchFailures: [Mailbox.ID: [UInt32: Int]] = [:]
+    /// The network path is satisfied (`NWPathMonitor`); no pass runs without it.
+    private var isOnline = true
+    private var pathTask: Task<Void, Never>?
+    /// What the pass in progress is doing, for the log ("select inbox", "new mail").
+    private var step = "login"
+    /// Sent copies the server refused to take this run (tried again after the next launch).
+    private var refusedSentCopies: Set<MailDraft.ID> = []
+    /// What the server refused in the pass in progress (a mailbox it skipped, moves it undid), in
+    /// the student's words: such a pass is recorded as this error, never as a success.
+    private var refusals: [String] = []
+    /// Mailboxes the pass in progress skipped after a refusal.
+    private var skippedMailboxes = 0
 
     public init(
         services: StudyServices,
@@ -111,6 +129,7 @@ public actor MailSyncEngine {
         state = .running
         generation += 1
         let current = generation
+        watchNetwork()
         await performPass(.all)
         guard state == .running, generation == current else { return }
         pollTask = Task { [weak self] in await self?.pollLoop(generation: current) }
@@ -147,9 +166,12 @@ public actor MailSyncEngine {
         idleTask?.cancel()
         pushTask?.cancel()
         idleBackoffTask?.cancel()
+        pathTask?.cancel()
         pollTask = nil
         idleTask = nil
         pushTask = nil
+        pathTask = nil
+        isOnline = true
         resumePoll(token: nil, timedOut: false)
         if let session = idleSession {
             idleSession = nil
@@ -161,6 +183,36 @@ public actor MailSyncEngine {
     private func haltAfterAuthenticationFailure() async {
         state = .authenticationFailed
         await tearDownLoops()
+    }
+
+    // MARK: - Network
+
+    /// Follows the network path while the engine runs: passes wait while there is none (no failure
+    /// counted, nothing recorded), and one runs a moment after it is back.
+    private func watchNetwork() {
+        guard pathTask == nil else { return }
+        pathTask = Task { [weak self] in
+            for await path in NWPathMonitor() {
+                guard !Task.isCancelled else { return }
+                await self?.pathChanged(online: path.status == .satisfied)
+            }
+        }
+    }
+
+    private func pathChanged(online: Bool) async {
+        guard online != isOnline else { return }
+        isOnline = online
+        guard online else {
+            Log.mail.notice("Mail sync waits for the network")
+            return
+        }
+        guard state == .running else { return }
+        // DHCP, DNS and the campus Wi-Fi's 802.1X need a moment after the path comes back.
+        try? await clock.sleep(.seconds(3))
+        guard isOnline, state == .running else { return }
+        Log.mail.notice("The network is back; syncing mail")
+        idleBackoffTask?.cancel()
+        await performPass(.all)
     }
 
     // MARK: - Local changes
@@ -386,7 +438,7 @@ public actor MailSyncEngine {
                 guard state == .running, generation == current, !Task.isCancelled else { return }
                 Log.mail.info("IDLE connection ended; reconnecting")
                 failures += 1
-            } catch let error as MailTransportError where error.isAuthentication {
+            } catch let error as MailTransportError where error.isAuthentication || error.isLoginUnsupported {
                 await recordFailure(error)
                 await haltAfterAuthenticationFailure()
                 return
@@ -429,6 +481,8 @@ public actor MailSyncEngine {
     }
 
     private func runPass(_ scope: Scope) async {
+        // No network (roaming, sleep, dark wake): nothing to try, nothing to count.
+        guard isOnline else { return }
         let accounts = MailAccountRepository(store: records)
         let account: MailAccount
         do {
@@ -440,25 +494,50 @@ public actor MailSyncEngine {
             }
             account = current
         } catch {
-            Log.mail.error("Mail account could not be read: \(String(describing: error), privacy: .private)")
+            Log.mail.error("Mail account could not be read: \(Self.kind(error), privacy: .public)")
             return
         }
+        step = "login"
+        refusals = []
+        skippedMailboxes = 0
         do {
             try await sync(account, scope: scope)
+            if let refusal = refusals.first {
+                // A mailbox or a move the server refused: the student sees why (the reason in the
+                // account's error, no fresh sync time). A skipped mailbox backs the poll off as a
+                // failed pass does; a refused move is never tried again, so it does not.
+                consecutiveFailures = skippedMailboxes > 0 ? consecutiveFailures + 1 : 0
+                let failures = consecutiveFailures
+                let count = refusals.count
+                Log.mail.error("Mail sync incomplete: \(count, privacy: .public) refused (\(failures, privacy: .public) in a row)")
+                _ = try? await accounts.recordSync(account.id, at: clock.now(), error: refusal)
+                resumePoll(token: nil, timedOut: false)
+                return
+            }
             if consecutiveFailures > 0 {
                 consecutiveFailures = 0
                 resumePoll(token: nil, timedOut: false)
             }
             _ = try? await accounts.recordSync(account.id, at: clock.now(), error: nil)
-        } catch let error as MailTransportError where error.isAuthentication {
-            Log.mail.error("Mail login refused; sync stops until the account is saved again")
+        } catch let error as MailTransportError where error.isAuthentication || error.isLoginUnsupported {
+            Log.mail.error("Mail login refused (\(error.kind, privacy: .public)); sync stops until the account is saved again")
             _ = try? await accounts.recordSync(account.id, at: clock.now(), error: error.localizedDescription)
             await haltAfterAuthenticationFailure()
         } catch {
             consecutiveFailures += 1
-            let reason = Self.readable(error)
-            Log.mail.error("Mail sync failed (\(self.consecutiveFailures, privacy: .public) in a row): \(String(describing: error), privacy: .private)")
-            _ = try? await accounts.recordSync(account.id, at: clock.now(), error: reason)
+            let failures = consecutiveFailures
+            let kind = Self.kind(error)
+            let failedAt = self.step
+            let transient = Self.isTransient(error)
+            if transient {
+                Log.mail.notice("Mail sync: \(kind, privacy: .public) at \(failedAt, privacy: .public) (\(failures, privacy: .public) in a row)")
+            } else {
+                Log.mail.error("Mail sync failed: \(kind, privacy: .public) at \(failedAt, privacy: .public) (\(failures, privacy: .public) in a row)")
+            }
+            // A short outage is not the student's business; from the third failed pass it is.
+            if !transient || failures >= 3 {
+                _ = try? await accounts.recordSync(account.id, at: clock.now(), error: Self.readable(error))
+            }
             resumePoll(token: nil, timedOut: false)
         }
     }
@@ -472,6 +551,19 @@ public actor MailSyncEngine {
         if let error = error as? MailTransportError { return error.localizedDescription }
         if let error = error as? MailSyncError { return error.localizedDescription }
         return "Mail could not be synced."
+    }
+
+    /// What failed, for the log: the error's case or type, never its host, reply or content.
+    static func kind(_ error: any Error) -> String {
+        if let error = error as? MailTransportError { return error.kind }
+        if let error = error as? MailSyncError { return "\(error)" }
+        if error is CancellationError { return "cancelled" }
+        return String(reflecting: type(of: error))
+    }
+
+    /// Network trouble worth waiting out (the poll's back-off) rather than reporting at once.
+    static func isTransient(_ error: any Error) -> Bool {
+        (error as? MailTransportError)?.isTransient ?? false
     }
 
     private func openSession(_ account: MailAccount) async throws -> any IMAPSession {
@@ -499,16 +591,24 @@ public actor MailSyncEngine {
             qresync = ((try? await session.enable(["QRESYNC"])) ?? []).contains("QRESYNC")
         }
 
+        step = "list"
         var folders = try await session.listMailboxes()
         var mailboxes = try await store.applyFolders(folders, accountID: account.id)
         let serverPaths = Set(folders.map(\.path))
         var created = false
+        step = "create"
         for mailbox in mailboxes where mailbox.isSynced && !serverPaths.contains(mailbox.path) {
             Log.mail.info("Creating the \(mailbox.role?.rawValue ?? "", privacy: .public) mailbox on the server")
-            try await session.createMailbox(mailbox.path)
-            created = true
+            do {
+                try await session.createMailbox(mailbox.path)
+                created = true
+            } catch let error as MailTransportError where error.isRefusal {
+                // That mailbox is skipped below (its SELECT is refused); the others still sync.
+                Log.mail.error("The server refused to create the \(mailbox.role?.rawValue ?? "", privacy: .public) mailbox")
+            }
         }
         if created {
+            step = "list"
             folders = try await session.listMailboxes()
             mailboxes = try await store.applyFolders(folders, accountID: account.id)
         }
@@ -519,9 +619,21 @@ public actor MailSyncEngine {
             .filter { $0.isSynced && scope.includes($0.role) }
             .sorted { (order.firstIndex(of: $0.role ?? .inbox) ?? 9) < (order.firstIndex(of: $1.role ?? .inbox) ?? 9) }
         for mailbox in synced {
-            try await syncMailbox(mailbox, account: account, session: session, qresync: qresync, mailboxes: byID, passStart: passStart)
+            do {
+                try await syncMailbox(mailbox, account: account, session: session, qresync: qresync, mailboxes: byID, passStart: passStart)
+            } catch let error as MailTransportError where error.isRefusal {
+                // The server refused a command in this mailbox (the session is still good): the
+                // other mailboxes sync; this one is tried again next pass, and the pass reports it.
+                let role = mailbox.role?.rawValue ?? "a mailbox"
+                let failedAt = self.step
+                Log.mail.error("Mail sync skipped \(role, privacy: .public): refused at \(failedAt, privacy: .public)")
+                let name = mailbox.role == .inbox ? "Inbox" : mailbox.name
+                skippedMailboxes += 1
+                refusals.append("\(name) couldn’t be synced. \(error.localizedDescription)")
+            }
         }
         if scope == .all {
+            step = "sent copies"
             try await saveSentCopies(account: account, session: session, mailboxes: mailboxes)
             await reparseOutdated()
         }
@@ -536,6 +648,7 @@ public actor MailSyncEngine {
         var mailbox = initial
         var resync: IMAPResync?
         let selection: IMAPSelection
+        step = "select \(mailbox.role?.rawValue ?? "mailbox")"
         if qresync, let validity = mailbox.uidValidity, let modSeq = mailbox.highestModSeq, modSeq > 0,
            let validity32 = UInt32(exactly: validity) {
             let result = try await session.select(mailbox.path, resyncFrom: validity32, modSeq: UInt64(modSeq))
@@ -558,12 +671,20 @@ public actor MailSyncEngine {
         let hadMessages = mailbox.lastUID > 0
 
         // Local changes first: the student's flags win, moves leave this mailbox.
+        step = "flags"
         let pendingFlags = try await store.pendingFlags(mailbox.id)
-        try await FlagState.push(pendingFlags, session: session)
+        do {
+            try await FlagState.push(pendingFlags, session: session)
+        } catch let error as MailTransportError where error.isRefusal {
+            // Refused flag changes are dropped (the server's flags win), never retried each pass.
+            Log.mail.error("The server refused \(pendingFlags.count, privacy: .public) flag changes")
+        }
         try await store.markFlagsPushed(pendingFlags)
+        step = "moves"
         try await pushMoves(from: mailbox, session: session, mailboxes: mailboxes)
 
         // The server's changes since the checkpoint.
+        step = "changes"
         if let resync {
             var flags = resync.changedFlags
             for row in pendingFlags { if let uid = row.uid.flatMap({ UInt32(exactly: $0) }) { flags[uid] = nil } }
@@ -584,6 +705,7 @@ public actor MailSyncEngine {
         var run = FetchRun()
         var windowComplete = mailbox.syncedSince.map { $0 <= since } ?? false
         if !windowComplete {
+            step = "window"
             let window = try await session.search(.since(since))
             let stored = try await store.storedUIDs(mailbox.id)
             let missing = window.filter { !stored.contains($0) }.sorted(by: >)
@@ -596,6 +718,7 @@ public actor MailSyncEngine {
         }
         let lastUID = UInt32(clamping: (try await store.mailbox(mailbox.id))?.lastUID ?? 0)
         if lastUID < UInt32.max {
+            step = "new mail"
             let stored = try await store.storedUIDs(mailbox.id)
             let fresh = try await session.search(.uids((lastUID + 1)...UInt32.max))
                 .filter { $0 > lastUID && !stored.contains($0) }
@@ -605,6 +728,7 @@ public actor MailSyncEngine {
 
         // Rows without a UID: find them again by Message-ID; what the server no longer has goes.
         if windowComplete {
+            step = "reattach"
             try await reattachDetached(in: mailbox, account: account, session: session, selection: selection, run: &run)
             let deleted = try await store.deleteLeftovers(mailbox.id, before: passStart)
             if deleted > 0 { Log.mail.info("Removed \(deleted, privacy: .public) messages the server no longer has") }
@@ -628,12 +752,21 @@ public actor MailSyncEngine {
             }
             let uids = rows.compactMap { $0.uid.flatMap { UInt32(exactly: $0) } }.sorted()
             let result: IMAPCopyResult?
-            if canMove {
-                result = try await session.move(uids, to: destination.path)
-            } else {
-                result = try await session.copy(uids, to: destination.path)
-                try await session.store(uids, flags: [IMAPFlag.deleted], .add)
-                try await session.expunge(uids)
+            do {
+                if canMove {
+                    result = try await session.move(uids, to: destination.path)
+                } else {
+                    result = try await session.copy(uids, to: destination.path)
+                    try await session.store(uids, flags: [IMAPFlag.deleted], .add)
+                    try await session.expunge(uids)
+                }
+            } catch let error as MailTransportError where error.isRefusal {
+                // The messages stay where the server has them (never retried on every pass).
+                Log.mail.error("The server refused to move \(rows.count, privacy: .public) messages; they stay where they are")
+                try await store.cancelMoves(rows.map(\.id))
+                let what = rows.count == 1 ? "A message" : "\(rows.count) messages"
+                refusals.append("\(what) couldn’t be moved. \(error.localizedDescription)")
+                continue
             }
             let validityMatches = result.map { copy in destination.uidValidity.map { $0 == Int64(copy.uidValidity) } ?? true } ?? false
             for row in rows {
@@ -684,7 +817,14 @@ public actor MailSyncEngine {
         while start < ordered.count {
             let chunk = Array(ordered[start..<min(start + configuration.batchSize, ordered.count)])
             start += configuration.batchSize
-            let summaries = try await session.fetchSummaries(chunk)
+            let summaries: [IMAPSummary]
+            do {
+                summaries = try await session.fetchSummaries(chunk)
+            } catch let error as MailTransportError where error.isRefusal {
+                // One message the server refuses fails its whole batch: one at a time instead, so
+                // only that message waits (and is left out after `fetchAttempts`).
+                summaries = try await summariesOneByOne(chunk, mailbox: mailbox, session: session, run: &run)
+            }
             let byUID = Dictionary(summaries.map { ($0.uid, $0) }, uniquingKeysWith: { first, _ in first })
             var prepared: [PreparedMessage] = []
             var interruption: MailTransportError?
@@ -700,13 +840,19 @@ public actor MailSyncEngine {
                 do {
                     prepared.append(try await prepare(summary, session: session, whole: attempts == 0))
                     fetchFailures[mailbox.id]?[uid] = nil
-                } catch let error as MailTransportError where !error.isAuthentication {
+                } catch let error as MailTransportError where error.isAuthentication {
+                    throw error
+                } catch {
+                    // This message waits (after `fetchAttempts` its headers are stored); the rest
+                    // of the batch is still stored. A local failure (the blob store) or a refusal
+                    // costs only this message; a lost connection ends the batch here.
                     fetchFailures[mailbox.id, default: [:]][uid] = attempts + 1
                     run.skipped.insert(uid)
-                    Log.mail.error("Downloading a message failed (\(attempts + 1, privacy: .public)): \(String(describing: error), privacy: .private)")
-                    if case .refused = error { continue }
-                    if case .missingCapability = error { continue }
-                    interruption = error
+                    Log.mail.error("Downloading a message failed (\(attempts + 1, privacy: .public)): \(Self.kind(error), privacy: .public)")
+                    guard let transport = error as? MailTransportError else { continue }
+                    if transport.isRefusal { continue }
+                    if case .missingCapability = transport { continue }
+                    interruption = transport
                     break messages
                 }
             }
@@ -722,6 +868,30 @@ public actor MailSyncEngine {
             }
             if let interruption { throw interruption }
         }
+    }
+
+    /// A batch's summaries one message at a time, after the server refused the batch. A message
+    /// it refuses alone waits for the next pass; after `fetchAttempts` it is left out, so the mail
+    /// after it still arrives.
+    private func summariesOneByOne(
+        _ chunk: [UInt32], mailbox: Mailbox, session: any IMAPSession, run: inout FetchRun
+    ) async throws -> [IMAPSummary] {
+        var summaries: [IMAPSummary] = []
+        for uid in chunk {
+            do {
+                summaries += try await session.fetchSummaries([uid])
+            } catch let error as MailTransportError where error.isRefusal {
+                let attempts = (fetchFailures[mailbox.id]?[uid] ?? 0) + 1
+                if attempts >= configuration.fetchAttempts {
+                    fetchFailures[mailbox.id]?[uid] = nil
+                    Log.mail.error("A message was refused \(attempts, privacy: .public) times; it is left out")
+                } else {
+                    fetchFailures[mailbox.id, default: [:]][uid] = attempts
+                    run.skipped.insert(uid)
+                }
+            }
+        }
+        return summaries
     }
 
     /// Fetches (BODY.PEEK, nothing is marked read) and parses one message; stores the raw
@@ -796,8 +966,14 @@ public actor MailSyncEngine {
                 .where { $0.accountID.eq(accountID) && $0.state.eq(MailDraftState.sent) && $0.sentCopySavedAt.is(nil) && $0.rfcMessageID.neq("") }
                 .fetchAll(db)
         }
-        for draft in drafts {
-            try await SentCopy.save(draft, account: account, sent: sent, session: session, services: services, now: clock.now)
+        for draft in drafts where !refusedSentCopies.contains(draft.id) {
+            do {
+                try await SentCopy.save(draft, account: account, sent: sent, session: session, services: services, now: clock.now)
+            } catch let error as MailTransportError where error.isRefusal {
+                // Not again on every pass; the next launch tries once more.
+                refusedSentCopies.insert(draft.id)
+                Log.mail.error("The server refused a sent message's copy for Sent")
+            }
         }
     }
 
