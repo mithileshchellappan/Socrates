@@ -574,10 +574,13 @@ public actor CoachEngine: StudyCoaching {
     /// The plan block a round or exam was started from is done (its session's time counts).
     func finishBlock(of session: StudySession, at date: Date) async throws {
         let sessionID = Optional(session.id)
+        let blockID = session.blockID
+        // `block_id` is a plain id since v17: its block may be gone (replanned, or its course deleted).
         let block = try await services.database.read { db in
-            try StudyBlock.where { $0.sessionID.eq(sessionID) }.fetchOne(db)
+            try blockID.flatMap { try StudyBlock.find($0).fetchOne(db) }
+                ?? StudyBlock.where { $0.sessionID.eq(sessionID) }.fetchOne(db)
         }
-        guard let id = session.blockID ?? block?.id else { return }
+        guard let id = block?.id else { return }
         try await plans.setState(id, .done, spentSeconds: session.elapsed(at: date), sessionID: session.id)
     }
 

@@ -6,9 +6,10 @@ import SQLiteData
 /// CloudKit-friendly rules (SQLiteData SyncEngine, docs/schema.md):
 /// UUID TEXT primary keys, no UNIQUE constraints/indexes besides the primary key,
 /// `ON DELETE` only CASCADE / SET NULL, columns added later must be nullable or have
-/// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names.
+/// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names, and no foreign-key
+/// cycle or self-reference among synced tables (a back-reference is a plain id column, v17).
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -76,6 +77,20 @@ public enum Schema {
         // ln, additive only (new tables and a nullable column): lecture notes.
         migrator.registerMigration("v16") { db in
             try db.execute(sql: v16)
+        }
+        // Sync: SQLiteData's SyncEngine refuses a schema whose synced tables reference each other
+        // in a cycle or themselves. Three tables are rebuilt without those references; every row,
+        // column, other key and index stays. Deferred foreign-key checks (GRDB's default, as v2):
+        // the migration runs with foreign keys off, so no DROP sets anything NULL, and
+        // `foreign_key_check` must pass before it commits. `StudyDatabase.open` copies a v16
+        // library before this runs.
+        migrator.registerMigration("v17") { db in
+            guard try Bool.fetchOne(db, sql: "PRAGMA foreign_keys") == false else {
+                throw DatabaseError(message: "v17 must run with foreign keys off")
+            }
+            try rebuild(db, "agent_change", as: v17AgentChange, dropping: ["superseded_by"])
+            try rebuild(db, "agent_event", as: v17AgentEvent, dropping: ["task_id"])
+            try rebuild(db, "study_session", as: v17StudySession, dropping: ["block_id", "retake_of"])
         }
         return migrator
     }
@@ -1399,6 +1414,164 @@ public enum Schema {
 
         ALTER TABLE "agent_memory" ADD COLUMN "notes_rule" TEXT;
         """
+
+    /// v17 (sync): the foreign keys that made cycles among synced tables become plain id columns
+    /// (SQLiteData's SyncEngine sorts synced tables by their foreign keys and refuses a cycle):
+    /// - `agent_change.superseded_by` (self): change rows are never deleted;
+    /// - `agent_event.task_id` (the back-reference of `agent_task.event_id`, which stays): set
+    ///   after the escalation task is made; tasks are never deleted, and readers treat a missing
+    ///   task as ended;
+    /// - `study_session.block_id` (the back-reference of `study_block.session_id`, which stays and
+    ///   keeps SET NULL, since the plan reads "no session" from it): a block can go (a replan, a
+    ///   course deleted) while its session stays, and readers look the block up;
+    /// - `study_session.retake_of` (self): written, never read.
+    /// Each table is made as `<name>_v17` with the columns of v11/v12 in their order, filled,
+    /// and swapped in (`rebuild`).
+    static let v17AgentChange = """
+        CREATE TABLE "agent_change_v17" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT '',
+          "target_table" TEXT NOT NULL DEFAULT '',
+          "target_id" TEXT,
+          "title" TEXT NOT NULL DEFAULT '',
+          "summary" TEXT NOT NULL DEFAULT '',
+          "before" TEXT,
+          "after" TEXT,
+          "source_kind" TEXT NOT NULL DEFAULT 'mail',
+          "mail_message_id" TEXT REFERENCES "mail_message"("id") ON DELETE SET NULL,
+          "rfc_message_id" TEXT NOT NULL DEFAULT '',
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE SET NULL,
+          "recording_id" TEXT REFERENCES "recording"("id") ON DELETE SET NULL,
+          "time" REAL,
+          "conversation_id" TEXT REFERENCES "agent_conversation"("id") ON DELETE SET NULL,
+          "task_id" TEXT REFERENCES "agent_task"("id") ON DELETE SET NULL,
+          "event_id" TEXT REFERENCES "agent_event"("id") ON DELETE SET NULL,
+          "quote" TEXT NOT NULL DEFAULT '',
+          "confidence" REAL NOT NULL DEFAULT 1,
+          "model" TEXT NOT NULL DEFAULT '',
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "tracked_item_source_id" TEXT REFERENCES "tracked_item_source"("id") ON DELETE SET NULL,
+          "superseded_by" TEXT,
+          "applied_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "undone_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT
+        """
+
+    static let v17AgentEvent = """
+        CREATE TABLE "agent_event_v17" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT 'mail',
+          "state" TEXT NOT NULL DEFAULT 'pending',
+          "source_key" TEXT NOT NULL DEFAULT '',
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE SET NULL,
+          "mail_message_id" TEXT REFERENCES "mail_message"("id") ON DELETE SET NULL,
+          "lecture_id" TEXT REFERENCES "lecture"("id") ON DELETE SET NULL,
+          "recording_id" TEXT REFERENCES "recording"("id") ON DELETE SET NULL,
+          "detail" TEXT,
+          "attempts" INTEGER NOT NULL DEFAULT 0,
+          "error" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "task_id" TEXT,
+          "triaged_at" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT
+        """
+
+    static let v17StudySession = """
+        CREATE TABLE "study_session_v17" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "kind" TEXT NOT NULL DEFAULT 'round',
+          "course_id" TEXT REFERENCES "course"("id") ON DELETE CASCADE,
+          "block_id" TEXT,
+          "title" TEXT NOT NULL DEFAULT '',
+          "scope" TEXT NOT NULL DEFAULT '{}',
+          "question_ids" TEXT NOT NULL DEFAULT '[]',
+          "position" INTEGER NOT NULL DEFAULT 0,
+          "minutes" INTEGER,
+          "points" INTEGER NOT NULL DEFAULT 0,
+          "drafts" TEXT NOT NULL DEFAULT '[]',
+          "flags" TEXT NOT NULL DEFAULT '[]',
+          "state" TEXT NOT NULL DEFAULT 'active',
+          "started_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "resumed_at" TEXT,
+          "active_seconds" REAL NOT NULL DEFAULT 0,
+          "ended_at" TEXT,
+          "score_points" REAL,
+          "retake_of" TEXT,
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT
+        """
+
+    /// v17: SQLite's table rebuild (sqlite.org/lang_altertable.html#otheralter, inside the
+    /// migration's transaction with foreign keys off). `create` makes `<table>_v17`; it must have
+    /// the table's columns exactly (name, type, NOT NULL, default, key, order) and its foreign keys
+    /// but `dropping`'s, or nothing changes. The rows are copied (the count checked), the old table
+    /// dropped, the new one renamed, and the table's indexes and triggers, as this library has
+    /// them, made again.
+    static func rebuild(_ db: Database, _ table: String, as create: String, dropping: Set<String>) throws {
+        let rebuilt = "\(table)_v17"
+        let dependents = try String.fetchAll(
+            db,
+            sql: """
+                SELECT "sql" FROM "sqlite_master"
+                WHERE "tbl_name" = ? AND "type" IN ('index', 'trigger') AND "sql" IS NOT NULL
+                ORDER BY "type", "rowid"
+                """,
+            arguments: [table]
+        )
+        try db.execute(sql: create)
+        // Each table's columns and foreign keys as one JSON text, compared between the two.
+        func columns(_ name: String) throws -> String? {
+            try String.fetchOne(
+                db,
+                sql: """
+                    SELECT json_group_array(json_array("name", "type", "notnull", "dflt_value", "pk"))
+                    FROM (SELECT * FROM pragma_table_info(?) ORDER BY "cid")
+                    """,
+                arguments: [name]
+            )
+        }
+        let dropped = try String(decoding: JSONEncoder().encode(dropping.sorted()), as: UTF8.self)
+        func foreignKeys(_ name: String) throws -> String? {
+            try String.fetchOne(
+                db,
+                sql: """
+                    SELECT json_group_array(json_array("from", "table", "to", "on_update", "on_delete"))
+                    FROM (SELECT * FROM pragma_foreign_key_list(?) WHERE "from" NOT IN (SELECT "value" FROM json_each(?)) ORDER BY "from")
+                    """,
+                arguments: [name, dropped]
+            )
+        }
+        let names = try String.fetchAll(db, sql: #"SELECT "name" FROM pragma_table_info(?) ORDER BY "cid""#, arguments: [table])
+        guard !names.isEmpty, try columns(rebuilt) == columns(table) else {
+            throw DatabaseError(message: "v17: \(table) has other columns than its rebuild")
+        }
+        func droppedKeys(_ name: String) throws -> Int? {
+            try Int.fetchOne(
+                db,
+                sql: #"SELECT count(*) FROM pragma_foreign_key_list(?) WHERE "from" IN (SELECT "value" FROM json_each(?))"#,
+                arguments: [name, dropped]
+            )
+        }
+        guard try droppedKeys(table) == dropping.count, try droppedKeys(rebuilt) == 0, try foreignKeys(rebuilt) == foreignKeys(table) else {
+            throw DatabaseError(message: "v17: \(table)'s foreign keys are not as expected")
+        }
+        let list = names.map(\.quotedDatabaseIdentifier).joined(separator: ", ")
+        try db.execute(sql: "INSERT INTO \(rebuilt.quotedDatabaseIdentifier) (\(list)) SELECT \(list) FROM \(table.quotedDatabaseIdentifier)")
+        let count = "SELECT count(*) FROM "
+        guard try Int.fetchOne(db, sql: count + rebuilt.quotedDatabaseIdentifier) == Int.fetchOne(db, sql: count + table.quotedDatabaseIdentifier) else {
+            throw DatabaseError(message: "v17: \(table)'s rows did not all copy")
+        }
+        try db.execute(sql: "DROP TABLE \(table.quotedDatabaseIdentifier)")
+        try db.execute(sql: "ALTER TABLE \(rebuilt.quotedDatabaseIdentifier) RENAME TO \(table.quotedDatabaseIdentifier)")
+        for sql in dependents {
+            try db.execute(sql: sql)
+        }
+    }
 
     /// v5: each entry of the legacy `course.mail_rules` JSON becomes a user `mail_rule` row
     /// (from → sender, list_id → list_id, subject → subject). The column stays, unread.
