@@ -15,6 +15,12 @@ struct TextUnit: Hashable, Sendable {
 /// local-translate's `chunker.js`: splits a text into model-sized units, one **sentence** per
 /// unit (Marian drops sentences when given several), with `NLTokenizer` in place of
 /// `Intl.Segmenter`. Not `Sendable`: one per job, used on the translator's actor.
+///
+/// Two departures from `chunker.js`, both from translating real German mail: a German ordinal
+/// ("den 16. Februar", "im 3. Semester") does not end a sentence, and a link or mail address
+/// inside a sentence is a unit of its own that is never translated (the model translates a
+/// URL's words: "…/studium/rueckmeldung" came back as "…/study/return message"), with the text
+/// around it translated on either side.
 final class TextChunker {
     private static let blockSeparator: NSRegularExpression? = try? NSRegularExpression(pattern: "[ \\t\\u00A0]*\\n\\s*")
     /// ASCII `, ; :` followed by whitespace, or CJK clause marks.
@@ -22,6 +28,17 @@ final class TextChunker {
     private static let urlish: NSRegularExpression? = try? NSRegularExpression(
         pattern: "^(https?://|www\\.)\\S+$", options: [.caseInsensitive]
     )
+    /// A bare mail address (with or without `mailto:`).
+    private static let addressish: NSRegularExpression? = try? NSRegularExpression(
+        pattern: "^(mailto:)?[^\\s@]+@[^\\s@]+\\.[^\\s@]+$", options: [.caseInsensitive]
+    )
+    /// A link or a mail address inside a text.
+    private static let link: NSRegularExpression? = try? NSRegularExpression(
+        pattern: "\\b(?:https?://|www\\.)[^\\s<>\"«»“”„]+|\\b(?:mailto:)?[a-z0-9._%+\\-]+@[a-z0-9\\-]+(?:\\.[a-z0-9\\-]+)*\\.[a-z]{2,}",
+        options: [.caseInsensitive]
+    )
+    /// Punctuation at a link's end that belongs to the sentence ("…/rueckmeldung.").
+    private static let linkTrailers: Set<Character> = [".", ",", ";", ":", "!", "?", "'", "\"", "’", "”"]
     private static let hardCutCharacters = 200
     /// Common abbreviations (lowercased, without the dot) across the supported languages.
     private static let abbreviationList: String = """
@@ -31,6 +48,20 @@ final class TextChunker {
         sig ecc pag pp ca lt cdr gen col sgt capt
         """
     private static let abbreviations: Set<String> = Set(abbreviationList.split(separator: " ").map { String($0) })
+    /// Words before a number that make "<number>." an ordinal ("am 3.", "den 16.", "im 2.").
+    private static let ordinalContextList: String = """
+        am an ab bis seit vom zum zur im ins beim den dem der des die das ein eine einem einen einer \
+        jede jeden jedem jeder jedes ihr ihre ihrem ihren ihrer sein seine seinem seinen seiner \
+        unser unsere unserem unseren unserer diese dieser diesem diesen dieses
+        """
+    private static let ordinalContext: Set<String> = Set(ordinalContextList.split(separator: " ").map { String($0) })
+    /// Month names and abbreviations that follow a day ("16. Februar", "1. Okt.").
+    private static let monthList: String = """
+        januar jänner februar feber märz maerz april mai juni juli august september oktober november dezember \
+        jan feb mär mrz apr jun jul aug sep sept okt nov dez \
+        january february march may june july october december mar oct dec
+        """
+    private static let months: Set<String> = Set(monthList.split(separator: " ").map { String($0) })
 
     private let language: NLLanguage?
     private var sentenceTokenizer: NLTokenizer?
@@ -79,7 +110,9 @@ final class TextChunker {
                 for (index, piece) in pieces.enumerated() {
                     if let pending { units.append(pending) }
                     let isLast = index == pieces.count - 1
-                    pending = TextUnit(text: piece, sep: isLast ? blockSep : joiner, skip: !Self.shouldTranslate(piece))
+                    let sep: String = isLast ? blockSep : (piece.sep ?? joiner)
+                    let skip: Bool = piece.isLink || !Self.shouldTranslate(piece.text)
+                    pending = TextUnit(text: piece.text, sep: sep, skip: skip)
                 }
             }
             if match == nil { break }
@@ -91,14 +124,24 @@ final class TextChunker {
 
     static func shouldTranslate(_ text: String) -> Bool {
         guard MarianOutput.hasLetter(text) else { return false }
-        guard let urlish else { return true }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return urlish.firstMatch(in: text, range: range) == nil
+        if let urlish, urlish.firstMatch(in: text, range: range) != nil { return false }
+        if let addressish, addressish.firstMatch(in: text, range: range) != nil { return false }
+        return true
     }
 
     // MARK: Sentences
 
-    private func splitBlock(_ block: String, maxTokens: Int, countTokens: (String) -> Int) -> [String] {
+    /// A piece of a block: a sentence (or part of one) to translate, or a link kept as written.
+    struct Piece {
+        var text: String
+        /// The whitespace after it inside its sentence (around a link); nil: the joiner.
+        var sep: String?
+        /// A link or mail address: never translated, never cut.
+        var isLink: Bool
+    }
+
+    private func splitBlock(_ block: String, maxTokens: Int, countTokens: (String) -> Int) -> [Piece] {
         var merged: [String] = []
         var current = ""
         var previous = ""
@@ -113,15 +156,64 @@ final class TextChunker {
         let rest = current.trimmingCharacters(in: .whitespacesAndNewlines)
         if !rest.isEmpty { merged.append(rest) }
 
-        var result: [String] = []
+        var result: [Piece] = []
         for sentence in merged {
-            if countTokens(sentence) > maxTokens {
-                result.append(contentsOf: splitLong(sentence, maxTokens: maxTokens, countTokens: countTokens))
-            } else {
-                result.append(sentence)
+            for part in Self.linkParts(sentence) {
+                if part.isLink || countTokens(part.text) <= maxTokens {
+                    result.append(part)
+                    continue
+                }
+                let cut = splitLong(part.text, maxTokens: maxTokens, countTokens: countTokens)
+                for (index, text) in cut.enumerated() {
+                    let sep: String? = index == cut.count - 1 ? part.sep : nil
+                    result.append(Piece(text: text, sep: sep, isLink: false))
+                }
             }
         }
         return result
+    }
+
+    /// The sentence cut around its links and mail addresses: the text before, the link, the text
+    /// after, each with the whitespace that followed it (the last part's is the joiner's). A
+    /// sentence without links is one part.
+    static func linkParts(_ sentence: String) -> [Piece] {
+        let whole = [Piece(text: sentence, sep: nil, isLink: false)]
+        guard let link else { return whole }
+        let ns = sentence as NSString
+        let matches = link.matches(in: sentence, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return whole }
+
+        var parts: [Piece] = []
+        var cursor = 0
+        // Text between links: its leading whitespace follows the part before it.
+        func addText(_ text: String) {
+            let leading = String(text.prefix(while: { $0.isWhitespace }))
+            if !leading.isEmpty, !parts.isEmpty { parts[parts.count - 1].sep = leading }
+            let core = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !core.isEmpty else { return }
+            let trailing = String(String(text.reversed()).prefix(while: { $0.isWhitespace }).reversed())
+            parts.append(Piece(text: core, sep: trailing, isLink: false))
+        }
+        for match in matches {
+            var found = ns.substring(with: match.range)
+            // "…/rueckmeldung." and "(siehe https://…)": the dot and the bracket are the sentence's.
+            while let last = found.last {
+                let opens = found.filter { $0 == "(" }.count
+                let closes = found.filter { $0 == ")" }.count
+                let isTrailer = Self.linkTrailers.contains(last) || (last == ")" && closes > opens)
+                guard isTrailer else { break }
+                found.removeLast()
+            }
+            let location = match.range.location
+            let length = (found as NSString).length
+            guard location >= cursor, length > 0 else { continue }
+            addText(ns.substring(with: NSRange(location: cursor, length: location - cursor)))
+            parts.append(Piece(text: found, sep: "", isLink: true))
+            cursor = location + length
+        }
+        addText(ns.substring(from: cursor))
+        if !parts.isEmpty { parts[parts.count - 1].sep = nil }
+        return parts
     }
 
     /// The block cut at sentence starts: each segment runs to the next one's start, so
@@ -148,7 +240,8 @@ final class TextChunker {
     }
 
     /// Does `next` continue the sentence that `previous` (a segment) ended? After "z.", "e.g.",
-    /// "U.S.", a known abbreviation, or when `next` starts in lowercase or with a digit.
+    /// "U.S.", a known abbreviation, when `next` starts in lowercase or with a digit, or after a
+    /// German ordinal: a day before a month's name, or a number after an article or preposition.
     static func continuesSentence(_ previous: String, _ next: String) -> Bool {
         let before = trimmingEnd(previous)
         guard before.hasSuffix(".") else { return false }
@@ -162,7 +255,18 @@ final class TextChunker {
         let after = next.drop(while: { $0.isWhitespace })
         guard let scalar = after.unicodeScalars.first else { return false }
         if scalar.properties.generalCategory == .lowercaseLetter { return true }
-        return scalar.value >= 0x30 && scalar.value <= 0x39
+        if scalar.value >= 0x30 && scalar.value <= 0x39 { return true }
+        // "den 16. | Februar", "bis spätestens 31. | Januar", "im 3. | Semester".
+        guard MarianOutput.isLetter(scalar), isNumber(lastWord, digits: 1...3) else { return false }
+        let nextWord = String(after.prefix(while: { $0.isLetter })).lowercased()
+        if isNumber(lastWord, digits: 1...2), months.contains(nextWord) { return true }
+        let wordBefore = words.count >= 2 ? String(words[words.count - 2]) : ""
+        let context = wordBefore.trimmingCharacters(in: CharacterSet.letters.inverted).lowercased()
+        return ordinalContext.contains(context)
+    }
+
+    private static func isNumber(_ word: String, digits: ClosedRange<Int>) -> Bool {
+        digits.contains(word.count) && word.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
     /// One letter, or letters separated by dots ("z", "e.g", "U.S").
