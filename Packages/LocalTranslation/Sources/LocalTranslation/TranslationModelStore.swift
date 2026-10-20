@@ -88,7 +88,8 @@ public struct TranslationModelStore: Sendable {
     }
 
     /// Forgets that the repo finished downloading (a model ONNX Runtime could not open), so the
-    /// next download checks and fetches it again.
+    /// next download checks every file against the manifest, offline, and fetches only those
+    /// that fail.
     public func invalidate(_ repository: String) {
         let marker = folder(for: repository).appending(path: Self.completeMarker, directoryHint: .notDirectory)
         try? FileManager.default.removeItem(at: marker)
@@ -139,7 +140,8 @@ public struct TranslationModelStore: Sendable {
 
     /// Fetches whatever the repo still misses, verifies it and writes the manifest and marker.
     /// `progress(done, total)` gets the repo's bytes, never going backwards, at most about 10
-    /// times a second. Partial files resume with a `Range` request.
+    /// times a second; a repo that only needed checking (offline) reports nothing. Partial files
+    /// resume with a `Range` request.
     public func download(_ repository: String, progress: @Sendable (Int64, Int64) -> Void) async throws {
         if isReady(repository) { return }
         do {
@@ -154,37 +156,76 @@ public struct TranslationModelStore: Sendable {
         }
     }
 
+    /// Makes the repo complete again. When `manifest.json` already lists every file's size and
+    /// hash (a repo invalidated after a load error, or an interrupted download), the files on
+    /// disk are checked against it first, offline: if all verify, the marker is written back and
+    /// no request is made. Otherwise only the files that fail are fetched (the file list is asked
+    /// for again only when there is no usable manifest, or it follows a branch, not a commit).
     private func fetchMissing(_ repository: String, progress: @Sendable (Int64, Int64) -> Void) async throws {
-        let revision = Self.pinnedRevisions[repository] ?? "main"
-        TranslationLog.logger.info("Downloading \(repository, privacy: .public) at \(revision, privacy: .public)")
-        let entries = try await Self.withRetry {
-            try await fetchTree(repository, revision: revision)
+        let folder = folder(for: repository)
+        var revision = Self.pinnedRevisions[repository] ?? "main"
+        // Each file is hashed at most once per attempt.
+        var checked: [TranslationManifest.File: Bool] = [:]
+        func verifies(_ file: TranslationManifest.File) throws -> Bool {
+            if let known = checked[file] { return known }
+            let result = try Self.verifiesOnDisk(file, in: folder)
+            checked[file] = result
+            return result
         }
+
         var files: [TranslationManifest.File] = []
-        var total: Int64 = 0
-        for path in Self.files {
-            guard let entry = entries.first(where: { $0.path == path && $0.type == "file" }) else {
-                throw TranslationError.modelUnreadable("\(repository) has no \(path)")
+        if let manifest = usableManifest(for: repository, in: folder) {
+            var allVerify = true
+            for file in manifest.files {
+                let verified: Bool = try verifies(file)
+                if !verified { allVerify = false }
             }
-            let file: TranslationManifest.File
-            if let lfs = entry.lfs {
-                file = TranslationManifest.File(path: path, size: lfs.size, sha256: lfs.oid.lowercased(), gitOID: nil)
-            } else {
-                file = TranslationManifest.File(path: path, size: entry.size, sha256: nil, gitOID: entry.oid?.lowercased())
+            if allVerify {
+                try writeMarker(revision: manifest.revision, in: folder)
+                TranslationLog.logger.info("Verified \(repository, privacy: .public) offline")
+                return
             }
-            files.append(file)
-            total += file.size
+            if Self.isCommit(manifest.revision) {
+                revision = manifest.revision
+                files = manifest.files
+            }
+        }
+        if files.isEmpty {
+            TranslationLog.logger.info("Listing \(repository, privacy: .public) at \(revision, privacy: .public)")
+            let entries = try await Self.withRetry {
+                try await fetchTree(repository, revision: revision)
+            }
+            files = try Self.listedFiles(entries, repository: repository)
         }
 
         try createDirectory()
-        let folder = folder(for: repository)
         try FileManager.default.createDirectory(
             at: folder.appending(path: "onnx", directoryHint: .isDirectory), withIntermediateDirectories: true
         )
         invalidate(repository)
-        try checkSpace(needed: total + Self.spareBytes)
 
+        // What verifies stays; the space needed is only what is still missing.
+        var total: Int64 = 0
         var completed: Int64 = 0
+        var pending: [TranslationManifest.File] = []
+        for file in files {
+            total += file.size
+            if try verifies(file) {
+                completed += file.size
+            } else {
+                pending.append(file)
+            }
+        }
+        removeLeftovers(pending: pending, in: folder)
+        var missing: Int64 = 0
+        for file in pending {
+            let destination = folder.appending(path: file.path, directoryHint: .notDirectory)
+            let resumable: Int64 = Self.fileSize(Self.partialURL(for: destination)) ?? 0
+            missing += max(0, file.size - resumable)
+        }
+        try checkSpace(needed: missing + Self.spareBytes)
+        TranslationLog.logger.info("Downloading \(pending.count) files of \(repository, privacy: .public) (\(missing) bytes)")
+
         var reported: Int64 = -1
         var lastReport = ContinuousClock.now - .seconds(1)
         func report(_ fileBytes: Int64) {
@@ -198,20 +239,9 @@ public struct TranslationModelStore: Sendable {
         }
         report(0)
 
-        for file in files {
+        for file in pending {
             try Task.checkCancellation()
             let destination = folder.appending(path: file.path, directoryHint: .notDirectory)
-            if let size = Self.fileSize(destination), size == file.size {
-                // Already there (an invalidated or interrupted download): keep it if it verifies.
-                var verifier = FileVerifier(file)
-                try verifier.absorb(contentsOf: destination)
-                if verifier.matches() {
-                    completed += file.size
-                    report(0)
-                    continue
-                }
-                try? FileManager.default.removeItem(at: destination)
-            }
             try await Self.withRetry {
                 try await fetch(file, repository: repository, revision: revision, to: destination, onBytes: report)
             }
@@ -224,9 +254,100 @@ public struct TranslationModelStore: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let manifestData = try encoder.encode(manifest)
         try manifestData.write(to: folder.appending(path: Self.manifestName, directoryHint: .notDirectory), options: .atomic)
+        try writeMarker(revision: revision, in: folder)
+        TranslationLog.logger.info("Downloaded \(repository, privacy: .public) (\(missing) of \(total) bytes)")
+    }
+
+    /// The manifest on disk when it can stand in for the file list: this repo, every file the
+    /// engine reads with a size and a hash, and the pinned revision when there is one. Its files
+    /// come in `files` order.
+    private func usableManifest(for repository: String, in folder: URL) -> TranslationManifest? {
+        guard var manifest = readManifest(in: folder), manifest.repository == repository else { return nil }
+        if let pinned = Self.pinnedRevisions[repository], manifest.revision != pinned { return nil }
+        var files: [TranslationManifest.File] = []
+        for path in Self.files {
+            guard let file = manifest.files.first(where: { $0.path == path }), file.size > 0 else { return nil }
+            let hash = file.sha256 ?? file.gitOID ?? ""
+            guard !hash.isEmpty else { return nil }
+            files.append(file)
+        }
+        manifest.files = files
+        return manifest
+    }
+
+    /// The engine's files from the Hugging Face file list, with their sizes and hashes.
+    private static func listedFiles(_ entries: [TreeEntry], repository: String) throws -> [TranslationManifest.File] {
+        var files: [TranslationManifest.File] = []
+        for path in Self.files {
+            guard let entry = entries.first(where: { $0.path == path && $0.type == "file" }) else {
+                throw TranslationError.modelUnreadable("\(repository) has no \(path)")
+            }
+            let file: TranslationManifest.File
+            if let lfs = entry.lfs {
+                file = TranslationManifest.File(path: path, size: lfs.size, sha256: lfs.oid.lowercased(), gitOID: nil)
+            } else {
+                file = TranslationManifest.File(path: path, size: entry.size, sha256: nil, gitOID: entry.oid?.lowercased())
+            }
+            files.append(file)
+        }
+        return files
+    }
+
+    /// The file is in place with its listed size and hash.
+    private static func verifiesOnDisk(_ file: TranslationManifest.File, in folder: URL) throws -> Bool {
+        let destination = folder.appending(path: file.path, directoryHint: .notDirectory)
+        guard let size = fileSize(destination), size == file.size else { return false }
+        var verifier = FileVerifier(file)
+        try verifier.absorb(contentsOf: destination)
+        return verifier.matches()
+    }
+
+    /// Clears what a failed download left behind: the files that did not verify, and every
+    /// `.partial` file that cannot resume (its file is no longer pending, or it is longer than
+    /// the file). A partial download of a pending file stays and resumes.
+    private func removeLeftovers(pending: [TranslationManifest.File], in folder: URL) {
+        let manager = FileManager.default
+        var resumable: [String: Int64] = [:]
+        for file in pending {
+            let destination = folder.appending(path: file.path, directoryHint: .notDirectory)
+            if manager.fileExists(atPath: destination.path(percentEncoded: false)) {
+                try? manager.removeItem(at: destination)
+            }
+            resumable[Self.pathKey(Self.partialURL(for: destination))] = file.size
+        }
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        guard let enumerator = manager.enumerator(at: folder, includingPropertiesForKeys: keys) else { return }
+        var orphans: [URL] = []
+        while let url = enumerator.nextObject() as? URL {
+            guard url.lastPathComponent.hasSuffix(".partial") else { continue }
+            if let expected = resumable[Self.pathKey(url)], let size = Self.fileSize(url), size <= expected { continue }
+            orphans.append(url)
+        }
+        for url in orphans {
+            TranslationLog.logger.info("Removing the leftover \(url.lastPathComponent, privacy: .public)")
+            try? manager.removeItem(at: url)
+        }
+    }
+
+    private func writeMarker(revision: String, in folder: URL) throws {
         let marker = folder.appending(path: Self.completeMarker, directoryHint: .notDirectory)
         try Data(revision.utf8).write(to: marker, options: .atomic)
-        TranslationLog.logger.info("Downloaded \(repository, privacy: .public) (\(total) bytes)")
+    }
+
+    /// Where a file downloads to before it verifies.
+    static func partialURL(for destination: URL) -> URL {
+        destination.deletingLastPathComponent()
+            .appending(path: "\(destination.lastPathComponent).partial", directoryHint: .notDirectory)
+    }
+
+    /// A path to compare files by, whatever symlinks led to it.
+    private static func pathKey(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path(percentEncoded: false)
+    }
+
+    /// A 40-digit commit hash, which never moves (unlike a branch such as `main`).
+    static func isCommit(_ revision: String) -> Bool {
+        revision.count == 40 && revision.allSatisfy { $0.isHexDigit }
     }
 
     private func fetchTree(_ repository: String, revision: String) async throws -> [TreeEntry] {
@@ -250,8 +371,7 @@ public struct TranslationModelStore: Sendable {
         _ file: TranslationManifest.File, repository: String, revision: String, to destination: URL, onBytes: (Int64) -> Void
     ) async throws {
         let manager = FileManager.default
-        let partial = destination.deletingLastPathComponent()
-            .appending(path: "\(destination.lastPathComponent).partial", directoryHint: .notDirectory)
+        let partial = Self.partialURL(for: destination)
         let partialPath = partial.path(percentEncoded: false)
         let address = "https://huggingface.co/\(repository)/resolve/\(revision)/\(file.path)"
         guard let url = URL(string: address) else { throw TranslationError.downloadFailed("Bad address for \(file.path)") }
@@ -397,7 +517,7 @@ public struct TranslationModelStore: Sendable {
 
 /// What `manifest.json` records for a repo.
 struct TranslationManifest: Codable, Sendable {
-    struct File: Codable, Sendable {
+    struct File: Codable, Hashable, Sendable {
         var path: String
         var size: Int64
         /// LFS files: the SHA-256 of the content.

@@ -91,7 +91,15 @@ public actor LocalTranslator {
 
     /// Frees the resident models now (a running job keeps the ones it uses until it ends).
     public func unload() {
+        releaseResident()
+    }
+
+    /// Drops the resident route and asks the allocator to hand the freed pages back (the live
+    /// check still counted 457 MB of footprint a second after an unload, until memory got tight).
+    private func releaseResident() {
+        guard resident != nil else { return }
         resident = nil
+        _ = malloc_zone_pressure_relief(nil, 0)
     }
 
     // MARK: The job
@@ -214,10 +222,11 @@ public actor LocalTranslator {
     // MARK: Models
 
     /// The route's models: the resident ones, or loaded after dropping the old route. A model
-    /// ONNX Runtime cannot open is invalidated, so the next download checks it again.
+    /// ONNX Runtime cannot open is invalidated: the next job checks its files against the
+    /// manifest offline and fetches only those that fail (none when all verify).
     private func load(_ route: TranslationRoute) throws -> LoadedRoute {
         if let resident, resident.id == route.id { return resident }
-        resident = nil
+        releaseResident()
         var models: [MarianModel] = []
         for step in route.steps {
             let folder = store.folder(for: step.repository)
@@ -257,7 +266,7 @@ public actor LocalTranslator {
 
     private func unloadIfIdle(_ generation: Int) {
         guard activeJobs == 0, generation == idleGeneration, resident != nil else { return }
-        resident = nil
+        releaseResident()
         idleTask = nil
         TranslationLog.logger.info("Unloaded the translation models after idling")
     }
@@ -276,12 +285,15 @@ public actor LocalTranslator {
     // MARK: Downloads
 
     /// Starts (or joins) each repo's download and reports their progress, polled 10 times a
-    /// second, until all are done. A cancelled job stops waiting; the download goes on.
+    /// second, until all are done. Progress starts once bytes are on their way: a repo that only
+    /// needed checking again (offline) shows no download. A cancelled job stops waiting; the
+    /// download goes on.
     private func waitForDownloads(_ repositories: [String], continuation: Continuation) async throws {
         for repository in repositories { startDownload(repository) }
         var reported: Double = -1
         while true {
             var pending = false
+            var transferring = false
             var sum: Double = 0
             for repository in repositories {
                 guard let state = downloads[repository] else { continue }
@@ -292,13 +304,15 @@ public actor LocalTranslator {
                 }
                 pending = true
                 if state.total > 0 {
+                    transferring = true
                     let part: Double = Double(state.done) / Double(state.total)
                     sum += min(1, part)
                 }
             }
             let count: Double = Double(max(1, repositories.count))
             let fraction: Double = sum / count
-            if fraction > reported {
+            let shows: Bool = transferring || (!pending && reported >= 0)
+            if shows, fraction > reported {
                 reported = fraction
                 continuation.yield(.downloading(fraction: fraction))
             }
