@@ -1,0 +1,56 @@
+#!/bin/bash
+# Fills the app icon slot (App/Shared/Assets.xcassets/AppIcon.appiconset) from square PNGs of
+# 1024 x 1024 px: the iPhone's single 1024 px icon and the Mac's ten sizes, scaled with sips.
+# The optional second file is the Mac's artwork (a rounded square with a transparent margin);
+# without it the Mac uses the first. Run it again with new files to replace the icon, then build.
+# The dark and tinted iPhone variants stay empty (iOS derives them).
+#
+#   tools/app-icon path/to/logo-1024.png [path/to/mac-logo-1024.png]
+set -euo pipefail
+
+die() { printf 'app-icon: %s\n' "$*" >&2; exit 1; }
+
+source_png="${1:-}"
+[ -n "$source_png" ] || die "usage: tools/app-icon <1024 x 1024 px PNG> [<Mac 1024 x 1024 px PNG>]"
+mac_png="${2:-$source_png}"
+for file in "$source_png" "$mac_png"; do [ -f "$file" ] || die "no file $file"; done
+command -v sips >/dev/null || die "sips is required (macOS)"
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+slot="$repo/App/Shared/Assets.xcassets/AppIcon.appiconset"
+[ -f "$slot/Contents.json" ] || die "no icon slot at $slot"
+
+for file in "$source_png" "$mac_png"; do
+    width="$(sips -g pixelWidth "$file" | awk '/pixelWidth/ { print $2 }')"
+    height="$(sips -g pixelHeight "$file" | awk '/pixelHeight/ { print $2 }')"
+    [ "$width" = 1024 ] && [ "$height" = 1024 ] || die "$file: want 1024 x 1024 px, got ${width:-?} x ${height:-?}"
+done
+
+# Earlier icon files go first, so a replaced icon leaves nothing behind.
+find "$slot" -maxdepth 1 -name 'icon-*.png' -delete
+
+sips -s format png "$source_png" --out "$slot/icon-1024.png" >/dev/null
+for size in 16 32 128 256 512; do
+    sips -s format png -z "$size" "$size" "$mac_png" --out "$slot/icon-mac-$size.png" >/dev/null
+    double=$((size * 2))
+    sips -s format png -z "$double" "$double" "$mac_png" --out "$slot/icon-mac-$size@2x.png" >/dev/null
+done
+
+python3 -I - "$slot/Contents.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    contents = json.load(handle)
+for image in contents["images"]:
+    image.pop("filename", None)
+    if image.get("idiom") == "mac":
+        size = image["size"].split("x")[0]
+        image["filename"] = f"icon-mac-{size}{'@2x' if image.get('scale') == '2x' else ''}.png"
+    elif image.get("platform") == "ios" and "appearances" not in image:
+        image["filename"] = "icon-1024.png"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(contents, handle, indent=2)
+    handle.write("\n")
+PY
+
+printf 'app-icon: filled %s; build the app to see it\n' "${slot#"$repo"/}"
