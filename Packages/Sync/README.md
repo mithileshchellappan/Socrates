@@ -1,10 +1,10 @@
 # Sync
 
-iCloud sync of the library (M7, docs/plan-m7.md §4, §5.1): `CloudSync`, SQLiteData's `SyncEngine`
+iCloud sync of the library (M7): `CloudSync`, SQLiteData's `SyncEngine`
 over the library tables, behind `CloudSyncConfiguration` (StudyCore): it exists only in a build
 signed with the iCloud entitlement that names its container in the Info.plist
-(`StudyPortalCloudKitContainer`). Every build this Mac can make today (no "Apple Development"
-identity) has none, so sync is compiled but never runs, and no CloudKit call is made.
+(`StudyPortalCloudKitContainer`). A build without an "Apple Development"
+identity has none, so sync is compiled but never runs, and no CloudKit call is made.
 
 ## Entry points
 
@@ -45,7 +45,7 @@ sync.stop()
    (nil today: unchanged) and start `CloudSync(services:)` at launch on both platforms when it is
    non-nil; pass `cloudSync?.isRunning ?? false` to the phone's agent relay.
 2. A phone configured for sync opens its own synced library file (the Mac's courses come down).
-3. Turning sync on (later, the user's): an "Apple Development" identity, the iCloud capability
+3. Turning sync on (later): an "Apple Development" identity, the iCloud capability
    with a container (e.g. `iCloud.com.yourname.studyportal`) on the app (Mac and iOS),
    `StudyPortalCloudKitContainer` in the Info.plist of that build, automatic signing with
    `-allowProvisioningUpdates`. Then check SQLiteData's schema validation once on a copy of the

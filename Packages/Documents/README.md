@@ -1,6 +1,6 @@
 # Documents
 
-Milestone md, the document bank ([docs/plan-docs.md](../../docs/plan-docs.md); PRD "Document bank"). Two products: `Documents` (logic, workstream A: this part) and `DocumentsUI` (the screen, workstream B). No tests: verification is that it builds; the integrator's one live check is plan §7.4.
+Milestone md, the document bank (PRD "Document bank", 2026-10-19). Two products: `Documents` (logic, workstream A: this part) and `DocumentsUI` (the screen, workstream B). No automated test suite at present; verified by building; the integrator makes one live check.
 
 ## Documents (logic, workstream A)
 

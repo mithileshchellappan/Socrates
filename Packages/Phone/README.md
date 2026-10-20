@@ -1,6 +1,6 @@
 # Phone
 
-The iPhone's shell (M7, [docs/plan-m7.md](../../docs/plan-m7.md) §5.2.1; mockups 09 and 16, agent panel mockup §7, DESIGN 6.7, 8.5). Depends on StudyCore, StudyUI and ChatUI (the agent sheet). The app passes the screens in: Today is CoursesUI's `TodayView` (its phone layout at a compact width), Courses, Calendar and Mail the existing iOS screens; Record presents Recorder's `RecorderScreen`. Compiles on macOS (a plain tab view with Record over it); the look is iOS. No tests: verification is that it builds and the integrator's simulator shots.
+The iPhone's shell (M7; mockups 09 and 16, agent panel mockup §7, DESIGN 6.7, 8.5). Depends on StudyCore, StudyUI and ChatUI (the agent sheet). The app passes the screens in: Today is CoursesUI's `TodayView` (its phone layout at a compact width), Courses, Calendar and Mail the existing iOS screens; Record presents Recorder's `RecorderScreen`. Compiles on macOS (a plain tab view with Record over it); the look is iOS. No automated test suite at present; verified by building and by the integrator's simulator shots.
 
 ## Entry points
 

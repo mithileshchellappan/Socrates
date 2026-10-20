@@ -1,6 +1,6 @@
 # Documents UI (md, workstream B)
 
-The screens of the document bank (docs/plan-docs.md §5.2, §6; PRD "Document bank", "Empty screens invite the next action"): the Documents screen (`DocumentsUI`), Search's Documents group (`SearchUI`), the agent panel's Documents prompts and `[[doc …]]` chips (`ChatUI`), and window drops of documents with their toast (`FilingUI`). No mockup exists: plan §6 is the spec. The bank itself (reading, the summary task, search chunks, the agent's tools) is workstream A's (`Documents`, `Search`, `AppAgent`).
+The screens of the document bank (PRD "Document bank", "Empty screens invite the next action"): the Documents screen (`DocumentsUI`), Search's Documents group (`SearchUI`), the agent panel's Documents prompts and `[[doc …]]` chips (`ChatUI`), and window drops of documents with their toast (`FilingUI`). No mockup exists: plan §6 is the spec. The bank itself (reading, the summary task, search chunks, the agent's tools) is workstream A's (`Documents`, `Search`, `AppAgent`).
 
 ## Entry points
 

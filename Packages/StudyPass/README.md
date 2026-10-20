@@ -1,8 +1,8 @@
 # StudyPass
 
-The AI study pass (PRD M4: #10 corrections, #11 said in class but not on the slides, #12 exam hints, #18 pins, #21 summaries, #24 further reading). Scope, contracts and acceptance: [docs/plan-m4.md](../../docs/plan-m4.md) §1–4 (workstream A, §7).
+The AI study pass (PRD M4: #10 corrections, #11 said in class but not on the slides, #12 exam hints, #18 pins, #21 summaries, #24 further reading). Workstream A of M4.
 
-Depends on StudyCore, ClaudeKit, Agent (`Deadlines` only: `TranscriptQuote`, `TextFolding`, `NormalizedText`), Capture (`SlidePageRenderer`) and GRDB (`DatabaseRegionObservation`, same pin as Agent). Never reads mail tables, never links MailIntelligence, never builds a client. No tests: verification is that it builds; the integrator's live check (plan §7.4) is the only model call.
+Depends on StudyCore, ClaudeKit, Agent (`Deadlines` only: `TranscriptQuote`, `TextFolding`, `NormalizedText`), Capture (`SlidePageRenderer`) and GRDB (`DatabaseRegionObservation`, same pin as Agent). Never reads mail tables, never links MailIntelligence, never builds a client. No automated test suite at present; verified by building; the integrator's live check is the only model call.
 
 ## Entry points
 
