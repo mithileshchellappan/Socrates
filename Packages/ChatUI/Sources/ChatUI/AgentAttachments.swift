@@ -90,6 +90,12 @@ struct AttachmentThumbnail: View {
                 Image(decorative: image, scale: displayScale)
                     .resizable()
                     .scaledToFill()
+            } else {
+                // Until (or without) its thumbnail: never a blank tile.
+                Image(systemName: "photo")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             }
         }
         .clipShape(shape)
@@ -112,7 +118,7 @@ enum AttachmentText {
             guard let pages = attachment.pageCount else { return nil }
             return pages == 1 ? String(localized: "1 page") : String(localized: "\(pages) pages")
         case .text, .document:
-            return ByteCountFormatter.string(fromByteCount: Int64(attachment.byteCount), countStyle: .file)
+            return ByteCountFormatter.string(fromByteCount: Int64(attachment.byteCount), countStyle: .memory)
         case .image:
             return nil
         }
@@ -290,8 +296,10 @@ private struct AgentDropDelegate: DropDelegate {
 
     private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
 
+    /// The accept rule alone: a file the panel reads is the panel's even when five wait already
+    /// (the drop then says so), never smart import's.
     func validateDrop(info: DropInfo) -> Bool {
-        model.canAttach && (!AgentPasteboard.acceptedURLs(pasteboard).isEmpty || AgentPasteboard.imageData(pasteboard) != nil)
+        !AgentPasteboard.acceptedURLs(pasteboard).isEmpty || AgentPasteboard.imageData(pasteboard) != nil
     }
 
     func dropEntered(info: DropInfo) {
@@ -308,6 +316,10 @@ private struct AgentDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         isTargeted = false
+        guard model.canAttach else {
+            model.notice = String(localized: "At most \(AgentAttachment.maximumPerMessage) files go with one message.")
+            return true
+        }
         return AgentPasteboard.attach(from: pasteboard, model: model, blobs: blobs)
     }
 }
@@ -328,6 +340,16 @@ enum AgentPasteboard {
         return nil
     }
 
+    /// The pasteboard is an image, not text with a picture of it: no text on it, or an image is
+    /// its first type (Numbers, Pages, Excel and Office copies carry an image after their text,
+    /// which then pastes as text).
+    static func isImageFirst(_ pasteboard: NSPasteboard) -> Bool {
+        let types = pasteboard.types ?? []
+        guard types.contains(.string) else { return true }
+        guard let first = types.first else { return false }
+        return first == .png || first == .tiff || first.rawValue == UTType.jpeg.identifier
+    }
+
     /// Attaches the pasteboard's accepted files, else its image; false when it holds neither.
     static func attach(from pasteboard: NSPasteboard, model: AgentPanelModel, blobs: BlobStore) -> Bool {
         let urls = acceptedURLs(pasteboard)
@@ -336,7 +358,7 @@ enum AgentPasteboard {
             return true
         }
         let hasFiles = !(pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []).isEmpty
-        guard !hasFiles, let image = imageData(pasteboard) else { return false }
+        guard !hasFiles, isImageFirst(pasteboard), let image = imageData(pasteboard) else { return false }
         model.attach(data: image.data, type: image.type, fileName: String(localized: "Screenshot") + ".png", blobs: blobs)
         return true
     }
@@ -363,7 +385,8 @@ struct AgentPasteMonitor: ViewModifier {
         let model = model
         let blobs = services.blobs
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+            // ⌘ alone (Caps Lock and the function key do not count).
+            guard event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
                   event.charactersIgnoringModifiers?.lowercased() == "v"
             else { return event }
             let handled = MainActor.assumeIsolated {

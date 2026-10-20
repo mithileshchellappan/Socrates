@@ -26,6 +26,12 @@ public struct AgentPanelActions: Sendable {
     public var cancelTask: @Sendable (AgentTask.ID) async -> Void
     /// Undoes an automatic change (a change row's popover Undo).
     public var undoChange: @Sendable (AgentChange.ID) async throws -> Void
+    /// Answers a conversation's last message again after its run failed ("Try again"; nil: no
+    /// button, the phone's relay).
+    public var retry: (@Sendable (AgentConversation.ID) async throws -> Void)?
+    /// The faint context line a message sent now would carry (the screen's glyph and label), for
+    /// the pending bubble before its stored turn has it; nil: none.
+    public var contextLine: (@Sendable (AgentContext) async -> AgentContextLine?)?
 
     public init(
         isAvailable: Bool = false,
@@ -36,7 +42,9 @@ public struct AgentPanelActions: Sendable {
         stop: @escaping @Sendable (AgentConversation.ID) async -> Void = { _ in },
         liveReply: @escaping @Sendable (AgentConversation.ID) -> AsyncStream<ChatLiveReply?> = { _ in AsyncStream { $0.finish() } },
         cancelTask: @escaping @Sendable (AgentTask.ID) async -> Void = { _ in },
-        undoChange: @escaping @Sendable (AgentChange.ID) async throws -> Void = { _ in throw ChatUnavailable() }
+        undoChange: @escaping @Sendable (AgentChange.ID) async throws -> Void = { _ in throw ChatUnavailable() },
+        retry: (@Sendable (AgentConversation.ID) async throws -> Void)? = nil,
+        contextLine: (@Sendable (AgentContext) async -> AgentContextLine?)? = nil
     ) {
         self.isAvailable = isAvailable
         self.pausedUntil = pausedUntil
@@ -45,7 +53,32 @@ public struct AgentPanelActions: Sendable {
         self.liveReply = liveReply
         self.cancelTask = cancelTask
         self.undoChange = undoChange
+        self.retry = retry
+        self.contextLine = contextLine
     }
+}
+
+/// A context line's glyph and label ("waveform" · "DC Lecture 2").
+public struct AgentContextLine: Hashable, Sendable {
+    public var glyph: String
+    public var label: String
+
+    public init(glyph: String, label: String) {
+        self.glyph = glyph
+        self.label = label
+    }
+}
+
+/// Why a message did not go, as the panel's notice line says it: one readable sentence ("Claude
+/// Code is signed out.", "Lecture3.pdf could not be read."), never an error's own text.
+public struct AgentSendFailure: LocalizedError, Sendable {
+    public var sentence: String
+
+    public init(sentence: String) {
+        self.sentence = sentence
+    }
+
+    public var errorDescription: String? { sentence }
 }
 
 extension EnvironmentValues {
@@ -73,14 +106,17 @@ public struct AgentPanelLaunch: Hashable, Sendable {
     public var conversationID: AgentConversation.ID?
     /// An empty New Chat instead of a conversation.
     public var newChat: Bool
-    /// Compact: the conversation's exchanges shown (0-based, a student message with its answer;
-    /// with the task results that came after them). Nil: as a panel just opened (the
-    /// conversation's latest exchange).
+    /// Renders only: the conversation's exchanges shown (0-based, a student message with its
+    /// answer; with the task results that came after them), as mockup §1–2 draw one. Nil (the
+    /// app): the whole conversation, as every panel and sheet shows it.
     public var exchanges: Range<Int>?
     /// Text in the composer.
     public var draft: String
     /// Files in the composer (already in the BlobStore, e.g. a seeded turn's attachments).
     public var attachments: [AgentAttachment]
+    /// Renders only: a message just sent and not stored yet (its bubble and the skeleton line
+    /// after the conversation's exchanges; the prompt reads "Ask a follow-up…").
+    public var pendingText: String?
     /// A fixed "now" (the history menu's days, a task's elapsed time); nil follows the clock.
     public var now: Date?
 
@@ -91,6 +127,7 @@ public struct AgentPanelLaunch: Hashable, Sendable {
         exchanges: Range<Int>? = nil,
         draft: String = "",
         attachments: [AgentAttachment] = [],
+        pendingText: String? = nil,
         now: Date? = nil
     ) {
         self.mode = mode
@@ -99,6 +136,7 @@ public struct AgentPanelLaunch: Hashable, Sendable {
         self.exchanges = exchanges
         self.draft = draft
         self.attachments = attachments
+        self.pendingText = pendingText
         self.now = now
     }
 }

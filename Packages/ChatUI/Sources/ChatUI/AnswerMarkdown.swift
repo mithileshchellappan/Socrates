@@ -248,6 +248,19 @@ enum AnswerMarkdownBlock: Hashable {
     }
 }
 
+/// The answer's sparkle where it stands apart from a paragraph (before a list, a table, change
+/// rows, the skeleton line): drawn as the paragraph's inline sparkle, at the answer's text size,
+/// so every answer's one sparkle has one size and the skeleton-to-text swap keeps it.
+struct AnswerSparkle: View {
+    @Environment(\.agentThreadMetrics) private var metrics
+
+    var body: some View {
+        Text("\(Text(Image(systemName: "sparkle")).foregroundStyle(Color.ai))")
+            .font(.system(size: metrics.text))
+            .accessibilityLabel(Text("AI"))
+    }
+}
+
 /// An answer's text as its Markdown blocks, in the answer's grey: ONE sparkle at the start of
 /// the first block when `sparkle`.
 struct AnswerMarkdownView: View {
@@ -283,11 +296,15 @@ struct AnswerMarkdownView: View {
             words(text, sparkle: sparkle, size: metrics.text + (level <= 2 ? 1 : 0), weight: .semibold)
                 .padding(.top, 2)
         case .rule:
-            Divider()
-        case .list, .table, .code, .quote:
+            Hairline()
+        case .list(let items):
+            // The sparkle goes in the first item's words (after its marker).
+            list(items, sparkle: sparkle)
+        case .table, .code, .quote:
             if sparkle {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    AIMark()
+                // On its own line above: a figure keeps the answer's leading edge.
+                VStack(alignment: .leading, spacing: 4) {
+                    AnswerSparkle()
                     figure(block)
                 }
             } else {
@@ -296,44 +313,38 @@ struct AnswerMarkdownView: View {
         }
     }
 
+    /// A list: its markers right-aligned in one column as wide as the widest (at least 10 pt).
+    private func list(_ items: [AnswerMarkdownBlock.ListItem], sparkle: Bool) -> some View {
+        let widest = items.map(\.marker.count).max() ?? 1
+        let markerWidth = max(10, CGFloat(widest) * metrics.text * 0.6)
+        return VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(verbatim: item.marker)
+                        .font(.system(size: metrics.text).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .frame(minWidth: markerWidth, alignment: .trailing)
+                    words(item.text, sparkle: sparkle && index == 0)
+                }
+                .padding(.leading, CGFloat(item.depth) * 14)
+            }
+        }
+    }
+
     @ViewBuilder
     private func figure(_ block: AnswerMarkdownBlock) -> some View {
         switch block {
-        case .list(let items):
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Text(verbatim: item.marker)
-                            .font(.system(size: metrics.text).monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                        words(item.text, sparkle: false)
-                    }
-                    .padding(.leading, CGFloat(item.depth) * 14)
-                }
-            }
         case .table(let table):
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 5) {
-                GridRow {
-                    ForEach(Array(table.header.enumerated()), id: \.offset) { column, cell in
-                        words(cell, sparkle: false, size: metrics.text - 1, weight: .semibold)
-                            .gridColumnAlignment(Self.alignment(table.alignments[column]))
-                    }
+            // As wide as its cells when that fits the panel; else it scrolls sideways, never
+            // squeezing its columns into a word per line.
+            ViewThatFits(in: .horizontal) {
+                tableGrid(table)
+                ScrollView(.horizontal) {
+                    tableGrid(table)
+                        .fixedSize()
                 }
-                Divider()
-                    .gridCellUnsizedAxes(.horizontal)
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { offset, row in
-                    if offset > 0 {
-                        Divider().opacity(0.5)
-                            .gridCellUnsizedAxes(.horizontal)
-                    }
-                    GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                            words(cell, sparkle: false, size: metrics.text - 1)
-                        }
-                    }
-                }
+                .scrollIndicators(.automatic)
             }
-            .padding(.vertical, 2)
         case .code(let code):
             ScrollView(.horizontal) {
                 Text(verbatim: code)
@@ -345,33 +356,62 @@ struct AnswerMarkdownView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
             }
-            .scrollIndicators(.never)
+            .scrollIndicators(.automatic)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(red: 120 / 255, green: 120 / 255, blue: 128 / 255).opacity(colorScheme == .dark ? 0.16 : 0.08), in: .rect(cornerRadius: 8))
+            .background(QuietFill(), in: .rect(cornerRadius: 8))
         case .quote(let text):
             words(text, sparkle: false)
                 .padding(.leading, 10)
                 .overlay(alignment: .leading) {
                     Capsule().fill(.quaternary).frame(width: 2)
                 }
-        case .paragraph, .heading, .rule:
+        case .paragraph, .heading, .rule, .list:
             EmptyView()
         }
+    }
+
+    /// A table's cells: the header semibold over a full hairline, rows between half-strength ones.
+    private func tableGrid(_ table: AnswerMarkdownBlock.Table) -> some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 5) {
+            GridRow {
+                ForEach(Array(table.header.enumerated()), id: \.offset) { column, cell in
+                    words(cell, sparkle: false, size: metrics.text - 1, weight: .semibold)
+                        .gridColumnAlignment(Self.alignment(table.alignments[column]))
+                }
+            }
+            Hairline()
+                .gridCellUnsizedAxes(.horizontal)
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { offset, row in
+                if offset > 0 {
+                    Hairline()
+                        .opacity(0.5)
+                        .gridCellUnsizedAxes(.horizontal)
+                }
+                GridRow {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                        words(cell, sparkle: false, size: metrics.text - 1)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     /// Words with inline Markdown and their checked chips: one `Text`.
     private func words(_ text: String, sparkle: Bool, size: CGFloat? = nil, weight: Font.Weight = .regular) -> some View {
         let answer = AnswerText(text, check: text.contains("[[") ? check : nil, logs: logs, openLecture: openLecture, prefixes: prefixes)
+        let textSize: CGFloat = size ?? metrics.text
+        let codeSize: CGFloat = textSize - 1.5
         return Group {
             if answer.hasChips {
-                answer.text(sparkle: sparkle)
+                answer.text(sparkle: sparkle, codeSize: codeSize)
                     .textRenderer(AnswerChipRenderer(colorScheme: colorScheme))
             } else {
-                answer.text(sparkle: sparkle)
+                answer.text(sparkle: sparkle, codeSize: codeSize)
                     .textSelection(.enabled)
             }
         }
-        .font(.system(size: size ?? metrics.text, weight: weight))
+        .font(.system(size: textSize, weight: weight))
         .lineSpacing(metrics.answerLineSpacing)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)

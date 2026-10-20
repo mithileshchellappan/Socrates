@@ -282,7 +282,8 @@ struct AnswerText: Equatable {
         pieces.map { piece in
             switch piece {
             case .text(let text): text
-            case .chip(let chip): chip.label.replacingOccurrences(of: "\u{00A0}", with: " ")
+            case .chip(let chip):
+                chip.label.replacingOccurrences(of: "\u{00A0}", with: " ").replacingOccurrences(of: "\u{2011}", with: "-")
             }
         }
         .joined()
@@ -358,7 +359,8 @@ struct AnswerText: Equatable {
         case .web(let url):
             var host = url.host()?.lowercased() ?? url.absoluteString
             if host.hasPrefix("www.") { host.removeFirst(4) }
-            return host
+            // A non-breaking hyphen: a domain never breaks into two capsules.
+            return host.replacingOccurrences(of: "-", with: "\u{2011}")
         case .document(_, let page, let title):
             return DocumentCitations.label(page: page, title: title)
         }
@@ -430,12 +432,14 @@ struct AnswerText: Equatable {
     /// The answer as one `Text`: one sparkle, then the Markdown runs (links removed: only checked
     /// chips link) and the chips as link runs for `AnswerChipRenderer`. ma: `sparkle` false for a
     /// paragraph after the answer's first block (one sparkle per answer).
-    func text(sparkle: Bool = true) -> Text {
+    /// - Parameter codeSize: inline `code` runs' size (mono, 1.5 pt under the text: mockup `.ans
+    ///   code`); nil keeps the text's size.
+    func text(sparkle: Bool = true, codeSize: CGFloat? = nil) -> Text {
         var result = sparkle ? Text("\(Text(Image(systemName: "sparkle")).foregroundStyle(Color.ai)) ") : Text(verbatim: "")
         for piece in pieces {
             switch piece {
             case .text(let text):
-                result = Text("\(result)\(Text(Self.markdown(text)))")
+                result = Text("\(result)\(Text(Self.markdown(text, codeSize: codeSize)))")
             case .chip(let chip):
                 result = Text("\(result)\(Self.chipText(chip))")
             }
@@ -459,7 +463,7 @@ struct AnswerText: Equatable {
                 .customAttribute(run)
         case .time, .slide:
             return Text(label)
-                .font(.system(size: 10, design: .monospaced))
+                .font(.chip)
                 .monospacedDigit()
                 .baselineOffset(1)
                 .customAttribute(run)
@@ -468,12 +472,18 @@ struct AnswerText: Equatable {
 
     /// Inline Markdown (bold, italics, code), whitespace kept; links are removed, so nothing in an
     /// answer links except its checked chips.
-    static func markdown(_ text: String) -> AttributedString {
+    static func markdown(_ text: String, codeSize: CGFloat? = nil) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         var string = (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
         let linked = string.runs.filter { $0.link != nil }.map(\.range)
         for range in linked {
             string[range].link = nil
+        }
+        if let codeSize {
+            let code = string.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true }.map(\.range)
+            for range in code {
+                string[range].swiftUI.font = .system(size: codeSize, design: .monospaced)
+            }
         }
         return string
     }

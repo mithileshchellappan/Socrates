@@ -73,7 +73,7 @@ struct AgentChangeRowsRequest: FetchKeyRequest {
 }
 
 /// A run of change markers as one list: ONE sparkle in its own column (when the list starts the
-/// answer), rows separated by hairlines.
+/// answer; else the rows' text starts at the answer's text edge), rows separated by hairlines.
 struct AgentChangeList: View {
     let keys: [String]
     let showsSparkle: Bool
@@ -93,11 +93,11 @@ struct AgentChangeList: View {
         let shown = keys.compactMap { rows[$0.lowercased()] }
         if !shown.isEmpty {
             HStack(alignment: .top, spacing: 6) {
-                AIMark()
-                    .font(.system(size: 12))
-                    .frame(width: 16)
-                    .padding(.top, 4)
-                    .opacity(showsSparkle ? 1 : 0)
+                if showsSparkle {
+                    AnswerSparkle()
+                        .frame(width: 16)
+                        .padding(.top, 4)
+                }
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(shown.enumerated()), id: \.element.change.id) { index, row in
                         let quiet = hovered == row.change.id || (index > 0 && hovered == shown[index - 1].change.id)
@@ -124,6 +124,7 @@ private struct AgentChangeRowView: View {
 
     @Environment(\.agentPanelActions) private var actions
     @Environment(\.timeZone) private var timeZone
+    @Environment(\.locale) private var locale
     @State private var isPresented = false
     @State private var overRow = false
     @State private var overPopover = false
@@ -156,9 +157,7 @@ private struct AgentChangeRowView: View {
                 .frame(minHeight: 16)
             }
             Spacer(minLength: 0)
-            Text(verbatim: DayText.time(change.appliedAt, timeZone: timeZone))
-                .font(.mono(11))
-                .monospacedDigit()
+            appliedText
                 .foregroundStyle(.tertiary)
                 .frame(minHeight: 18)
         }
@@ -193,6 +192,20 @@ private struct AgentChangeRowView: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { isPresented.toggle() }
+    }
+
+    /// When it was applied, as the Notes list says it (DESIGN 9): "14:08" (mono) today, then
+    /// "Yesterday", the weekday within the week, "Tue 13 Oct".
+    private var appliedText: Text {
+        let today = CalendarDay(now, in: timeZone)
+        let day = CalendarDay(change.appliedAt, in: timeZone)
+        if day.days(to: today) <= 0 {
+            return Text(verbatim: DayText.time(change.appliedAt, timeZone: timeZone))
+                .font(.mono(11))
+                .monospacedDigit()
+        }
+        let title = HistoryDay.title(day, today: today, date: change.appliedAt, locale: locale, timeZone: timeZone)
+        return Text(verbatim: title).font(.system(size: 11.5))
     }
 
     private var undo: @MainActor () -> Void {

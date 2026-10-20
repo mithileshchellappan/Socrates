@@ -39,9 +39,10 @@ struct ChatTranscript: Equatable {
     init(turns: [AgentTurn], cache: ChatTurnCache = ChatTurnCache()) {
         turnCount = turns.count
         var answerID: AgentTurn.ID?
-        var answer: [String] = []
+        var answer: [AnswerPart] = []
         func flush() {
-            if let answerID, !answer.isEmpty { entries.append(.answer(id: answerID, text: answer.joined(separator: "\n\n"))) }
+            let kept = Self.withoutNarration(answer)
+            if let answerID, !kept.isEmpty { entries.append(.answer(id: answerID, text: kept.joined(separator: "\n\n"))) }
             answerID = nil
             answer = []
         }
@@ -61,10 +62,31 @@ struct ChatTranscript: Equatable {
             default:
                 guard !digest.text.isEmpty else { continue }
                 if answerID == nil { answerID = turn.id }
-                answer.append(digest.text)
+                answer.append(AnswerPart(text: digest.text, hasToolUse: digest.hasToolUse))
             }
         }
         flush()
+    }
+
+    /// One assistant turn's text in an answer.
+    struct AnswerPart {
+        var text: String
+        var hasToolUse: Bool
+    }
+
+    /// The answer's texts without the narration before tool calls ("Let me check your
+    /// calendar."): a tool-use turn's text is left out when it is one line under 160 characters
+    /// and a later turn of the same answer has text (an answer written before a `remember` call
+    /// stays: it is the last text or longer).
+    static func withoutNarration(_ parts: [AnswerPart]) -> [String] {
+        var kept: [String] = []
+        for index in parts.indices {
+            let part = parts[index]
+            let laterText = parts[(index + 1)...].contains { !$0.text.isEmpty }
+            let isNarration = part.hasToolUse && laterText && !part.text.contains("\n") && part.text.count < 160
+            if !isNarration { kept.append(part.text) }
+        }
+        return kept
     }
 
     /// The tools whose results name citable web pages.
@@ -78,10 +100,11 @@ struct ChatTranscript: Equatable {
 
     /// A block the app put before the student's words (`<context …>`, `<catalog …>`,
     /// `<task_result …>`, `<memory>`, `<mail …>`, `<filed …>` for slides filed from the message,
-    /// mc's `<reminder …>`), never shown as the student's message.
+    /// `<attached_file …>` for a long PDF's first pages, mc's `<reminder …>`), never shown as the
+    /// student's message: a message of files alone shows only its tiles.
     static func isContextBlock(_ text: String) -> Bool {
         let head = text.prefix(16).trimmingCharacters(in: .whitespacesAndNewlines)
-        return ["<context", "<catalog", "<task_result", "<memory", "<mail", "<filed", "<reminder"].contains { head.hasPrefix($0) }
+        return ["<context", "<catalog", "<task_result", "<memory", "<mail", "<filed", "<reminder", "<attached_file"].contains { head.hasPrefix($0) }
     }
 
     /// The student's last message has no answer yet.
@@ -100,6 +123,8 @@ struct ChatTurnDigest: Equatable, Sendable {
     var text: String
     /// The web pages its web tools' results name (`ChatTranscript.webPages`).
     var webPages: [String: URL]
+    /// An assistant turn that calls tools (its text, if any, came before the calls).
+    var hasToolUse = false
 }
 
 /// Turns parsed before, by id: a thread keeps one, so a new turn (a background task's loop, the
@@ -157,7 +182,12 @@ final class ChatTurnCache {
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n\n")
-            return ChatTurnDigest(words: nil, text: text, webPages: webPages)
+            let hasToolUse = blocks.contains { block in
+                if case .toolUse = block { return true }
+                if case .serverToolUse = block { return true }
+                return false
+            }
+            return ChatTurnDigest(words: nil, text: text, webPages: webPages, hasToolUse: hasToolUse)
         }
     }
 }
