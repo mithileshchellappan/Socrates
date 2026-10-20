@@ -392,22 +392,8 @@ public struct LectureImporter: Sendable {
     /// must run again. Recordings still waiting for their transcript get alignment queued by
     /// the transcription itself. For use inside a write transaction.
     public static func alignmentJobs(lectureID: Lecture.ID, in db: Database, now: Date = Date()) throws -> [Job] {
-        let recordings = try Recording.where { $0.lectureID.eq(lectureID) }.fetchAll(db)
-        var jobs: [Job] = []
-        for recording in recordings {
-            let lines = try TranscriptSegment.where { $0.recordingID.eq(recording.id) }.fetchCount(db)
-            guard lines > 0 else { continue }
-            let pending = try Job
-                .where {
-                    $0.recordingID.eq(recording.id)
-                        && ($0.state.eq(JobState.queued) || $0.state.eq(JobState.running))
-                        && ($0.stage.eq(JobStage.align) || $0.stage.eq(JobStage.transcribe))
-                }
-                .fetchCount(db)
-            guard pending == 0 else { continue }
-            jobs.append(Job(stage: .align, lectureID: lectureID, recordingID: recording.id, createdAt: now))
-        }
-        return jobs
+        // mr: one rule for every writer of a lecture's slides (StudyCore `LectureSlides`).
+        try LectureSlides.alignmentJobs(lectureID: lectureID, in: db, now: now)
     }
 
     // MARK: - Helpers

@@ -268,6 +268,12 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     /// weekly_slot (`slot_change` from a date, `after` only): the new slot that takes over while
     /// `slot` ends the day before, so classes held before keep their day, time and room.
     public var successor: WeeklySlotValues?
+    // lecture_deck_span (mr: `deck_link`, `deck_unlink`): a lecture's page range of a deck (with
+    // `lectureID`); `exists: false` in `before` = the change made the link, in `after` = removed it
+    public var deckID: Deck.ID?
+    public var firstPage: Int?
+    public var lastPage: Int?
+    public var spanSource: SpanSource?
 
     public init(
         exists: Bool? = nil,
@@ -297,7 +303,11 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         reason: String? = nil,
         deletion: String? = nil,
         slot: WeeklySlotValues? = nil,
-        successor: WeeklySlotValues? = nil
+        successor: WeeklySlotValues? = nil,
+        deckID: Deck.ID? = nil,
+        firstPage: Int? = nil,
+        lastPage: Int? = nil,
+        spanSource: SpanSource? = nil
     ) {
         self.exists = exists
         self.startsAt = startsAt
@@ -327,6 +337,10 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         self.deletion = deletion
         self.slot = slot
         self.successor = successor
+        self.deckID = deckID
+        self.firstPage = firstPage
+        self.lastPage = lastPage
+        self.spanSource = spanSource
     }
 
     /// The values of a session's changeable columns.

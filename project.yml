@@ -55,6 +55,10 @@ packages:
     path: Packages/MailIntelligence
   MailUI:
     path: Packages/MailUI
+  # Mail Translate (docs/plan-translation.md): local-translate's OPUS-MT models on ONNX Runtime.
+  # Linked through MailUI on both platforms (the iPhone shows MailView too), so no product line.
+  LocalTranslation:
+    path: Packages/LocalTranslation
   Agent:
     path: Packages/Agent
   CalendarUI:
