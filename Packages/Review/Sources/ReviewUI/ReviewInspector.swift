@@ -300,7 +300,7 @@ enum ReviewNoteLinks {
         switch link {
         case .slide(let source):
             guard (source.lectureID ?? model.lecture.id) == model.lecture.id, let page = source.pageNumber,
-                  source.deckID == nil || source.deckID == model.deckID, model.deck != nil
+                  source.deckID == nil || source.deckID == model.deckID, model.deck != nil, model.shows(page: page)
             else { return false }
             Task { await model.session.selectThumbnail(page: page) }
             return true

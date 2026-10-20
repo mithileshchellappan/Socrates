@@ -345,15 +345,13 @@ public actor SemanticIndex: SemanticSearching {
         return vector
     }
 
-    /// Slide chunks a lecture showed (pages inside its deck spans): a lecture filter keeps them,
-    /// though slide chunks belong to a deck, not a lecture.
+    /// Slide chunks of a lecture (mr: the pages of its range, `LectureSlideScope`): a lecture
+    /// filter keeps them, though slide chunks belong to a deck, not a lecture.
     private func slideChunks(of lectureID: Lecture.ID) async throws -> Set<Int64> {
         try await database.read { db in
-            Set(try Int64.fetchAll(db, sql: """
-                SELECT c.id FROM search_chunk c JOIN lecture_deck_span s ON s.deck_id = c.deck_id
-                WHERE c.kind = 'slide' AND s.lecture_id = ? AND s.first_page IS NOT NULL
-                  AND c.page_number BETWEEN s.first_page AND coalesce(s.last_page, s.first_page)
-                """, arguments: [lectureID.storageText]))
+            let scope = try LectureSlideScope.condition(lectureID: lectureID, alias: "c", in: db)
+            let ids = try Int64.fetchAll(db, sql: "SELECT c.id FROM search_chunk c WHERE \(scope.sql)", arguments: scope.arguments)
+            return Set(ids)
         }
     }
 

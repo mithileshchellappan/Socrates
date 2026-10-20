@@ -91,20 +91,22 @@ struct NoteSlidePicker: View {
         isLoaded = true
     }
 
-    /// The lecture's deck and the pages it covered (its newest coarse span), as Review reads it.
+    /// The lecture's deck and its pages (mr: its range, `LectureSlides.current`), as Review
+    /// reads it; without a range, a timed span's deck, whole (a capture's stamped deck).
     private func deck(of lecture: Lecture, services: StudyServices) async -> (Deck, ClosedRange<Int>?)? {
+        let lectureID = lecture.id
         do {
             return try await services.database.read { db in
-                let spans = try LectureDeckSpan.where { $0.lectureID.eq(lecture.id) }.order(by: \.updatedAt).fetchAll(db)
-                guard let span = spans.last(where: { !$0.isTimed }) ?? spans.last,
-                      let deck = try Deck.find(span.deckID).fetchOne(db)
-                else { return nil }
-                let range: ClosedRange<Int>? = if let first = span.firstPage, let last = span.lastPage, first <= last, !span.isTimed {
-                    first...last
-                } else {
-                    nil
+                if let range = try LectureSlides.current(lectureID: lectureID, in: db) {
+                    guard let deck = try Deck.find(range.deckID).fetchOne(db) else { return nil }
+                    return (deck, range.pages)
                 }
-                return (deck, range)
+                let timed = try LectureDeckSpan
+                    .where { $0.lectureID.eq(lectureID) && $0.startTime.isNot(nil) && $0.firstPage.isNot(nil) }
+                    .order(by: \.updatedAt)
+                    .fetchAll(db)
+                guard let span = timed.last, let deck = try Deck.find(span.deckID).fetchOne(db) else { return nil }
+                return (deck, nil)
             }
         } catch {
             NotesLog.logger.error("Loading a deck failed: \(String(describing: error), privacy: .public)")

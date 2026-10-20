@@ -442,6 +442,9 @@ public final class FilingCenter {
         public let id = UUID()
         public var item: LibraryItem
         public var summary: DeletionSummary
+        /// mr: a deck's lectures ("DC Lecture 2", "DC Lecture 3"): a shared deck's confirmation
+        /// names every lecture that loses it.
+        public var lectures: [String] = []
     }
 
     /// Set to ask for the confirmation; cleared by Delete or Cancel.
@@ -453,7 +456,11 @@ public final class FilingCenter {
         Task {
             do {
                 let summary = try await service.deletionSummary(item)
-                pendingDeletion = PendingDeletion(item: item, summary: summary)
+                var lectures: [String] = []
+                if case .deck(let deckID) = item {
+                    lectures = try await service.lectureNames(usingDeck: deckID)
+                }
+                pendingDeletion = PendingDeletion(item: item, summary: summary, lectures: lectures)
             } catch {
                 Self.log.error("Reading what a delete takes failed: \(String(describing: error), privacy: .public)")
             }

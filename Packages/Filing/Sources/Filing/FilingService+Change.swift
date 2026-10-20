@@ -270,14 +270,23 @@ extension FilingService {
             // Never transcribed (it had no course): start now that it has one.
             let job = store.stamp(Job(stage: .transcribe, lectureID: lecture.id, recordingID: recordingID, createdAt: now))
             try Job.upsert { job }.execute(db)
-        } else if lines > 0, newDeck != nil, newDeck != oldDeck, pending == 0 {
+        } else if lines > 0, newDeck != oldDeck || newDeck == nil, pending == 0 {
+            // mr: a lecture without slides gets continuation detection from the align stage.
             let job = store.stamp(Job(stage: .align, lectureID: lecture.id, recordingID: recordingID, createdAt: now))
             try Job.upsert { job }.execute(db)
         }
     }
 
+    /// mr: moves only this filing's lecture link (`oldLectureID` → `lecture`); other lectures that
+    /// use the deck keep their ranges. A deck other lectures use never changes course
+    /// (`FilingError.sharedDeck`).
     static func moveDeck(_ deckID: Deck.ID, from oldLectureID: Lecture.ID?, to lecture: Lecture, in db: Database, store: RecordStore, now: Date) throws {
         guard var deck = try Deck.find(deckID).fetchOne(db) else { throw FilingError.missing }
+        if deck.courseID != lecture.courseID {
+            let others = try LectureSlides.lectures(usingDeck: deckID, in: db)
+                .filter { $0.lectureID != oldLectureID && $0.lectureID != lecture.id }
+            if !others.isEmpty { throw FilingError.sharedDeck }
+        }
         let old = try oldLectureID.flatMap { id in
             try LectureDeckSpan.where { $0.lectureID.eq(id) && $0.deckID.eq(deckID) && $0.startTime.is(nil) }.fetchOne(db)
         }

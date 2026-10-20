@@ -29,7 +29,8 @@ struct SlideRail: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(1...max(1, deck.pageCount), id: \.self) { page in
+                    // mr: the lecture's pages of the deck, with the deck's numbers.
+                    ForEach(Array(model.session.pages), id: \.self) { page in
                         RailThumbnail(deck: deck, page: page, isCurrent: page == shown, hasNotes: noted.contains(page))
                             .id(page)
                             .onTapGesture {
@@ -59,7 +60,7 @@ struct SlideRail: View {
     /// The slide on screen as the fourth thumbnail, with three whole ones above it (the first
     /// slides from the top).
     private func scroll(_ proxy: ScrollViewProxy, to page: Int) {
-        proxy.scrollTo(max(1, page - Self.thumbnailsAbove), anchor: .top)
+        proxy.scrollTo(max(model.session.pages.lowerBound, page - Self.thumbnailsAbove), anchor: .top)
     }
 
     static let thumbnailsAbove = 3
@@ -142,7 +143,9 @@ struct SlideStage: View {
             }
             .frame(maxWidth: .infinity)
             .task(id: page) {
-                await deck.prefetch(pages: [page + 1, page - 1, page + 2, page - 2], width: SlideWidth.display)
+                let range = model.session.pages
+                let near: [Int] = [page + 1, page - 1, page + 2, page - 2].filter { range.contains($0) }
+                await deck.prefetch(pages: near, width: SlideWidth.display)
             }
     }
 }

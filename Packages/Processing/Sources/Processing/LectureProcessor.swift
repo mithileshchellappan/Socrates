@@ -41,9 +41,11 @@ public enum ProcessingEvent: Sendable {
 ///
 /// - transcribe: the recording's segment files → `TranscriptionEngine` (course languages,
 ///   glossary) → `transcript_segment` rows. On success, in the same transaction, the align job
-///   is queued when the lecture has slides.
-/// - align: deck pages + transcript + stamps/manual anchors → `SlideAligner` → timed
-///   `lecture_deck_span` rows (OFF spans without pages), replacing the recording's earlier ones.
+///   is queued whenever the recording has a lecture (mr: with slides or not).
+/// - align: the lecture's pages (`LectureSlides`: its range of a deck) + transcript +
+///   stamps/manual anchors → `SlideAligner` → timed `lecture_deck_span` rows (OFF spans without
+///   pages), replacing the recording's earlier ones. A lecture without slides (and a recording
+///   without stamps) gets continuation detection first (`ContinuationDetector`).
 public actor LectureProcessor {
     public let services: StudyServices
     public let engine: any TranscriptionEngine
@@ -332,7 +334,9 @@ public actor LectureProcessor {
             var done = finishedJob
             done.lectureID = lectureID
             try Job.upsert { done }.execute(db)
-            if let lectureID, try Realigner.deckID(lectureID: lectureID, recordingID: recording.id, in: db) != nil {
+            // mr: with slides it aligns; without, the align stage looks for them first
+            // (continuation detection).
+            if let lectureID {
                 let next = store.stamp(Job(stage: .align, lectureID: lectureID, recordingID: recording.id, createdAt: Date()))
                 try Job.upsert { next }.execute(db)
             }
@@ -352,6 +356,13 @@ public actor LectureProcessor {
         guard let lectureID = job.lectureID ?? recording.lectureID,
               let lecture = try await store.fetch(Lecture.self, id: lectureID)
         else { throw ProcessingError.missingLecture }
+        let slides = try await services.database.read { db in
+            try Realigner.slides(lectureID: lectureID, recordingID: recordingID, in: db)
+        }
+        guard slides != nil else {
+            try await detectContinuation(job, lecture: lecture, recording: recording)
+            return
+        }
         guard let plan = try await Realigner(services: services, aligner: aligner).plan(lecture: lecture, recording: recording) else {
             // Nothing to align against: done.
             try await store.save(finished(job))
@@ -365,6 +376,107 @@ public actor LectureProcessor {
         Log.jobs.info(
             "Aligned \(recording.id, privacy: .public): \(plan.spans.count) spans, \(plan.anchorsUsed) of \(plan.anchorsGiven) anchors"
         )
+    }
+
+    // MARK: - Continuation detection (mr)
+
+    /// The lecture has no slides and the recording no stamps: look for its deck among the course's
+    /// recent decks (`ContinuationDetector`, on device). Found: ONE transaction links the range
+    /// (`auto`, with its confidence), logs the `deck_link` change (source transcript, the
+    /// best-matching line as quote, model "") and writes the alignment against the range. Not
+    /// found: the job just succeeds.
+    private func detectContinuation(_ job: Job, lecture: Lecture, recording: Recording) async throws {
+        let detector = ContinuationDetector(aligner: aligner)
+        let detection = try await detector.detect(lecture: lecture, recording: recording, database: services.database)
+        try Task.checkCancellation()
+        let done = finished(job)
+        guard let detection else {
+            try await store.save(done)
+            Log.jobs.info("No slides found for \(recording.id, privacy: .public)")
+            return
+        }
+        let segments = try await TranscriptRepository(store: store).segments(recordingID: recording.id)
+        let course = try await store.fetch(Course.self, id: lecture.courseID)
+        let measure = detection.measure
+        let deckID = measure.deckID
+        let plan = Realigner(services: services, aligner: aligner).plan(
+            lecture: lecture, recording: recording, deckID: deckID, pages: detection.pages, segments: segments, events: [],
+            glossary: Glossary(text: course?.glossary ?? "")
+        )
+        let quote = detection.quote
+        let quoteTime: Double? = detection.line?.startTime
+        let lectureID = lecture.id
+        let recordingID = recording.id
+        let store = store
+        let now = Date()
+        let linked: Bool = try await services.database.write { db in
+            // Slides arrived meanwhile (filed or linked by the student): align against those.
+            if try Realigner.slides(lectureID: lectureID, recordingID: recordingID, in: db) != nil {
+                try Job.upsert { done }.execute(db)
+                let again = store.stamp(Job(stage: .align, lectureID: lectureID, recordingID: recordingID, createdAt: now))
+                try Job.upsert { again }.execute(db)
+                return false
+            }
+            let result = try LectureSlides.link(
+                lectureID: lectureID, deckID: deckID, firstPage: measure.firstPage, lastPage: measure.lastPage, source: .auto,
+                confidence: measure.confidence, in: db, store: store, now: now
+            )
+            if var change = result.change(sourceKind: .transcript, quote: quote, confidence: measure.confidence, model: "", now: now) {
+                change.recordingID = recordingID
+                change.time = quoteTime
+                let stamped = store.stamp(change)
+                try AgentChangeRepository.insert(stamped, db: db)
+            }
+            try Realigner.write(plan, in: db)
+            try Job.upsert { done }.execute(db)
+            return true
+        }
+        guard linked else { return }
+        let coverage = Int((measure.coverage * 100).rounded())
+        let confidence = Int((measure.confidence * 100).rounded())
+        let first = measure.firstPage
+        let last = measure.lastPage
+        Log.jobs.info(
+            "Continuation: \(recording.id, privacy: .public) uses deck \(deckID, privacy: .public) slides \(first)–\(last) (coverage \(coverage) %, confidence \(confidence) %)"
+        )
+    }
+
+    /// The launch backfill (mr): `align` jobs for the recordings that have a lecture and a
+    /// transcript, whose lecture has no slides and that never had an `align` job (transcribed
+    /// before continuation detection existed). The job row is the marker: each recording is
+    /// tried once (again only after a new transcription). Returns how many were queued; the
+    /// caller wakes the queue. One transaction, off the main actor.
+    @discardableResult
+    public func queueContinuationChecks() async throws -> Int {
+        let store = store
+        let now = Date()
+        let queued: Int = try await services.database.write { db in
+            let linked: [Lecture.ID] = try LectureDeckSpan.where { $0.startTime.is(nil) }.select { $0.lectureID }.fetchAll(db)
+            let withSlides = Set(linked)
+            let alignJobs: [Recording.ID?] = try Job.where { $0.stage.eq(JobStage.align) }.select { $0.recordingID }.fetchAll(db)
+            let aligned = Set(alignJobs.compactMap(\.self))
+            let openJobs: [Recording.ID?] = try Job
+                .where { $0.state.eq(JobState.queued) || $0.state.eq(JobState.running) }
+                .select { $0.recordingID }
+                .fetchAll(db)
+            let pending = Set(openJobs.compactMap(\.self))
+            let recordings = try Recording.where { $0.lectureID.isNot(nil) }.fetchAll(db)
+            var count = 0
+            for recording in recordings {
+                guard let lectureID = recording.lectureID, !withSlides.contains(lectureID),
+                      !aligned.contains(recording.id), !pending.contains(recording.id)
+                else { continue }
+                let recordingID = recording.id
+                let lines = try TranscriptSegment.where { $0.recordingID.eq(recordingID) }.fetchCount(db)
+                guard lines > 0 else { continue }
+                let job = store.stamp(Job(stage: .align, lectureID: lectureID, recordingID: recordingID, createdAt: now))
+                try Job.upsert { job }.execute(db)
+                count += 1
+            }
+            return count
+        }
+        if queued > 0 { Log.jobs.info("Queued \(queued) continuation check(s)") }
+        return queued
     }
 
     // MARK: - Helpers

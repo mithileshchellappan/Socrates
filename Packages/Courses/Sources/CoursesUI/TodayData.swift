@@ -187,15 +187,27 @@ struct TodayRequest: FetchKeyRequest {
     private func candidate(_ lecture: Lecture, db: Database) throws -> ReviewCandidate {
         let lectureID = lecture.id
         let recording = try Recording.where { $0.lectureID.eq(lectureID) }.order(by: \.startedAt).fetchOne(db)
-        let spans = try LectureDeckSpan.where { $0.lectureID.eq(lectureID) }.fetchAll(db)
-        // The slides that were discussed (aligned visits); before alignment, the deck's link.
-        let visits = spans.filter { $0.startTime != nil && $0.firstPage != nil }
-        let coarse = spans.filter { $0.startTime == nil && $0.firstPage != nil }
-        let pageSpans = visits.isEmpty ? coarse : visits
-        let deckID = pageSpans.first?.deckID
+        // mr: the lecture's slides are its range of a deck ("slides 38–88 of 88"): the pages its
+        // aligned visits showed inside it ("slides 1–37 of 88"), else the range; a lecture
+        // without a range (a capture's stamped deck), the pages its visits showed.
+        let range = try LectureSlides.current(lectureID: lectureID, in: db)
+        let allVisits = try LectureDeckSpan
+            .where { $0.lectureID.eq(lectureID) && $0.startTime.isNot(nil) && $0.firstPage.isNot(nil) }
+            .fetchAll(db)
+        let deckID: Deck.ID? = range?.deckID ?? allVisits.first?.deckID
+        let visits = allVisits.filter { span in
+            guard span.deckID == deckID else { return false }
+            guard let range, let page = span.firstPage else { return true }
+            return range.contains(page)
+        }
+        var first: Int? = visits.compactMap(\.firstPage).min()
+        var last: Int? = visits.compactMap(\.lastPage).max()
+        if visits.isEmpty, let range {
+            first = range.firstPage
+            last = range.lastPage
+        }
         let deck = try deckID.flatMap { id in try Deck.find(id).fetchOne(db) }
-        let first = pageSpans.filter { $0.deckID == deckID }.compactMap(\.firstPage).min()
-        let last = pageSpans.filter { $0.deckID == deckID }.compactMap(\.lastPage).max()
+        let pageCount: Int? = range?.pageCount ?? deck?.pageCount
         let professorKinds = [AnnotationKind.examHint, AnnotationKind.highlight]
         let highlights = try Annotation
             .where { $0.lectureID.eq(lectureID) && $0.hiddenAt.is(nil) && $0.layer.eq(AnnotationLayer.professor) && $0.kind.in(professorKinds) }
@@ -209,7 +221,7 @@ struct TodayRequest: FetchKeyRequest {
             duration: recording.map(\.duration).flatMap { $0 > 0 ? $0 : nil },
             firstPage: first,
             lastPage: last,
-            pageCount: deck?.pageCount,
+            pageCount: pageCount,
             highlights: highlights,
             notOnSlides: notOnSlides
         )

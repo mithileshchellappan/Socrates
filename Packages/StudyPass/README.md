@@ -107,3 +107,12 @@ M4:
 - **docs/schema.md "Deadlines and the agent (v6)"**: transcript extraction now re-reads a recording when its *oldest* line's `updated_at` is after `source_updated_at` (lines replaced), so corrections never trigger a deadline re-read (`TranscriptItemPipeline.pendingRecordings`).
 - **docs/decisions.md**: Claude Code web runs (`ClaudeKit` README, "Web tools in one-shot calls"): `--safe-mode` first, then `--setting-sources ""`; the init must list exactly WebSearch/WebFetch (+ `StructuredOutput` with a schema) and no MCP server. The live check should confirm the variant, the init tool list, that `--strict-mcp-config` without `--mcp-config` is accepted, and whether WebSearch's own calls appear as the extra ledger row.
 - **project.yml**: link `StudyPass` into the Mac app target (it pulls GRDB, already in the graph through Agent and SQLiteData).
+
+## Shared decks (mr, workstream B)
+
+`LectureMaterial` reads the lecture's slides through `LectureSlides.current` (its page range of a
+deck; one deck may serve several lectures): the deck pages, the timed spans (sections) and the
+synthesis's slide list are only the range's pages, with the deck's numbers. The prompts list only
+those pages, so every unit's input hash changes with the range (a new range re-runs the pass; an
+unchanged one never calls again). Without a range (a capture's stamped deck whose link is gone):
+the deck most of the recording's slide spans are on, whole, as before.

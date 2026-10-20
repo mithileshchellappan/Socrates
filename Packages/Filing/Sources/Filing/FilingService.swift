@@ -12,6 +12,9 @@ public enum FilingError: Error, Equatable, Sendable, LocalizedError {
     case unreadable(String)
     /// Undo of a change the filing advisor made: the filing moved since (by the student).
     case changedSince
+    /// mr: Change… of a deck other lectures of its course use, to another course (a deck belongs
+    /// to one course; those lectures keep it).
+    case sharedDeck
 
     public var errorDescription: String? {
         switch self {
@@ -19,6 +22,7 @@ public enum FilingError: Error, Equatable, Sendable, LocalizedError {
         case .unsupported(let name): String(localized: "“\(name)” is not slides or a recording.")
         case .unreadable(let name): String(localized: "“\(name)” can’t be read.")
         case .changedSince: String(localized: "Changed since; nothing undone.")
+        case .sharedDeck: String(localized: "Other lectures of the course use these slides.")
         }
     }
 }
@@ -177,11 +181,17 @@ public actor FilingService {
     private func fileDeck(_ evidence: FileEvidence, destination: FilingDestination?, advise: Bool) async throws -> FilingOutcome {
         let url = evidence.url
         let sha = try BlobStore.sha256(of: url)
-        if let filing = try await knownFiling(sha256: sha) {
-            return try await outcome(evidence, filing: filing, status: .known)
-        }
+        let known = try await knownFiling(sha256: sha)
         let existingDeck = try await services.database.read { db in
             try Deck.where { $0.blobSHA256.eq(sha) }.fetchOne(db)
+        }
+        // mr: a deck a lecture uses, filed to another lecture or session: linked there too.
+        if let existingDeck, let destination,
+           let linked = try await linkKnownDeck(existingDeck, evidence: evidence, sha256: sha, destination: destination) {
+            return linked
+        }
+        if let filing = known {
+            return try await outcome(evidence, filing: filing, status: .known)
         }
         if let existingDeck, let filing = try await describeLinkedDeck(existingDeck, evidence: evidence, sha256: sha) {
             return try await outcome(evidence, filing: filing, status: .known)
@@ -229,6 +239,66 @@ public actor FilingService {
         Log.importer.info("Filed deck \(evidence.fileName, privacy: .private) (\(best.confidence, privacy: .public))")
         if advise, decision.verdict != .file { adviseLater(filingID, decision: decision) }
         return try await outcome(evidence, filing: make(attached), status: status(decision, destination: destination), decision: decision)
+    }
+
+    /// mr: a deck lectures of its course already use, dropped on (or filed with the destination
+    /// of) another lecture or session of that course: linked there too, the whole deck, `manual`
+    /// (`LectureImporter.linkDeck` → `LectureSlides.link`); the lectures that have it keep it.
+    /// Its own `filing` row (`known_file`: Undo removes only this link, and the lecture when the
+    /// link created it). Nil when it is where it is already, for a course destination, for a deck
+    /// no lecture uses, or for another course's lecture: then it stays "known".
+    private func linkKnownDeck(
+        _ deck: Deck, evidence: FileEvidence, sha256: String, destination: FilingDestination
+    ) async throws -> FilingOutcome? {
+        let deckID = deck.id
+        let target: LectureTarget? = try await services.database.read { db -> LectureTarget? in
+            guard let deckCourse = try Deck.find(deckID).fetchOne(db)?.courseID,
+                  try !LectureSlides.lectures(usingDeck: deckID, in: db).isEmpty
+            else { return nil }
+            let lectureID: Lecture.ID?
+            let target: LectureTarget
+            switch destination {
+            case .course:
+                return nil
+            case .lecture(let id):
+                guard let lecture = try Lecture.find(id).fetchOne(db), lecture.courseID == deckCourse else { return nil }
+                lectureID = id
+                target = .lecture(id)
+            case .session(let id):
+                guard let session = try LectureSession.find(id).fetchOne(db), session.courseID == deckCourse else { return nil }
+                lectureID = try Lecture.where { $0.lectureSessionID.eq(id) }.fetchOne(db)?.id
+                target = .session(id)
+            }
+            if let lectureID {
+                let linked = try LectureDeckSpan
+                    .where { $0.lectureID.eq(lectureID) && $0.deckID.eq(deckID) && $0.startTime.is(nil) }
+                    .fetchCount(db)
+                if linked > 0 { return nil }
+            }
+            return target
+        }
+        guard let target else { return nil }
+        let createdAt = now()
+        let filingID = UUID()
+        let fileName = evidence.fileName
+        let make: @Sendable (AttachedDeck) -> Filing = { attached in
+            Filing(
+                id: filingID, kind: .deck, fileName: fileName, blobSHA256: sha256, courseID: attached.lecture.courseID,
+                lectureID: attached.lecture.id, lectureSessionID: attached.lecture.lectureSessionID, deckID: attached.deck.id,
+                source: .manual, confidence: 1, signals: [FilingSignal(kind: .knownFile, evidence: fileName, weight: 1)],
+                createdLecture: attached.createdLecture, createdAt: createdAt
+            )
+        }
+        let store = store
+        let attached = try await LectureImporter(services: services).linkDeck(deck, to: target) { db, attached in
+            // Written only when the link is new (a race with another filing made it already).
+            guard attached.linkedNow else { return }
+            let filing = store.stamp(make(attached))
+            try Filing.upsert { filing }.execute(db)
+        }
+        guard attached.linkedNow else { return nil }
+        Log.importer.info("Linked known deck \(fileName, privacy: .private) to one more lecture")
+        return try await outcome(evidence, filing: make(attached), status: .filed)
     }
 
     /// A deck imported before smart import existed (or before filings were kept) that already

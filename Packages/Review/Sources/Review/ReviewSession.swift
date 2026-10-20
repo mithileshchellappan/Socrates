@@ -15,17 +15,31 @@ public final class ReviewSession {
     /// Nil when the lecture has no recording.
     public let player: LecturePlayer?
     public private(set) var timeline: SlideTimeline
-    /// Deck pages; 0 without a deck.
+    /// Deck pages; 0 without a deck. "16 / 88" counts the deck (mr: deck numbers are kept).
     public private(set) var pageCount: Int
+    /// mr: the lecture's pages of the deck (its `LectureSlides` range); the slide on screen, the
+    /// rail and ← / → stay inside it. The whole deck when the lecture has no range.
+    public private(set) var pages: ClosedRange<Int>
     public private(set) var isFollowing = true
     /// The slide picked by hand (or the last one shown before Follow went off).
     private var manualPage: Int?
 
-    public init(player: LecturePlayer?, pageCount: Int, timeline: SlideTimeline = .empty) {
+    /// - Parameter pages: the lecture's range of the deck; nil: every page.
+    public init(player: LecturePlayer?, pageCount: Int, pages: ClosedRange<Int>? = nil, timeline: SlideTimeline = .empty) {
         self.player = player
         self.pageCount = max(0, pageCount)
+        self.pages = Self.clamp(pages, pageCount: max(0, pageCount))
         self.timeline = timeline
         player?.setTimeline(timeline)
+    }
+
+    /// `pages` inside `1...pageCount` (1...1 without a deck).
+    static func clamp(_ pages: ClosedRange<Int>?, pageCount: Int) -> ClosedRange<Int> {
+        let last = max(1, pageCount)
+        guard let pages else { return 1...last }
+        let lower = min(max(1, pages.lowerBound), last)
+        let upper = min(max(lower, pages.upperBound), last)
+        return lower...upper
     }
 
     /// The slide on screen; nil without a deck.
@@ -34,7 +48,8 @@ public final class ReviewSession {
         if isFollowing, let page = player?.currentPage {
             return clamped(page)
         }
-        return clamped(manualPage ?? player?.currentPage ?? timeline.spans.first { $0.page != nil }?.page ?? 1)
+        let first = timeline.spans.first { $0.page != nil }?.page ?? pages.lowerBound
+        return clamped(manualPage ?? player?.currentPage ?? first)
     }
 
     public var canFollow: Bool { player != nil && pageCount > 0 }
@@ -49,12 +64,13 @@ public final class ReviewSession {
 
     public func update(pageCount: Int) {
         self.pageCount = max(0, pageCount)
+        pages = Self.clamp(pages, pageCount: self.pageCount)
     }
 
     // MARK: - Navigation
 
-    public var canGoPrevious: Bool { (shownPage ?? 1) > 1 }
-    public var canGoNext: Bool { (shownPage ?? pageCount) < pageCount }
+    public var canGoPrevious: Bool { (shownPage ?? pages.lowerBound) > pages.lowerBound }
+    public var canGoNext: Bool { (shownPage ?? pages.upperBound) < pages.upperBound }
 
     /// Shows `page` by hand: Follow off, playback paused.
     public func show(page: Int) {
@@ -65,12 +81,12 @@ public final class ReviewSession {
     }
 
     public func previousSlide() {
-        guard let page = shownPage, page > 1 else { return }
+        guard let page = shownPage, page > pages.lowerBound else { return }
         show(page: page - 1)
     }
 
     public func nextSlide() {
-        guard let page = shownPage, page < pageCount else { return }
+        guard let page = shownPage, page < pages.upperBound else { return }
         show(page: page + 1)
     }
 
@@ -157,7 +173,8 @@ public final class ReviewSession {
         isFollowing = false
     }
 
+    /// Inside the lecture's range.
     private func clamped(_ page: Int) -> Int {
-        min(max(1, page), max(1, pageCount))
+        min(max(pages.lowerBound, page), pages.upperBound)
     }
 }

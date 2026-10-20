@@ -30,6 +30,31 @@ extension Deletion {
 extension FilingService {
     // MARK: - Delete with Undo
 
+    /// mr: the lectures that lose a deck when it is deleted (every lecture with a range of it), by
+    /// when they were held: "DC Lecture 2", "DC Lecture 3". Reads only.
+    public func lectureNames(usingDeck deckID: Deck.ID) async throws -> [String] {
+        try await services.database.read { db in
+            let ranges = try LectureSlides.lectures(usingDeck: deckID, in: db)
+            var names: [String] = []
+            for range in ranges {
+                guard let lecture = try Lecture.find(range.lectureID).fetchOne(db) else { continue }
+                let course = try Course.find(lecture.courseID).fetchOne(db)
+                names.append(Self.lectureName(lecture, course: course))
+            }
+            return names
+        }
+    }
+
+    /// "DC Lecture 2" (the course's short name), else the lecture's title, else "Lecture".
+    static func lectureName(_ lecture: Lecture, course: Course?) -> String {
+        let short = course.map { $0.shortName.isEmpty ? $0.name : $0.shortName } ?? ""
+        if let number = lecture.number {
+            return short.isEmpty ? String(localized: "Lecture \(number)") : String(localized: "\(short) Lecture \(number)")
+        }
+        if !lecture.title.isEmpty { return lecture.title }
+        return String(localized: "Lecture")
+    }
+
     /// What deleting `item` takes with it, for the confirmation. Reads only.
     public func deletionSummary(_ item: LibraryItem) async throws -> DeletionSummary {
         try await services.database.read { db in
