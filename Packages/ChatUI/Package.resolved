@@ -1,5 +1,5 @@
 {
-  "originHash" : "1258dc24de7a63cf92ce23fc79bac8ad5f01c56346321c475eb439c60641f43b",
+  "originHash" : "e5bdd912256ccb0e1dc62aec0d08b575236f53616772964844c639a072ca88ea",
   "pins" : [
     {
       "identity" : "combine-schedulers",
@@ -83,6 +83,15 @@
       }
     },
     {
+      "identity" : "swift-issue-reporting",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-issue-reporting",
+      "state" : {
+        "revision" : "b23bb4493c439d3e05152bc167014235ba3d47fc",
+        "version" : "2.1.2"
+      }
+    },
+    {
       "identity" : "swift-perception",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-perception",
@@ -128,12 +137,12 @@
       }
     },
     {
-      "identity" : "xctest-dynamic-overlay",
+      "identity" : "swiftmath",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/pointfreeco/xctest-dynamic-overlay",
+      "location" : "https://github.com/mgriebling/SwiftMath.git",
       "state" : {
-        "revision" : "d9308ad679143c26a30dec52daefe82f54af2b82",
-        "version" : "1.13.1"
+        "revision" : "fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7",
+        "version" : "1.7.3"
       }
     }
   ],

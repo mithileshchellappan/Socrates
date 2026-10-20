@@ -103,6 +103,9 @@ struct NoteReadOnlyView: View {
             if marks.contains(.underline) { run.underlineStyle = .single }
             if marks.contains(.strikethrough) { run.strikethroughStyle = .single }
             if marks.contains(.highlight) { run.backgroundColor = Color(.sRGB, red: 1, green: 214 / 255, blue: 10 / 255, opacity: 0.45) }
+            if marks.contains(.code) { run.font = .system(size: context.metrics.bodySize - 1.5, design: .monospaced) }
+            // ln: Claude's words (Edit as Note) stay grey.
+            if marks.contains(.ai) { run.foregroundColor = .secondary }
             switch inline.type {
             case .link:
                 run.link = inline.url

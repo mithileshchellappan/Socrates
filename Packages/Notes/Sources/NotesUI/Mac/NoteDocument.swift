@@ -20,7 +20,12 @@ extension NSAttributedString.Key {
     static let noteUnderline = NSAttributedString.Key("StudyPortal.noteUnderline")
     static let noteStrikethrough = NSAttributedString.Key("StudyPortal.noteStrikethrough")
     static let noteHighlight = NSAttributedString.Key("StudyPortal.noteHighlight")
-    /// Marks the editor shows nothing for (`code`, newer ones), kept as they were.
+    /// ln: Claude's words copied from lecture notes (`NoteInline.Mark.ai`): grey until the student
+    /// edits them.
+    static let noteAI = NSAttributedString.Key("StudyPortal.noteAI")
+    /// ln: code (`NoteInline.Mark.code`), in SF Mono.
+    static let noteCode = NSAttributedString.Key("StudyPortal.noteCode")
+    /// Marks the editor shows nothing for (newer ones), kept as they were.
     static let noteOtherMarks = NSAttributedString.Key("StudyPortal.noteOtherMarks")
 }
 
@@ -164,7 +169,17 @@ struct NoteTypesetter {
             attributes[.noteHighlight] = true
             attributes[.backgroundColor] = Self.highlightColor
         }
-        let known: Set<NoteInline.Mark> = [.bold, .italic, .underline, .strikethrough, .highlight]
+        if set.contains(.code) {
+            attributes[.noteCode] = true
+            attributes[.font] = NSFont.monospacedSystemFont(ofSize: max(10, metrics.bodySize - 1.5), weight: bold ? .semibold : .regular)
+        }
+        if set.contains(.ai) {
+            // Claude's words (Edit as Note): grey, the paragraph's one sparkle hung before its
+            // first line (`NoteAIFragment`); an edit takes the words it touches.
+            attributes[.noteAI] = true
+            attributes[.foregroundColor] = NSColor.secondaryLabelColor
+        }
+        let known: Set<NoteInline.Mark> = [.bold, .italic, .underline, .strikethrough, .highlight, .code, .ai]
         let other = marks.filter { !known.contains($0) }.map(\.rawValue)
         if !other.isEmpty { attributes[.noteOtherMarks] = other }
         return attributes
@@ -184,6 +199,8 @@ struct NoteTypesetter {
         if attributes[.noteUnderline] as? Bool == true { marks.append(.underline) }
         if attributes[.noteStrikethrough] as? Bool == true { marks.append(.strikethrough) }
         if attributes[.noteHighlight] as? Bool == true { marks.append(.highlight) }
+        if attributes[.noteCode] as? Bool == true { marks.append(.code) }
+        if attributes[.noteAI] as? Bool == true { marks.append(.ai) }
         if let other = attributes[.noteOtherMarks] as? [String] { marks += other.map(NoteInline.Mark.init(rawValue:)) }
         return marks
     }
@@ -225,7 +242,13 @@ struct NoteDocumentBuilder {
     /// Runs in `format`: text with its styles, links, chips and inline media.
     func runs(_ inlines: [NoteInline], format: BlockFormat) -> NSAttributedString {
         let result = NSMutableAttributedString()
+        var sparkled = false
         for inline in inlines {
+            // ln: one sparkle before the paragraph's first words Claude wrote.
+            if !sparkled, inline.type == .text, (inline.marks ?? []).contains(.ai), !inline.text.allSatisfy(\.isWhitespace) {
+                result.append(attachment(AISparkleAttachment(context: context), format: format))
+                sparkled = true
+            }
             switch inline.type {
             case .text:
                 result.append(text(inline.text, format: format, marks: inline.marks ?? []))

@@ -20,7 +20,9 @@ let package = Package(
         // ma: the agent panel's composer focus (`\.isAgentComposerFocused`: the plain keys stand down).
         .package(path: "../ChatUI"),
         // M6: "Your notes" are rich notes (`NoteSession`, `NotesUI.NoteEditor`).
-        .package(path: "../Notes")
+        .package(path: "../Notes"),
+        // ln: Whole lecture shows the lecture's notes (`LectureNotesView`).
+        .package(path: "../StudyPage")
     ],
     targets: [
         .target(
@@ -41,7 +43,8 @@ let package = Package(
                 .product(name: "CaptureUI", package: "Capture"),
                 .product(name: "ChatUI", package: "ChatUI"),
                 .product(name: "Notes", package: "Notes"),
-                .product(name: "NotesUI", package: "Notes")
+                .product(name: "NotesUI", package: "Notes"),
+                .product(name: "StudyPageUI", package: "StudyPage")
             ]
         ),
     ],

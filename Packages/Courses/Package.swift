@@ -19,7 +19,9 @@ let package = Package(
         .package(path: "../StudyCore"),
         .package(path: "../StudyUI"),
         // mc: Today's hero is the plan's first block (`PlanHero`).
-        .package(path: "../Coach")
+        .package(path: "../Coach"),
+        // ln: a lecture's notes page (`LectureNotesView`, Edit as Note).
+        .package(path: "../StudyPage")
     ],
     targets: [
         .target(
@@ -36,7 +38,8 @@ let package = Package(
                 "Courses", "CalendarSync",
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "StudyUI", package: "StudyUI"),
-                .product(name: "CoachUI", package: "Coach")
+                .product(name: "CoachUI", package: "Coach"),
+                .product(name: "StudyPageUI", package: "StudyPage")
             ]
         ),
     ],

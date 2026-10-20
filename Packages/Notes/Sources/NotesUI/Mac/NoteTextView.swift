@@ -591,7 +591,50 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
         }
         let changed = NSRange(location: affectedCharRange.location, length: (replacementString as NSString?)?.length ?? affectedCharRange.length)
         editedParagraphs = editedParagraphs.map { NSUnionRange($0, changed) } ?? changed
+        // ln: typed or replaced words are the student's (a style change keeps Claude's grey).
+        if replacementString != nil { typedRange = typedRange.map { NSUnionRange($0, changed) } ?? changed }
         return true
+    }
+
+    /// The text the student typed or changed since the last change was handled.
+    private var typedRange: NSRange?
+
+    /// ln: the words the student typed in or changed lose the `ai` mark (DESIGN 5.1: grey becomes
+    /// normal when the student takes it), whole words, and typing goes on in the label colour.
+    private func dropAIMark(in textView: NoteTextView) {
+        guard let storage = textView.textStorage, var range = typedRange else { return }
+        typedRange = nil
+        if textView.typingAttributes[.noteAI] != nil {
+            var typing = textView.typingAttributes
+            typing[.noteAI] = nil
+            typing[.foregroundColor] = NSColor.labelColor
+            textView.typingAttributes = typing
+        }
+        let string = storage.string as NSString
+        guard string.length > 0 else { return }
+        range.location = min(range.location, string.length)
+        range.length = min(range.length, string.length - range.location)
+        func isWord(_ index: Int) -> Bool {
+            guard index >= 0, index < string.length, let scalar = UnicodeScalar(string.character(at: index)) else { return false }
+            return CharacterSet.alphanumerics.contains(scalar)
+        }
+        var start = range.location
+        while isWord(start - 1) { start -= 1 }
+        var end = NSMaxRange(range)
+        while isWord(end) { end += 1 }
+        let words = NSRange(location: start, length: end - start)
+        guard words.length > 0 else { return }
+        var touched: [NSRange] = []
+        storage.enumerateAttribute(.noteAI, in: words) { value, sub, _ in
+            if value as? Bool == true { touched.append(sub) }
+        }
+        guard !touched.isEmpty else { return }
+        storage.beginEditing()
+        for sub in touched {
+            storage.removeAttribute(.noteAI, range: sub)
+            storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: sub)
+        }
+        storage.endEditing()
     }
 
     func textDidChange(_ notification: Notification) {
@@ -604,6 +647,7 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
             return
         }
         normalizeEditedParagraphs(in: textView)
+        dropAIMark(in: textView)
         if paragraphCountChanged {
             paragraphCountChanged = false
             refreshNumbers(in: textView)
