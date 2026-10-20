@@ -57,10 +57,17 @@ public struct SlideImageCache: Sendable, Hashable {
 
     /// Decodes the cached bitmap off the calling thread's lazy path (decoded immediately),
     /// downsampled so its longer side is at most `maxPixelSize` when given.
+    /// A miss (a deck's first open, or the system purged Caches) is nil without asking ImageIO,
+    /// which logs every path it cannot open; a damaged file is deleted, so the page is rendered
+    /// and stored again.
     public func load(_ key: SlideRenderKey, maxPixelSize: Int? = nil) -> CGImage? {
         let url = url(for: key)
+        guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else { return nil }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
-        else { return nil }
+        else {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
         var options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -73,7 +80,11 @@ public struct SlideImageCache: Sendable, Hashable {
                   let height = properties[kCGImagePropertyPixelHeight] as? Int {
             options[kCGImageSourceThumbnailMaxPixelSize] = max(width, height)
         }
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        return image
     }
 
     /// Writes `image` as PNG atomically.

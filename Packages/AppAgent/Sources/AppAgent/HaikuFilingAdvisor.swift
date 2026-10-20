@@ -10,7 +10,8 @@ import StudyCore
 /// title, how sure, and why.
 ///
 /// - Call: one-shot `claude -p` through `ClaudeClient` (Claude Code: `--tools "" --safe-mode
-///   --no-session-persistence --json-schema`), Haiku 5.5, effort low, ≤ 800 output tokens;
+///   --no-session-persistence --json-schema`), Haiku 5.5, effort low, ≤ 4,000 output tokens
+///   (thinking and the structured answer both count against it);
 ///   `.background` for a window drop, `.interactive` for the panel (the student waits). Logged
 ///   with its usage like every call (`api_call`, purpose `filing.advice`).
 /// - Data: the deck's text and the student's words go in delimited `<deck_text>` and
@@ -19,7 +20,7 @@ import StudyCore
 ///   call, an answer that is not JSON of the schema.
 public struct HaikuFilingAdvisor: FilingAdvisor {
     public static let purpose = "filing.advice"
-    static let maxTokens = 800
+    static let maxTokens = 4_000
 
     public let client: ClaudeClient
     public let services: StudyServices
