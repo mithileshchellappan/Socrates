@@ -131,7 +131,12 @@ targets:
         # A university profile a library with courses but none takes once (Config/Signing.xcconfig;
         # empty unless a local Config/Local.xcconfig sets it). StudyCore's UniversityProfileRecord.
         StudyPortalUniversityProfile: $(STUDYPORTAL_UNIVERSITY_PROFILE)
-        UIBackgroundModes: [audio]
+        # M7: the CloudKit container this build syncs the library to (StudyCore's
+        # CloudSyncConfiguration). Set only with STUDYPORTAL_ICLOUD = YES, which also adds the
+        # iCloud entitlement (Config/Signing.xcconfig); empty in simulator builds.
+        StudyPortalCloudKitContainer: $(STUDYPORTAL_SYNC_CONTAINER)
+        # audio: recording with the screen locked; remote-notification: iCloud sync's silent pushes.
+        UIBackgroundModes: [audio, remote-notification]
         # M7: the recording's Live Activity (Lock Screen + Dynamic Island), from StudyPortalWidgets.
         NSSupportsLiveActivities: true
         UISupportedInterfaceOrientations~iphone:
@@ -173,19 +178,24 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
-        # macOS: unsandboxed personal build, hardened runtime with mic + calendars.
+        # macOS: unsandboxed personal build, hardened runtime with mic + calendars. M7: with
+        # STUDYPORTAL_ICLOUD = YES both apps take the iCloud entitlements files (CloudKit, push);
+        # the iPhone app has no entitlements file otherwise (Config/Signing.xcconfig).
         ENABLE_APP_SANDBOX: NO
         "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": YES
-        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": App/macOS/StudyPortal.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": $(STUDYPORTAL_MAC_ENTITLEMENTS)
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": $(STUDYPORTAL_IOS_ENTITLEMENTS)
         "COMBINE_HIDPI_IMAGES[sdk=macosx*]": YES
         # The macOS identity and style come from Config/Signing.xcconfig ("-", Automatic: signed to
         # run locally) or Config/Local.xcconfig. A Developer ID identity keeps the designated
         # requirement the same across rebuilds, so the Keychain's "Always Allow" and the privacy
-        # grants stick (ad-hoc signing changes it on every build). No provisioning profile is
-        # needed: the app uses no restricted entitlements. See docs/decisions.md.
+        # grants stick (ad-hoc signing changes it on every build). Without iCloud no provisioning
+        # profile is needed: the app uses no restricted entitlements. With iCloud (M7) the Mac app
+        # needs one: Apple Development with Automatic signing makes its own; a manually signed
+        # Developer ID build names its profile in STUDYPORTAL_MAC_PROFILE. See docs/decisions.md.
         "CODE_SIGN_IDENTITY[sdk=macosx*]": $(STUDYPORTAL_MAC_SIGN_IDENTITY)
         "CODE_SIGN_STYLE[sdk=macosx*]": $(STUDYPORTAL_MAC_SIGN_STYLE)
-        "PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]": ""
+        "PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]": $(STUDYPORTAL_MAC_PROFILE)
     dependencies:
       - package: StudyCore
       - package: Capture
@@ -256,7 +266,7 @@ targets:
       - package: Coach
         product: CoachUI
       # M7 (docs/plan-m7.md): the iPhone recorder, its Live Activity and the phone's shell (iOS);
-      # iCloud sync (both, off unless the build is signed for CloudKit).
+      # iCloud sync (both, off unless STUDYPORTAL_ICLOUD = YES signs the build for CloudKit).
       - package: Recorder
         product: RecorderActivity
         destinationFilters: [iOS]

@@ -61,6 +61,8 @@
 	<string>Shows live captions while a lecture is recorded.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>StudyPortalCloudKitContainer</key>
+	<string>$(STUDYPORTAL_SYNC_CONTAINER)</string>
 	<key>StudyPortalUniversityProfile</key>
 	<string>$(STUDYPORTAL_UNIVERSITY_PROFILE)</string>
 	<key>UIApplicationSceneManifest</key>
@@ -71,6 +73,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>remote-notification</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

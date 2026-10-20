@@ -1,6 +1,6 @@
 // Signing, bundle IDs and the other values one machine's builds may set, for every target
 // (project.yml's configFiles). These defaults let anyone build: no team, the Mac app signed to
-// run locally (ad-hoc), bundle IDs under com.example.
+// run locally (ad-hoc), bundle IDs under com.example, no iCloud sync.
 //
 // To sign with your own team, copy Local.xcconfig.example to Local.xcconfig (not committed) and
 // set your values there; it is included last, so its values win.
@@ -17,6 +17,28 @@ BUNDLE_ID_PREFIX = com.example
 // ask for permissions again after a rebuild because the signature changes every build.
 STUDYPORTAL_MAC_SIGN_IDENTITY = -
 STUDYPORTAL_MAC_SIGN_STYLE = Automatic
+// A manually signed Mac app's provisioning profile (its name), when it needs one: a Developer ID
+// build with iCloud. Empty: none (automatic signing finds its own).
+STUDYPORTAL_MAC_PROFILE =
+
+// iCloud sync (M7) of the library between the Mac and the iPhone: YES signs both apps with the
+// iCloud (CloudKit) and push entitlements for the container iCloud.$(BUNDLE_ID_PREFIX).studyportal
+// and names it in their Info.plist (the app syncs only when both are there). Needs a team whose
+// App ID $(BUNDLE_ID_PREFIX).studyportal has iCloud with that container, and Push Notifications;
+// on the Mac an Apple Development identity with Automatic signing (or a Developer ID profile in
+// STUDYPORTAL_MAC_PROFILE). NO: no entitlement, no container, the app never touches iCloud.
+// Simulator builds never sync.
+STUDYPORTAL_ICLOUD = NO
+
+STUDYPORTAL_CLOUDKIT_CONTAINER_YES = iCloud.$(BUNDLE_ID_PREFIX).studyportal
+STUDYPORTAL_CLOUDKIT_CONTAINER = $(STUDYPORTAL_CLOUDKIT_CONTAINER_$(STUDYPORTAL_ICLOUD))
+STUDYPORTAL_SYNC_CONTAINER = $(STUDYPORTAL_CLOUDKIT_CONTAINER)
+STUDYPORTAL_SYNC_CONTAINER[sdk=iphonesimulator*] =
+STUDYPORTAL_MAC_ENTITLEMENTS_NO = App/macOS/StudyPortal.entitlements
+STUDYPORTAL_MAC_ENTITLEMENTS_YES = App/macOS/Socrates-iCloud.entitlements
+STUDYPORTAL_MAC_ENTITLEMENTS = $(STUDYPORTAL_MAC_ENTITLEMENTS_$(STUDYPORTAL_ICLOUD))
+STUDYPORTAL_IOS_ENTITLEMENTS_YES = App/iOS/Socrates-iCloud.entitlements
+STUDYPORTAL_IOS_ENTITLEMENTS = $(STUDYPORTAL_IOS_ENTITLEMENTS_$(STUDYPORTAL_ICLOUD))
 
 // A university profile as one line of JSON (`UniversityProfile`'s keys; no "//" in it), which a
 // library that has courses but no profile takes once when it opens: for a library set up by a

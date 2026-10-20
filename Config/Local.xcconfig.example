@@ -15,3 +15,11 @@ BUNDLE_ID_PREFIX = com.yourname
 // rebuilds, so Keychain and privacy permissions stick; no provisioning profile is needed):
 // STUDYPORTAL_MAC_SIGN_IDENTITY = Developer ID Application
 // STUDYPORTAL_MAC_SIGN_STYLE = Manual
+
+// iCloud sync of the library between your Mac and iPhone (off by default). First create the
+// CloudKit container iCloud.com.yourname.studyportal in your developer account (Certificates,
+// IDs & Profiles > Identifiers > iCloud Containers) and tick it, with Push Notifications, on the
+// App ID com.yourname.studyportal. The Mac app then needs the Apple Development identity above
+// (Automatic: Xcode makes the profiles; build once with -allowProvisioningUpdates). Both devices
+// use CloudKit's Development environment. See README ("iCloud sync").
+// STUDYPORTAL_ICLOUD = YES

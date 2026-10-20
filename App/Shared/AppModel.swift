@@ -108,7 +108,8 @@ final class AppModel {
     let coach: CoachEngine?
     /// M7: iCloud sync of the library (SQLiteData's `SyncEngine`), on the Mac and the iPhone. Nil
     /// unless this build is signed for CloudKit and names its container
-    /// (`CloudSyncConfiguration.containerIdentifier()`): nothing about sync runs otherwise.
+    /// (`CloudSyncConfiguration.containerIdentifier()`) and the library is the real one
+    /// (`services.syncContainer`): nothing about sync runs otherwise.
     let cloudSync: CloudSync?
     #if os(iOS)
     /// M7, the iPhone: the recorder (mockup 09) and its Live Activity, owned for the app's life so
@@ -417,8 +418,11 @@ final class AppModel {
         // md: returns at once (reading resumes after 20 s at utility, file removal after 60 s).
         await documentBank?.start()
         #endif
-        // Conversations a quit left running end as failed.
-        await agent?.recoverInterrupted()
+        // Conversations a quit left running end as failed (only where the agent runs: on a
+        // synced iPhone this would fail the conversation the Mac is answering).
+        if runsLibraryPasses {
+            await agent?.recoverInterrupted()
+        }
 
         if let searchIndexer {
             let semanticIndex = semanticIndex
@@ -451,7 +455,7 @@ final class AppModel {
                 Log.jobs.error("Queueing continuation checks failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        if let filing, let filingCenter {
+        if runsLibraryPasses, let filing, let filingCenter {
             // Captures that never reached a filing go through smart import like a Stop: session
             // match, a filing row, a toast with Change….
             let recording = live?.session.package.map { Set([$0.url]) } ?? []
@@ -467,14 +471,16 @@ final class AppModel {
         }
         await processor?.wake()
 
-        if let filing {
+        if runsLibraryPasses, let filing {
             for changed in await filing.fileUnsureRecordingsBySpokenContent() {
                 await filingCenter?.refresh(changed)
             }
         }
         startMail(services: services)
         // Transcripts waiting for extraction are read in the background (only with Claude Code).
-        await transcriptItems?.start()
+        if runsLibraryPasses {
+            await transcriptItems?.start()
+        }
         // The study pass follows lectures from here on; a finished lecture wakes it at once.
         if let studyPass {
             await studyPass.start()
@@ -505,6 +511,18 @@ final class AppModel {
         // phone's coach is never started).
         #if os(macOS)
         await coach?.start()
+        #endif
+    }
+
+    /// M7: the launch passes that rewrite the library's rows (recovering the agent's interrupted
+    /// conversations, the filing passes, reading transcripts) run where the library's work is
+    /// done: the Mac, and an iPad without sync. The iPhone shows the Mac's rows (synced, they are
+    /// the Mac's own: a running conversation there is the Mac answering, not one a quit left).
+    private var runsLibraryPasses: Bool {
+        #if os(macOS)
+        true
+        #else
+        !Self.isPhone && cloudSync == nil
         #endif
     }
 

@@ -37,8 +37,68 @@ enum SyncedTables {
         return Schema.tableNames.filter { !excluded.contains($0) && !listed.contains($0) }
     }
 
-    /// The sync engine over these tables, not started.
-    static func engine(for database: any DatabaseWriter, container: String) throws -> SyncEngine {
+    /// The schema SQLiteData attaches its metadatabase under (`Database.attachMetadatabase`).
+    static let metadataSchema = "sqlitedata_icloud"
+
+    /// True once a sync engine has started on this library (SQLiteData cached its record types
+    /// at the end of that start); false before the first sync.
+    static func hasSynced(_ db: Database) throws -> Bool {
+        let exists = try Int.fetchOne(
+            db,
+            sql: """
+                SELECT count(*) FROM "\(metadataSchema)".sqlite_master
+                WHERE "type" = 'table' AND "name" = 'sqlitedata_icloud_recordTypes'
+                """
+        ) ?? 0
+        guard exists > 0 else { return false }
+        let cached = try Int.fetchOne(db, sql: #"SELECT count(*) FROM "\#(metadataSchema)"."sqlitedata_icloud_recordTypes""#) ?? 0
+        return cached > 0
+    }
+
+    /// Rows iCloud has not received yet: never saved to the server and not deleted.
+    static func unsentCount(_ db: Database) throws -> Int {
+        try SyncMetadata
+            .where { !$0.hasLastKnownServerRecord && !$0._isDeleted }
+            .fetchCount(db)
+    }
+
+    /// Queues those rows again (a running engine only: SQLiteData's metadata triggers add each
+    /// to its pending changes; already pending ones stay once). Returns how many.
+    static func queueUnsent(_ db: Database) throws -> Int {
+        try SyncMetadata
+            .where { !$0.hasLastKnownServerRecord && !$0._isDeleted }
+            .update { $0.recordPrimaryKey = $0.recordPrimaryKey }
+            .execute(db)
+        return db.changesCount
+    }
+
+    /// Queues the rows no engine noted (written while none was built: by a build without sync,
+    /// or before this launch made its engine): their tables are touched (`SET id = id`), so
+    /// SQLiteData's triggers add their metadata and queue them. Only rows without metadata are
+    /// touched; a running engine sends them. Returns how many.
+    static func queueUntracked(_ db: Database) throws -> Int {
+        var queued = 0
+        for table in types.map({ $0.tableName }) {
+            try db.execute(
+                sql: """
+                    UPDATE "\(table)" SET "id" = "id"
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM "\(metadataSchema)"."sqlitedata_icloud_metadata" AS "m"
+                      WHERE "m"."recordPrimaryKey" = "\(table)"."id" AND "m"."recordType" = ?
+                    )
+                    """,
+                arguments: [table]
+            )
+            queued += db.changesCount
+        }
+        return queued
+    }
+
+    /// The sync engine over these tables, not started. `delegate` decides what an iCloud
+    /// account change does (`AccountChangeGuard`: never delete the device's rows).
+    static func engine(
+        for database: any DatabaseWriter, container: String, delegate: any SyncEngineDelegate
+    ) throws -> SyncEngine {
         try SyncEngine(
             for: database,
             tables:
@@ -57,7 +117,8 @@ enum SyncedTables {
                 AgentRequest.self, AgentRequestFile.self,
                 UniversityProfileRecord.self,
             containerIdentifier: container,
-            startImmediately: false
+            startImmediately: false,
+            delegate: delegate
         )
     }
 }
