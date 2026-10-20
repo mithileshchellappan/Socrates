@@ -9,7 +9,7 @@ import SwiftUI
 /// Debug builds only: renders the wired main window of a library to PNGs and quits, so the app
 /// can be checked against the mockups without a screen.
 ///
-///     STUDYPORTAL_DATA_ROOT=<library copy> STUDYPORTAL_SNAPSHOTS=<folder> StudyPortal.app/Contents/MacOS/StudyPortal
+///     SOCRATES_DATA_ROOT=<library copy> STUDYPORTAL_SNAPSHOTS=<folder> Socrates.app/Contents/MacOS/Socrates
 ///
 /// Shots (light and dark): Today, Calendar (the week of `STUDYPORTAL_SNAPSHOT_WEEK`, YYYY-MM-DD, else
 /// this week), Mail (Inbox with the newest message, its course, Drafts), Course

@@ -4,7 +4,7 @@
 # Signing and the bundle ID prefix come from Config/Signing.xcconfig, which includes
 # Config/Local.xcconfig when it exists (not committed; copy Config/Local.xcconfig.example). Without
 # it no team is set and the Mac app is signed to run locally (ad-hoc).
-name: StudyPortal
+name: Socrates
 
 configFiles:
   Debug: Config/Signing.xcconfig
@@ -94,7 +94,7 @@ packages:
     path: Packages/Documents
 
 targets:
-  StudyPortal:
+  Socrates:
     type: application
     supportedDestinations: [macOS, iOS]
     sources:
@@ -110,7 +110,7 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: Study Portal
+        CFBundleDisplayName: Socrates
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.education
@@ -119,8 +119,8 @@ targets:
         # M7: the iPhone's agent sheet (Take Photo of the board).
         NSCameraUsageDescription: Takes a photo to ask about.
         NSSpeechRecognitionUsageDescription: Shows live captions while a lecture is recorded.
-        NSCalendarsFullAccessUsageDescription: Shows your classes and deadlines and keeps the Study Portal calendar up to date.
-        # studyportal://session/<id> and studyportal://item/<id>: links on the Study Portal
+        NSCalendarsFullAccessUsageDescription: Shows your classes and deadlines and keeps the Socrates calendar up to date.
+        # studyportal://session/<id> and studyportal://item/<id>: links on the Socrates
         # calendar's events open the lecture or the mail a deadline was read from.
         CFBundleURLTypes:
           - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
@@ -137,7 +137,7 @@ targets:
         StudyPortalCloudKitContainer: $(STUDYPORTAL_SYNC_CONTAINER)
         # audio: recording with the screen locked; remote-notification: iCloud sync's silent pushes.
         UIBackgroundModes: [audio, remote-notification]
-        # M7: the recording's Live Activity (Lock Screen + Dynamic Island), from StudyPortalWidgets.
+        # M7: the recording's Live Activity (Lock Screen + Dynamic Island), from SocratesWidgets.
         NSSupportsLiveActivities: true
         UISupportedInterfaceOrientations~iphone:
           - UIInterfaceOrientationPortrait
@@ -145,20 +145,20 @@ targets:
         # import dialog treat one as a single item.
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.example.studyportal.lecture
-            UTTypeDescription: Study Portal Lecture
+            UTTypeDescription: Socrates Lecture
             UTTypeConformsTo: [com.apple.package, public.composite-content]
             UTTypeTagSpecification:
               public.filename-extension: [lecture]
           # M7: one `.lecture` package as a single file (Apple Archive), shared from the iPhone
           # by Share / AirDrop; the Mac's smart import unpacks and files it.
           - UTTypeIdentifier: com.example.studyportal.lecture-bundle
-            UTTypeDescription: Study Portal Recording
+            UTTypeDescription: Socrates Recording
             UTTypeConformsTo: [public.data, public.archive]
             UTTypeTagSpecification:
               public.filename-extension: [lecturebundle]
         # M7: the Mac opens an AirDropped or double-clicked capture (smart import files it).
         CFBundleDocumentTypes:
-          - CFBundleTypeName: Study Portal Recording
+          - CFBundleTypeName: Socrates Recording
             CFBundleTypeRole: Viewer
             LSHandlerRank: Owner
             LSItemContentTypes: [com.example.studyportal.lecture-bundle, com.example.studyportal.lecture]
@@ -169,7 +169,10 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     settings:
       base:
-        PRODUCT_NAME: StudyPortal
+        PRODUCT_NAME: Socrates
+        # The bundle IDs, UTType IDs, URL schemes and the library folder keep the app's earlier name
+        # "studyportal" so an existing install keeps its data, permissions and Keychain items
+        # (docs/decisions.md, 2026-10-20).
         PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).studyportal
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
@@ -289,13 +292,13 @@ targets:
       - package: Documents
         product: DocumentsUI
         destinationFilters: [macOS]
-      - target: StudyPortalWidgets
+      - target: SocratesWidgets
         destinationFilters: [iOS]
         embed: true
 
   # M7 (docs/plan-m7.md §3): the recording's Live Activity (Lock Screen + Dynamic Island). Its views
   # and the two button intents are in Widgets/Shared, which the app compiles too.
-  StudyPortalWidgets:
+  SocratesWidgets:
     type: app-extension
     platform: iOS
     deploymentTarget: "26.0"
@@ -304,14 +307,14 @@ targets:
     info:
       path: Widgets/Info.plist
       properties:
-        CFBundleDisplayName: Study Portal
+        CFBundleDisplayName: Socrates
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
-        PRODUCT_NAME: StudyPortalWidgets
+        PRODUCT_NAME: SocratesWidgets
         PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).studyportal.widgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES

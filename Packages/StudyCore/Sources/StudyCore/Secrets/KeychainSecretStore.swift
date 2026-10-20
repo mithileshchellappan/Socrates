@@ -202,7 +202,7 @@ public struct SystemKeychain: KeychainOperations {
         case errSecItemNotFound:
             var add = query
             add[kSecValueData as String] = data
-            add[kSecAttrLabel as String] = "Study Portal (\(item.account))"
+            add[kSecAttrLabel as String] = "Socrates (\(item.account))"
             if backend == .dataProtection {
                 add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             }

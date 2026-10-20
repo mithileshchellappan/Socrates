@@ -47,7 +47,7 @@ public struct Course: StudyRecord {
     @Column(as: [CourseRule].JSONRepresentation.self) public var rules: [CourseRule]
     /// v4: whose voices recordings keep.
     @Column("recording_scope") public var recordingScope: RecordingScope
-    /// v4: mirror this course's sessions to the "Study Portal" calendar.
+    /// v4: mirror this course's sessions to the "Socrates" calendar.
     @Column("shows_in_calendar") public var showsInCalendar: Bool
     /// v4: folder the course's slide PDFs are downloaded to (display path; smart import watches it).
     @Column("slides_folder") public var slidesFolder: String?
@@ -199,7 +199,7 @@ public struct LectureSession: StudyRecord {
     @Column("ends_at") public var endsAt: Date
     public var room: String
     @Column("is_cancelled") public var isCancelled: Bool
-    /// EventKit `calendarItemExternalIdentifier` in the "Study Portal" calendar.
+    /// EventKit `calendarItemExternalIdentifier` in the "Socrates" calendar.
     @Column("calendar_event_id") public var calendarEventID: String?
     /// v4: ordinal among the course's non-cancelled sessions of this kind ("Lecture 3"), kept up to
     /// date by session planning; nil when unknown.
@@ -764,14 +764,14 @@ public struct TrackedItem: StudyRecord {
     @Column("source_quote") public var sourceQuote: String
     /// Legacy (v1) pointers; since v5 provenance lives in `tracked_item_source` rows.
     @Column("source_refs", as: [SourceRef].JSONRepresentation.self) public var sourceRefs: [SourceRef]
-    /// EventKit `calendarItemExternalIdentifier` in the "Study Portal" calendar.
+    /// EventKit `calendarItemExternalIdentifier` in the "Socrates" calendar.
     @Column("calendar_event_id") public var calendarEventID: String?
     @Column("created_by") public var createdBy: Author
     /// v5: the lecture session a room change or cancellation is about (or a deadline is tied to).
     @Column("lecture_session_id") public var lectureSessionID: LectureSession.ID?
     /// v5: the new room of a room change; where an exam or event takes place.
     public var room: String?
-    /// v5: the item belongs in the "Study Portal" calendar (set automatically for verified
+    /// v5: the item belongs in the "Socrates" calendar (set automatically for verified
     /// deadlines, by Add to Calendar otherwise); the calendar mirror writes events for open items
     /// with a due date where this is true and removes the others.
     @Column("in_calendar") public var inCalendar: Bool

@@ -136,7 +136,7 @@ struct WeekPlan: Equatable {
         data: CalendarData,
         week: CalendarWeek,
         timeZone: TimeZone,
-        showsStudyPortal: Bool = true,
+        showsOwnCalendar: Bool = true,
         foreignEvents: [ForeignEvent] = [],
         foreignColors: [String: String] = [:]
     ) -> WeekPlan {
@@ -147,7 +147,7 @@ struct WeekPlan: Equatable {
         }
         func range(_ start: Date, _ end: Date) -> String { DayText.timeRange(start, end, timeZone: timeZone) }
 
-        if showsStudyPortal {
+        if showsOwnCalendar {
             var proposals: [LectureSession.ID: TrackedItem] = [:]
             for item in data.proposals {
                 if let id = item.lectureSessionID, proposals[id] == nil { proposals[id] = item }

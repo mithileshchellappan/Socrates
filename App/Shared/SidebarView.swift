@@ -233,7 +233,7 @@ struct SidebarView: View {
         // The whole sidebar is one drop area around its row targets: the window's HUD stays away
         // while files are over it, so only the row under the cursor lights.
         .filingDropZone(center)
-        .navigationTitle("Study Portal")
+        .navigationTitle("Socrates")
         #if os(macOS)
         .navigationSplitViewColumnWidth(min: 200, ideal: Self.idealWidth, max: 320)
         #else

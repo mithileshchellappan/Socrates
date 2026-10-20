@@ -12,7 +12,7 @@ import StudyCore
 /// log in one transaction with its `agent_change` row and Undo, each through the app's own code: a
 /// course as New Course… makes one (`CourseLibrary.insert`), a slot as Course Settings' Add Slot
 /// saves one (`CourseSchedule.saveSlot` / `deleteSlot`: the sessions are planned, and the calendar
-/// mirror writes them into the "Study Portal" calendar after the log's `onChange`).
+/// mirror writes them into the "Socrates" calendar after the log's `onChange`).
 extension WriteTools {
     static let weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
@@ -50,7 +50,7 @@ extension WriteTools {
                     lecturers; it shows in the sidebar), ONLY when the student's message asks you to (quote: their words \
                     asking). Then add its classes with add_weekly_slot. Recording stays off until the student turns it \
                     on. language: taught in (null: en); admin_language: its admin mail (null: de); in_calendar: its \
-                    sessions in the Study Portal calendar (null: true). Undo removes it.
+                    sessions in the Socrates calendar (null: true). Undo removes it.
                     """,
                 inputSchema: Schema.object([
                     "name": Schema.string("The course's full name."),
@@ -123,7 +123,7 @@ extension WriteTools {
                 description: """
                     Adds a course's weekly class as Course Settings' Add Slot does, ONLY when the student asks (quote: \
                     their words asking): its sessions are planned for the semester's lecture days (breaks skipped) and \
-                    appear in the Study Portal calendar. Times are \(UniversityProfile.current.localTime). every: null for every week. A class \
+                    appear in the Socrates calendar. Times are \(UniversityProfile.current.localTime). every: null for every week. A class \
                     of the course that meets at an overlapping time is refused with its key (change_weekly_slot \
                     changes it). Undo removes it with its sessions (not ones holding a lecture).
                     """,

@@ -35,7 +35,7 @@ struct WebCheck: Sendable {
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         configuration.timeoutIntervalForRequest = Self.timeout
         configuration.timeoutIntervalForResource = Self.timeout
-        configuration.httpAdditionalHeaders = ["User-Agent": "StudyPortal/1 (source check)"]
+        configuration.httpAdditionalHeaders = ["User-Agent": "Socrates/1 (source check)"]
         session = URLSession(configuration: configuration)
     }
 

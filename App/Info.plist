@@ -5,12 +5,12 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Study Portal</string>
+	<string>Socrates</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>Study Portal Recording</string>
+			<string>Socrates Recording</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
@@ -52,7 +52,7 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.education</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Shows your classes and deadlines and keeps the Study Portal calendar up to date.</string>
+	<string>Shows your classes and deadlines and keeps the Socrates calendar up to date.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Takes a photo to ask about.</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -97,7 +97,7 @@
 				<string>public.composite-content</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>Study Portal Lecture</string>
+			<string>Socrates Lecture</string>
 			<key>UTTypeIdentifier</key>
 			<string>com.example.studyportal.lecture</string>
 			<key>UTTypeTagSpecification</key>
@@ -115,7 +115,7 @@
 				<string>public.archive</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>Study Portal Recording</string>
+			<string>Socrates Recording</string>
 			<key>UTTypeIdentifier</key>
 			<string>com.example.studyportal.lecture-bundle</string>
 			<key>UTTypeTagSpecification</key>

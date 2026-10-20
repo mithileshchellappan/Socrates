@@ -28,15 +28,28 @@ public struct AppPaths: Hashable, Sendable {
 
     /// Environment variable that relocates all app data to an absolute directory, so test runs
     /// and parallel agents never touch the real library.
-    public static let rootOverrideVariable = "STUDYPORTAL_DATA_ROOT"
+    public static let rootOverrideVariable = "SOCRATES_DATA_ROOT"
+    /// The same variable under the app's name before the rename, still honoured when
+    /// `SOCRATES_DATA_ROOT` is not set.
+    public static let legacyRootOverrideVariable = "STUDYPORTAL_DATA_ROOT"
 
-    /// The real locations for this device (or `$STUDYPORTAL_DATA_ROOT` when set).
+    /// The absolute folder `$SOCRATES_DATA_ROOT` (else `$STUDYPORTAL_DATA_ROOT`) names, if any.
+    public static func rootOverride(in environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        for variable in [rootOverrideVariable, legacyRootOverrideVariable] {
+            if let value = environment[variable], value.hasPrefix("/") {
+                return URL(filePath: value, directoryHint: .isDirectory)
+            }
+        }
+        return nil
+    }
+
+    /// The real locations for this device (or `$SOCRATES_DATA_ROOT` when set).
     public static func live(
         fileManager: FileManager = .default,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> AppPaths {
-        if let override = environment[rootOverrideVariable], override.hasPrefix("/") {
-            return AppPaths(root: URL(filePath: override, directoryHint: .isDirectory))
+        if let override = rootOverride(in: environment) {
+            return AppPaths(root: override)
         }
         let support = try fileManager.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true

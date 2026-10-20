@@ -81,9 +81,9 @@ let package = Package(
             exclude: [
                 "App/Info.plist",
                 "App/iOS",
-                "App/Shared/StudyPortalApp.swift",
+                "App/Shared/SocratesApp.swift",
                 "App/Shared/Assets.xcassets",
-                "App/macOS/StudyPortal.entitlements"
+                "App/macOS/Socrates.entitlements"
             ],
             swiftSettings: [
                 .defaultIsolation(MainActor.self),

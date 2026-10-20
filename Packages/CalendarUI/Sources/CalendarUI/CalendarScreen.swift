@@ -87,7 +87,7 @@ public struct CalendarScreen: View {
         let shown = data.week ?? week
         let plan = WeekPlan.make(
             data: data, week: shown, timeZone: timeZone,
-            showsStudyPortal: visibility?.showsStudyPortal ?? true,
+            showsOwnCalendar: visibility?.showsOwnCalendar ?? true,
             foreignEvents: foreignEvents,
             foreignColors: Dictionary(foreignList.calendars.map { ($0.id, $0.colorHex) }, uniquingKeysWith: { first, _ in first })
         )

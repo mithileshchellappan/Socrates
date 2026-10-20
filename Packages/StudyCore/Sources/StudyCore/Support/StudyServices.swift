@@ -27,7 +27,7 @@ public struct StudyServices: Sendable {
     ///
     /// `syncContainer` (M7): the CloudKit container when this build syncs
     /// (`CloudSyncConfiguration.containerIdentifier()`); nil opens the database as before. Only
-    /// the real library syncs: with a data-root override (`STUDYPORTAL_DATA_ROOT`: a scratch,
+    /// the real library syncs: with a data-root override (`SOCRATES_DATA_ROOT`: a scratch,
     /// demo or parity library) the container is dropped, so such a library never uploads its rows
     /// into the student's iCloud data nor sends its deletes there (`syncContainer` stays nil and
     /// so does `CloudSync`). On iOS a syncing build opens `syncedDatabase`: SQLiteData's first
@@ -63,7 +63,7 @@ public struct StudyServices: Sendable {
 
     /// In-memory database, temporary directories, no Keychain. For tests and previews.
     public static func inMemory() throws -> StudyServices {
-        let root = URL.temporaryDirectory.appending(path: "StudyPortal-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let root = URL.temporaryDirectory.appending(path: "Socrates-\(UUID().uuidString)", directoryHint: .isDirectory)
         let paths = AppPaths(root: root)
         return StudyServices(
             paths: paths,

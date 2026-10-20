@@ -47,7 +47,7 @@ final class AppModel {
     let filing: FilingService?
     /// The main window's drop HUD, toasts, change sheet and File ▸ Import… panel.
     let filingCenter: FilingCenter?
-    /// Mirrors lecture sessions into the "Study Portal" calendar. Mac only until the library
+    /// Mirrors lecture sessions into the "Socrates" calendar. Mac only until the library
     /// syncs between devices (M7): another device's session ids differ, and each device's orphan
     /// cleanup would delete the other's events.
     let calendarMirror: CalendarMirror?
@@ -621,7 +621,7 @@ final class AppModel {
 
     // MARK: - Calendar
 
-    /// Brings the "Study Portal" calendar in line with the sessions and the deadlines from mail.
+    /// Brings the "Socrates" calendar in line with the sessions and the deadlines from mail.
     /// Calendar access is asked for only once a course shown in the calendar has a session or a
     /// deadline wants an event; until then nothing is written.
     func syncCalendar(full: Bool = false) async {
@@ -667,7 +667,7 @@ final class AppModel {
         #endif
     }
 
-    /// ma: a Study Portal event moved or deleted in Calendar.app is found by a full sync only (it
+    /// ma: a Socrates event moved or deleted in Calendar.app is found by a full sync only (it
     /// records a `calendar` event for the agent's triage and leaves the student's edit until triage
     /// decides). Coalesced, and at most one a minute: the mirror's own writes post the same
     /// notification, and a full sync after them writes nothing.

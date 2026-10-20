@@ -15,7 +15,7 @@ import SwiftUI
 /// Debug builds only: opens the app on one screen of a throwaway library, in a fixed window, so
 /// the real window can be captured and compared with the approved mockups (`tools/parity/shoot`).
 ///
-///     StudyPortal.app/Contents/MacOS/StudyPortal \
+///     Socrates.app/Contents/MacOS/Socrates \
 ///         -StudyPortalDataRoot <library copy> -StudyPortalRoute <route> \
 ///         [-StudyPortalAppearance light|dark] [-StudyPortalReadyMarker <file>] [-StudyPortalSettle <seconds>] \
 ///         -ApplePersistenceIgnoreState YES
@@ -35,7 +35,7 @@ import SwiftUI
 /// newest selected) and `documents/<title>?page=N` (that document, the page a hit named). Path
 /// parts may be percent-encoded.
 ///
-/// The library comes from `-StudyPortalDataRoot` (or `STUDYPORTAL_DATA_ROOT`); without either,
+/// The library comes from `-StudyPortalDataRoot` (or `SOCRATES_DATA_ROOT`); without either,
 /// or pointed at the real library, the app opens nothing. Nothing runs in the background (no
 /// transcription, no calendar, no first-launch courses), the Keychain is not read, the window is
 /// 1440×900 points and nothing is restored. Once the routed screen has rendered, the marker file
@@ -146,8 +146,7 @@ enum ParityMode {
 
     /// The library to open: never the real one.
     static func services(_ options: Options) throws -> StudyServices {
-        let environment = ProcessInfo.processInfo.environment[AppPaths.rootOverrideVariable]
-        guard let root = options.dataRoot ?? environment.flatMap({ $0.hasPrefix("/") ? URL(filePath: $0, directoryHint: .isDirectory) : nil }) else {
+        guard let root = options.dataRoot ?? AppPaths.rootOverride() else {
             throw Failure("Parity mode needs -StudyPortalDataRoot <library copy>")
         }
         let real = try AppPaths.live(environment: [:]).root.standardizedFileURL.resolvingSymlinksInPath()

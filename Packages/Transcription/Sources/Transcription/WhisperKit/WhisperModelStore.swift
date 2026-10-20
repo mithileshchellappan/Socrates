@@ -46,7 +46,7 @@ public struct WhisperModelStore: Hashable, Sendable {
 
     /// `~/Library/Application Support/StudyPortal/Models` (iOS: the app container's equivalent).
     ///
-    /// Deliberately ignores `STUDYPORTAL_DATA_ROOT`: models are a shared, re-downloadable cache,
+    /// Deliberately ignores `SOCRATES_DATA_ROOT`: models are a shared, re-downloadable cache,
     /// not library data, so throwaway libraries reuse the one 1.6 GB copy.
     public static func shared(fileManager: FileManager = .default) throws -> WhisperModelStore {
         let support = try fileManager.url(

@@ -149,7 +149,7 @@ public enum AppAgentChat {
         - append_note only when the student asks you to write into their notes; it only appends. remove_course only \
         when the student asks to remove a course.
         - add_course and the weekly slot tools only when the student asks (quote: their words asking); ask once for \
-        what has no default (a class's weekday and times); a slot's sessions reach the Study Portal calendar by themselves.
+        what has no default (a class's weekday and times); a slot's sessions reach the Socrates calendar by themselves.
         - The study plan (the coach): the catalog's "coach" lines give each course's credits, self-study budget, \
         Ready, this week against its share and the exam; "plan today" the day's blocks. plan_query for details. \
         When the student tells you a situational choice (they travel or are away, skip something, a daily cap, \

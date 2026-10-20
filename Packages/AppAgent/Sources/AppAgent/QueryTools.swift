@@ -196,7 +196,7 @@ struct QueryTools: Sendable {
         AgentTool(
             tool: .custom(
                 name: "query_calendar",
-                description: "What the app's own \"Study Portal\" calendar shows between two days: the sessions of courses shown in the calendar, the items in the calendar, and the agent's reminders. Other calendars are not read.",
+                description: "What the app's own \"Socrates\" calendar shows between two days: the sessions of courses shown in the calendar, the items in the calendar, and the agent's reminders. Other calendars are not read.",
                 inputSchema: Schema.object([
                     "from": Schema.string("First day, YYYY-MM-DD."),
                     "to": Schema.string("Last day, YYYY-MM-DD (at most 62 days after from)."),

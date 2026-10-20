@@ -2,14 +2,14 @@
 import PackageDescription
 
 // Workstream A (M1): course setup (#1), weekly slots → lecture sessions, the app-owned
-// "Study Portal" calendar (#36), the course setup screen (mockup 08) and a light Today (mockup 01).
+// "Socrates" calendar (#36), the course setup screen (mockup 08) and a light Today (mockup 01).
 let package = Package(
     name: "Courses",
     platforms: [.macOS(.v26), .iOS(.v26)],
     products: [
         // Pure logic: course drafts/validation, session planning from weekly slots and the semester.
         .library(name: "Courses", targets: ["Courses"]),
-        // EventKit mirror of lecture sessions into the app-owned "Study Portal" calendar.
+        // EventKit mirror of lecture sessions into the app-owned "Socrates" calendar.
         .library(name: "CalendarSync", targets: ["CalendarSync"]),
         // SwiftUI: course setup (08), new course, semester settings, light Today (01; mc: the plan's
         // hero, mockups 11–12).
