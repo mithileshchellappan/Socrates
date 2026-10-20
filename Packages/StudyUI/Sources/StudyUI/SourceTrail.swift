@@ -27,6 +27,10 @@ public enum SourceTrailText {
             return name.isEmpty ? (entry.senderAddress ?? String(localized: "Mail")) : name
         case .chat:
             return String(localized: "You")
+        case .calendar:
+            return String(localized: "Calendar")
+        case .profile:
+            return String(localized: "Profile")
         default:
             let title = entry.lectureTitle?.trimmingCharacters(in: .whitespaces) ?? ""
             let isLecture = entry.sessionKind == nil || entry.sessionKind == .lecture
@@ -119,7 +123,8 @@ public struct SourceGlyph: View {
     static func symbol(_ kind: SourceRef.Kind) -> String {
         switch kind {
         case .mail: "envelope"
-        case .timetable: "calendar"
+        case .timetable, .calendar: "calendar"
+        case .profile: "doc.text"
         default: "waveform"
         }
     }
@@ -232,24 +237,11 @@ public struct SourceTrailRows: View {
         switch entry.kind {
         case .mail:
             mailRow(entry)
-        case .timetable:
-            HStack(alignment: .center, spacing: 9) {
-                Image(systemName: "calendar")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(SourceTrailText.name(entry))
-                        .font(.system(size: 12.5, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(SourceTrailText.quote(entry.source.quote))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-            }
+        case .timetable, .calendar:
+            quoteRow(entry, glyph: "calendar")
+        case .profile:
+            // Not a lecture: no professor's pin.
+            quoteRow(entry, glyph: "doc.text")
         case .chat:
             HStack(alignment: .center, spacing: 9) {
                 ProvenancePin(.user)
@@ -287,6 +279,27 @@ public struct SourceTrailRows: View {
                     }
                 }
             }
+        }
+    }
+
+    /// A timetable file, the calendar or the profile: its glyph, its name, the quote.
+    private func quoteRow(_ entry: SourceTrailEntry, glyph: String) -> some View {
+        HStack(alignment: .center, spacing: 9) {
+            Image(systemName: glyph)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(SourceTrailText.name(entry))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(SourceTrailText.quote(entry.source.quote))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
         }
     }
 
