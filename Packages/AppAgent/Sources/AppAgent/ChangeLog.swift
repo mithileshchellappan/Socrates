@@ -109,6 +109,11 @@ public struct ChangeLog: Sendable {
         case slotChange(WeeklySlot)
         /// A weekly slot removed (`remove_weekly_slot`, `CourseSchedule.deleteSlot`).
         case slotRemove(WeeklySlot.ID)
+        /// mr: a lecture's page range of a deck made or changed (`link_deck_pages`,
+        /// `LectureSlides.link`; other lectures' ranges of the deck stay).
+        case deckLink(lectureID: Lecture.ID, deckID: Deck.ID, firstPage: Int, lastPage: Int)
+        /// mr: a lecture's link to a deck removed (`unlink_deck`, `LectureSlides.unlink`; the deck stays).
+        case deckUnlink(lectureID: Lecture.ID, deckID: Deck.ID)
     }
 
     /// What `apply` did.
@@ -168,20 +173,24 @@ public struct ChangeLog: Sendable {
     /// md: the app's document bank, for Undo of `keep_document` (it stops reading the document;
     /// nil: a bank of its own).
     let documents: DocumentBank?
+    /// mr: wakes the lecture processor after a change or its Undo queued `align` jobs (a deck
+    /// linked, unlinked or put back).
+    let wakeProcessing: @Sendable () async -> Void
     let now: @Sendable () -> Date
 
     /// `memory`: the app's deadline memory, whose `onChange` syncs the calendar after each write.
     /// `filing`: the app's smart import (its Undo wakes the processor for re-alignment).
-    /// `documents` (md): the app's document bank.
+    /// `documents` (md): the app's document bank. `wakeProcessing` (mr): the processor's `wake()`.
     public init(
         services: StudyServices, memory: DeadlineMemory? = nil, filing: FilingService? = nil, documents: DocumentBank? = nil,
-        now: @escaping @Sendable () -> Date = { Date() }
+        wakeProcessing: @escaping @Sendable () async -> Void = {}, now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
         let memory = memory
         onChange = { await memory?.didChange() }
         self.filing = filing
         self.documents = documents
+        self.wakeProcessing = wakeProcessing
         self.now = now
     }
 
@@ -192,11 +201,13 @@ public struct ChangeLog: Sendable {
     public func apply(_ request: Request, quote: String, confidence: Double = 1, origin: Origin) async throws -> Outcome {
         let store = services.records
         let date = now()
-        let outcome = try await services.database.write { db in
-            try Self.apply(request, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: date)
+        let result: (outcome: Outcome, jobs: [Job]) = try await services.database.write { db in
+            try Self.applyQueuing(request, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: date)
         }
-        if case .applied = outcome { await onChange() }
-        return outcome
+        if case .applied = result.outcome { await onChange() }
+        // mr: a deck change queued alignment of the lecture's recordings.
+        if !result.jobs.isEmpty { await wakeProcessing() }
+        return result.outcome
     }
 
     /// Undo of one change: the target back from `before`, the item's source undone, reminders
@@ -207,6 +218,7 @@ public struct ChangeLog: Sendable {
         let date = now()
         if let change = try await store.fetch(AgentChange.self, id: id) {
             if change.targetTable == .filing { return try await undoFiling(change, at: date) }
+            if change.targetTable == .deckSpan { return try await undoDeckLink(id, at: date) }
             if change.kind == .courseRemove { return try await undoCourseRemoval(change, at: date) }
             if change.kind == .courseAdd { return try await undoCourseAdd(change, at: date) }
             if change.kind == .documentAdd { return try await undoDocumentAdd(change, at: date) }
@@ -280,6 +292,21 @@ public struct ChangeLog: Sendable {
         let id = change.id
         try await services.database.write { db in try AgentChangeRepository.markUndone(id, at: date, db: db) }
         return true
+    }
+
+    /// mr: Undo of a `deck_link` / `deck_unlink` change (the agent's or continuation detection's):
+    /// `LectureSlides.undo` and the row marked in one transaction; the processor wakes when it
+    /// queued alignment. `UndoRefused.changedSince` when the link changed since.
+    private func undoDeckLink(_ id: AgentChange.ID, at date: Date) async throws -> Bool {
+        let store = services.records
+        let result: (undone: Bool, jobs: [Job]) = try await services.database.write { db -> (undone: Bool, jobs: [Job]) in
+            guard let change = try AgentChange.find(id).fetchOne(db), change.undoneAt == nil else { return (false, []) }
+            let jobs = try Self.undoDeckLink(change, db: db, store: store, now: date)
+            try AgentChangeRepository.markUndone(id, at: date, db: db)
+            return (true, jobs)
+        }
+        if !result.jobs.isEmpty { await wakeProcessing() }
+        return result.undone
     }
 
     /// Undo from an item's popover (or Mail's found row): the change written with that source
@@ -397,6 +424,81 @@ public struct ChangeLog: Sendable {
             return try changeSlot(slot, quote: quote, origin: origin, db: db, store: store, now: now)
         case .slotRemove(let id):
             return try removeSlot(id, quote: quote, origin: origin, db: db, store: store, now: now)
+        case .deckLink, .deckUnlink:
+            return try applyDeck(request, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now).outcome
+        }
+    }
+
+    /// `apply` with the `align` jobs a deck change queued (the instance then wakes the processor).
+    static func applyQueuing(
+        _ request: Request, quote: String, confidence: Double, origin: Origin, db: Database, store: RecordStore, now: Date
+    ) throws -> (outcome: Outcome, jobs: [Job]) {
+        switch request {
+        case .deckLink, .deckUnlink:
+            let quote = quote.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !quote.isEmpty else { return (.refused("A change needs the exact words it comes from."), []) }
+            let confidence = min(max(confidence.isFinite ? confidence : 0, 0), 1)
+            return try applyDeck(request, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now)
+        default:
+            let outcome = try apply(request, quote: quote, confidence: confidence, origin: origin, db: db, store: store, now: now)
+            return (outcome, [])
+        }
+    }
+
+    // MARK: Decks (mr)
+
+    /// A deck link or unlink through `LectureSlides` with its change row (kind `deck_link` /
+    /// `deck_unlink`, target the coarse span, `lecture_id` the lecture) and the origin's columns,
+    /// in the caller's transaction. Already so: `.unchanged("Already uses …")`; a `DeckLinkError`
+    /// (unknown lecture or deck, another course's deck, pages outside the deck, not linked):
+    /// `.refused` with its sentence, nothing written.
+    static func applyDeck(
+        _ request: Request, quote: String, confidence: Double, origin: Origin, db: Database, store: RecordStore, now: Date
+    ) throws -> (outcome: Outcome, jobs: [Job]) {
+        let result: DeckLinkResult
+        do {
+            switch request {
+            case .deckLink(let lectureID, let deckID, let firstPage, let lastPage):
+                result = try LectureSlides.link(
+                    lectureID: lectureID, deckID: deckID, firstPage: firstPage, lastPage: lastPage, source: .manual, confidence: 1,
+                    in: db, store: store, now: now
+                )
+            case .deckUnlink(let lectureID, let deckID):
+                result = try LectureSlides.unlink(lectureID: lectureID, deckID: deckID, in: db, store: store, now: now)
+            default:
+                return (.refused("Not a deck change."), [])
+            }
+        } catch let error as DeckLinkError {
+            return (.refused(error.description), [])
+        }
+        let made = result.change(sourceKind: origin.sourceKind, quote: quote, confidence: confidence, model: origin.model, now: now)
+        guard var change = made else {
+            let summary = result.summary
+            let prefix = "Uses "
+            var already = "Already so: " + summary
+            if summary.hasPrefix(prefix) {
+                let rest = String(summary.dropFirst(prefix.count))
+                already = "Already uses " + rest
+            }
+            return (.unchanged(already + "."), [])
+        }
+        let lectureID = change.lectureID
+        ItemChangeRows.apply(origin.source, to: &change)
+        // The row's lecture is the one whose slides changed (a transcript quote's may differ).
+        change.lectureID = lectureID
+        change.apiCallID = origin.apiCallID
+        let stamped = finalize(change, origin: origin, store: store)
+        try AgentChangeRepository.insert(stamped, db: db)
+        return (.applied(stamped), result.alignJobs)
+    }
+
+    /// Undo of a deck change in the caller's transaction (`LectureSlides.undo`); the caller marks
+    /// the row. Returns the `align` jobs it queued.
+    static func undoDeckLink(_ change: AgentChange, db: Database, store: RecordStore, now: Date) throws -> [Job] {
+        do {
+            return try LectureSlides.undo(change, in: db, store: store, now: now)
+        } catch DeckLinkError.changedSince {
+            throw UndoRefused.changedSince
         }
     }
 
@@ -1119,6 +1221,9 @@ public struct ChangeLog: Sendable {
             if let targetID = change.targetID {
                 try undoSlot(change, slotID: targetID, db: db, store: store, now: now)
             }
+        case .deckSpan:
+            // mr: a deck link made, changed or removed (the agent's, or continuation detection's).
+            _ = try undoDeckLink(change, db: db, store: store, now: now)
         default:
             break
         }

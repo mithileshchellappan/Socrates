@@ -15,8 +15,10 @@ struct CitationRows: Equatable, Sendable {
     struct LectureRow: Equatable, Sendable {
         var id: Lecture.ID
         var number: Int?
-        /// The page count of its deck (the largest when it has several); nil without slides.
-        var pageCount: Int?
+        /// mr: the deck pages its slides are (its range of a shared deck, `LectureSlides.current`;
+        /// a lecture with only timed spans: 1 to the largest of their decks' page counts); nil
+        /// without slides.
+        var pages: ClosedRange<Int>?
         /// Oldest first: a marker without a recording key is on the first.
         var recordings: [RecordingRow]
     }
@@ -35,16 +37,25 @@ struct CitationRows: Equatable, Sendable {
     static func load(_ database: any DatabaseReader) async throws -> CitationRows {
         try await database.read { db in
             let lectures = try Lecture.all.fetchAll(db)
-            var spans = try LectureDeckSpan.where { $0.startTime.is(nil) }.fetchAll(db)
-            let linked = Set(spans.map(\.lectureID))
-            let unlinked = lectures.map(\.id).filter { !linked.contains($0) }
-            if !unlinked.isEmpty {
-                spans += try LectureDeckSpan.where { $0.lectureID.in(unlinked) }.fetchAll(db)
+            // mr: a slide marker is valid only inside its lecture's range of a shared deck.
+            var pages: [Lecture.ID: ClosedRange<Int>] = [:]
+            var unlinked: [Lecture.ID] = []
+            for lecture in lectures {
+                if let range = try LectureSlides.current(lectureID: lecture.id, in: db) {
+                    pages[lecture.id] = range.pages
+                } else {
+                    unlinked.append(lecture.id)
+                }
             }
-            let pageCounts = Dictionary(try Deck.all.fetchAll(db).map { ($0.id, $0.pageCount) }, uniquingKeysWith: { max($0, $1) })
-            var decks: [Lecture.ID: Int] = [:]
-            for span in spans {
-                if let count = pageCounts[span.deckID] { decks[span.lectureID] = max(decks[span.lectureID] ?? 0, count) }
+            if !unlinked.isEmpty {
+                // Only timed spans (slide stamps): their decks' pages, as before.
+                let spans = try LectureDeckSpan.where { $0.lectureID.in(unlinked) }.fetchAll(db)
+                let pageCounts = Dictionary(try Deck.all.fetchAll(db).map { ($0.id, $0.pageCount) }, uniquingKeysWith: { max($0, $1) })
+                var counts: [Lecture.ID: Int] = [:]
+                for span in spans {
+                    if let count = pageCounts[span.deckID] { counts[span.lectureID] = max(counts[span.lectureID] ?? 0, count) }
+                }
+                for (lectureID, count) in counts { pages[lectureID] = 1...max(1, count) }
             }
             var recordings: [Lecture.ID: [RecordingRow]] = [:]
             let recordingRows = try Recording.where { $0.lectureID.isNot(nil) }.order(by: \.startedAt).fetchAll(db)
@@ -56,7 +67,7 @@ struct CitationRows: Equatable, Sendable {
             var rows = CitationRows(isLoaded: true)
             for lecture in lectures {
                 rows.lectures[ChatCitation.key(lecture.id), default: []].append(LectureRow(
-                    id: lecture.id, number: lecture.number, pageCount: decks[lecture.id], recordings: recordings[lecture.id] ?? []
+                    id: lecture.id, number: lecture.number, pages: pages[lecture.id], recordings: recordings[lecture.id] ?? []
                 ))
             }
             rows.documents = try DocumentCitations.rows(db)
@@ -83,7 +94,7 @@ enum CheckedCitation: Hashable, Sendable {
 }
 
 /// The checks of docs/plan-m5.md §4, from rows: a lecture marker's key names exactly one lecture,
-/// its slide is a page of the lecture's deck, its moment lies in the recording; a web marker's URL
+/// its slide is a page of the lecture's range of its deck (mr), its moment lies in the recording; a web marker's URL
 /// (host without `www.`, path without a trailing `/`) is a page a web tool of the same
 /// conversation returned (`ChatTranscript.webPages`), and its chip opens the URL as the tool
 /// result wrote it, not the marker's.
@@ -125,8 +136,8 @@ struct CitationCheck: Sendable {
             switch lecture(key) {
             case .failure(let drop): return .failure(drop)
             case .success(let lecture):
-                guard let pages = lecture.pageCount else { return .failure(DropError(.noSlides)) }
-                guard (1...max(1, pages)).contains(page) else { return .failure(DropError(.slideOutsideDeck)) }
+                guard let pages = lecture.pages else { return .failure(DropError(.noSlides)) }
+                guard pages.contains(page) else { return .failure(DropError(.slideOutsideDeck)) }
                 return .success(.slide(lecture: lecture.id, number: lecture.number, page: page))
             }
         case .moment(let key, let recordingKey, let seconds):
