@@ -350,7 +350,7 @@ public actor MailSyncEngine {
         #if os(macOS)
         var values = URLResourceValues()
         values.quarantineProperties = [
-            kLSQuarantineAgentNameKey as String: "Study Portal",
+            kLSQuarantineAgentNameKey as String: "Socrates",
             kLSQuarantineTypeKey as String: kLSQuarantineTypeEmailAttachment as String,
         ]
         try url.setResourceValues(values)

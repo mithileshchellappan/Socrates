@@ -37,7 +37,7 @@ extension TrackedItemKind {
 }
 
 extension SourceRef.Kind {
-    /// The student changed a "Study Portal" event in another calendar app (ma: an `agent_event`).
+    /// The student changed a "Socrates" event in another calendar app (ma: an `agent_event`).
     public static let calendar: Self = "calendar"
 }
 
@@ -100,7 +100,7 @@ public struct AgentToolGroup: StringKind {
     public static let items: Self = "items"
     /// query_sessions (the courses' lecture sessions).
     public static let sessions: Self = "sessions"
-    /// query_calendar (Study Portal rows; other calendars read-only).
+    /// query_calendar (Socrates rows; other calendars read-only).
     public static let calendar: Self = "calendar"
     /// query_memory.
     public static let memory: Self = "memory"
@@ -406,7 +406,7 @@ public struct AgentEventKind: StringKind {
     public static let studyPass: Self = "study_pass"
     /// A timetable import (`detail`: its diff).
     public static let timetable: Self = "timetable"
-    /// A "Study Portal" event the student changed in another calendar app (`detail`).
+    /// A "Socrates" event the student changed in another calendar app (`detail`).
     public static let calendar: Self = "calendar"
 }
 

@@ -9,7 +9,7 @@ import SwiftUI
 /// Debug builds only: opens the iPhone app on one screen of a library copy, for simulator shots
 /// compared with mockups 09, 16 and the agent panel's §7 (docs/plan-m7.md §7.3):
 ///
-///     SIMCTL_CHILD_STUDYPORTAL_DATA_ROOT=<library copy> \
+///     SIMCTL_CHILD_SOCRATES_DATA_ROOT=<library copy> \
 ///         xcrun simctl launch "SP Test" <your bundle id> -phoneParity <route>
 ///
 /// Routes: `recorder` (DC Lecture 2 at slide 17 of 88, 38:41 in), `recorder-after-stop` (the
@@ -19,7 +19,7 @@ import SwiftUI
 /// `sheet-small` and `sheet-large` (the agent sheet on "F1 on the board"), `round` (the plan
 /// card's round started, its first question), `round-answered` (the same, its first question
 /// answered right through the phone's coach, as after a tap). Nothing records (no microphone), nothing is sent,
-/// nothing runs in the background; `STUDYPORTAL_DATA_ROOT` is required.
+/// nothing runs in the background; `SOCRATES_DATA_ROOT` is required.
 enum PhoneParity {
     enum Route: String {
         case recorder
@@ -44,12 +44,12 @@ enum PhoneParity {
     /// The renders' "now": Friday 23 October 2026, 12:47 (mockups 16 and §7).
     static let now: Date = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 23, hour: 12, minute: 47)) ?? Date()
 
-    /// The library copy named by `STUDYPORTAL_DATA_ROOT`; no Keychain.
+    /// The library copy named by `SOCRATES_DATA_ROOT`; no Keychain.
     static func services() throws -> StudyServices {
-        guard let root = ProcessInfo.processInfo.environment[AppPaths.rootOverrideVariable], root.hasPrefix("/") else {
-            throw Failure("Phone parity needs STUDYPORTAL_DATA_ROOT=<library copy>")
+        guard let root = AppPaths.rootOverride() else {
+            throw Failure("Phone parity needs SOCRATES_DATA_ROOT=<library copy>")
         }
-        let paths = AppPaths(root: URL(filePath: root, directoryHint: .isDirectory))
+        let paths = AppPaths(root: root)
         try paths.createDirectories()
         return StudyServices(
             paths: paths,

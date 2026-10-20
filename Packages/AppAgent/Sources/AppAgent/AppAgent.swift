@@ -230,7 +230,7 @@ public actor AppAgent {
         guard let filing, let advisor else { return nil }
         // A copy under the file's own name: the filing keeps the name the student dropped.
         let fileManager = FileManager.default
-        let directory = fileManager.temporaryDirectory.appending(path: "StudyPortal-panel-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let directory = fileManager.temporaryDirectory.appending(path: "Socrates-panel-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? fileManager.removeItem(at: directory) }
         var name = (attachment.fileName as NSString).lastPathComponent
         if name.isEmpty || name.hasPrefix(".") { name = "Slides.pdf" }

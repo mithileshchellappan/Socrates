@@ -22,7 +22,7 @@ public struct StudyServices: Sendable {
     /// a syncing build opens `syncedDatabase`: SQLiteData's first sync uploads every row already
     /// in the file, and the phone's pre-sync library (seeded courses with their own ids) would
     /// duplicate the Mac's. Its captures are files (`phoneCaptures`), so nothing is left behind.
-    /// Only the real library (no `STUDYPORTAL_DATA_ROOT` override) takes the build's university
+    /// Only the real library (no `SOCRATES_DATA_ROOT` override) takes the build's university
     /// profile (`StudyDatabase.open(carryOver:)`).
     public static func live(syncContainer: String? = nil) throws -> StudyServices {
         let paths = try AppPaths.live()
@@ -43,7 +43,7 @@ public struct StudyServices: Sendable {
 
     /// In-memory database, temporary directories, no Keychain. For tests and previews.
     public static func inMemory() throws -> StudyServices {
-        let root = URL.temporaryDirectory.appending(path: "StudyPortal-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let root = URL.temporaryDirectory.appending(path: "Socrates-\(UUID().uuidString)", directoryHint: .isDirectory)
         let paths = AppPaths(root: root)
         return StudyServices(
             paths: paths,

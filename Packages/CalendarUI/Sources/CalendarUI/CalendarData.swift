@@ -3,7 +3,7 @@ import StudyCore
 
 /// What the Calendar screen shows for one week, read in one transaction: the grid's sessions and
 /// items, and the inspector's proposals and due items (from today on) with their source trails.
-/// The "Study Portal" EventKit calendar is never read back: it is the mirror of these rows.
+/// The "Socrates" EventKit calendar is never read back: it is the mirror of these rows.
 struct CalendarData: Hashable, Sendable {
     /// The week these rows are for (nil before the first read): the grid keeps drawing it until
     /// the next week's rows land, so a week switch never shows an empty frame.

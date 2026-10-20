@@ -660,7 +660,7 @@ extension LiveLectureSession {
     ) async throws -> LiveLectureSession {
         try await open(
             configuration: Configuration(
-                directory: URL.temporaryDirectory.appending(path: "StudyPortal-preview", directoryHint: .isDirectory),
+                directory: URL.temporaryDirectory.appending(path: "Socrates-preview", directoryHint: .isDirectory),
                 captionLocale: captionLocale,
                 countsSlidesWithoutDeck: countsSlidesWithoutDeck
             ),

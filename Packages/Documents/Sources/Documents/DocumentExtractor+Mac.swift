@@ -70,7 +70,7 @@ extension DocumentExtractor {
             guard fileManager.fileExists(atPath: preview.path(percentEncoded: false)) else { throw DocumentReadError.pagesWithoutPreview }
             return try await readPDF(at: preview)
         }
-        let directory = fileManager.temporaryDirectory.appending(path: "StudyPortal-pages-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let directory = fileManager.temporaryDirectory.appending(path: "Socrates-pages-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? fileManager.removeItem(at: directory) }
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)

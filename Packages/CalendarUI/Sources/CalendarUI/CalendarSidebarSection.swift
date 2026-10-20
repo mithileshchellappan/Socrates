@@ -4,7 +4,7 @@ import SwiftUI
 
 /// The sidebar's calendar checkboxes while Calendar is selected (docs/DESIGN.md §6.2, mockup 06),
 /// placed by the app after Courses, inside its sidebar `List`: one section per account, as
-/// Calendar.app, the app's own calendar's account first ("iCloud") with "Study Portal" (the
+/// Calendar.app, the app's own calendar's account first ("iCloud") with "Socrates" (the
 /// library's sessions and deadlines; on by default) and that account's other calendars (off by
 /// default, read-only). Choices are kept per device (`\.calendarVisibility`).
 public struct CalendarSidebarSection: View {
@@ -17,12 +17,12 @@ public struct CalendarSidebarSection: View {
     public var body: some View {
         ForEach(CalendarSidebarGroup.groups(list)) { group in
             Section {
-                if group.holdsStudyPortal {
+                if group.holdsOwnCalendar {
                     Toggle(isOn: Binding(
-                        get: { visibility?.showsStudyPortal ?? true },
-                        set: { visibility?.showsStudyPortal = $0 }
+                        get: { visibility?.showsOwnCalendar ?? true },
+                        set: { visibility?.showsOwnCalendar = $0 }
                     )) {
-                        Text(verbatim: "Study Portal")
+                        Text(verbatim: "Socrates")
                     }
                     .modifier(CalendarCheckbox())
                 }
@@ -62,22 +62,22 @@ private struct CalendarCheckbox: ViewModifier {
 /// One account's section in the sidebar.
 struct CalendarSidebarGroup: Identifiable, Hashable {
     var title: String
-    var holdsStudyPortal: Bool
+    var holdsOwnCalendar: Bool
     var calendars: [ForeignCalendar]
 
     var id: String { title }
 
-    /// The own account first (with "Study Portal" and its other calendars), then the others in
-    /// the store's order. Without access: one section with "Study Portal" alone.
+    /// The own account first (with "Socrates" and its other calendars), then the others in
+    /// the store's order. Without access: one section with "Socrates" alone.
     static func groups(_ list: ForeignCalendarList) -> [CalendarSidebarGroup] {
         let ownTitle = list.ownSourceTitle ?? String(localized: "Calendars")
-        var groups = [CalendarSidebarGroup(title: ownTitle, holdsStudyPortal: true, calendars: [])]
+        var groups = [CalendarSidebarGroup(title: ownTitle, holdsOwnCalendar: true, calendars: [])]
         for calendar in list.calendars {
             let title = calendar.sourceTitle.isEmpty ? ownTitle : calendar.sourceTitle
             if let index = groups.firstIndex(where: { $0.title == title }) {
                 groups[index].calendars.append(calendar)
             } else {
-                groups.append(CalendarSidebarGroup(title: title, holdsStudyPortal: false, calendars: [calendar]))
+                groups.append(CalendarSidebarGroup(title: title, holdsOwnCalendar: false, calendars: [calendar]))
             }
         }
         return groups

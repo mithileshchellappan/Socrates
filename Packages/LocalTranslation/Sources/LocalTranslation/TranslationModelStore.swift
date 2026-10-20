@@ -14,7 +14,7 @@ public struct InstalledTranslationModel: Hashable, Sendable {
 ///
 /// `~/Library/Application Support/StudyPortal/Models/Translation/<owner>/<repo>/` (iOS: the app
 /// container's equivalent), excluded from backups. Like `WhisperModelStore.shared()`, it ignores
-/// `STUDYPORTAL_DATA_ROOT`: models are a shared, re-downloadable cache, not library data. Each repo
+/// `SOCRATES_DATA_ROOT`: models are a shared, re-downloadable cache, not library data. Each repo
 /// folder holds the six files the engine reads, `manifest.json` (the revision and each file's
 /// size and hash) and a `.complete` marker written last.
 public struct TranslationModelStore: Sendable {

@@ -437,7 +437,7 @@ public final class PhoneRecorder {
     /// The outbox after Stop: this lecture first, then two earlier ones (packages that do not
     /// exist; Share and Delete do nothing in a preview).
     private func previewOutbox(day: Date) -> [PhoneCapture] {
-        let folder = URL.temporaryDirectory.appending(path: "StudyPortal-preview", directoryHint: .isDirectory)
+        let folder = URL.temporaryDirectory.appending(path: "Socrates-preview", directoryHint: .isDirectory)
         func capture(_ title: String, _ course: Course?, _ start: Date, _ duration: TimeInterval, _ stamps: Int) -> PhoneCapture {
             let id = UUID()
             return PhoneCapture(

@@ -163,7 +163,7 @@ public actor DocumentBank {
     private static func storePackage(_ package: URL, blobs: BlobStore) async throws -> BlobRef {
         #if os(macOS)
         let fileManager = FileManager.default
-        let directory = fileManager.temporaryDirectory.appending(path: "StudyPortal-package-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let directory = fileManager.temporaryDirectory.appending(path: "Socrates-package-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? fileManager.removeItem(at: directory) }
         let zip = directory.appending(path: package.lastPathComponent)
         do {

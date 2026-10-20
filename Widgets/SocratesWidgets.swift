@@ -8,7 +8,7 @@ import WidgetKit
 // the app compiles too. Links RecorderActivity only.
 
 @main
-struct StudyPortalWidgets: WidgetBundle {
+struct SocratesWidgets: WidgetBundle {
     var body: some Widget {
         RecordingLiveActivity()
     }

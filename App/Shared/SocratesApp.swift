@@ -11,7 +11,7 @@ import StudyCore
 import SwiftUI
 
 @main
-struct StudyPortalApp: App {
+struct SocratesApp: App {
     @State private var model: AppModel
 
     init() {

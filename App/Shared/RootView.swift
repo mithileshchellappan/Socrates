@@ -128,7 +128,7 @@ struct RootView: View {
                 // naming what goes, then Edit ▸ Undo.
                 .environment(\.deleteFromLibrary, DeleteFromLibraryAction { item in center.requestDelete(item) })
                 .libraryDeleteConfirmation(center: center, willDelete: leave, didDelete: { item in
-                    // A course's sessions and items leave the "Study Portal" calendar.
+                    // A course's sessions and items leave the "Socrates" calendar.
                     if case .course = item { await model.syncCalendar() }
                 }, failed: { model.failure = $0 })
                 .environment(\.studyServices, model.services)
@@ -668,7 +668,7 @@ struct RootView: View {
         }
     }
 
-    /// `studyportal://` links from the Study Portal calendar: a session opens its lecture (else its
+    /// `studyportal://` links from the Socrates calendar: a session opens its lecture (else its
     /// course), a deadline the mail it was read from (else its course). M7, the Mac: an opened
     /// capture (a `.lecturebundle` AirDropped from the iPhone, or a `.lecture` package) is filed by
     /// smart import like a drop (a bundle is unpacked, never changed; one already in the library is

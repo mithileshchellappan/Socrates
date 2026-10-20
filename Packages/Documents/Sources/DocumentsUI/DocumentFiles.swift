@@ -46,6 +46,6 @@ enum DocumentFiles {
     }
 
     private static var previewRoot: URL {
-        FileManager.default.temporaryDirectory.appending(path: "StudyPortal Documents", directoryHint: .isDirectory)
+        FileManager.default.temporaryDirectory.appending(path: "Socrates Documents", directoryHint: .isDirectory)
     }
 }

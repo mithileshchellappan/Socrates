@@ -24,7 +24,7 @@ public struct CourseDraft: Hashable, Sendable {
     public var rules: [CourseRule]
     /// The course's short name, its token ("DC"); nil = the initials of the name.
     public var shortName: String?
-    /// Mirror its sessions to the "Study Portal" calendar.
+    /// Mirror its sessions to the "Socrates" calendar.
     public var showsInCalendar: Bool
     /// Credit points (ECTS / LP), when known.
     public var credits: Double?

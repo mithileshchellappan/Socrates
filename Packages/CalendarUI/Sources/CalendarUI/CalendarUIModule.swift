@@ -17,7 +17,7 @@ enum CalendarUILog {
 
 extension EnvironmentValues {
     /// The student's other calendars, read-only (the app installs the calendar mirror on the
-    /// Mac). Nil: no other calendars, and the sidebar shows only "Study Portal".
+    /// Mac). Nil: no other calendars, and the sidebar shows only "Socrates".
     @Entry public var foreignCalendars: (any ForeignCalendarSource)?
 
     /// Where the screen puts its toolbar items and inspector: `.window` (the app: the window
