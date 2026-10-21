@@ -173,6 +173,7 @@ private struct SlideNotesPane: View {
     @State private var typingOn: TypingPage?
     /// A click in the pane's empty room: the empty note takes the caret (no placeholder copy).
     @State private var focusRequest = 0
+    @Environment(\.contentZoom) private var zoom
 
     private struct TypingPage: Equatable {
         var page: Int?
@@ -180,11 +181,11 @@ private struct SlideNotesPane: View {
 
     var body: some View {
         let page = typingOn.map(\.page) ?? model.session.shownPage
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 14 * zoom) {
             if let page, let summary = items.slideSummaries[page] {
                 SummaryBlock(model: model, summary: summary)
             }
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 7 * zoom) {
                 SectionLabel("Your notes")
                 SlideNoteEditorView(model: model, page: page, notes: notes.filter { $0.pageNumber == page }, focusRequest: focusRequest)
                     .id(page)
@@ -228,6 +229,7 @@ private struct SlideNoteEditorView: View {
     /// Bumped to put the caret in the empty note.
     var focusRequest = 0
     @State private var editor: SlideNoteEditor
+    @Environment(\.contentZoom) private var zoom
 
     init(model: ReviewModel, page: Int?, notes: [Note], focusRequest: Int = 0) {
         self.model = model
@@ -245,7 +247,7 @@ private struct SlideNoteEditorView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10 * zoom) {
             ForEach(editor.sessions) { session in
                 NoteSessionRow(model: model, session: session, focusRequest: focusRequest)
             }
@@ -265,6 +267,7 @@ private struct NoteSessionRow: View {
     let session: NoteSession
     /// Bumped by a click in the pane's empty room: an empty note takes the caret.
     var focusRequest = 0
+    @Environment(\.contentZoom) private var zoom
 
     private var isBlank: Bool {
         session.note?.isBlank ?? true
@@ -272,11 +275,12 @@ private struct NoteSessionRow: View {
 
     var body: some View {
         let model = model
-        HStack(alignment: .top, spacing: 7) {
+        HStack(alignment: .top, spacing: 7 * zoom) {
             // The pin marks your text: none beside an empty note, but its place is kept so typing
             // does not shift the line.
             ProvenancePin(.user)
-                .padding(.top, 1)
+                .zoomScaled(zoom)
+                .padding(.top, 1 * zoom)
                 .opacity(isBlank ? 0 : 1)
             NoteEditor(
                 session: session,
@@ -327,24 +331,32 @@ enum ReviewNoteLinks {
     }
 }
 
+/// The lecture's own notes (no slide), without the copies of its lecture notes that Edit as Note
+/// made (nl: Claude's words stay in Notes, never twice).
+private func lectureOwnNotes(_ notes: [Note]) -> [Note] {
+    notes.filter { $0.pageNumber == nil && !$0.isLectureNotesCopy }
+}
+
 /// "Your notes" on Whole lecture (and without a deck): the lecture's own notes (editable), then the
 /// notes of its slides, read-only, each after its `SlideChip`.
 private struct LectureYourNotes: View {
     let model: ReviewModel
     let notes: [Note]
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
         let model = model
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10 * zoom) {
             SectionLabel("Your notes")
-            SlideNoteEditorView(model: model, page: nil, notes: notes.filter { $0.pageNumber == nil })
+            SlideNoteEditorView(model: model, page: nil, notes: lectureOwnNotes(notes))
             ForEach(notes.filter { $0.pageNumber != nil && !$0.isBlank }) { note in
-                HStack(alignment: .top, spacing: 7) {
+                HStack(alignment: .top, spacing: 7 * zoom) {
                     if let page = note.pageNumber {
                         SlideChip(page: page) {
                             Task { await model.session.selectThumbnail(page: page) }
                         }
-                        .padding(.top, 1)
+                        .zoomScaled(zoom)
+                        .padding(.top, 1 * zoom)
                     }
                     NoteEditor(
                         note: note, style: .inspector,
@@ -364,9 +376,10 @@ private struct LectureOnlyNotesPane: View {
     let model: ReviewModel
     let notes: [Note]
     let items: StudyItems
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 14 * zoom) {
             if let summary = items.lectureSummary {
                 SummaryBlock(model: model, summary: summary)
             }
@@ -402,6 +415,7 @@ private struct WholeLecturePane: View {
     let items: StudyItems
     private let versionsQuery: FetchAll<LectureNotes>
     @Environment(\.lectureNotesQueuesOnOpen) private var queuesOnOpen
+    @Environment(\.contentZoom) private var zoom
 
     init(model: ReviewModel, notes: [Note], items: StudyItems) {
         self.model = model
@@ -459,7 +473,8 @@ private struct WholeLecturePane: View {
     #if os(macOS)
     private var notesPane: some View {
         let model = model
-        return VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: 14 * zoom) {
+            // The notes text zooms itself (StudyPageUI).
             LectureNotesView(
                 lectureID: model.lecture.id, style: .inspector,
                 followPage: model.session.isFollowing ? model.session.shownPage : nil,
@@ -472,9 +487,9 @@ private struct WholeLecturePane: View {
                 Hairline()
                 FurtherReadingBlock(model: model, readings: items.furtherReading, showsSlides: true)
             }
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 7 * zoom) {
                 SectionLabel("Your notes")
-                SlideNoteEditorView(model: model, page: nil, notes: notes.filter { $0.pageNumber == nil })
+                SlideNoteEditorView(model: model, page: nil, notes: lectureOwnNotes(notes))
             }
         }
         .padding(.horizontal, 14)
@@ -492,9 +507,10 @@ private struct LectureNotesPane: View {
     /// The study pass's rows (M4): the lecture's summary, every exam hint, everything only said in
     /// class by category, every further reading.
     let items: StudyItems
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 14 * zoom) {
             if let summary = items.lectureSummary {
                 SummaryBlock(model: model, summary: summary)
             }

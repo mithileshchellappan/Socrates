@@ -1,3 +1,4 @@
+import NotesUI
 import Review
 import StudyCore
 import StudyUI
@@ -290,16 +291,17 @@ private struct TranscriptFollower: View {
 /// 03). A stretch that starts at a manual marker shows nothing more: the line's menu removes it.
 private struct SectionDivider: View {
     let section: TranscriptSection
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 8 * zoom) {
             if let page = section.page {
                 Text("Slide \(page)")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.zoomed(.subheadline, zoom, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             Text(verbatim: "\(TimeText.clock(section.start))–\(TimeText.clock(section.end))")
-                .font(.caption.monospaced())
+                .font(.zoomed(.caption, zoom, design: .monospaced))
                 .monospacedDigit()
                 .foregroundStyle(.tertiary)
             Rectangle()
@@ -307,8 +309,8 @@ private struct SectionDivider: View {
                 .frame(height: 0.5)
         }
         .padding(.horizontal, 8)
-        .padding(.top, 7)
-        .padding(.bottom, 4)
+        .padding(.top, 7 * zoom)
+        .padding(.bottom, 4 * zoom)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
         .accessibilityValue(section.startsAtMarker ? Text("Marker") : Text(verbatim: ""))
@@ -329,25 +331,28 @@ private struct TranscriptRow: View {
     var professorItem: Annotation?
 
     @Environment(\.colorScheme) private var colorScheme
+    /// nl: the line's text, its time and its spacing follow the content zoom.
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
         let isCurrent = model.player?.currentSegmentID.flatMap { lineIDs[$0] } == line.id
         let pieces = TranscriptText.pieces(line)
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 8 * zoom) {
             Text(TimeText.clock(line.start))
-                .font(.subheadline.monospaced())
+                .font(.zoomed(.subheadline, zoom, design: .monospaced))
                 .monospacedDigit()
                 .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
-                .frame(width: 54, alignment: .leading)
+                .frame(width: 54 * zoom, alignment: .leading)
             Group {
                 if let professorItem {
-                    QuotedLineText(pieces: pieces) {
+                    QuotedLineText(pieces: pieces, zoom: zoom) {
                         AnnotationPin(.professor, style: .inline) {
                             ProfessorPinCard(model: model, item: professorItem)
                         }
                         .contextMenu {
                             Button("Hide") { model.hide(professorItem.id) }
                         }
+                        .zoomScaled(zoom)
                     }
                 } else if pieces.contains(where: { $0.kind == .inserted }) {
                     TranscriptText.text(pieces)
@@ -356,19 +361,19 @@ private struct TranscriptRow: View {
                     TranscriptText.text(pieces)
                 }
             }
-            .font(.body)
-            .lineSpacing(2.5)
+            .font(.zoomed(.body, zoom))
+            .lineSpacing(2.5 * zoom)
             .frame(maxWidth: .infinity, alignment: .leading)
             if !line.language.isEmpty, !language.isEmpty, line.language != language {
                 Text(line.language.uppercased())
-                    .font(.caption2.weight(.semibold))
+                    .font(.zoomed(.caption2, zoom, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator, lineWidth: 0.5))
+                    .padding(.horizontal, 4 * zoom)
+                    .overlay(RoundedRectangle(cornerRadius: 4 * zoom).strokeBorder(.separator, lineWidth: 0.5))
                     .accessibilityLabel(Text(Locale.current.localizedString(forLanguageCode: line.language) ?? line.language))
             }
         }
-        .padding(.vertical, 4.5)
+        .padding(.vertical, 4.5 * zoom)
         .padding(.horizontal, 8)
         .background(
             isCurrent ? AnyShapeStyle(.tint.opacity(ReviewTint.soft(colorScheme))) : AnyShapeStyle(.clear),
@@ -416,11 +421,12 @@ private struct TranscriptRow: View {
 /// sits right after the last word (mockup `.seg .pin.inline`).
 private struct QuotedLineText<Pin: View>: View {
     let pieces: [TranscriptText.Piece]
+    var zoom: CGFloat = 1
     @ViewBuilder let pin: Pin
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        NoteFlowLayout(lineSpacing: 2.5, wordSpacing: 3.6) {
+        NoteFlowLayout(lineSpacing: 2.5 * zoom, wordSpacing: 3.6 * zoom) {
             ForEach(Array(TranscriptText.words(pieces).enumerated()), id: \.offset) { _, word in
                 switch word.kind {
                 case .plain:
