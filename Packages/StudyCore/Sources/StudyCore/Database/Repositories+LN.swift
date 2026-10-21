@@ -441,7 +441,9 @@ public struct LectureNotesRepository: Sendable {
         }
     }
 
-    static func cancel(_ id: LectureNotes.ID, in db: Database, now: Date) throws -> Bool {
+    /// `cancel(_:)` inside the caller's write transaction (a merge cancels the survivor's
+    /// slides-only notes not written yet when a recording comes in).
+    public static func cancel(_ id: LectureNotes.ID, in db: Database, now: Date) throws -> Bool {
         guard var notes = try LectureNotes.find(id).fetchOne(db), notes.state.isOpen else { return false }
         Log.lectureNotes.notice(
             "Notes \(ChatCitation.key(id), privacy: .public) cancelled: v\(notes.version, privacy: .public) of lecture \(ChatCitation.key(notes.lectureID), privacy: .public) was \(notes.state.rawValue, privacy: .public)"

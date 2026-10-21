@@ -229,7 +229,7 @@ public struct ActionRegistry: Sendable {
 extension ActionRegistry {
     /// The `app` conversation's actions (docs/plan-actions.md §4 "Registered"): 27, 26 without the
     /// document bank (`keep_document`); oss adds set_profile; ln adds write_lecture_notes,
-    /// set_notes_length and keep_notes_answer; merge_duplicate_lectures (2026-10-21). Their tools are the instances `AppAgentChat.spec` builds
+    /// set_notes_length and keep_notes_answer; merge_lectures (2026-10-21). Their tools are the instances `AppAgentChat.spec` builds
     /// for its direct writes (the student's words and mail are sources).
     public static func app(_ deps: AppAgentChat.Services) throws -> ActionRegistry {
         let writes = WriteTools(services: deps.services, changeLog: deps.changeLog, chatSource: true, mailSource: true)
@@ -394,10 +394,12 @@ extension ActionRegistry {
                 sources: chat, studentOnly: true
             ),
             AgentAction(
-                writes.mergeDuplicateLectures, summary: "Merges a lecture filed twice (slides in one, the recording in the other) into one.",
+                writes.mergeLectures,
+                summary: "Merges two lectures of one course into one (a class meeting filed twice: two L2s, a duplicate lecture).",
                 keywords: [
-                    "merge", "duplicate", "twice", "double", "two", "same", "combine", "zusammenführen", "doppelt", "zweimal",
-                    "zwei", "gleiche", "lecture", "Vorlesung", "recording", "Aufnahme",
+                    "merge", "duplicate", "duplicates", "twice", "double", "two", "l2", "same", "combine", "lectures",
+                    "zusammenführen", "doppelt", "zweimal", "zwei", "gleiche", "lecture", "Vorlesung", "Vorlesungen", "recording",
+                    "Aufnahme",
                 ],
                 sources: chat, studentOnly: true
             ),
@@ -428,6 +430,6 @@ extension ActionRegistry {
     }
 
     /// How many actions `app` registers (the catalog's "actions" line); ln added three, and
-    /// merge_duplicate_lectures one (2026-10-21).
+    /// merge_lectures one (2026-10-21).
     static func appCount(documents: Bool) -> Int { documents ? 27 : 26 }
 }

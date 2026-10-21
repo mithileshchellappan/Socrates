@@ -20,7 +20,7 @@ import Tutor
 ///   Delegate: spawn_task, cancel_task. mr: every other write is a registered action
 ///   (`ActionRegistry.app`: change_session, add_session, set_course_fact, remove_course,
 ///   add_course, the weekly slot tools, plan_adjust, mark_away_days, set_profile, set_course_credits,
-///   keep_document, rerun_study_pass, link_deck_pages, unlink_deck, merge_duplicate_lectures), reached through find_actions
+///   keep_document, rerun_study_pass, link_deck_pages, unlink_deck, merge_lectures), reached through find_actions
 ///   and run_action with the same handlers. No web tool (it reads mail: web goes through a
 ///   research task), no send, no other calendars, no delete of notes or recordings: those tools
 ///   do not exist.

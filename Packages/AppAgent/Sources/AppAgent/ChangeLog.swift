@@ -288,25 +288,37 @@ public struct ChangeLog: Sendable {
         return true
     }
 
-    /// A lecture filed twice merged into one (`merge_duplicate_lectures`, the student asked in
-    /// chat): smart import merges every pair of lectures of `courseID` (nil: every course) that
-    /// are one class meeting, one holding only slides and the other only recordings or notes,
-    /// with its `lecture_merge` row in the same transaction. `.unchanged` when there is none.
-    public func mergeDuplicateLectures(courseID: Course.ID?, quote: String, origin: Origin) async throws -> Outcome {
+    /// Two lectures the student named merged into one (`merge_lectures`, they asked in chat):
+    /// smart import moves what the student or filing put in the one that goes into the one that
+    /// stays (`keep`, else the one filed to the lecture session), with its `lecture_merge` row in
+    /// the same transaction. Refused: a lecture gone, the same lecture twice, two courses, a
+    /// recording of theirs being processed, or both with recordings unless `bothRecorded` (the
+    /// student's words say so).
+    public func mergeLectures(
+        _ first: Lecture.ID, _ second: Lecture.ID, keep: Lecture.ID?, bothRecorded: Bool, quote: String, origin: Origin
+    ) async throws -> Outcome {
         let quote = quote.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !quote.isEmpty else { return .refused("A change needs the exact words it comes from.") }
         let service = filing ?? FilingService(services: services)
-        let outcome = try await service.mergeDuplicateLectures(
-            courseID: courseID, quote: quote, sourceKind: origin.sourceKind, model: origin.model,
-            conversationID: origin.conversationID, taskID: origin.taskID
-        )
-        guard let change = outcome.change else {
-            return .unchanged(
-                outcome.busy > 0
-                    ? "A recording of those lectures is being processed; ask again when it is done."
-                    : "No class meeting is filed as two lectures with the slides in one and only the recording or notes in the other. Two lectures that both have recordings stay apart: the student moves a recording with Change… on its filing."
+        let outcome: LectureMergeOutcome
+        do {
+            outcome = try await service.mergeLectures(
+                first, second, keep: keep, bothRecorded: bothRecorded, quote: quote, sourceKind: origin.sourceKind, model: origin.model,
+                conversationID: origin.conversationID, taskID: origin.taskID
             )
+        } catch let refusal as LectureMergeRefusal {
+            switch refusal {
+            case .missing: return .refused("A lecture is gone. Use list_lectures.")
+            case .sameLecture: return .refused("Those are one lecture.")
+            case .otherCourses: return .refused("The two lectures belong to different courses; only lectures of one course merge.")
+            case .bothRecorded(let left, let right):
+                return .refused(
+                    "Both lectures have recordings (\(left) and \(right)). Merge them only when the student's words ask to merge lectures that both have recordings (both_recorded: true); a single recording moves with Change… on its filing."
+                )
+            case .busy: return .unchanged("A recording of those lectures is being processed; ask again when it is done.")
+            }
         }
+        guard let change = outcome.change else { return .unchanged("Nothing was merged.") }
         await wakeProcessing()
         return .applied(change)
     }

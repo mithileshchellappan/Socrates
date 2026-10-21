@@ -536,8 +536,11 @@ final class AppModel {
         #endif
     }
 
-    /// Set once the launch merged the lectures filed twice (an Undo of it is never redone).
-    static let mergedDuplicateLecturesKey = "Socrates.mergedDuplicateLectures"
+    /// Set once the launch merged the lectures filed twice (an Undo of it is never redone). v2
+    /// (2026-10-21, second pass): rows the app generated (Claude's notes, the study pass,
+    /// continuation detection's deck links) no longer keep a pair apart, so every library gets
+    /// one more pass; the first pass's key ("Socrates.mergedDuplicateLectures") is left as it is.
+    static let mergedDuplicateLecturesKey = "Socrates.mergedDuplicateLectures.v2"
 
     /// `FilingService.mergeDuplicateLectures` on the first launch with it; again only when a
     /// recording of a pair was busy (none is before the processor starts).
