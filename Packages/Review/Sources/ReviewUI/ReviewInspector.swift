@@ -268,6 +268,8 @@ private struct NoteSessionRow: View {
     /// Bumped by a click in the pane's empty room: an empty note takes the caret.
     var focusRequest = 0
     @Environment(\.contentZoom) private var zoom
+    /// This note has the caret (an editor that goes away with it never says it lost it).
+    @State private var hasFocus = false
 
     private var isBlank: Bool {
         session.note?.isBlank ?? true
@@ -290,9 +292,20 @@ private struct NoteSessionRow: View {
                 lectureID: model.lecture.id,
                 trailingTime: model.player == nil ? nil : session.note?.audioTime,
                 focusRequest: isBlank ? focusRequest : 0,
-                onFocusChange: { model.isEditingText = $0 },
+                onFocusChange: { focused in
+                    hasFocus = focused
+                    model.isEditingText = focused
+                },
                 onLink: { ReviewNoteLinks.open($0, model: model) }
             )
+        }
+        .onDisappear {
+            // Gone with the caret (the other tab, the inspector hidden, the agent's column): the
+            // review's keys come back.
+            if hasFocus {
+                hasFocus = false
+                model.isEditingText = false
+            }
         }
     }
 }

@@ -11,7 +11,8 @@ import SwiftUI
 ///
 /// The app passes `Realigner(services:).realign` and installs `\.studyServices`, SQLiteData's
 /// default database and `ReviewCommands` (Space, ⌥←/⌥→, ←/→, ⇧⌘F, ⌘\, ⇧⌘R; M6 on the Mac: P, H, E,
-/// F, Esc; View ⌥⌘1, ⌥⌘2).
+/// F, Esc; View ⌥⌘1, ⌥⌘2). On the Mac ← / → and Page Up / Page Down page the slides through the
+/// screen's own key monitor (`ReviewSlideKeys`) whenever no text in the window has the keyboard.
 ///
 /// - Without a deck there is no rail and no slide; without a recording no player and no
 ///   transcript; before the transcript exists the transcript zone shows the job's progress.
@@ -186,6 +187,11 @@ struct ReviewScreen: View {
             switch chrome {
             case .window:
                 ReviewContent(model: model, timeline: timeline)
+                    #if os(macOS)
+                    // A click on the slide, the rail, the transcript or the player ends typing in
+                    // a note or the agent's composer: ← / → and Space are the review's again.
+                    .endsTypingOnClick()
+                    #endif
                     // The Window menu's name; the toolbar shows its own, larger title.
                     .navigationTitle(title)
                     #if os(macOS)
@@ -215,6 +221,10 @@ struct ReviewScreen: View {
             }
         }
         .background(ReviewActionsPublisher(model: model))
+        #if os(macOS)
+        // ← / → and Page Up / Page Down page the slides while no text in the window has the keyboard.
+        .background(ReviewSlideKeys(model: model))
+        #endif
         .background(ReviewAgentContext(model: model))
         .background(DrawingFollowGuard(model: model))
         .onChange(of: timeline, initial: true) { _, timeline in

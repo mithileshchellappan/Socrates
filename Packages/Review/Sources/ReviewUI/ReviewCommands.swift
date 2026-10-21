@@ -111,7 +111,9 @@ extension FocusedValues {
 /// (← / →), Follow Playback (⇧⌘F), Slide Starts Here (⌘\), Mark as Reviewed (⇧⌘R); M6 on the Mac:
 /// Flag (F), Pen (P), Highlighter (H), Eraser (E, while drawing), Stop Drawing (Esc). Reads the
 /// focused review screen's actions; everything is disabled while a text field has focus. In the
-/// View menu after the sidebar: Hide/Show Thumbnails (⌥⌘1) and Hide/Show Transcript (⌥⌘2).
+/// View menu after the sidebar: Hide/Show Thumbnails (⌥⌘1) and Hide/Show Transcript (⌥⌘2). On the
+/// Mac the screen's own key monitor (`ReviewSlideKeys`) takes ← / → before the menu whenever no
+/// editable text in the window has the keyboard, so a stale focus flag never leaves them dead.
 ///
 ///     WindowGroup { … }.commands { ReviewCommands() }
 public struct ReviewCommands: Commands {

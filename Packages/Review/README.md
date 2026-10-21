@@ -40,7 +40,12 @@ deck link on the default database, which the app already points at the same data
 - **Follow.** `ReviewSession.shownPage` is the player's page while following, else the page picked
   by hand. ←/→, the toolbar, a thumbnail or the scrubber turn Follow off and pause (a thumbnail
   also seeks to the slide's first visit); a transcript line or time chip plays from there with
-  Follow on; turning Follow on re-syncs. Opening: the target time wins for the player and the
+  Follow on; turning Follow on re-syncs. On the Mac ← / → and Page Up / Page Down reach the slides
+  through the screen's own key monitor (`ReviewSlideKeys`, `ReviewKeys.swift`): it reads the
+  window's first responder as each key comes and leaves the keys to editable text (a note, the
+  agent panel's composer, the search field); a click on the slide, rail, transcript or player ends
+  typing there (`endsTypingOnClick`), and a note editor that goes away with the caret clears
+  `isEditingText`. Opening: the target time wins for the player and the
   target page for the slide; else `reviewPosition`; else the start.
 - **Notes.** `SlideNoteEditor` edits every note anchored to the slide (live quick notes included)
   or one empty draft that becomes a note on its first keystroke, with `recordingID` and
