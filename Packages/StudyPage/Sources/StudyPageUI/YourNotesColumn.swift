@@ -30,7 +30,7 @@ public struct YourNotesColumn: View {
     static let headerHeight: CGFloat = 52
     /// The toolbar's inset from the window's trailing edge.
     static let toolbarTrailingInset: CGFloat = 11
-    private static let space = "yourNotes"
+    private nonisolated static let space = "yourNotes"
 
     private let lectureID: Lecture.ID
     private let readingSection: String?
@@ -93,8 +93,10 @@ public struct YourNotesColumn: View {
                     .coordinateSpace(.named(Self.space))
                     .background(alignment: .topLeading) {
                         if let run {
+                            // The quiet fill as a solid token (DESIGN 3.1), as the empty note's
+                            // area: a vibrant `.fill` style drew nothing on the inspector's glass.
                             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(.fill.quaternary)
+                                .fill(QuietFill())
                                 .frame(width: run.width, height: run.height)
                                 .offset(x: run.minX, y: run.minY)
                                 .accessibilityHidden(true)

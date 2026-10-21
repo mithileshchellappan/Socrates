@@ -29,6 +29,8 @@ public struct LectureNotesPage: View {
     /// Your notes opens by itself from this detail width, and closes under `closesBelow`.
     static let opensFrom: CGFloat = 1160
     static let closesBelow: CGFloat = 1120
+    /// The screen's declared minimum width (DESIGN 3.3): the page and the open column together.
+    static let screenMinimum: CGFloat = 480
 
     private let lectureID: Lecture.ID
     @Fetch private var page: LectureNotesPageData
@@ -77,32 +79,38 @@ public struct LectureNotesPage: View {
     private func content(zoom: CGFloat) -> some View {
         // Before the first measure: the text's measure with its margins.
         let layout = NotesPageLayout(pageWidth: pageWidth > 0 ? pageWidth : 884, zoom: zoom)
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                header(zoom: zoom)
-                    .padding(.horizontal, layout.inset)
-                LectureNotesView(
-                    lectureID: lectureID, style: .page, layout: layout, writeAgain: { showWriteAgain() },
-                    onReadingSection: { section in
-                        if readingSection != section { readingSection = section }
-                    }
-                )
-                .padding(.top, 18 * zoom)
-                if !page.items.isEmpty {
-                    KeepInMindBlock(
-                        items: page.items, trails: page.trails, course: page.course, text: SessionText(locale: locale, timeZone: timeZone), zoom: zoom
+        // Not a scroll view at the top edge: one there runs under the toolbar, and the window then
+        // draws Your notes as floating glass over the page (as a sidebar) instead of the inspector
+        // column Review and Calendar have.
+        return VStack(spacing: 0) {
+            Color.contentBackground.frame(height: 1)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    header(zoom: zoom)
+                        .padding(.horizontal, layout.inset)
+                    LectureNotesView(
+                        lectureID: lectureID, style: .page, layout: layout, writeAgain: { showWriteAgain() },
+                        onReadingSection: { section in
+                            if readingSection != section { readingSection = section }
+                        }
                     )
-                    .padding(.horizontal, layout.inset)
-                    .padding(.top, 34 * zoom)
+                    .padding(.top, 18 * zoom)
+                    if !page.items.isEmpty {
+                        KeepInMindBlock(
+                            items: page.items, trails: page.trails, course: page.course, text: SessionText(locale: locale, timeZone: timeZone), zoom: zoom
+                        )
+                        .padding(.horizontal, layout.inset)
+                        .padding(.top, 34 * zoom)
+                    }
                 }
+                // Never a fixed width: the measured one must not become the window's minimum (the
+                // page could not narrow when Your notes opens).
+                .frame(minWidth: 0, maxWidth: layout.wide, alignment: .leading)
+                .padding(.horizontal, layout.margin)
+                .padding(.top, 26)
+                .padding(.bottom, 40)
+                .frame(minWidth: 0, maxWidth: .infinity)
             }
-            // Never a fixed width: the measured one must not become the window's minimum (the
-            // page could not narrow when Your notes opens).
-            .frame(minWidth: 0, maxWidth: layout.wide, alignment: .leading)
-            .padding(.horizontal, layout.margin)
-            .padding(.top, 26)
-            .padding(.bottom, 40)
-            .frame(minWidth: 0, maxWidth: .infinity)
         }
         .frame(minWidth: 0, maxWidth: .infinity)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
@@ -128,13 +136,15 @@ public struct LectureNotesPage: View {
                 hide: { setColumn(shown: false) },
                 onEditingChange: { typing in typingInColumn = typing }
             )
-            .inspectorColumnWidth(min: 260, ideal: 336, max: 440)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
                 // A hidden column can report nothing; its minimum is 260.
                 guard width >= 200 else { return }
                 columnWidth = width
                 followWidth()
             }
+            // Outermost: under the geometry reader the column took its content's width as both its
+            // minimum and maximum (270 pt).
+            .inspectorColumnWidth(min: 260, ideal: 336, max: 440)
         })
     }
 
@@ -175,7 +185,11 @@ public struct LectureNotesPage: View {
     /// 1120, unchanged between (a resize near the line never flips it). Not while the agent panel
     /// has the column's place: it comes back as it was.
     private func followWidth() {
-        guard !agentPanelExpanded, pageWidth > 0 else { return }
+        // A page narrower than a laid-out window ever gives it (the screen is at least 480 pt,
+        // the open column included) is a pass before the window has its size: it must not close
+        // the column (presented again a moment later, the column came back at its 260 pt minimum).
+        let narrowest = max(40, Self.screenMinimum - (isColumnShown ? columnWidth : 0))
+        guard !agentPanelExpanded, pageWidth >= narrowest else { return }
         let detail = pageWidth + (isColumnShown ? columnWidth : 0)
         let opens = detail >= Self.opensFrom ? true : detail < Self.closesBelow ? false : opensByWidth
         Self.lastOpensByWidth = opens
