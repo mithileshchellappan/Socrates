@@ -1,7 +1,9 @@
 import Foundation
-import Notes
 import Observation
 import StudyCore
+
+// nl (docs/plan-notes-layout.md §2): moved here unchanged from Review, so the lecture notes page's
+// Your notes column (StudyPageUI) edits a slide's notes exactly as Review's This slide does.
 
 /// Where a slide's notes are anchored. `page` nil: the lecture's own notes (and a lecture without
 /// a deck).

@@ -44,8 +44,8 @@ import Foundation
 // ```
 //
 // ```note
-// [[note 7f3a20c1]]                  (where a student's note goes: drawn from the `note` row)
-// ```
+// [[note 7f3a20c1]]                  (older versions only: where a student's note went; since nl the
+// ```                                 notes sit beside the text and this fence is drawn as nothing)
 //
 // ```check
 // Q: P1 holds [3,1,0] and receives [2,4,1]. What is its vector afterwards?
@@ -141,6 +141,46 @@ public enum LectureNotesFormat {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         let count = trimmed.prefix { $0 == "`" }.count
         return count >= ticks && count == trimmed.count && line.prefix(while: { $0 == " " }).count <= 3
+    }
+
+    /// `text` (a body or a part's source) without its `note` fences, and without the blank line a
+    /// removed fence leaves (nl, docs/plan-notes-layout.md §5: the student's notes sit beside the
+    /// text, in Your notes, never inside it; versions written before keep their fences in the body).
+    /// Copy as Markdown, Edit as Note and the agent's `read_lecture_notes` carry Claude's text only.
+    /// The lines of every other fence stay as they are.
+    public static func withoutNoteFences(_ text: String) -> String {
+        var lines: [Substring] = []
+        var skipping: Int?
+        var fence: Int?
+        var removed = false
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if let ticks = skipping {
+                if closesFence(line, ticks: ticks) {
+                    skipping = nil
+                    removed = true
+                }
+                continue
+            }
+            if removed {
+                removed = false
+                let blank = line.allSatisfy(\.isWhitespace)
+                if blank, lines.last.map({ $0.allSatisfy(\.isWhitespace) }) ?? true { continue }
+            }
+            if let ticks = fence {
+                if closesFence(line, ticks: ticks) { fence = nil }
+                lines.append(line)
+                continue
+            }
+            if let opened = opensFence(line) {
+                if NotesFenceKind(info: opened.info) == .note {
+                    skipping = opened.ticks
+                    continue
+                }
+                fence = opened.ticks
+            }
+            lines.append(line)
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// The prose runs and fences of one part, in order.
@@ -284,7 +324,8 @@ public enum NotesFenceKind: String, Hashable, Sendable, CaseIterable {
     case slide
     /// The professor's words, by the moment of an exam hint or highlight row (`NotesQuoteRef`).
     case quote
-    /// Where one of the student's notes goes (`NotesNoteRef`).
+    /// Where one of the student's notes went (`NotesNoteRef`): older versions only. Since nl the
+    /// writer places none, the validator drops any, and the renderer draws one as nothing.
     case note
     /// Check yourself (`NotesCheckItem`).
     case check
@@ -500,16 +541,15 @@ public enum LectureNotesText {
         return ordered.first { (" " + $0.text + " ").contains(" " + needle + " ") }?.key
     }
 
-    /// Copy as Markdown: the source with markers as their labels ("S13", "37:59"; a note fence as
-    /// "(your note)"), section markers left out.
+    /// Copy as Markdown: the source with markers as their labels ("S13", "37:59"), section markers
+    /// and `note` fences left out (nl: the student's notes are not part of Claude's text).
     public static func readable(_ body: String) -> String {
         var lines: [String] = []
-        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
+        for line in LectureNotesFormat.withoutNoteFences(body).split(separator: "\n", omittingEmptySubsequences: false) {
             if LectureNotesFormat.markerKey(line) != nil { continue }
             lines.append(String(line))
         }
-        var text = lines.joined(separator: "\n")
-        text = text.replacingOccurrences(of: #"\[\[note [0-9a-f]{8}\]\]"#, with: "(your note)", options: .regularExpression)
+        let text = lines.joined(separator: "\n")
         var result = ""
         for piece in ChatCitation.pieces(of: text) {
             switch piece {

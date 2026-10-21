@@ -92,7 +92,8 @@ public struct LectureNotesSection: Hashable, Sendable, Codable {
     public var targetWords: Int?
     /// Its Check yourself questions as `study_question` rows (origin `notes`), in order.
     public var questionIDs: [StudyQuestion.ID]
-    /// The student's notes the writer placed in it (`note` fences), in order.
+    /// The student's notes the writer placed in it (`note` fences), in order. Written empty since nl
+    /// (the notes sit beside the text, in Your notes); older versions keep theirs.
     public var noteIDs: [Note.ID]
     /// The professor's exam hints and highlights it quotes (`quote` fences), in order.
     public var quoteIDs: [Annotation.ID]
@@ -129,6 +130,24 @@ public struct LectureNotesSection: Hashable, Sendable, Codable {
     public func covers(page: Int) -> Bool {
         guard let first = firstPage else { return false }
         return page >= first && page <= (lastPage ?? first)
+    }
+
+    /// The section slide `page` belongs to (Review's Follow, the page's Your notes column): the
+    /// first whose slides hold it, else the last that starts at or before it; nil before the first.
+    public static func holding(page: Int, in sections: [LectureNotesSection]) -> LectureNotesSection? {
+        sections.first { $0.covers(page: page) } ?? sections.last { ($0.firstPage ?? .max) <= page }
+    }
+
+    /// The section a moment belongs to (a note without a slide, at its `audio_time`): the one whose
+    /// `startTime ..< endTime` holds it (no end: up to the next section's start, or on).
+    public static func holding(time: Double, in sections: [LectureNotesSection]) -> LectureNotesSection? {
+        let timed = sections.filter { $0.startTime != nil }.sorted { ($0.startTime ?? 0) < ($1.startTime ?? 0) }
+        for (index, section) in timed.enumerated() {
+            guard let start = section.startTime, time >= start else { continue }
+            let end = section.endTime ?? (index + 1 < timed.count ? timed[index + 1].startTime : nil) ?? .infinity
+            if time < end { return section }
+        }
+        return nil
     }
 }
 
@@ -412,6 +431,16 @@ extension NoteInline.Mark {
     /// block (DESIGN 5.1: grey becomes normal when the student takes it). An edit inside such a
     /// run drops the mark from the words the student typed or changed.
     public static let ai: Self = "ai"
+}
+
+extension Note {
+    /// An Edit as Note copy of a lecture's notes: some run still carries the `ai` mark (Claude's
+    /// words the student has not taken over). The lecture page's Your notes column and Review's
+    /// Whole lecture "Your notes" leave such notes out (nl: Claude's words never twice); Notes
+    /// lists them as usual.
+    public var isLectureNotesCopy: Bool {
+        blocks.contains { block in (block.inlines ?? []).contains { $0.marks?.contains(.ai) == true } }
+    }
 }
 
 /// What a notes passage the student took to the agent panel carries (`AgentContext.notesPassage`,
