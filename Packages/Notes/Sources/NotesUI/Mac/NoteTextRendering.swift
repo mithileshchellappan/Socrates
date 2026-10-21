@@ -5,23 +5,23 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// ln: a note drawn as Notes draws it, as read-only text another TextKit 2 document embeds (the
-/// lecture notes show the student's notes in place, live): the same paragraphs, styles, chips,
-/// images, sketches, slide clips and professor quotes as the editor, nothing editable. The host
-/// asks `layoutFragment(for:in:)` from its layout manager's delegate so list items get their
-/// markers.
+/// ln: a note drawn as Notes draws it, as read-only text another TextKit 2 document embeds: the
+/// same paragraphs, styles, chips, images, sketches, slide clips and professor quotes as the
+/// editor, nothing editable. The host asks `layoutFragment(for:in:)` from its layout manager's
+/// delegate so list items get their markers.
 @MainActor
 public final class NoteTextRendering {
     private let context: NoteEditorContext
     private let builder: NoteDocumentBuilder
 
     /// - Parameters:
+    ///   - zoom: the content zoom (nl §11) the note is set at.
     ///   - onLink: a chip was clicked; return true when the host handled it (else it navigates).
     public init(
-        style: NoteEditorStyle, services: StudyServices?, lectureID: Lecture.ID?, professor: String?,
+        style: NoteEditorStyle, zoom: CGFloat = 1, services: StudyServices?, lectureID: Lecture.ID?, professor: String?,
         open: OpenDestinationAction, onLink: ((NoteLink) -> Bool)? = nil
     ) {
-        let context = NoteEditorContext(metrics: NoteMetrics(style: style))
+        let context = NoteEditorContext(metrics: NoteMetrics(style: style, zoom: zoom))
         context.services = services
         context.lectureID = lectureID
         context.professor = professor
@@ -37,25 +37,12 @@ public final class NoteTextRendering {
         builder.document(blocks)
     }
 
-    /// A list item's fragment with its marker (bullet, number, box) in `style`; nil for any other
-    /// paragraph. Called from the host's layout manager delegate.
+    /// A list item's fragment with its marker (bullet, number, box) in `style`, at the zoom its
+    /// text was set at; nil for any other paragraph. Called from the host's layout manager delegate.
     public nonisolated static func layoutFragment(
         for textElement: NSTextElement, in manager: NSTextLayoutManager, style: NoteEditorStyle
     ) -> NSTextLayoutFragment? {
-        guard let paragraph = textElement as? NSTextParagraph, paragraph.attributedString.length > 0,
-              let format = paragraph.attributedString.attribute(.noteBlock, at: 0, effectiveRange: nil) as? BlockFormat,
-              format.isList
-        else { return nil }
-        let metrics = NoteMetrics(style: style)
-        let marker: NoteListFragment.Marker = switch format.kind {
-        case .checklist: .checkbox(checked: format.checked)
-        case .numbered: .number(NoteEditorCoordinator.number(of: paragraph, level: format.level, in: manager.textContentManager))
-        default: .bullet(level: format.level)
-        }
-        return NoteListFragment(
-            textElement: textElement, range: textElement.elementRange, marker: marker,
-            indent: metrics.listIndent * CGFloat(format.level + 1), font: NSFont.systemFont(ofSize: metrics.bodySize)
-        )
+        NoteListFragment.make(for: textElement, in: manager, style: style)
     }
 }
 #endif

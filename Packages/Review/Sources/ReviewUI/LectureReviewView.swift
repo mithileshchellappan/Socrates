@@ -16,6 +16,7 @@ import SwiftUI
 /// - Without a deck there is no rail and no slide; without a recording no player and no
 ///   transcript; before the transcript exists the transcript zone shows the job's progress.
 /// - Opens at `target` (page and/or time, optionally playing), else where review left off.
+/// - nl: its content zooms (`.contentZoomable()`): the transcript and the inspector's text.
 public struct LectureReviewView: View {
     private let lectureID: Lecture.ID
     private let target: ReviewTarget
@@ -78,6 +79,9 @@ public struct LectureReviewView: View {
         .onChange(of: model?.requestedRecordingID) { _, recordingID in
             if let recordingID { chosenRecording = recordingID }
         }
+        // nl: View ▸ Zoom In / Zoom Out / Actual Size scale the transcript and the inspector's
+        // text (both chromes); the toolbar, tabs, rail, stage and player stay.
+        .contentZoomable()
     }
 
     /// Opened again at another slide or time (a search hit, Today): move there, once.

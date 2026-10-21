@@ -19,8 +19,11 @@ import SwiftUI
 //                [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
 //                [--week 2026-10-19] [--m35-sample] [--mc] [--sweep] [--claude]
 //                [--review-layout 0.5,1,0] [--size 1800x1130] [--panel-width 560]
-//                [--review-tab slide|lecture]
+//                [--review-tab slide|lecture] [--zoom 1.3]
 //   (swift run -j 4 --package-path tools/ParityRender ParityRender …)
+//
+// `--zoom 1.3` (nl): the content zoom (View ▸ Zoom In) as stored (`Socrates.contentZoom`, in the
+// registration domain); the PNG's name gets `-z130`. Only zoomable content scales.
 //
 // `--size` draws the windows at that size in points (default the mockups' 1440×900); the PNG's
 // name gets the size (`08-course-1800x1130-light.png`). A window whose columns' minimums do not
@@ -131,6 +134,8 @@ struct RenderOptions {
     var panelWidth: Double?
     /// The tab a review opens on (`--review-tab lecture`: Whole lecture).
     var reviewTab: ReviewInspectorTab = .slide
+    /// The stored content zoom (`--zoom 1.3`).
+    var zoom: Double?
 
     init(arguments: [String]) throws {
         var index = 0
@@ -175,6 +180,9 @@ struct RenderOptions {
             case "--panel-width":
                 guard let width = Double(try value()) else { throw RenderFailure("--panel-width takes 560") }
                 panelWidth = width
+            case "--zoom":
+                guard let scale = Double(try value()), scale > 0 else { throw RenderFailure("--zoom takes 1.3") }
+                zoom = scale
             case "--appearance":
                 switch try value() {
                 case "light": schemes = [.light]
@@ -237,7 +245,9 @@ struct ParityRender {
         reviewTab = options.reviewTab
         let size = options.windowSize ?? ParityMode.windowSize
         // `08-course-1800x1130-light.png` for a size other than the mockups'.
-        let sizeSuffix = options.windowSize.map { "-\(Int($0.width))x\(Int($0.height))" } ?? ""
+        // `-z130` for a content zoom (`--zoom 1.3`).
+        let sizeSuffix = (options.windowSize.map { "-\(Int($0.width))x\(Int($0.height))" } ?? "")
+            + (options.zoom.map { "-z\(Int(($0 * 100).rounded()))" } ?? "")
         let copy = URL.temporaryDirectory.appending(path: "ParityRender-\(UUID().uuidString)", directoryHint: .isDirectory)
         // An APFS clone: every run starts from the same data; nothing is written to the library.
         try FileManager.default.copyItem(at: options.library, to: copy)
@@ -266,6 +276,8 @@ struct ParityRender {
         if let layout = options.reviewLayout { UserDefaults.standard.register(defaults: ["review.layout": layout]) }
         // The agent's right sidebar as wide as a student left it.
         if let width = options.panelWidth { UserDefaults.standard.register(defaults: ["agent.panel.width": width]) }
+        // nl: the content zoom as View ▸ Zoom In left it.
+        if let zoom = options.zoom { UserDefaults.standard.register(defaults: [ContentZoom.defaultsKey: zoom]) }
 
         let newestMail = try await services.database.read { db in
             try MailMessage

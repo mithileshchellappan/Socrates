@@ -13,7 +13,8 @@ import SwiftUI
 @MainActor
 @Observable
 final class NoteEditorContext {
-    let metrics: NoteMetrics
+    /// The editor's sizes at the content zoom (nl): the attachments' views follow a zoom change.
+    var metrics: NoteMetrics
     /// The sketch being drawn on (an attachment's identity), nil when none.
     var editingSketch: ObjectIdentifier?
 

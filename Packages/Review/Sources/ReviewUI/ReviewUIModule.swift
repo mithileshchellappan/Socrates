@@ -94,9 +94,10 @@ extension View {
     }
 }
 
-/// Section heading in the inspector ("Your notes").
+/// Section heading in the inspector ("Your notes"), at the content zoom.
 struct SectionLabel: View {
     let title: LocalizedStringKey
+    @Environment(\.contentZoom) private var zoom
 
     init(_ title: LocalizedStringKey) {
         self.title = title
@@ -104,8 +105,33 @@ struct SectionLabel: View {
 
     var body: some View {
         Text(title)
-            .font(.subheadline.weight(.semibold))
+            .font(.zoomed(.subheadline, zoom, weight: .semibold))
             .foregroundStyle(.secondary)
             .accessibilityAddTraits(.isHeader)
+    }
+}
+
+extension Font {
+    /// nl (docs/plan-notes-layout.md §11): Review's content type at the content zoom: at 100 % the
+    /// text style as before; zoomed, the style's Mac size × `zoom` (the transcript and the
+    /// inspector's text; never the toolbar, tabs, rail, stage or player). `\.contentZoom` is 1 on
+    /// iOS.
+    static func zoomed(_ style: Font.TextStyle, _ zoom: CGFloat, weight: Font.Weight? = nil, design: Font.Design? = nil) -> Font {
+        guard zoom != 1 else { return .system(style, design: design, weight: weight) }
+        return .system(size: macSize(style) * zoom, weight: weight, design: design)
+    }
+
+    /// A text style's size on the Mac.
+    private static func macSize(_ style: Font.TextStyle) -> CGFloat {
+        switch style {
+        case .largeTitle: 26
+        case .title: 22
+        case .title2: 17
+        case .title3: 15
+        case .headline, .body: 13
+        case .callout: 12
+        case .subheadline: 11
+        default: 10
+        }
     }
 }

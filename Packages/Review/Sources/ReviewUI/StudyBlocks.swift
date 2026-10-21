@@ -1,3 +1,4 @@
+import NotesUI
 import Review
 import StudyCore
 import StudyUI
@@ -6,7 +7,8 @@ import SwiftUI
 // The study pass's blocks in the inspector (docs/plan-m4.md §5, mockup 03): Summary, Further
 // reading, Exam hints, Only said in class. A block appears when its rows land: no skeleton and no
 // copy while the pass waits or is paused. AI text is secondary with one sparkle per block; the
-// professor's words are primary, marked by the amber pin.
+// professor's words are primary, marked by the amber pin. nl: their text, chips and pins follow
+// the content zoom (`\.contentZoom`); "Show N more" (a button) stays.
 
 extension FetchAll<Annotation> {
     /// The lecture's study pass rows and pins that are not hidden, in time order.
@@ -32,9 +34,10 @@ struct StudyBlockLabel: View {
 
     let title: LocalizedStringKey
     var mark: Mark = .none
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 6 * zoom) {
             switch mark {
             case .none:
                 EmptyView()
@@ -48,36 +51,38 @@ struct StudyBlockLabel: View {
             }
             Text(title)
         }
-        .font(.subheadline.weight(.semibold))
+        .font(.zoomed(.subheadline, zoom, weight: .semibold))
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
     }
 }
 
-/// A paragraph of 12.5 pt text that ends with one time chip on its last line (mockup `.ai-text`
-/// with `.chip-ts`), wrapping word by word.
+/// A paragraph of 12.5 pt text (× the content zoom) that ends with one time chip on its last line
+/// (mockup `.ai-text` with `.chip-ts`), wrapping word by word.
 struct ChipParagraph: View {
     let text: String
     let time: Double?
     let play: (Double) -> Void
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
         Group {
             if let time {
-                NoteFlowLayout(lineSpacing: 3, wordSpacing: 3.2) {
+                NoteFlowLayout(lineSpacing: 3 * zoom, wordSpacing: 3.2 * zoom) {
                     ForEach(Array(text.split(whereSeparator: \.isWhitespace).enumerated()), id: \.offset) { _, word in
                         Text(verbatim: String(word))
                     }
                     TimeChip(time) { play(time) }
+                        .zoomScaled(zoom)
                 }
             } else {
                 Text(verbatim: text)
-                    .lineSpacing(3)
+                    .lineSpacing(3 * zoom)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .font(.system(size: 12.5))
+        .font(.system(size: 12.5 * zoom))
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
@@ -105,9 +110,10 @@ struct ShowMoreButton: View {
 struct SummaryBlock: View {
     let model: ReviewModel
     let summary: Annotation
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 7 * zoom) {
             StudyBlockLabel(title: "Summary", mark: .ai)
             ChipParagraph(text: summary.body, time: model.player == nil ? nil : summary.startTime, play: play)
                 .foregroundStyle(.secondary)
@@ -126,19 +132,22 @@ struct FurtherReadingBlock: View {
     let model: ReviewModel
     let readings: [Annotation]
     var showsSlides = false
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 7 * zoom) {
             StudyBlockLabel(title: "Further reading", mark: .ai)
             // Mockup `.ref + .ref`: 3 pt more than the block's own 7.
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 10 * zoom) {
                 ForEach(readings) { reading in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8 * zoom) {
                         FurtherReadingRow(title: reading.body, byline: reading.detail, url: Self.url(of: reading))
+                            .zoomScaled(zoom)
                         if showsSlides, let page = reading.pageNumber {
                             SlideChip(page: page) {
                                 Task { await model.session.selectThumbnail(page: page) }
                             }
+                            .zoomScaled(zoom)
                         }
                     }
                     .contextMenu { HideButton(model: model, id: reading.id) }
@@ -159,15 +168,17 @@ struct ExamHintsBlock: View {
     let hints: [Annotation]
     var limit: Int?
     @State private var expanded = false
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
         let shown = expanded || limit == nil ? hints : Array(hints.prefix(limit ?? hints.count))
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 7 * zoom) {
             StudyBlockLabel(title: "Exam hints", mark: .exam)
             ForEach(shown) { hint in
-                HStack(alignment: .top, spacing: 7) {
+                HStack(alignment: .top, spacing: 7 * zoom) {
                     ProvenancePin(.professor)
-                        .padding(.top, 1)
+                        .zoomScaled(zoom)
+                        .padding(.top, 1 * zoom)
                     ChipParagraph(
                         text: SourceTrailText.quote(hint.body, maxWords: 25),
                         time: model.player == nil ? nil : hint.startTime,
@@ -192,17 +203,18 @@ struct SaidInClassBlock: View {
     var limit: Int?
     var groups: [(category: SaidInClassCategory?, items: [Annotation])]?
     @State private var expanded = false
+    @Environment(\.contentZoom) private var zoom
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 7 * zoom) {
             StudyBlockLabel(title: "Only said in class", mark: .ai)
             if let groups {
                 ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
                     if let title = Self.title(group.category) {
                         Text(title)
-                            .font(.subheadline)
+                            .font(.zoomed(.subheadline, zoom))
                             .foregroundStyle(.secondary)
-                            .padding(.top, index == 0 ? 0 : 3)
+                            .padding(.top, index == 0 ? 0 : 3 * zoom)
                             .accessibilityAddTraits(.isHeader)
                     }
                     ForEach(group.items) { row($0) }

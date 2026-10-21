@@ -9,7 +9,9 @@ import SwiftUI
 ///
 /// On the Mac it is an `NSTextView` on TextKit 2; on iOS a read-only rendering. It writes through
 /// its `NoteSession` (nothing on open; 500 ms after typing stops and on leaving). Give it an `.id`
-/// per note: a new note is a new editor with its own undo steps.
+/// per note: a new note is a new editor with its own undo steps. On the Mac it is set at the
+/// content zoom (`\.contentZoom`, nl): a zoom change sets the text again at the new sizes, keeping
+/// the selection and the scroll, without a save or an undo step.
 public struct NoteEditor: View {
     private let session: NoteSession?
     private let readOnlyNote: Note?

@@ -98,23 +98,35 @@ public enum NoteLink: Hashable, Sendable {
     case time(SourceRef)
 }
 
-/// Note sizes (DESIGN 3.2, 3.3, mockups 03 and 04).
+/// Note sizes (DESIGN 3.2, 3.3, mockups 03 and 04), at the content zoom (nl §11: every text size,
+/// line height, spacing, list indent, box, chip and inline medium × `zoom`; the document's sides
+/// stay, its text column grows).
 struct NoteMetrics: Hashable, Sendable {
     let style: NoteEditorStyle
+    /// `\.contentZoom` (1 = 100 %).
+    let zoom: CGFloat
 
-    var bodySize: CGFloat { style == .document ? 14 : 13 }
+    init(style: NoteEditorStyle, zoom: CGFloat = 1) {
+        self.style = style
+        self.zoom = zoom > 0 ? zoom : 1
+    }
+
+    var bodySize: CGFloat { (style == .document ? 14 : 13) * zoom }
     /// 14 × 1.55 (document), 13 × 1.45 (inspector, mockup 03's `.mynote`).
-    var lineHeight: CGFloat { style == .document ? 21.7 : 18.85 }
-    var paragraphSpacing: CGFloat { style == .document ? 9 : 5 }
+    var lineHeight: CGFloat { (style == .document ? 21.7 : 18.85) * zoom }
+    var paragraphSpacing: CGFloat { (style == .document ? 9 : 5) * zoom }
     /// A list level's indent: the 15 pt box and 8 pt to the text, plus a pt.
-    var listIndent: CGFloat { 24 }
-    var checkboxSize: CGFloat { 15 }
-    /// The document's text column (DESIGN 3.3).
+    var listIndent: CGFloat { 24 * zoom }
+    var checkboxSize: CGFloat { 15 * zoom }
+    /// The document's text column at 100 % and its sides (DESIGN 3.3).
     static let documentSide: CGFloat = 52
     static let documentWidth: CGFloat = 680
+    /// The document's text column at this zoom: a line keeps its words until the window runs out
+    /// (Word's zoom without a sideways scroll).
+    var textColumnWidth: CGFloat { Self.documentWidth * zoom }
 
     func headingSize(_ level: Int) -> CGFloat {
-        switch (style, level) {
+        let size: CGFloat = switch (style, level) {
         case (.document, 1): 22
         case (.document, 2): 17
         case (.document, _): 15
@@ -122,6 +134,7 @@ struct NoteMetrics: Hashable, Sendable {
         case (.inspector, 2): 14
         case (.inspector, _): 13
         }
+        return size * zoom
     }
 
     func headingWeight(_ level: Int) -> Font.Weight {

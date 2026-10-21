@@ -122,8 +122,8 @@ struct NoteTypesetter {
         let font = font(format)
         let natural = font.ascender - font.descender + font.leading
         if format.kind == .heading {
-            style.lineSpacing = 2
-            style.paragraphSpacingBefore = format.level == 1 ? 0 : 4
+            style.lineSpacing = 2 * metrics.zoom
+            style.paragraphSpacingBefore = format.level == 1 ? 0 : 4 * metrics.zoom
         } else {
             style.lineSpacing = max(0, metrics.lineHeight - natural)
         }
@@ -144,7 +144,7 @@ struct NoteTypesetter {
             .font: font(format),
             .foregroundColor: NSColor.labelColor
         ]
-        if format.kind == .heading, format.level == 1 { attributes[.kern] = -0.22 }
+        if format.kind == .heading, format.level == 1 { attributes[.kern] = -0.22 * metrics.zoom }
         return attributes
     }
 
@@ -171,7 +171,8 @@ struct NoteTypesetter {
         }
         if set.contains(.code) {
             attributes[.noteCode] = true
-            attributes[.font] = NSFont.monospacedSystemFont(ofSize: max(10, metrics.bodySize - 1.5), weight: bold ? .semibold : .regular)
+            let size = max(10 * metrics.zoom, metrics.bodySize - 1.5 * metrics.zoom)
+            attributes[.font] = NSFont.monospacedSystemFont(ofSize: size, weight: bold ? .semibold : .regular)
         }
         if set.contains(.ai) {
             // Claude's words (Edit as Note): grey, the paragraph's one sparkle hung before its
