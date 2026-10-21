@@ -53,10 +53,14 @@ public struct FileEvidence: Sendable, Hashable {
     }
 
     public enum StartSource: String, Sendable, Hashable {
-        /// QuickTime/MPEG-4 creation date in the file (Voice Memos writes the recording start).
+        /// QuickTime/MPEG-4 creation date in the file (the recording start; Voice Memos' Share
+        /// writes the export time instead, see `writtenAt`).
         case metadata
         /// The file system's creation date (may be when the file was copied or exported).
         case fileDate
+        /// Either date, read as when the file was written (the audio would otherwise end after
+        /// it): the start is that moment minus the duration.
+        case writtenAt
         /// Nothing known.
         case unknown
     }
@@ -228,6 +232,20 @@ extension FileEvidence {
         } else if let time = try? await asset.load(.duration), time.isNumeric {
             duration = time.seconds
         }
+        // A stamp the audio would end after the file was last written (or after now) is not when
+        // it began: Voice Memos' Share writes the export time, some recorders the end. The audio
+        // ended by then, so it began `duration` earlier.
+        if let stamped = start, let duration, duration > 0 {
+            let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            let written = min(Date(), modified ?? Date())
+            if stamped.addingTimeInterval(duration) > written.addingTimeInterval(writeSlack) {
+                start = stamped.addingTimeInterval(-duration)
+                source = .writtenAt
+            }
+        }
         return RecordingEvidence(startedAt: start, startSource: source, duration: duration)
     }
+
+    /// How far past the file's last write a recording's end may fall (clocks, a slow write).
+    static let writeSlack: TimeInterval = 120
 }

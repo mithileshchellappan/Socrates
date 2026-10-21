@@ -227,9 +227,9 @@ public struct ActionRegistry: Sendable {
 }
 
 extension ActionRegistry {
-    /// The `app` conversation's actions (docs/plan-actions.md §4 "Registered"): 26, 25 without the
+    /// The `app` conversation's actions (docs/plan-actions.md §4 "Registered"): 27, 26 without the
     /// document bank (`keep_document`); oss adds set_profile; ln adds write_lecture_notes,
-    /// set_notes_length and keep_notes_answer. Their tools are the instances `AppAgentChat.spec` builds
+    /// set_notes_length and keep_notes_answer; merge_duplicate_lectures (2026-10-21). Their tools are the instances `AppAgentChat.spec` builds
     /// for its direct writes (the student's words and mail are sources).
     public static func app(_ deps: AppAgentChat.Services) throws -> ActionRegistry {
         let writes = WriteTools(services: deps.services, changeLog: deps.changeLog, chatSource: true, mailSource: true)
@@ -393,6 +393,14 @@ extension ActionRegistry {
                 keywords: ["slides", "Folien", "deck", "pdf", "unlink", "remove", "entfernen", "wrong", "falsch", "detach"],
                 sources: chat, studentOnly: true
             ),
+            AgentAction(
+                writes.mergeDuplicateLectures, summary: "Merges a lecture filed twice (slides in one, the recording in the other) into one.",
+                keywords: [
+                    "merge", "duplicate", "twice", "double", "two", "same", "combine", "zusammenführen", "doppelt", "zweimal",
+                    "zwei", "gleiche", "lecture", "Vorlesung", "recording", "Aufnahme",
+                ],
+                sources: chat, studentOnly: true
+            ),
             // ln: lecture notes.
             AgentAction(
                 notes.writeLectureNotes, summary: "Writes a lecture's notes again as a new version (optionally with what to change).",
@@ -419,6 +427,7 @@ extension ActionRegistry {
         return try ActionRegistry(actions)
     }
 
-    /// How many actions `app` registers (the catalog's "actions" line); ln added three.
-    static func appCount(documents: Bool) -> Int { documents ? 26 : 25 }
+    /// How many actions `app` registers (the catalog's "actions" line); ln added three, and
+    /// merge_duplicate_lectures one (2026-10-21).
+    static func appCount(documents: Bool) -> Int { documents ? 27 : 26 }
 }

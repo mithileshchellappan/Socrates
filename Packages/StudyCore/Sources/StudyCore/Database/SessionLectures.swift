@@ -13,11 +13,21 @@ import SQLiteData
 /// - undated: the numbered session with its number.
 ///
 /// Numbered sessions are lectures, or seminars in a course without lectures.
+///
+/// One class meeting, one lecture (2026-10-21): an exercise, tutorial or seminar of a course with
+/// lectures that adjoins one of its lectures (a recitation right after it, ≤ 30 min between them)
+/// is part of that class meeting (`meeting(of:among:)`), so what was recorded or shown in it goes
+/// into that lecture. Such a session takes a lecture of its own only when it stands alone, and
+/// never gives it a lecture number (its own count is not one: `numbersLectures`).
 public enum SessionLectures {
     /// A lecture may start this long before or after its session's start.
     public static let tolerance: TimeInterval = 30 * 60
+    /// At most this between a lecture and an exercise, tutorial or seminar of its course for the
+    /// two to be one class meeting.
+    public static let adjoining: TimeInterval = 30 * 60
 
-    /// The session `lecture` was held in, among its course's `sessions` (cancelled ones never).
+    /// The session `lecture` was held in, among its course's `sessions` (cancelled ones never);
+    /// a session that is part of a lecture's class meeting gives that lecture's session.
     public static func session(for lecture: Lecture, in sessions: [LectureSession], zone: TimeZone) -> LectureSession? {
         let open = sessions.filter { $0.courseID == lecture.courseID && !$0.isCancelled }
         let numbered = numberedKind(open)
@@ -38,9 +48,41 @@ public enum SessionLectures {
                     let right = abs(heldAt.timeIntervalSince(rhs.startsAt))
                     return left == right ? lhs.id.uuidString < rhs.id.uuidString : left < right
                 }
+                .map { meeting(of: $0, among: open) }
         }
         guard let number = lecture.number else { return nil }
         return open.first { $0.kind == numbered && $0.number == number }
+    }
+
+    /// Whether `session`'s own number is a lecture number: a numbered session (a lecture, or a
+    /// seminar in a course without lectures), or any session of a course without numbered ones.
+    /// An exercise's count beside lectures is not one ("L2" twice on one day).
+    public static func numbersLectures(_ session: LectureSession, among sessions: [LectureSession]) -> Bool {
+        let open = sessions.filter { $0.courseID == session.courseID && !$0.isCancelled }
+        let numbered = numberedKind(open)
+        return session.kind == numbered || !open.contains { $0.kind == numbered }
+    }
+
+    /// The session whose lecture holds what happened in `session`: `session` itself, or, for an
+    /// exercise, tutorial or seminar beside lectures, the course's numbered session it adjoins
+    /// (≤ `adjoining` between the two; the nearer, the earlier on a tie). One that stands alone
+    /// (another day, the evening) is its own.
+    public static func meeting(of session: LectureSession, among sessions: [LectureSession]) -> LectureSession {
+        guard !numbersLectures(session, among: sessions) else { return session }
+        let open = sessions.filter { $0.courseID == session.courseID && !$0.isCancelled }
+        let numbered = numberedKind(open)
+        return open
+            .filter { $0.kind == numbered && gap($0, session) <= adjoining }
+            .min { lhs, rhs in
+                let left = gap(lhs, session)
+                let right = gap(rhs, session)
+                return left == right ? lhs.startsAt < rhs.startsAt : left < right
+            } ?? session
+    }
+
+    /// Time between two sessions (0 when they overlap or touch).
+    static func gap(_ lhs: LectureSession, _ rhs: LectureSession) -> TimeInterval {
+        max(0, max(lhs.startsAt, rhs.startsAt).timeIntervalSince(min(lhs.endsAt, rhs.endsAt)))
     }
 
     /// The lecture without a session among `lectures` that was held in `session` (oldest first).
@@ -60,6 +102,14 @@ public enum SessionLectures {
     }
 
     // MARK: - Inside a transaction
+
+    /// The number a new lecture of `session` takes: the session's, unless that is not a lecture
+    /// number (an exercise beside lectures: `numbersLectures`).
+    public static func lectureNumber(for session: LectureSession, in db: Database) throws -> Int? {
+        let courseID = session.courseID
+        let sessions = try LectureSession.where { $0.courseID.eq(courseID) }.fetchAll(db)
+        return numbersLectures(session, among: sessions) ? session.number : nil
+    }
 
     /// The lecture filed to `sessionID`, else the one it adopts (`isLinked` false; not written).
     public static func lecture(forSession sessionID: LectureSession.ID, in db: Database) throws -> (lecture: Lecture, isLinked: Bool)? {

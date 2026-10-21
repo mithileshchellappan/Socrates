@@ -582,7 +582,9 @@ public struct LectureImporter: Sendable {
             if let found = try await services.database.read({ db in try SessionLectures.lecture(forSession: id, in: db) }) {
                 return LecturePlan(lecture: found.lecture, isNew: false)
             }
-            return try await newLecture(number: session.number, heldAt: session.startsAt, sessionID: session.id)
+            // An exercise's own count is not a lecture number (never a second "L2").
+            let number = try await services.database.read { db in try SessionLectures.lectureNumber(for: session, in: db) }
+            return try await newLecture(number: number, heldAt: session.startsAt, sessionID: session.id)
         }
     }
 

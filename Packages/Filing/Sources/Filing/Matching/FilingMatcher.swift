@@ -13,7 +13,9 @@ import StudyCore
 ///
 /// Lecture fit (0…1) within a course: a session (or lecture) with the file's number, the
 /// session overlapping a recording, the session or lecture on the title slide's date, the next
-/// session without slides, or a new lecture. A choice's confidence is score × fit.
+/// session without slides, or a new lecture. A choice's confidence is score × fit. An exercise,
+/// tutorial or seminar adjoining a lecture stands for that lecture (one class meeting, one
+/// lecture: `SessionLectures.meeting`).
 public struct FilingMatcher: Sendable {
     /// At or above: filed without asking.
     public static let fileThreshold = 0.75
@@ -233,13 +235,16 @@ public struct FilingMatcher: Sendable {
             ($0, FilingSignal(kind: .titleDate, evidence: evidence.deck?.titleDateText ?? $0.rawValue, weight: 0.85))
         }
 
-        // A recording or capture: the session it overlaps, else a lecture dated that day.
+        // A recording or capture: the session it overlaps, else a lecture dated that day. An
+        // exercise right after (or before) a lecture is that lecture's class meeting: the file
+        // goes into the lecture, never into a second lecture of the day.
         var timed = false
         if let start = evidence.startedAt {
             let end = start.addingTimeInterval(max(0, evidence.duration ?? 0))
-            if let (session, _) = bestSession(course.id, start: start, end: end) {
+            if let (overlapped, _) = bestSession(course.id, start: start, end: end) {
+                let session = library.meeting(of: overlapped)
                 let recorded = library.lecture(sessionID: session.id)?.hasRecording == true
-                let signal = FilingSignal(kind: .weeklySlot, evidence: Self.stamp(session.startsAt, zone: library.zone), weight: 0.9)
+                let signal = FilingSignal(kind: .weeklySlot, evidence: Self.stamp(overlapped.startsAt, zone: library.zone), weight: 0.9)
                 choices.append(sessionChoice(session, course: course, fit: recorded ? 0.9 : 1, signals: [signal]))
                 timed = true
             } else if let info = sameDayLecture(course.id, start: start, contested: contested) {
@@ -260,7 +265,7 @@ public struct FilingMatcher: Sendable {
             } else if let info = lectures.first(where: { $0.lecture.number == number.value }) {
                 choices.append(lectureChoice(info, course: course, fit: dayOK(info.lecture.heldAt) ? fit : 0.85, signals: [number.signal]))
             } else {
-                let session = date.flatMap { day in sessions.first { library.day($0.startsAt) == day.day } }
+                let session = date.flatMap { day in sessions.first { library.day($0.startsAt) == day.day } }.map(library.meeting)
                 if let session, library.lecture(sessionID: session.id) == nil {
                     var choice = sessionChoice(session, course: course, fit: 0.95, signals: [number.signal])
                     choice.target = .newLecture(number: number.value, heldAt: session.startsAt, sessionID: session.id)
@@ -278,8 +283,12 @@ public struct FilingMatcher: Sendable {
 
         if let date {
             let fit = number == nil ? 1 : 0.85
+            // That day's class meetings (two lectures on one day stay two; an exercise right after
+            // a lecture is the lecture's).
             let onDay = sessions.filter { library.day($0.startsAt) == date.day }
-            let session = onDay.first { library.lecture(sessionID: $0.id)?.hasDeck != true } ?? onDay.first
+            let meetings = onDay.filter { library.meeting(of: $0).id == $0.id }
+            let pool = meetings.isEmpty ? onDay : meetings
+            let session = pool.first { library.lecture(sessionID: $0.id)?.hasDeck != true } ?? pool.first
             if let session {
                 choices.append(sessionChoice(session, course: course, fit: fit, signals: [date.signal]))
             } else if let info = lectures.first(where: { $0.lecture.heldAt.map(library.day) == date.day }) {
