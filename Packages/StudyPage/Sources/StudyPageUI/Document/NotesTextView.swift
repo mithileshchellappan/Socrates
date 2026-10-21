@@ -164,6 +164,12 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
     private var capsule: NSView?
     private var popover: NSPopover?
     private var askSession: AskSession?
+    /// Renders: the preview's popover drawn in place, its passage marked.
+    private var previewPopover: NSView?
+    private var previewPassage: NSRange?
+    private var previewTask: Task<Void, Never>?
+    /// Renders: the capsule on an opaque surface (an off-screen window draws no glass).
+    private var opaqueCapsule = false
     private var observedClip: NSClipView?
     private var pendingInvalidate = false
     private var hoveredMark: LectureNotesMark.ID?
@@ -314,6 +320,7 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
         layout.removeRenderingAttribute(.backgroundColor, for: layout.documentRange)
         var ranges: [NSRange] = []
         if let askSession, popover?.isShown == true { ranges.append(askSession.passage.range) }
+        if let previewPassage { ranges.append(previewPassage) }
         if let hoveredMark, let range = build.passages[hoveredMark] { ranges.append(range) }
         for range in ranges {
             guard let textRange = textRange(range) else { continue }
@@ -488,6 +495,7 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
         let controller = controller
         return SelectionCapsule(
             canAsk: controller?.asker != nil,
+            opaque: opaqueCapsule,
             highlight: { controller?.toggleHighlight() },
             ask: { controller?.ask() }
         )
@@ -691,6 +699,84 @@ extension NotesTextCoordinator: NSPopoverDelegate {
     }
 }
 
+// MARK: - Renders (`LectureNotesPreview`)
+
+extension NotesTextCoordinator {
+    /// Renders only: once the passage is laid out and the view as tall as its text, scrolls it to a
+    /// third of the screen, then selects it and floats the capsule over it, or draws the Ask popover
+    /// in place under it with its one exchange (an off-screen window draws no popover).
+    func showPreview(_ preview: LectureNotesPreview) {
+        guard let text = preview.passage ?? preview.reveal else { return }
+        previewTask?.cancel()
+        previewTask = Task { @MainActor [weak self] in
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self, let textView = self.textView, let storage = textView.textStorage else { return }
+                let found = (storage.string as NSString).range(of: text)
+                guard found.location != NSNotFound, textView.window != nil, let frame = self.frame(of: found),
+                      textView.bounds.height >= frame.maxY
+                else { continue }
+                let visible = textView.enclosingScrollView?.contentView.bounds.height ?? 600
+                textView.scrollToVisible(CGRect(x: frame.minX, y: max(0, frame.minY - visible / 3), width: 1, height: max(visible - 40, frame.height)))
+                // A scroll takes the capsule away: select once it has settled.
+                try? await Task.sleep(for: .milliseconds(300))
+                guard preview.passage != nil else { return }
+                textView.window?.makeFirstResponder(textView)
+                textView.setSelectedRange(found)
+                self.opaqueCapsule = true
+                if preview.question != nil {
+                    self.drawPreviewPopover(preview, below: frame)
+                } else {
+                    self.selectionSettled()
+                }
+                return
+            }
+        }
+    }
+
+    /// The text of `range` in the view's coordinates.
+    private func frame(of range: NSRange) -> CGRect? {
+        guard let textView, let layout = textView.textLayoutManager, let textRange = textRange(range) else { return nil }
+        var union: CGRect?
+        layout.enumerateTextSegments(in: textRange, type: .selection, options: []) { _, frame, _, _ in
+            if frame.width > 0 { union = union.map { $0.union(frame) } ?? frame }
+            return true
+        }
+        let origin = textView.textContainerOrigin
+        return union?.offsetBy(dx: origin.x, dy: origin.y)
+    }
+
+    private func drawPreviewPopover(_ preview: LectureNotesPreview, below frame: CGRect) {
+        guard let textView, let controller, let notes = controller.notes, let asker = controller.asker,
+              let selection = currentSelection()
+        else { return }
+        hideCapsule()
+        previewPopover?.removeFromSuperview()
+        let session = AskSession(passage: selection, notesID: notes.id, lectureID: controller.lectureID, asker: asker)
+        session.field = preview.question ?? ""
+        session.send()
+        let view = AskPopoverView(session: session, chips: controller.chips, open: { _ in }, keep: { _ in }, continueInChat: {})
+            .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.separator, lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.18), radius: 16, y: 6)
+        let host = NSHostingView(rootView: view)
+        textView.addSubview(host)
+        previewPopover = host
+        previewPassage = selection.range
+        applyRenderingMarks()
+        Task { @MainActor [weak host, weak textView] in
+            // The answer arrives on the next turn: size the popover after it.
+            for _ in 0..<3 {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard let host, let textView else { return }
+                let size = host.fittingSize
+                let x = min(max(frame.midX - size.width / 2, 0), max(0, textView.bounds.width - size.width))
+                host.frame = CGRect(x: x, y: frame.maxY + 8, width: size.width, height: size.height)
+            }
+        }
+    }
+}
+
 /// The fold chevron hung before a heading (Notes' folding headings): right while folded, down
 /// while open (shown on hover).
 struct FoldChevron: View {
@@ -714,6 +800,8 @@ struct FoldChevron: View {
 /// The glass capsule over a settled selection: [highlighter] [Ask] (Ask only with Claude Code).
 struct SelectionCapsule: View {
     let canAsk: Bool
+    /// Renders only (`LectureNotesPreview`): the system's content surface instead of glass.
+    var opaque = false
     let highlight: () -> Void
     let ask: () -> Void
 
@@ -739,8 +827,24 @@ struct SelectionCapsule: View {
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
         .padding(3)
-        .glassEffect(.regular.interactive(), in: .capsule)
+        .modifier(CapsuleSurface(opaque: opaque))
         .fixedSize()
+    }
+}
+
+/// The capsule's glass, or (renders) an opaque surface with the glass's ring and shadow.
+private struct CapsuleSurface: ViewModifier {
+    let opaque: Bool
+
+    func body(content: Content) -> some View {
+        if opaque {
+            content
+                .background(.background, in: .capsule)
+                .overlay(Capsule().strokeBorder(.separator, lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+        } else {
+            content.glassEffect(.regular.interactive(), in: .capsule)
+        }
     }
 }
 

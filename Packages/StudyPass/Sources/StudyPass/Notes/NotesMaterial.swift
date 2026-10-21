@@ -257,7 +257,7 @@ struct NotesMaterial: Sendable {
         var used: Set<String> = []
         for group in groups {
             guard let first = group.first, let last = group.last else { continue }
-            var title = group.first { !$0.title.isEmpty }?.title ?? "Slides \(first.page)–\(last.page)"
+            var title = group.first { !$0.title.isEmpty }.map { provisionalTitle($0.title) } ?? "Slides \(first.page)–\(last.page)"
             var key = LectureNotesFormat.sectionKey(topicTitle: title)
             if used.contains(key) {
                 title += " (continued)"
@@ -267,6 +267,20 @@ struct NotesMaterial: Sendable {
             sections.append(LectureNotesSection(key: key, title: title, firstPage: first.page, lastPage: last.page))
         }
         return sections
+    }
+
+    /// A group's title until the model names it (`NotesValidator.heading`): the first slide's
+    /// title up to a page number, a bullet or a footer mark, at most eight words (a PDF without line
+    /// breaks gives the slide's whole text as its title).
+    static func provisionalTitle(_ title: String) -> String {
+        var words: [Substring] = []
+        for word in title.split(whereSeparator: \.isWhitespace) {
+            if word.allSatisfy(\.isNumber) || word.first.map({ "§•▪◦©|".contains($0) }) == true { break }
+            words.append(word)
+            if words.count == 8 { break }
+        }
+        let cut = words.joined(separator: " ").trimmingCharacters(in: .punctuationCharacters.subtracting(CharacterSet(charactersIn: ")?")))
+        return cut.isEmpty ? title : cut
     }
 
     /// A slide title without what repeats it ("(cont.)", "2/3"), folded.

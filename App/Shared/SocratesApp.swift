@@ -86,7 +86,12 @@ struct SocratesApp: App {
             }
             GoCommands()
             ReviewCommands()
+            // ln: the Lecture menu also holds the lecture notes' Ask… and Highlight (Mac).
+            #if os(macOS)
+            LiveLectureCommands { LectureNotesMenuItems() }
+            #else
             LiveLectureCommands()
+            #endif
             // A commands builder takes ten items: the screens' own menus share one group.
             Group {
                 MailCommands()

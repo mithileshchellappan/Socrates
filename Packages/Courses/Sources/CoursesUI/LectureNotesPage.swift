@@ -1,9 +1,9 @@
+import SwiftUI
 #if os(macOS)
 import Courses
 import StudyCore
 import StudyPageUI
 import StudyUI
-import SwiftUI
 
 /// A lecture's notes, pushed full width on its course's Lectures (ln, docs/plan-lecture-notes.md
 /// "Build plan", decision 1; mockups 30–33): the reading column centred, at most 680 pt of text.

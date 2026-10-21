@@ -41,6 +41,9 @@ enum SidebarItem: Hashable {
     /// mc: a submitted practice exam's results (mockup 19), pushed on its course's Progress: the
     /// sidebar shows that course's Progress row selected, the toolbar Back.
     case practiceResults(StudySession.ID, course: Course.ID)
+    /// ln (docs/plan-lecture-notes.md, decision 1): a lecture's notes, pushed full width on its
+    /// course's Lectures: the sidebar shows that course's Lectures row selected, the toolbar Back.
+    case lectureNotes(Lecture.ID, course: Course.ID)
 
     /// The top-level rows, in sidebar order: Go ⌘1…⌘7 (md: Documents ⌘5 on the Mac).
     #if os(macOS)
@@ -72,13 +75,15 @@ enum SidebarItem: Hashable {
         case .lecture: String(localized: "Lecture")
         case .practice: String(localized: "Practice")
         case .practiceResults: String(localized: "Practice exam")
+        case .lectureNotes: String(localized: "Lectures")
         }
     }
 
     /// The sidebar row that shows as selected: a practice exam's results are pushed on its course's
-    /// Progress (mockup 19).
+    /// Progress (mockup 19), a lecture's notes on its course's Lectures (ln).
     var sidebarRow: SidebarItem {
         if case .practiceResults(_, let course) = self { return .courseProgress(course) }
+        if case .lectureNotes(_, let course) = self { return .courseLectures(course) }
         return self
     }
 
@@ -131,7 +136,8 @@ enum SidebarItem: Hashable {
     var courseScreenID: Course.ID? {
         switch self {
         case .course(let id), .courseLectures(let id), .courseSlides(let id), .courseNotes(let id),
-             .courseProgress(let id), .courseSettings(let id), .practiceResults(_, let id): id
+             .courseProgress(let id), .courseSettings(let id), .practiceResults(_, let id),
+             .lectureNotes(_, let id): id
         case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .documents, .study, .search, .lecture, .practice: nil
         }
     }
@@ -142,7 +148,7 @@ enum SidebarItem: Hashable {
         switch self {
         case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .documents, .study, .search: true
         case .course, .courseLectures, .courseSlides, .courseNotes, .courseProgress, .courseSettings, .lecture,
-             .practice, .practiceResults: false
+             .practice, .practiceResults, .lectureNotes: false
         }
     }
 
@@ -167,6 +173,7 @@ enum SidebarItem: Hashable {
         case .lecture: "display"
         case .practice: "brain"
         case .practiceResults: "chart.bar"
+        case .lectureNotes: "waveform"
         }
     }
 }

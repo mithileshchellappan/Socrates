@@ -9,6 +9,7 @@ import FilingUI
 import ReviewUI
 import SearchUI
 import StudyCore
+import StudyPageUI
 import StudyUI
 import SwiftUI
 
@@ -31,6 +32,13 @@ import SwiftUI
 //
 // `--review-tab lecture` (ln): every review opens on the inspector's Whole lecture tab (the
 // lecture's notes on a copy of .data/parity/ln/library).
+//
+// ln (a copy of .data/parity/ln/library, `tools/parity/seed --ln-sample`; mockups 30–33): DC
+// Lecture 2's notes pushed on DC's Lectures, `30-lecture-notes` (the top of the page),
+// `31-notes-select` (a sentence selected, the capsule over it), `31-notes-ask` (the Ask popover
+// drawn in place with a canned answer: no model), `32-notes-kept` (scrolled to the kept answer),
+// and DC Lecture 3's from the slides, `33-notes-writing` (writing) and `33-notes-paused` (its row
+// set to paused in the clone). Opening the notes never queues any in a render.
 //
 // `03-review-cl` (a library with Computational Linguistics L1, e.g. the M1 library): that review
 // where it left off. `--review-layout` sets Review's stored layout ("share,transcript,rail", 1 =
@@ -198,6 +206,8 @@ struct RenderShot {
     var calendarDetail: CalendarDetailPreview?
     /// mc: the practice exam sheet of this course drawn on top (off-screen windows draw no sheet).
     var examSheet: Course.ID?
+    /// ln: a selection, the capsule, the Ask popover or a scroll drawn on the notes.
+    var notesPreview: LectureNotesPreview?
     var prepare: ((AppModel, CGSize) async throws -> Void)?
 }
 
@@ -370,6 +380,7 @@ struct ParityRender {
                 ))))
             }
             shots += try await mdShots(services: services)
+            shots += try await lnShots(dc: dc, services: services)
             if options.mc { shots = try mcShots(dc: dc, services: services) }
             if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
             if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
@@ -449,6 +460,42 @@ struct ParityRender {
             RenderShot(name: "md-documents-pending", window: documents("Pruefungsamt_Hinweis_Anmeldung")),
             RenderShot(name: "md-search", window: .main(ParityMode.Launch(selection: .search, query: "Prüfung")))
         ]
+    }
+
+    /// ln: the lecture notes' shots (mockups 30–33) on a library with DC Lecture 2's notes.
+    static func lnShots(dc: Course, services: StudyServices) async throws -> [RenderShot] {
+        guard let (_, lecture2) = try? ParityMode.lecture("DC", 2, services: services),
+              try await !LectureNotesRepository(store: services.records).versions(lectureID: lecture2.id).isEmpty
+        else { return [] }
+        func notes(_ lecture: Lecture) -> RenderShot.Window {
+            .main(ParityMode.Launch(selection: .lectureNotes(lecture.id, course: dc.id)))
+        }
+        let k = ChatCitation.key(lecture2.id)
+        let passage = "The guest operating system is not modified, so any operating system runs."
+        let answer = """
+            The hypervisor finds the troublesome instructions in the guest's code and replaces them itself, so the guest \
+            needs no changes and does not even know. That is why an operating system without source code, or an old one, \
+            runs as it is. Paravirtualization, next, gives up exactly this to run faster. [[\(k) S16]]
+            """
+        var shots = [
+            RenderShot(name: "30-lecture-notes", window: notes(lecture2)),
+            RenderShot(name: "31-notes-select", window: notes(lecture2), notesPreview: LectureNotesPreview(passage: passage)),
+            RenderShot(
+                name: "31-notes-ask", window: notes(lecture2),
+                notesPreview: LectureNotesPreview(passage: passage, question: "why does any OS run then?", answer: answer)
+            ),
+            RenderShot(name: "32-notes-kept", window: notes(lecture2), notesPreview: LectureNotesPreview(reveal: "Because the guest cooperates"))
+        ]
+        if let (_, lecture3) = try? ParityMode.lecture("DC", 3, services: services) {
+            shots.append(RenderShot(name: "33-notes-writing", window: notes(lecture3)))
+            // Paused at a usage limit (set in the clone before the shot settles).
+            shots.append(RenderShot(name: "33-notes-paused", window: notes(lecture3)) { _, _ in
+                let repository = LectureNotesRepository(store: services.records)
+                guard let current = try await repository.current(lectureID: lecture3.id) else { return }
+                try await repository.pause(current.id, until: Date().addingTimeInterval(2 * 3600))
+            })
+        }
+        return shots
     }
 
     /// mc: the study coach's screens (mockups 11–19, 16 is M7's iPhone) the library has.
@@ -555,6 +602,9 @@ struct ParityRender {
                 )
                 .environment(\.calendarDetailPreview, shot.calendarDetail)
                 .environment(\.reviewInspectorTab, reviewTab)
+                // ln: opening a lecture's notes or Review's Whole lecture never queues notes here.
+                .environment(\.lectureNotesQueuesOnOpen, false)
+                .environment(\.lectureNotesPreview, shot.notesPreview)
                 .environment(model)
             )
         case .live:

@@ -92,6 +92,10 @@ packages:
   # md (docs/plan-docs.md): the document bank. Mac only in the app (documents never sync).
   Documents:
     path: Packages/Documents
+  # ln (docs/plan-lecture-notes.md): Claude's study text drawn natively (the lecture notes; the
+  # agent panel's Markdown parser). SwiftMath (MIT, tools/oss/notices.tsv) comes through it.
+  StudyPage:
+    path: Packages/StudyPage
 
 targets:
   Socrates:
@@ -295,6 +299,12 @@ targets:
       - package: Documents
         product: DocumentsUI
         destinationFilters: [macOS]
+      # ln (docs/plan-lecture-notes.md): the lecture notes (format, views, the figure checker, the
+      # Lecture menu's Ask… and Highlight).
+      - package: StudyPage
+        product: StudyPageFormat
+      - package: StudyPage
+        product: StudyPageUI
       - target: SocratesWidgets
         destinationFilters: [iOS]
         embed: true

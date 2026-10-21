@@ -37,7 +37,9 @@ let package = Package(
         // M7: AppModel owns the (gated) iCloud sync.
         .package(path: "../../Packages/Sync"),
         // md: the document bank and the Documents screen.
-        .package(path: "../../Packages/Documents")
+        .package(path: "../../Packages/Documents"),
+        // ln: the lecture notes (the notes page, the Lecture menu's Ask… and Highlight).
+        .package(path: "../../Packages/StudyPage")
     ],
     targets: [
         .executableTarget(
@@ -76,7 +78,9 @@ let package = Package(
                 .product(name: "CoachUI", package: "Coach"),
                 .product(name: "Sync", package: "Sync"),
                 .product(name: "Documents", package: "Documents"),
-                .product(name: "DocumentsUI", package: "Documents")
+                .product(name: "DocumentsUI", package: "Documents"),
+                .product(name: "StudyPageFormat", package: "StudyPage"),
+                .product(name: "StudyPageUI", package: "StudyPage")
             ],
             exclude: [
                 "App/Info.plist",

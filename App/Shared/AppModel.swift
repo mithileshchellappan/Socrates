@@ -28,6 +28,7 @@ import Darwin
 import Documents
 import DocumentsUI
 import EventKit
+import StudyPageUI
 #endif
 #if os(iOS)
 import Recorder
@@ -81,6 +82,10 @@ final class AppModel {
     /// keep_document and its summary tasks). Mac only: documents never sync. Started (it returns at
     /// once) only where background work runs; renders draw its rows.
     let documentBank: DocumentBank?
+    /// ln (docs/plan-lecture-notes.md): Ask on a lecture's notes (Opus low, grounded in the
+    /// section's material). Only where background work runs; `\.lectureNotesAsker` gets it while
+    /// Claude Code is ready (`lectureNotesAsker`).
+    let notesAsker: NotesAsker?
     #endif
     /// What the Mail screen and the mail account settings ask the app to do (`\.mailActions`).
     @ObservationIgnored private(set) var mailActions = MailActions()
@@ -288,10 +293,16 @@ final class AppModel {
             #if os(macOS)
             let studyPass = startsProcessing ? StudyPassPipeline(services: services, client: claude) : nil
             self.studyPass = studyPass
+            // ln: the lecture notes are written in the agent's task queue (one at a time, background
+            // slots), their figures checked by StudyPage's renderers.
+            let notesWriter = startsProcessing
+                ? NotesWriter(services: services, client: claude, figureCheck: StudyPageFigureChecker()) : nil
+            notesAsker = startsProcessing ? NotesAsker(services: services, client: claude) : nil
             let appAgent = startsProcessing ? AppAgent(
                 services: services, client: claude, runtime: agent, memory: memory,
                 schedule: CourseSchedule(services: services), studyPass: studyPass, coach: coach, specs: specs,
-                filing: service, advisor: advisor, documents: documentBank, wakeProcessing: wakeProcessing
+                filing: service, advisor: advisor, documents: documentBank, notesWriter: notesWriter,
+                wakeProcessing: wakeProcessing
             ) : nil
             self.appAgent = appAgent
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
@@ -327,6 +338,7 @@ final class AppModel {
             mailEngine = nil
             mailSender = nil
             documentBank = nil
+            notesAsker = nil
             #else
             phoneRecorder = nil
             #endif
@@ -903,6 +915,23 @@ final class AppModel {
         // mc: written answers that waited for Claude Code are graded.
         Task { await coach?.wake() }
     }
+
+    #if os(macOS)
+    /// ln: Ask on a lecture's notes while Claude Code is ready (`\.lectureNotesAsker`); nil
+    /// otherwise, and in renders: the notes then offer Highlight only.
+    var lectureNotesAsker: (any LectureNotesAsking)? {
+        guard claudeAvailability?.isReady == true else { return nil }
+        return notesAsker
+    }
+
+    /// ln: why a lecture's notes cannot be written on this Mac (`\.lectureNotesUnavailable`, the
+    /// one line under the outline): "Claude Code is not installed.", "Claude Code is signed out.";
+    /// nil while ready and before the first check.
+    var lectureNotesUnavailable: String? {
+        guard let availability = claudeAvailability, !availability.isReady else { return nil }
+        return ReadableError.sentence(for: ClaudeError.unavailable(availability))
+    }
+    #endif
 
     /// The agent panel's effects (`\.agentPanelActions`), rebuilt when the availability changes:
     /// the panel's messages, Stop, the answer being written, Cancel of a sub-agent task and Undo of

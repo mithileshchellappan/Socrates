@@ -9,6 +9,7 @@ import FilingUI
 import ReviewUI
 import SearchUI
 import StudyCore
+import StudyPageUI
 import StudyUI
 import SwiftUI
 
@@ -32,8 +33,10 @@ import SwiftUI
 /// the practice exam sheet presented); `practice/round?question=N` and `practice/exam?question=N`
 /// (the open round or exam at question N, full window); `practice-results/<course>` (the course's
 /// latest handed-in practice exam). md (on a copy of .data/parity/docs/library): `documents` (the
-/// newest selected) and `documents/<title>?page=N` (that document, the page a hit named). Path
-/// parts may be percent-encoded.
+/// newest selected) and `documents/<title>?page=N` (that document, the page a hit named). ln (on a
+/// copy of .data/parity/ln/library): `lecture-notes/<course>/<lecture number>` (the lecture's notes
+/// pushed on its course's Lectures; opening them never queues notes in parity mode). Path parts
+/// may be percent-encoded.
 ///
 /// The library comes from `-SocratesDataRoot` (or `SOCRATES_DATA_ROOT`); without either,
 /// or pointed at the real library, the app opens nothing. Nothing runs in the background (no
@@ -69,6 +72,8 @@ enum ParityMode {
         case practiceResults(course: String)
         // md: the Documents screen.
         case documents(title: String?, page: Int?)
+        // ln: a lecture's notes, pushed on its course's Lectures.
+        case lectureNotes(course: String, number: Int)
     }
 
     enum WindowRole: Hashable {
@@ -278,6 +283,9 @@ enum ParityMode {
                 show(Launch(selection: .practiceResults(try practiceResults(course, services: services).id, course: course.id)))
             case .documents(let title, let page):
                 show(Launch(selection: .documents, documentSelection: try title.map { try document($0, services: services).id }, documentPage: page))
+            case .lectureNotes(let courseName, let number):
+                let (course, lecture) = try lecture(courseName, number, services: services)
+                show(Launch(selection: .lectureNotes(lecture.id, course: course.id)))
             }
             try await Task.sleep(for: options.settle)
             let active = quiet ? false : await activate(shown)
@@ -591,6 +599,9 @@ extension ParityMode.Route {
             self = .practiceResults(course: path[1])
         case ("documents", 1), ("documents", 2):
             self = .documents(title: path.count == 2 ? path[1] : nil, page: query["page"].flatMap(Int.init))
+        case ("lecture-notes", 3):
+            guard let number = Int(path[2]) else { return nil }
+            self = .lectureNotes(course: path[1], number: number)
         default:
             return nil
         }
@@ -612,6 +623,8 @@ struct ParityRootView: View {
                     documentSelection: launch.documentSelection, documentPage: launch.documentPage,
                     panel: launch.panel, examSheet: launch.examSheet
                 )
+                // ln: opening a lecture's notes or Review's Whole lecture never queues notes here.
+                .environment(\.lectureNotesQueuesOnOpen, false)
                 .environment(model)
             } else {
                 Color.clear

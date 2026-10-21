@@ -59,10 +59,16 @@ extension FocusedValues {
 /// Space handler never fires for the same press.
 ///
 ///     WindowGroup { … }.commands { LiveLectureCommands() }
-public struct LiveLectureCommands: Commands {
+///
+/// ln: the app puts the lecture notes' Ask… and Highlight at the menu's top (`leading`), so the
+/// Lecture menu stays one menu.
+public struct LiveLectureCommands<Leading: View>: Commands {
     @FocusedValue(\.liveLecture) private var live
+    private let leading: Leading
 
-    public init() {}
+    public init(@ViewBuilder leading: () -> Leading) {
+        self.leading = leading()
+    }
 
     public var body: some Commands {
         // A menu item with a key equivalent takes the key even while disabled, so the plain keys
@@ -72,6 +78,7 @@ public struct LiveLectureCommands: Commands {
         // the main window).
         let keys = live.map { !$0.isEditingText } ?? false
         CommandMenu("Lecture") {
+            leading
             Button("Next Slide") { live?.next() }
                 .keyboardShortcut(keys ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
                 .disabled(live?.nextEnabled != true)
@@ -89,5 +96,11 @@ public struct LiveLectureCommands: Commands {
                 .keyboardShortcut(live != nil ? KeyboardShortcut("r", modifiers: [.command, .shift]) : nil)
                 .disabled(live == nil || (live?.isRecording != true && live?.canRecord != true))
         }
+    }
+}
+
+extension LiveLectureCommands where Leading == EmptyView {
+    public init() {
+        self.init { EmptyView() }
     }
 }

@@ -94,6 +94,11 @@ struct NotesValidator: Sendable {
                 continue
             }
             draft.sections[position].written = true
+            // From the slides alone the model names the section (its given title is the first
+            // slide's first words, `NotesPrompt.text`).
+            if material.source == .slides, let heading = Self.heading(part.heading) {
+                draft.sections[position].outline.title = heading
+            }
             read(part, into: position, draft: &draft)
         }
         return draft
@@ -149,6 +154,16 @@ struct NotesValidator: Sendable {
             }
         }
         draft.sections[position] = section
+    }
+
+    /// A heading the model wrote, as a section title: plain words (emphasis and chips gone),
+    /// 2–80 characters; nil otherwise.
+    static func heading(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let plain = text.replacingOccurrences(of: #"\[\[[^\]]*\]\]"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return (2...80).contains(plain.count) ? plain : nil
     }
 
     /// The section's prose with its title as the one `##` heading at the top.

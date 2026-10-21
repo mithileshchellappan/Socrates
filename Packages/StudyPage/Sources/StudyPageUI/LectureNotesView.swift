@@ -40,6 +40,7 @@ public struct LectureNotesView: View {
     @Environment(\.openAgentPanel) private var openAgentPanel
     @Environment(\.lectureNotesAsker) private var asker
     @Environment(\.lectureNotesUnavailable) private var unavailable
+    @Environment(\.lectureNotesPreview) private var preview
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.undoManager) private var undoManager
 
@@ -65,7 +66,8 @@ public struct LectureNotesView: View {
         let controller = controller
         let input = makeInput()
         controller.services = services
-        controller.asker = asker
+        // Renders: the preview's canned Ask (the capsule's [Ask], the popover's one exchange).
+        controller.asker = preview?.passage != nil ? CannedNotesAsker(answer: preview?.answer ?? "") : asker
         controller.openDestination = openDestination
         controller.openAgentPanel = openAgentPanel
         controller.onChip = onChip
@@ -83,6 +85,7 @@ public struct LectureNotesView: View {
             .onChange(of: followPage, initial: true) { follow() }
             // The first follow waits for the text's real height.
             .onChange(of: height) { if !followSettled { follow(force: true) } }
+            .task(id: preview) { await showPreview() }
             .accessibilityElement(children: .contain)
     }
 
@@ -115,6 +118,18 @@ public struct LectureNotesView: View {
             AgentContext(screen: .lecture, courseID: rows.lecture?.courseID, lectureID: lectureID, page: followPage, notesPassage: passage)
         }
         return AgentContextSource(context: context)
+    }
+
+    /// Renders: the preview's selection, capsule, popover or scroll, once the text is there.
+    private func showPreview() async {
+        guard let preview else { return }
+        for _ in 0..<50 {
+            if let coordinator = controller.coordinator {
+                coordinator.showPreview(preview)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     /// Follow: the section whose slides hold Review's slide on screen comes to the top (once per

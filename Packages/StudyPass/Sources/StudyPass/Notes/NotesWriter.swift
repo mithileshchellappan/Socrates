@@ -31,7 +31,7 @@ public enum NotesWriteOutcome: Sendable, Hashable {
 ///   (`stream` returns false). A cancelled task (a quit) writes nothing more: the row stays
 ///   `generating` and is resumed when the task runs again.
 ///
-/// Contract for the app (integrator, Mac only): `NotesWriter(services:, client: .studyPortal,
+/// Contract for the app (integrator, Mac only): `NotesWriter(services:, client: .socrates,
 /// figureCheck: <StudyPage's checker>)` into `AppAgent(…, notesWriter:)`; the task queue runs it.
 public struct NotesWriter: Sendable {
     let services: StudyServices

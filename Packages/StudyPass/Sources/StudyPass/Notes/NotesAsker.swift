@@ -16,7 +16,7 @@ import Synchronization
 /// professor's voice. Updates about ten times a second; chips are checked when it ends. Writes
 /// nothing (Keep does, through `LectureNotesRepository.addMark`).
 ///
-/// Contract for the app (integrator, Mac only): `NotesAsker(services:, client: .studyPortal)` as
+/// Contract for the app (integrator, Mac only): `NotesAsker(services:, client: .socrates)` as
 /// `\.lectureNotesAsker` on the main window while Claude Code is available.
 public struct NotesAsker: LectureNotesAsking {
     let services: StudyServices

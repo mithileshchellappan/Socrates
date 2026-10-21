@@ -4,6 +4,7 @@ import CoursesUI
 import FilingUI
 import StudyCore
 import StudyUI
+import StudyPageUI
 import SwiftUI
 
 /// Debug builds only: renders the wired main window of a library to PNGs and quits, so the app
@@ -154,6 +155,8 @@ enum SnapshotRunner {
     /// views), lets it settle, and draws the whole window, toolbar included.
     static func render(_ shot: Shot, scheme: ColorScheme, model: AppModel, to url: URL) async throws {
         let root = RootView(selection: shot.item, query: shot.query, reviewTarget: shot.target, mailSelection: shot.message)
+            // ln: opening a lecture's notes never queues them in a render.
+            .environment(\.lectureNotesQueuesOnOpen, false)
             .environment(model)
         let host = NSHostingView(rootView: root)
         host.sceneBridgingOptions = .all

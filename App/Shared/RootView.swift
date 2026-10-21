@@ -12,6 +12,9 @@ import MailUI
 import Processing
 import SearchUI
 import StudyCore
+#if os(macOS)
+import StudyPageUI
+#endif
 import StudyUI
 import SwiftUI
 
@@ -138,6 +141,10 @@ struct RootView: View {
                 #if os(macOS)
                 // md: the Documents screen's writes, over the app's document bank.
                 .environment(\.documentActions, model.documentActions)
+                // ln: Ask on a lecture's notes while Claude Code is ready (Highlight only without
+                // it), and why notes cannot be written when it is not.
+                .environment(\.lectureNotesAsker, model.lectureNotesAsker)
+                .environment(\.lectureNotesUnavailable, model.lectureNotesUnavailable)
                 #endif
                 // The agent panel: absent until Claude Code is available, and while a practice exam
                 // is being written (mc: the panel, its launcher and ⌘J go until it is handed in).
@@ -431,7 +438,14 @@ struct RootView: View {
         guard let services = model.services else { return }
         switch item {
         case .lecture(let id):
-            guard selection == .lecture(id) else { return }
+            switch selection {
+            case .lecture(id)?: break
+            // ln: its notes go with it.
+            case .lectureNotes(id, let course)?:
+                selection = .courseLectures(course)
+                return
+            default: return
+            }
             let courseID = try? await services.database.read { db in try Lecture.find(id).fetchOne(db)?.courseID }
             selection = courseID.map { .courseLectures($0) } ?? .today
         case .course(let id):
@@ -564,6 +578,10 @@ struct RootView: View {
             return AgentContext(screen: .study)
         case .courseProgress(let id), .practiceResults(_, let id):
             return AgentContext(screen: .course, courseID: id, courseScreen: "progress")
+        // ln: a lecture's notes, pushed on its course's Lectures (the page refines it with the
+        // passage taken to the panel).
+        case .lectureNotes(let lectureID, let id):
+            return AgentContext(screen: .course, courseID: id, courseScreen: "lecture_notes", lectureID: lectureID)
         }
     }
 
@@ -665,10 +683,18 @@ struct RootView: View {
             if let id { documentSelection = id }
             documentPage = page
             selection = .documents
-        // ln: until the integrator pushes the notes page on the course's Lectures
-        // (`SidebarItem.lectureNotes`), the lecture's review.
+        // ln (decision 1): the lecture's notes pushed on its course's Lectures (Mac); the iPad
+        // opens the lecture's review until the iOS notes come.
         case .lectureNotes(let id):
+            #if os(macOS)
+            guard let services = model.services else { return }
+            Task {
+                let course = try? await services.database.read { db in try Lecture.find(id).fetchOne(db)?.courseID }
+                if let course { selection = .lectureNotes(id, course: course) }
+            }
+            #else
             open(.lecture(id))
+            #endif
         }
     }
 

@@ -11,7 +11,7 @@ import StudyCore
 /// professor's voice; no web. Order for the CLI's cache: system, the lecture pack, the request.
 enum NotesPrompt {
     /// Part of every version's `input_hash`: bump it when the prompt changes.
-    static let promptVersion = 1
+    static let promptVersion = 2
 
     static func system(german: Bool) -> String {
         """
@@ -178,6 +178,10 @@ enum NotesPrompt {
         }
         if m.source == .slides {
             ask += " There is no recording: write from the slides alone, without moment chips or quote blocks."
+            // The groups' titles are their first slide's first words (often a slide's whole text
+            // when its PDF has no line breaks): the model names each section.
+            ask += " Each section's given title is only the first words of its first slide: as its ## heading write a "
+                + "short title of at most six words for what its slides teach; keep every marker line as given."
         }
         return pack + ask
     }

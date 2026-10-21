@@ -104,6 +104,16 @@ struct DetailView: View {
             PracticeExamResultsView(sessionID: id)
                 .modifier(CourseToolbarSpacer())
                 .id(id)
+        case .lectureNotes(let id, _):
+            // ln (decision 1): pushed full width on the course's Lectures, with Back (Mac; the
+            // iPad's `open` shows the lecture's review instead).
+            #if os(macOS)
+            LectureNotesPage(lectureID: id)
+                .modifier(CourseToolbarSpacer())
+                .id(id)
+            #else
+            EmptyView()
+            #endif
         case .lecture(let id):
             if let services = model.services {
                 LectureReviewView(
