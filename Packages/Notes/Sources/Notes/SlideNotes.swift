@@ -61,7 +61,7 @@ public final class SlideNoteEditor {
 
     /// True when some note of the slide has text or media.
     public var hasNotes: Bool {
-        sessions.contains { $0.note.map { !$0.isBlank } ?? false }
+        sessions.contains { !$0.isBlank }
     }
 
     /// Writes every pending edit now (page change, closing the screen).

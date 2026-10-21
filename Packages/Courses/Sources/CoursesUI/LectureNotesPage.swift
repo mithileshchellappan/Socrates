@@ -25,6 +25,11 @@ import StudyUI
 /// panel takes its place. While a note in the column is being typed in, ↩ (Open in Review) and the
 /// notes' ⌘K / ⇧⌘E stand down. View ▸ Zoom In / Out scale the content (title, meta, notes, Keep in
 /// mind, the column's notes), never the buttons.
+///
+/// The expanded agent panel's coming and going builds the page under the inspector again (DESIGN
+/// 6.4: the column is left out, not hidden), so what must survive it lives here, above that
+/// branch: the scroll offset (put back once the text is long enough again, as Calendar does) and
+/// Continue in Chat's passage (the page publishes it: the notes view hands it up).
 public struct LectureNotesPage: View {
     /// Your notes opens by itself from this detail width, and closes under `closesBelow`.
     static let opensFrom: CGFloat = 1160
@@ -45,6 +50,11 @@ public struct LectureNotesPage: View {
     @State private var readingSection: String?
     /// A note in Your notes has focus.
     @State private var typingInColumn = false
+    @State private var kept = LectureNotesPageState()
+    @State private var scroll = ScrollPosition(edge: .top)
+    /// The page has been scrolled back to `kept.offset` in its layout with the agent panel
+    /// expanded (true) or not (false); nil: not yet.
+    @State private var openedFor: Bool?
     @SceneStorage(YourNotesVisibility.sceneStorageKey) private var storedVisibility = YourNotesVisibility.auto.rawValue
     @Environment(\.studyServices) private var services
     @Environment(\.openDestination) private var openDestination
@@ -90,6 +100,9 @@ public struct LectureNotesPage: View {
                         .padding(.horizontal, layout.inset)
                     LectureNotesView(
                         lectureID: lectureID, style: .page, layout: layout, writeAgain: { showWriteAgain() },
+                        onChatPassage: { [kept] passage in
+                            if kept.chatPassage != passage { kept.chatPassage = passage }
+                        },
                         onReadingSection: { section in
                             if readingSection != section { readingSection = section }
                         }
@@ -110,6 +123,20 @@ public struct LectureNotesPage: View {
                 .padding(.top, 26)
                 .padding(.bottom, 40)
                 .frame(minWidth: 0, maxWidth: .infinity)
+            }
+            .scrollPosition($scroll)
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height - $0.containerSize.height } action: { [expanded = agentPanelExpanded] _, reach in
+                restoreOffset(reach: reach, expanded: expanded)
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { [expanded = agentPanelExpanded, kept] _, y in
+                // Kept without re-rendering the page (not observed); only once this scroll view
+                // has been put back (a new one starts at the top).
+                guard openedFor == expanded else { return }
+                kept.offset = y
+            }
+            .onScrollPhaseChange { [expanded = agentPanelExpanded] _, phase in
+                // The student scrolls before the text is long enough again: where they go wins.
+                if openedFor != expanded, phase == .tracking || phase == .interacting { openedFor = expanded }
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity)
@@ -132,7 +159,7 @@ public struct LectureNotesPage: View {
         }
         .modifier(YourNotesInspector(isPanelExpanded: agentPanelExpanded, isPresented: columnBinding) {
             YourNotesColumn(
-                lectureID: lectureID, readingSection: readingSection, isShown: isColumnShown && !agentPanelExpanded,
+                lectureID: lectureID, sections: page.current?.sections ?? [], readingSection: readingSection, isShown: isColumnShown && !agentPanelExpanded,
                 hide: { setColumn(shown: false) },
                 onEditingChange: { typing in typingInColumn = typing }
             )
@@ -146,6 +173,41 @@ public struct LectureNotesPage: View {
             // minimum and maximum (270 pt).
             .inspectorColumnWidth(min: 260, ideal: 336, max: 440)
         })
+        // Outside the branch above, so a rebuilt notes view does not lose it.
+        .transformPreference(AgentContextPreferenceKey.self) { [source = passageContext] value in
+            if let source { value = source }
+        }
+    }
+
+    // MARK: Kept across the agent panel
+
+    /// The page laid out again (the agent panel took or gave back the column's place): back to
+    /// where it was, as far as the text reaches yet (it grows from its placeholder height), until
+    /// it reaches that far.
+    private func restoreOffset(reach: CGFloat, expanded: Bool) {
+        guard openedFor != expanded else { return }
+        let y = kept.offset
+        guard y > 0 else {
+            openedFor = expanded
+            return
+        }
+        guard reach > 0 else { return }
+        scroll.scrollTo(y: min(y, reach))
+        if reach >= y { openedFor = expanded }
+    }
+
+    /// Continue in Chat's passage as the panel's context; `refine` runs once, when a message reads
+    /// it: the passage goes with that message only.
+    private var passageContext: AgentContextSource? {
+        guard let passage = kept.chatPassage else { return nil }
+        let context = AgentContext(
+            screen: .course, courseID: page.lecture?.courseID, courseScreen: "lecture_notes", lectureID: lectureID, notesPassage: passage
+        )
+        let kept = kept
+        return AgentContextSource(context: context) {
+            Task { @MainActor in if kept.chatPassage != nil { kept.chatPassage = nil } }
+            return AgentContext(screen: .course)
+        }
     }
 
     // MARK: Your notes
@@ -371,6 +433,17 @@ public struct LectureNotesPage: View {
 /// The identity Previous Version's undo steps are registered with.
 @MainActor
 final class WriteAgainUndoTarget {}
+
+/// What the lecture notes page keeps across the notes view being built again.
+@MainActor
+@Observable
+final class LectureNotesPageState {
+    /// Continue in Chat's passage, until a message carries it, a new selection settles or an Ask
+    /// starts.
+    var chatPassage: NotesPassageContext?
+    /// Where the page is scrolled to: not observed (it changes with every scrolled point).
+    @ObservationIgnored var offset: CGFloat = 0
+}
 
 /// Keep in mind (the brief's third zone, at the end): the lecture's tracked items on one line
 /// each: [ring = due, bar = class, filled = done | title with its faint source glyph | day, mono

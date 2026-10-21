@@ -65,6 +65,15 @@ public final class NoteSession: Identifiable {
     /// True when the row does not exist yet.
     public var isNew: Bool { note == nil }
 
+    /// True when the body as last loaded or written has no visible text and no attachments (as
+    /// `Note.isBlank`, without decoding the row's JSON again: views read it on every redraw).
+    public var isBlank: Bool {
+        blocks.allSatisfy { block in
+            block.text.allSatisfy(\.isWhitespace) && block.attachment == nil
+                && (block.inlines ?? []).allSatisfy { $0.attachment == nil }
+        }
+    }
+
     /// The student changed the note: create it on the first change, save after a pause.
     public func edited() {
         guard !isDiscarded else { return }

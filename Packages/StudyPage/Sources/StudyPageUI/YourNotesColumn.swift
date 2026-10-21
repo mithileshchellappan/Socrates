@@ -33,6 +33,7 @@ public struct YourNotesColumn: View {
     private nonisolated static let space = "yourNotes"
 
     private let lectureID: Lecture.ID
+    private let sections: [LectureNotesSection]
     private let readingSection: String?
     private let isShown: Bool
     private let hide: () -> Void
@@ -56,16 +57,19 @@ public struct YourNotesColumn: View {
     @State private var pendingScroll = false
 
     /// - Parameters:
+    ///   - sections: the current version's sections (the page reads them; this column's read
+    ///     leaves `lecture_notes` alone, which is written ten times a second while notes stream).
     ///   - readingSection: the section of the notes under the reading line (nil: the overview).
     ///   - isShown: the column is on screen (its header joins the toolbar only then).
     ///   - hide: the header's Hide.
     ///   - onEditingChange: a note in the column has focus or no longer has (the page detaches its
     ///     ↩ meanwhile).
     public init(
-        lectureID: Lecture.ID, readingSection: String?, isShown: Bool = true, hide: @escaping () -> Void,
-        onEditingChange: @escaping (Bool) -> Void = { _ in }
+        lectureID: Lecture.ID, sections: [LectureNotesSection], readingSection: String?, isShown: Bool = true,
+        hide: @escaping () -> Void, onEditingChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.lectureID = lectureID
+        self.sections = sections
         self.readingSection = readingSection
         self.isShown = isShown
         self.hide = hide
@@ -231,7 +235,7 @@ public struct YourNotesColumn: View {
     }
 
     private var items: [Item] {
-        let sections = rows.sections
+        let sections = sections
         var byPage: [Int: [Note]] = [:]
         for note in rows.notes {
             if let page = note.pageNumber { byPage[page, default: []].append(note) }
@@ -293,26 +297,24 @@ public struct YourNotesColumn: View {
 /// The lecture's own note(s), edited as in Notes. Empty: a 96 pt area on the quiet fill (radius
 /// 9, no placeholder) whose click puts the caret in the note.
 private struct OwnNoteView: View {
+    let anchor: NoteAnchor
+    let notes: [Note]
+    let store: RecordStore
     let lectureID: Lecture.ID
     let zoom: CGFloat
     let onFocus: (Note.ID, Bool) -> Void
-    @State private var editor: SlideNoteEditor
+    /// Made once, when the view appears: never in `init`, which runs on every redraw of the column
+    /// (each time a session per note, with its body decoded, thrown away by `State`).
+    @State private var editor: SlideNoteEditor?
     @State private var focusRequest = 0
 
-    init(anchor: NoteAnchor, notes: [Note], store: RecordStore, lectureID: Lecture.ID, zoom: CGFloat, onFocus: @escaping (Note.ID, Bool) -> Void) {
-        self.lectureID = lectureID
-        self.zoom = zoom
-        self.onFocus = onFocus
-        _editor = State(initialValue: SlideNoteEditor(anchor: anchor, notes: notes, store: store, playhead: { nil }))
-    }
-
     var body: some View {
-        let isBlank = !editor.hasNotes
+        let isBlank = !(editor?.hasNotes ?? false)
         VStack(alignment: .leading, spacing: 7 * zoom) {
-            ForEach(editor.sessions) { session in
+            ForEach(editor?.sessions ?? []) { session in
                 NoteEditor(
                     session: session, style: .inspector, startsWith: .body, lectureID: lectureID,
-                    focusRequest: (session.note?.isBlank ?? true) ? focusRequest : 0,
+                    focusRequest: session.isBlank ? focusRequest : 0,
                     onFocusChange: { onFocus(session.id, $0) }
                 )
             }
@@ -328,8 +330,11 @@ private struct OwnNoteView: View {
                 .accessibilityHidden(true)
         }
         .padding(.horizontal, -8)
+        .onAppear {
+            if editor == nil { editor = SlideNoteEditor(anchor: anchor, notes: notes, store: store, playhead: { nil }) }
+        }
         .onDisappear {
-            let editor = editor
+            guard let editor else { return }
             Task { await editor.flush() }
         }
     }
@@ -339,26 +344,15 @@ private struct OwnNoteView: View {
 private struct NoteGroupRow: View {
     let item: YourNotesColumn.Item
     let lectureID: Lecture.ID
+    let courseID: Course.ID?
     let deck: Deck?
+    let store: RecordStore
     let services: StudyServices?
     let zoom: CGFloat
     let onFocus: (Note.ID, Bool) -> Void
-    @State private var editor: SlideNoteEditor
+    /// Made once, when the row appears (as `OwnNoteView`'s).
+    @State private var editor: SlideNoteEditor?
     @Environment(\.openDestination) private var openDestination
-
-    init(
-        item: YourNotesColumn.Item, lectureID: Lecture.ID, courseID: Course.ID?, deck: Deck?, store: RecordStore, services: StudyServices?,
-        zoom: CGFloat, onFocus: @escaping (Note.ID, Bool) -> Void
-    ) {
-        self.item = item
-        self.lectureID = lectureID
-        self.deck = deck
-        self.services = services
-        self.zoom = zoom
-        self.onFocus = onFocus
-        let anchor = NoteAnchor(courseID: courseID, lectureID: lectureID, deckID: item.page == nil ? nil : deck?.id, page: item.page, recordingID: nil)
-        _editor = State(initialValue: SlideNoteEditor(anchor: anchor, notes: item.notes, store: store, playhead: { nil }))
-    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8 * zoom) {
@@ -373,7 +367,7 @@ private struct NoteGroupRow: View {
                     )
                     .accessibilityLabel(Text("Slide \(page) with your ink"))
                 }
-                ForEach(editor.sessions) { session in
+                ForEach(editor?.sessions ?? []) { session in
                     NoteEditor(
                         session: session, style: .inspector, startsWith: .body, lectureID: lectureID,
                         onFocusChange: { onFocus(session.id, $0) }
@@ -382,8 +376,13 @@ private struct NoteGroupRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear {
+            guard editor == nil else { return }
+            let anchor = NoteAnchor(courseID: courseID, lectureID: lectureID, deckID: item.page == nil ? nil : deck?.id, page: item.page, recordingID: nil)
+            editor = SlideNoteEditor(anchor: anchor, notes: item.notes, store: store, playhead: { nil })
+        }
         .onDisappear {
-            let editor = editor
+            guard let editor else { return }
             Task { await editor.flush() }
         }
     }
@@ -453,8 +452,9 @@ private struct EscapeEndsTyping: ViewModifier {
 // MARK: - Data
 
 /// What Your notes shows, in one observed read: the lecture's notes by (slide, creation) without
-/// Edit as Note copies, its slides (range and deck), the non-empty ink of the range's pages, and
-/// the current version's sections.
+/// Edit as Note copies, its slides (range and deck) and the non-empty ink of the range's pages.
+/// Not `lecture_notes` (the sections come from the page): a streaming version is written ten times
+/// a second, and every write would run this read again.
 struct YourNotesRows: Equatable, Sendable {
     var isLoaded = false
     var lecture: Lecture?
@@ -463,7 +463,6 @@ struct YourNotesRows: Equatable, Sendable {
     var deck: Deck?
     /// The newest drawing per page, non-empty only.
     var ink: [Int: InkDrawing] = [:]
-    var sections: [LectureNotesSection] = []
 
     static let empty = YourNotesRows()
 }
@@ -482,13 +481,17 @@ struct YourNotesRequest: FetchKeyRequest {
         if let range = rows.range {
             let deckID = range.deckID
             rows.deck = try Deck.find(deckID).fetchOne(db)
-            let pages = range.firstPage...range.lastPage
-            let inks = try SlideInk.where { $0.deckID.eq(deckID) }.order { $0.updatedAt.desc() }.fetchAll(db)
-            for row in inks where pages.contains(row.pageNumber) && rows.ink[row.pageNumber] == nil && !row.drawing.isEmpty {
+            let first = range.firstPage
+            let last = range.lastPage
+            // The range's pages only: a deck can span several lectures.
+            let inks = try SlideInk
+                .where { $0.deckID.eq(deckID) && $0.pageNumber.gte(first) && $0.pageNumber.lte(last) }
+                .order { $0.updatedAt.desc() }
+                .fetchAll(db)
+            for row in inks where rows.ink[row.pageNumber] == nil && !row.drawing.isEmpty {
                 rows.ink[row.pageNumber] = row.drawing
             }
         }
-        rows.sections = LectureNotes.current(of: try LectureNotesRepository.versions(lectureID: id, in: db))?.sections ?? []
         return rows
     }
 }
