@@ -225,6 +225,7 @@ public struct ChangeLog: Sendable {
         let store = services.records
         let date = now()
         if let change = try await store.fetch(AgentChange.self, id: id) {
+            if change.kind == .lectureMerge { return try await undoLectureMerge(change) }
             if change.targetTable == .filing { return try await undoFiling(change, at: date) }
             if change.targetTable == .deckSpan { return try await undoDeckLink(id, at: date) }
             if change.kind == .courseRemove { return try await undoCourseRemoval(change, at: date) }
@@ -285,6 +286,43 @@ public struct ChangeLog: Sendable {
         try await services.database.write { db in try AgentChangeRepository.markUndone(id, at: date, db: db) }
         await onChange()
         return true
+    }
+
+    /// A lecture filed twice merged into one (`merge_duplicate_lectures`, the student asked in
+    /// chat): smart import merges every pair of lectures of `courseID` (nil: every course) that
+    /// are one class meeting, one holding only slides and the other only recordings or notes,
+    /// with its `lecture_merge` row in the same transaction. `.unchanged` when there is none.
+    public func mergeDuplicateLectures(courseID: Course.ID?, quote: String, origin: Origin) async throws -> Outcome {
+        let quote = quote.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !quote.isEmpty else { return .refused("A change needs the exact words it comes from.") }
+        let service = filing ?? FilingService(services: services)
+        let outcome = try await service.mergeDuplicateLectures(
+            courseID: courseID, quote: quote, sourceKind: origin.sourceKind, model: origin.model,
+            conversationID: origin.conversationID, taskID: origin.taskID
+        )
+        guard let change = outcome.change else {
+            return .unchanged(
+                outcome.busy > 0
+                    ? "A recording of those lectures is being processed; ask again when it is done."
+                    : "No class meeting is filed as two lectures with the slides in one and only the recording or notes in the other. Two lectures that both have recordings stay apart: the student moves a recording with Change… on its filing."
+            )
+        }
+        await wakeProcessing()
+        return .applied(change)
+    }
+
+    /// Undo of `lecture_merge`: smart import splits the lectures again and marks the row, in one
+    /// transaction. Refused when a lecture that kept the meeting is gone since.
+    private func undoLectureMerge(_ change: AgentChange) async throws -> Bool {
+        guard change.undoneAt == nil else { return false }
+        let undone: Bool
+        do {
+            undone = try await (filing ?? FilingService(services: services)).undoMerge(change)
+        } catch FilingError.changedSince {
+            throw UndoRefused.changedSince
+        }
+        if undone { await wakeProcessing() }
+        return undone
     }
 
     /// Undo of a deck the filing advisor filed or moved: smart import puts the filing back (or

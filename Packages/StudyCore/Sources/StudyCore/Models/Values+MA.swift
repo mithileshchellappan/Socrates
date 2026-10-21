@@ -210,6 +210,15 @@ extension AgentChangeKind {
 extension AgentChangeTarget {
     /// A `weekly_slot` row (the slot changes); `before` / `after.slot` hold its values.
     public static let slot: Self = "weekly_slot"
+    /// A `lecture` row (`lecture_merge`: the lecture that kept the class meeting).
+    public static let lecture: Self = "lecture"
+}
+
+extension AgentChangeKind {
+    /// One class meeting filed as two lectures (one with only the slides, one with only the
+    /// recordings or notes), merged into one; `before.deletion` holds Filing's `LectureMerges`
+    /// (the lecture that went and what moved) for Undo, which splits them again.
+    public static let lectureMerge: Self = "lecture_merge"
 }
 
 /// A weekly slot's columns as an `agent_change` keeps them (`before.slot`, `after.slot`), so Undo

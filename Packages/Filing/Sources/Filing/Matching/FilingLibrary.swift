@@ -45,6 +45,12 @@ struct FilingLibrary: Sendable {
         return adopted.flatMap { lecture($0.id) }
     }
 
+    /// The session whose lecture holds what happened in `session`: itself, or the lecture an
+    /// exercise, tutorial or seminar adjoins (one class meeting, `SessionLectures.meeting`).
+    func meeting(of session: LectureSession) -> LectureSession {
+        SessionLectures.meeting(of: session, among: sessions(courseID: session.courseID))
+    }
+
     func day(_ date: Date) -> CalendarDay { CalendarDay(date, in: zone) }
 
     /// Sessions that carry lecture numbers: lectures, or seminars for a course without lectures.

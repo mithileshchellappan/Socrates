@@ -114,7 +114,8 @@ extension FilingService {
                     lecture = existing
                 } else {
                     lecture = store.stamp(Lecture(
-                        courseID: session.courseID, lectureSessionID: session.id, number: session.number,
+                        courseID: session.courseID, lectureSessionID: session.id,
+                        number: try SessionLectures.lectureNumber(for: session, in: db),
                         heldAt: session.startsAt, language: course.language, createdAt: now
                     ))
                     try Lecture.upsert { lecture }.execute(db)
