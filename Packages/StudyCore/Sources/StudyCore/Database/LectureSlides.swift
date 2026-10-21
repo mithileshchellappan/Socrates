@@ -10,7 +10,9 @@ import SQLiteData
 /// Every reader of "the lecture's deck" goes through `current` / `pages(of:)`; every writer of a
 /// lecture ↔ deck link that is not a filing (the agent's `link_deck_pages` / `unlink_deck`,
 /// continuation detection, Undo of those) through `link` / `unlink` / `undo`, inside the caller's
-/// write transaction, together with the change row (`DeckLinkResult.change`).
+/// write transaction, together with the change row (`DeckLinkResult.change`). Slides that arrive
+/// later send the course's recordings without slides back to continuation detection
+/// (`queueContinuationChecks`).
 public enum LectureSlides {
     // MARK: - Reading
 
@@ -229,6 +231,112 @@ public enum LectureSlides {
         default:
             throw DeckLinkError.changedSince
         }
+    }
+
+    // MARK: - Slides that arrive later (continuation checks)
+
+    /// How far back a recording checked before is checked again when its course gets slides (its
+    /// lecture's `held_at`, else `created_at`).
+    public static let continuationRecheckAge: TimeInterval = 21 * 86_400
+
+    /// Continuation checks: saved `align` jobs (Processing's `align` stage runs continuation
+    /// detection for a lecture without slides) for the transcribed recordings whose lecture has no
+    /// slides (no coarse span, so a link made by filing, a capture, the student, the agent or an
+    /// earlier detection is never replaced) and that have no queued or running job (one at a time
+    /// per recording), newest lecture first:
+    /// - never checked (no `align` job yet): always (the launch backfill);
+    /// - checked before: again once the course got slides after that check began (a deck filed to
+    ///   the course, `deck.imported_at`, or linked to one of its lectures by filing, a capture, the
+    ///   student or the agent, a coarse span's `updated_at`; detection's own `auto` links never
+    ///   send other recordings back), only for a lecture of the last `continuationRecheckAge`.
+    /// `courseID`: that course only (slides just arrived); nil: every course (the launch). One public
+    /// log line with the counts (`reason` names the trigger) when there are such recordings. Inside
+    /// the caller's write transaction; the caller wakes the processor.
+    @discardableResult
+    public static func queueContinuationChecks(
+        courseID: Course.ID?, reason: String, in db: Database, store: RecordStore, now: Date
+    ) throws -> [Job] {
+        let lectures: [Lecture]
+        if let courseID {
+            lectures = try Lecture.where { $0.courseID.eq(courseID) }.fetchAll(db)
+        } else {
+            lectures = try Lecture.all.fetchAll(db)
+        }
+        guard !lectures.isEmpty else { return [] }
+        let lectureByID = Dictionary(lectures.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let coarse = try LectureDeckSpan.where { $0.startTime.is(nil) }.fetchAll(db)
+        let withSlides = Set(coarse.map(\.lectureID))
+        let open: [Recording.ID?] = try Job
+            .where { $0.state.eq(JobState.queued) || $0.state.eq(JobState.running) }
+            .select { $0.recordingID }
+            .fetchAll(db)
+        let busy = Set(open.compactMap(\.self))
+        // When each recording's latest check (any `align` job) began.
+        var checkedAt: [Recording.ID: Date] = [:]
+        for job in try Job.where({ $0.stage.eq(JobStage.align) }).fetchAll(db) {
+            guard let recordingID = job.recordingID else { continue }
+            let began = job.startedAt ?? job.createdAt
+            checkedAt[recordingID] = max(checkedAt[recordingID] ?? began, began)
+        }
+        // When each course last got slides.
+        var deckCourse: [Deck.ID: Course.ID] = [:]
+        var slidesArrived: [Course.ID: Date] = [:]
+        for deck in try Deck.where({ $0.courseID.isNot(nil) }).fetchAll(db) {
+            guard let course = deck.courseID else { continue }
+            deckCourse[deck.id] = course
+            slidesArrived[course] = max(slidesArrived[course] ?? deck.importedAt, deck.importedAt)
+        }
+        for span in coarse where span.source != .auto {
+            guard let course = deckCourse[span.deckID] else { continue }
+            slidesArrived[course] = max(slidesArrived[course] ?? span.updatedAt, span.updatedAt)
+        }
+
+        let cutoff = now.addingTimeInterval(-continuationRecheckAge)
+        var due: [(recording: Recording, lecture: Lecture)] = []
+        var firstChecks = 0
+        var again = 0
+        var upToDate = 0
+        var older = 0
+        for recording in try Recording.where({ $0.lectureID.isNot(nil) }).fetchAll(db) {
+            guard let lectureID = recording.lectureID, let lecture = lectureByID[lectureID], !withSlides.contains(lectureID),
+                  !busy.contains(recording.id)
+            else { continue }
+            let recordingID = recording.id
+            guard try TranscriptSegment.where({ $0.recordingID.eq(recordingID) }).fetchCount(db) > 0 else { continue }
+            if let checked = checkedAt[recordingID] {
+                guard let arrived = slidesArrived[lecture.courseID], arrived > checked else {
+                    upToDate += 1
+                    continue
+                }
+                guard (lecture.heldAt ?? lecture.createdAt) >= cutoff else {
+                    older += 1
+                    continue
+                }
+                again += 1
+            } else {
+                firstChecks += 1
+            }
+            due.append((recording, lecture))
+        }
+        due.sort { lhs, rhs in
+            let left = lhs.lecture.heldAt ?? lhs.lecture.createdAt
+            let right = rhs.lecture.heldAt ?? rhs.lecture.createdAt
+            return left != right ? left > right : lhs.recording.startedAt > rhs.recording.startedAt
+        }
+        var jobs: [Job] = []
+        for (index, item) in due.enumerated() {
+            // The queue runs the oldest job first: the newest lecture's check gets the earliest stamp.
+            let createdAt = now.addingTimeInterval(Double(index) * 0.001)
+            let job = store.stamp(Job(stage: .align, lectureID: item.lecture.id, recordingID: item.recording.id, createdAt: createdAt))
+            try Job.upsert { job }.execute(db)
+            jobs.append(job)
+        }
+        if firstChecks + again + upToDate + older > 0 {
+            Log.jobs.info(
+                "Continuation checks (\(reason, privacy: .public)): \(firstChecks) first, \(again) again, \(upToDate) up to date, \(older) older than 21 days"
+            )
+        }
+        return jobs
     }
 
     // MARK: - Helpers

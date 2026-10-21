@@ -171,9 +171,33 @@ public actor FilingService {
                 continue
             }
             outcomes.append(outcome)
-            if outcome.status != .known { await afterImport() }
+            if outcome.status != .known {
+                await checkForContinuations(outcome.filing)
+                await afterImport()
+            }
         }
         return outcomes
+    }
+
+    /// Slides that arrive later (a deck filed or moved to a course, a capture with its deck): the
+    /// course's transcribed recordings without slides get a continuation check again
+    /// (`LectureSlides.queueContinuationChecks`: lectures of the last 21 days, newest first, one
+    /// job per recording at a time, never a lecture that has slides). `afterImport` wakes the
+    /// processor. A failure is logged; the next launch's backfill catches up.
+    func checkForContinuations(_ filing: Filing?) async {
+        guard let filing, filing.kind == .deck || filing.kind == .capture else { return }
+        let store = store
+        let stamp = now()
+        let reason = filing.kind == .deck ? "slides filed" : "capture filed"
+        do {
+            try await services.database.write { db in
+                let deckCourse = try filing.deckID.flatMap { try Deck.find($0).fetchOne(db)?.courseID }
+                guard let courseID = deckCourse ?? filing.courseID else { return }
+                try LectureSlides.queueContinuationChecks(courseID: courseID, reason: reason, in: db, store: store, now: stamp)
+            }
+        } catch {
+            Log.jobs.error("Queueing continuation checks failed: \(String(reflecting: type(of: error)), privacy: .public)")
+        }
     }
 
     // MARK: - Decks

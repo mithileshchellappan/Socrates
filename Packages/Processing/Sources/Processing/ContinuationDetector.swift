@@ -4,21 +4,29 @@ import StudyCore
 
 /// mr (docs/plan-actions.md §4 "Continuation detection"): finds the slides of a transcribed
 /// recording whose lecture has none, among the decks the course's latest other lectures use ("the
-/// session used the same slides as the earlier lecture, which I didn't record"). On device: the
-/// `SlideAligner` runs over every page of each candidate, no model.
+/// session used the same slides as the earlier lecture, which I didn't record") and the course's
+/// decks that arrived later (no lecture uses them, or filed since the lecture: slides uploaded
+/// after class). On device: the `SlideAligner` runs over every page of each candidate, no
+/// model. Slides filed later send the course's recent recordings back here
+/// (`LectureSlides.queueContinuationChecks`).
 ///
 /// Measures per candidate (`Measure`): coverage = the share of the speech time the aligner put
 /// on a slide; confidence = the duration-weighted mean confidence of those slide spans; the
 /// window = the contiguous pages between the 1st and 99th percentile of on-slide time. The best
 /// coverage × confidence is accepted above the `Thresholds`; within `newestWinsWithin` of it the
-/// newest lecture's deck wins. Reads only: `LectureProcessor`'s `align` stage writes the link,
-/// its change row and the alignment in one transaction.
+/// first candidate wins (the newest lecture's deck, a later deck after the lectures' decks).
+/// Reads only: `LectureProcessor`'s `align` stage writes the link, its change row and the
+/// alignment in one transaction.
 public struct ContinuationDetector: Sendable {
     /// Every constant of detection, in one place (calibrated once on the parity library; the
     /// numbers are in the Processing README).
     public struct Thresholds: Hashable, Sendable {
-        /// Distinct decks tried, newest lecture first.
+        /// Distinct decks of other lectures tried, newest lecture first.
         public var candidateLimit = 3
+        /// Further course decks tried after those, newest imported first: decks no lecture uses
+        /// and decks filed since the day before the lecture (slides that arrived later, e.g. a deck
+        /// the professor uploads after class, filed to the course or to another lecture).
+        public var laterDeckLimit = 2
         /// Share of the speech time on a slide.
         public var minimumCoverage = 0.6
         /// Duration-weighted mean confidence of the slide spans.
@@ -30,7 +38,7 @@ public struct ContinuationDetector: Sendable {
         /// under 1 % of the on-slide time at either end).
         public var windowStart = 0.01
         public var windowEnd = 0.99
-        /// A deck of a newer lecture scoring within this of the best wins.
+        /// An earlier candidate (a newer lecture's deck) scoring within this of the best wins.
         public var newestWinsWithin = 0.05
 
         public init() {}
@@ -38,14 +46,14 @@ public struct ContinuationDetector: Sendable {
         public static let `default` = Thresholds()
     }
 
-    /// A deck another lecture of the course uses, with every page.
+    /// A deck of the course (another lecture's, or one that arrived later), with every page.
     public struct Candidate: Sendable {
         public var deckID: Deck.ID
-        /// The newest other lecture using it (by when it was held).
-        public var lectureID: Lecture.ID
+        /// The newest other lecture using it (by when it was held); nil: no other lecture uses it.
+        public var lectureID: Lecture.ID?
         public var pages: [DeckPage]
 
-        public init(deckID: Deck.ID, lectureID: Lecture.ID, pages: [DeckPage]) {
+        public init(deckID: Deck.ID, lectureID: Lecture.ID?, pages: [DeckPage]) {
             self.deckID = deckID
             self.lectureID = lectureID
             self.pages = pages
@@ -107,7 +115,10 @@ public struct ContinuationDetector: Sendable {
     // MARK: - Candidates
 
     /// The decks of the course's latest lectures other than `lectureID` (newest `held_at` first,
-    /// distinct, at most `candidateLimit`), minus the decks the student turned down for it
+    /// distinct, at most `candidateLimit`), then at most `laterDeckLimit` more of the course's
+    /// decks, newest imported first: decks no lecture uses and decks imported since the day before
+    /// the lecture (slides that arrived later: filed to the course, or to an older lecture beyond
+    /// the newest ones); minus the decks the student turned down for it
     /// (`LectureSlides.declinedDeckIDs`). Inside the caller's read.
     public func candidates(lectureID: Lecture.ID, in db: Database) throws -> [Candidate] {
         guard let lecture = try Lecture.find(lectureID).fetchOne(db) else { return [] }
@@ -117,7 +128,7 @@ public struct ContinuationDetector: Sendable {
         let declined = try LectureSlides.declinedDeckIDs(lectureID: lectureID, in: db)
         var seen: Set<Deck.ID> = []
         var candidates: [Candidate] = []
-        for other in newestFirst {
+        lectures: for other in newestFirst {
             // A lecture's own decks, its current one first.
             let ranges = try LectureSlides.ranges(lectureID: other.id, in: db).reversed()
             for range in ranges {
@@ -126,8 +137,27 @@ public struct ContinuationDetector: Sendable {
                 let pages = try DeckPage.where { $0.deckID.eq(deckID) }.order(by: \.pageNumber).fetchAll(db)
                 guard !pages.isEmpty else { continue }
                 candidates.append(Candidate(deckID: deckID, lectureID: other.id, pages: pages))
-                if candidates.count >= thresholds.candidateLimit { return candidates }
+                if candidates.count >= thresholds.candidateLimit { break lectures }
             }
+        }
+
+        // Slides that arrived later.
+        var users: [Deck.ID: Set<Lecture.ID>] = [:]
+        for span in try LectureDeckSpan.where({ $0.startTime.is(nil) }).fetchAll(db) {
+            users[span.deckID, default: []].insert(span.lectureID)
+        }
+        let since = (lecture.heldAt ?? lecture.createdAt).addingTimeInterval(-86_400)
+        let later = try Deck.where { $0.courseID.eq(courseID) }.order { $0.importedAt.desc() }.fetchAll(db)
+        var added = 0
+        for deck in later where added < thresholds.laterDeckLimit {
+            let deckID = deck.id
+            let usedBy = users[deckID] ?? []
+            guard usedBy.isEmpty || deck.importedAt >= since, !declined.contains(deckID), seen.insert(deckID).inserted else { continue }
+            let pages = try DeckPage.where { $0.deckID.eq(deckID) }.order(by: \.pageNumber).fetchAll(db)
+            guard !pages.isEmpty else { continue }
+            let user = newestFirst.first { usedBy.contains($0.id) }
+            candidates.append(Candidate(deckID: deckID, lectureID: user?.id, pages: pages))
+            added += 1
         }
         return candidates
     }

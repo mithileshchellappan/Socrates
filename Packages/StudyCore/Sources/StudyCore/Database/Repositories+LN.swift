@@ -94,17 +94,29 @@ public struct LectureNotesRepository: Sendable {
 
     /// After the lecture's study pass synthesis is written (StudyPass; `agent`): queues a version
     /// from the recording when the lecture has no current notes, or its current notes came from
-    /// the slides alone (replaced once, automatically), or `rerun` (the student re-ran the study
-    /// pass: they asked for the lecture's AI again).
+    /// the slides alone (replaced once, automatically), or were written before the lecture got its
+    /// slides (`predatesSlides`: slides that arrived later, filed or found by continuation
+    /// detection; the pass ran again with them; written again once, with the same Write Again
+    /// sentence), or `rerun` (the student re-ran the study pass: they asked for the lecture's AI
+    /// again).
     @discardableResult
     public func queueAfterStudyPass(lectureID: Lecture.ID, rerun: Bool = false) async throws -> LectureNotes? {
         let stamp = store.currentDate
         return try await store.database.write { db in
             let current = try Self.current(lectureID: lectureID, in: db)
-            guard current == nil || current?.source == .slides || rerun else { return nil }
+            let stale = try current.map { try Self.predatesSlides($0, in: db) } ?? false
+            guard current == nil || current?.source == .slides || stale || rerun else { return nil }
             guard try Self.source(lectureID: lectureID, in: db) == .recording else { return nil }
-            return try Self.queue(lectureID: lectureID, request: nil, createdBy: .agent, in: db, now: stamp)
+            let request = stale && !rerun ? current?.request : nil
+            return try Self.queue(lectureID: lectureID, request: request, createdBy: .agent, in: db, now: stamp)
         }
+    }
+
+    /// Finished notes queued before the lecture's current slides were linked (its newest coarse
+    /// span changed after the version was queued): written from the recording without them.
+    static func predatesSlides(_ notes: LectureNotes, in db: Database) throws -> Bool {
+        guard notes.state == .done, let slides = try LectureSlides.current(lectureID: notes.lectureID, in: db) else { return false }
+        return slides.updatedAt > notes.createdAt
     }
 
     /// What a new version of the lecture would be written from now; nil: nothing yet (a recording

@@ -188,6 +188,7 @@ extension FilingService {
             return stamped
         }
         Log.importer.info("Moved filing \(filing.id, privacy: .public)")
+        await checkForContinuations(moved)
         await afterImport()
         return moved
     }
