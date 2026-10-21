@@ -54,6 +54,7 @@ sync.stop()
   every device, and SQLiteData has no hook to refuse it.
 - **A new synced library on the iPhone** (`Database/Socrates-synced.sqlite`) drops the semester
   the migrations seeded (fixed id) before its first sync, so it can never overwrite the Mac's.
+- **No parent references** (2026-10-22): every table goes to SQLiteData as a private table (`privateTables:`; the app never shares records). A shareable table's record takes its single foreign key as `CKRecord.parent`; iCloud refuses it while the parent is not on the server, and SQLiteData then deletes the row on the device when the key is ON DELETE CASCADE (a deck's pages went so in the Mac's first upload; `DeckPageRepair` in Capture puts them back from the PDF).
 - **Tables** (`SyncedTables`): every table of `Schema.tableNames` except `job` (device-local
   processing state) and the Mac-only `document` / `document_page`. The search index
   (`Schema.localTableNames`, `Schema.virtualTableNames`) is rebuilt per device and never syncs. The

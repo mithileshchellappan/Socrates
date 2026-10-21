@@ -75,7 +75,9 @@ public struct LectureNotesPage: View {
         ZoomReader { zoom in
             content(zoom: zoom)
         }
-        .task(id: lectureID) {
+        // Again when the material arrives while the page is open (`canWrite`: slides with pages
+        // or a transcript); it queues nothing once a version is current.
+        .task(id: NotesQueueTrigger(lectureID: lectureID, canWrite: page.canWrite)) {
             guard queuesOnOpen, let services else { return }
             do {
                 try await LectureNotesRepository(store: services.records).queueIfNeeded(lectureID: lectureID)
@@ -533,6 +535,13 @@ private struct YourNotesInspector<Column: View>: ViewModifier {
             content.inspector(isPresented: isPresented, content: column)
         }
     }
+}
+
+/// When the page asks for its first version (`queueIfNeeded`): on open, and when what it could be
+/// written from arrives while it is open.
+struct NotesQueueTrigger: Hashable {
+    var lectureID: Lecture.ID
+    var canWrite: Bool
 }
 
 /// The page's rows in one observed read.

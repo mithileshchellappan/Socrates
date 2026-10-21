@@ -97,12 +97,20 @@ enum SyncedTables {
 
     /// The sync engine over these tables, not started. `delegate` decides what an iCloud
     /// account change does (`AccountChangeGuard`: never delete the device's rows).
+    ///
+    /// Every table is private (`privateTables`: never shared with another iCloud user, which the
+    /// app never does), so no record carries a CloudKit parent reference. With one (SQLiteData
+    /// gives a shareable table's record its single foreign key as parent), iCloud refuses a row
+    /// whose parent record is not on the server yet (`referenceViolation`), and SQLiteData then
+    /// deletes that row on the device when the key is ON DELETE CASCADE: a deck's pages went that
+    /// way during the Mac's first upload (2026-10-22, docs/decisions.md), with the deck left in
+    /// place. Without parent references iCloud takes each row as it comes.
     static func engine(
         for database: any DatabaseWriter, container: String, delegate: any SyncEngineDelegate
     ) throws -> SyncEngine {
         try SyncEngine(
             for: database,
-            tables:
+            privateTables:
                 Course.self, WeeklySlot.self, LectureSession.self, Deck.self, DeckPage.self, Lecture.self,
                 Recording.self, LectureDeckSpan.self, RecordingSegment.self, SlideEvent.self,
                 TranscriptSegment.self, APICall.self, Note.self, Annotation.self, TrackedItem.self,

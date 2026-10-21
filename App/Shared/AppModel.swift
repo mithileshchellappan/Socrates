@@ -487,6 +487,9 @@ final class AppModel {
                 await filingCenter.file(pending)
             }
             await filing.repairDeckTitles()
+            // Decks that lost page rows (iCloud refused a page before its deck was there) get
+            // their page text back from their PDF, in the background; the notes runner follows.
+            Task(priority: .background) { await DeckPageRepair(services: services).run() }
             // Files of decks, lectures and recordings deleted in an earlier session (their Undo
             // is gone with it) once no row uses them; this session's deletions keep theirs.
             await filing.removeDeletedBlobs()
