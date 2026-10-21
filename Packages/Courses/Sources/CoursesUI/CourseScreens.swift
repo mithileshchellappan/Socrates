@@ -47,6 +47,8 @@ public struct CourseLecturesView: View {
         }
         .screenTitle(String(localized: "Lectures"), subtitle: course?.name ?? "")
         .toolbar { CourseImportToolbarItem(courseID: courseID) }
+        // nl (§11): View ▸ Zoom In / Out scale the rows' text (the group label and chrome stay).
+        .contentZoomable()
     }
 
     /// How far a lecture's notes are written (0…1); nil when none is being written.
@@ -80,6 +82,7 @@ private struct LectureListRow: View {
     let open: () -> Void
     let openInReview: () -> Void
     @Environment(\.deleteFromLibrary) private var deleteFromLibrary
+    @Environment(\.contentZoom) private var zoom
     @State private var isHovered = false
 
     var body: some View {
@@ -89,12 +92,13 @@ private struct LectureListRow: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
                     .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 4 * zoom) {
                     Text(title)
+                        .font(zoom == 1 ? .body : .system(size: 13 * zoom))
                         .lineLimit(1)
                     if let held = lecture.heldAt {
                         Text(text.day(held))
-                            .font(.subheadline)
+                            .font(zoom == 1 ? .subheadline : .system(size: 11 * zoom))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -108,9 +112,9 @@ private struct LectureListRow: View {
                         .accessibilityHidden(true)
                 }
             }
-            .padding(.vertical, 9)
+            .padding(.vertical, 9 * zoom)
             .padding(.horizontal, 12)
-            .frame(minHeight: 50)
+            .frame(minHeight: 50 * zoom)
             .background(isHovered ? Color.primary.opacity(0.04) : .clear)
             .contentShape(Rectangle())
         }

@@ -6,26 +6,51 @@ import StudyPageUI
 import StudyUI
 
 /// A lecture's notes, pushed full width on its course's Lectures (ln, docs/plan-lecture-notes.md
-/// "Build plan", decision 1; mockups 30–33): the reading column centred, at most 680 pt of text.
-/// Three zones: the header (title; "Lecture 3 · Mon 19 Oct · 1:29:36 · slides 1–42"; [Open in
-/// Review] filled, [Practice], ⋯ with Write Again…, Previous Version, Edit as Note, Copy as
-/// Markdown), the notes (`LectureNotesView`), Keep in mind (the lecture's tracked items) at the
-/// end. The first open of a lecture without notes queues them (`queueIfNeeded`), except where
-/// `\.lectureNotesQueuesOnOpen` is off (renders). Write Again… (the ⋯ menu, the failure line) opens
-/// its popover hung off a plain view behind the ⋯ (a popover on the `Menu` itself does not show
-/// reliably), after the click; a version without text is queued again at once. It is off while a
-/// version is open or nothing could be written (no slides with pages, no transcript).
+/// "Build plan", decision 1; nl, docs/plan-notes-layout.md; mockups 30–35). Three zones: the
+/// header (title; "Lecture 3 · Mon 19 Oct · 1:29:36 · slides 1–42"; [Open in Review] filled,
+/// [Practice], ⋯ with Write Again…, Previous Version, Edit as Note, Copy as Markdown), the notes
+/// (`LectureNotesView`), Keep in mind (the lecture's tracked items) at the end. The first open of
+/// a lecture without notes queues them (`queueIfNeeded`), except where `\.lectureNotesQueuesOnOpen`
+/// is off (renders). Write Again… (the ⋯ menu, the failure line) opens its popover hung off a
+/// plain view behind the ⋯ (a popover on the `Menu` itself does not show reliably), after the
+/// click; a version without text is queued again at once. It is off while a version is open or
+/// nothing could be written (no slides with pages, no transcript).
+///
+/// nl: the page grows with the window (`NotesPageLayout`): the text at most 780 pt, code, tables,
+/// diagrams, charts and slides breaking out to at most 1120, the header and Keep in mind at the
+/// text's measure; 52 pt margins (22 under 640 pt of page). Your notes (`YourNotesColumn`) is the
+/// window's inspector column beside it: open by default from 1160 pt of detail width, closed
+/// under 1120, unchanged between; the student's toggle (the toolbar's Show Inspector while closed,
+/// the column header's Hide, ⌃⌘I / View ▸ Show Inspector) is kept per window; the expanded agent
+/// panel takes its place. While a note in the column is being typed in, ↩ (Open in Review) and the
+/// notes' ⌘K / ⇧⌘E stand down. View ▸ Zoom In / Out scale the content (title, meta, notes, Keep in
+/// mind, the column's notes), never the buttons.
 public struct LectureNotesPage: View {
+    /// Your notes opens by itself from this detail width, and closes under `closesBelow`.
+    static let opensFrom: CGFloat = 1160
+    static let closesBelow: CGFloat = 1120
+
     private let lectureID: Lecture.ID
     @Fetch private var page: LectureNotesPageData
     @State private var writeAgainShown = false
     @State private var request = ""
     @State private var editing = false
+    /// C: the page's width (the detail column less Your notes while it is open).
+    @State private var pageWidth: CGFloat = 0
+    @State private var columnWidth: CGFloat = 336
+    /// `auto`'s state: open or closed by the detail width.
+    @State private var opensByWidth = LectureNotesPage.lastOpensByWidth
+    @State private var readingSection: String?
+    /// A note in Your notes has focus.
+    @State private var typingInColumn = false
+    @SceneStorage(YourNotesVisibility.sceneStorageKey) private var storedVisibility = YourNotesVisibility.auto.rawValue
     @Environment(\.studyServices) private var services
     @Environment(\.openDestination) private var openDestination
     @Environment(\.studyCoach) private var studyCoach
     @Environment(\.undoManager) private var undoManager
     @Environment(\.lectureNotesQueuesOnOpen) private var queuesOnOpen
+    @Environment(\.yourNotesVisibilityOverride) private var visibilityOverride
+    @Environment(\.agentPanelExpanded) private var agentPanelExpanded
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
 
@@ -35,24 +60,9 @@ public struct LectureNotesPage: View {
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                LectureNotesView(lectureID: lectureID, style: .page, writeAgain: { showWriteAgain() })
-                    .padding(.top, 18)
-                if !page.items.isEmpty {
-                    KeepInMindBlock(items: page.items, trails: page.trails, course: page.course, text: SessionText(locale: locale, timeZone: timeZone))
-                        .padding(.top, 34)
-                }
-            }
-            .frame(maxWidth: 680, alignment: .leading)
-            .padding(.horizontal, 52)
-            .padding(.top, 26)
-            .padding(.bottom, 40)
-            .frame(maxWidth: .infinity)
+        ZoomReader { zoom in
+            content(zoom: zoom)
         }
-        .background(Color.contentBackground)
-        .screenTitle(String(localized: "Lectures"), subtitle: page.course?.name ?? "")
         .task(id: lectureID) {
             guard queuesOnOpen, let services else { return }
             do {
@@ -61,18 +71,136 @@ public struct LectureNotesPage: View {
                 CoursesUILog.ui.error("Queueing the lecture's notes failed: \(String(describing: error), privacy: .public)")
             }
         }
+        .contentZoomable()
     }
+
+    private func content(zoom: CGFloat) -> some View {
+        // Before the first measure: the text's measure with its margins.
+        let layout = NotesPageLayout(pageWidth: pageWidth > 0 ? pageWidth : 884, zoom: zoom)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                header(zoom: zoom)
+                    .padding(.horizontal, layout.inset)
+                LectureNotesView(
+                    lectureID: lectureID, style: .page, layout: layout, writeAgain: { showWriteAgain() },
+                    onReadingSection: { section in
+                        if readingSection != section { readingSection = section }
+                    }
+                )
+                .padding(.top, 18 * zoom)
+                if !page.items.isEmpty {
+                    KeepInMindBlock(
+                        items: page.items, trails: page.trails, course: page.course, text: SessionText(locale: locale, timeZone: timeZone), zoom: zoom
+                    )
+                    .padding(.horizontal, layout.inset)
+                    .padding(.top, 34 * zoom)
+                }
+            }
+            // Never a fixed width: the measured one must not become the window's minimum (the
+            // page could not narrow when Your notes opens).
+            .frame(minWidth: 0, maxWidth: layout.wide, alignment: .leading)
+            .padding(.horizontal, layout.margin)
+            .padding(.top, 26)
+            .padding(.bottom, 40)
+            .frame(minWidth: 0, maxWidth: .infinity)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            guard width > 0 else { return }
+            pageWidth = width
+            followWidth()
+        }
+        .background(Color.contentBackground)
+        // The title and toolbar before the inspector, as Review and Calendar have them.
+        .screenTitle(String(localized: "Lectures"), subtitle: page.course?.name ?? "")
+        .toolbar {
+            // Exactly one inspector toggle: this one while the column is closed (DESIGN 6.4).
+            if !isColumnShown, !agentPanelExpanded {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Show Inspector", systemImage: "sidebar.trailing") { setColumn(shown: true) }
+                        .help(Text("Show Inspector"))
+                }
+            }
+        }
+        .modifier(YourNotesInspector(isPanelExpanded: agentPanelExpanded, isPresented: columnBinding) {
+            YourNotesColumn(
+                lectureID: lectureID, readingSection: readingSection, isShown: isColumnShown && !agentPanelExpanded,
+                hide: { setColumn(shown: false) },
+                onEditingChange: { typing in typingInColumn = typing }
+            )
+            .inspectorColumnWidth(min: 260, ideal: 336, max: 440)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                // A hidden column can report nothing; its minimum is 260.
+                guard width >= 200 else { return }
+                columnWidth = width
+                followWidth()
+            }
+        })
+    }
+
+    // MARK: Your notes
+
+    private var visibility: YourNotesVisibility {
+        visibilityOverride ?? YourNotesVisibility(rawValue: storedVisibility) ?? .auto
+    }
+
+    private var isColumnShown: Bool {
+        switch visibility {
+        case .auto: opensByWidth
+        case .shown: true
+        case .hidden: false
+        }
+    }
+
+    /// The inspector's binding: ⌃⌘I, the header's Hide, dragging the column shut. Off while the
+    /// expanded agent panel has the column's place.
+    private var columnBinding: Binding<Bool> {
+        let shown = isColumnShown
+        let expanded = agentPanelExpanded
+        return Binding(
+            get: { shown && !expanded },
+            set: { value in
+                guard !expanded, value != shown else { return }
+                setColumn(shown: value)
+            }
+        )
+    }
+
+    /// The student's toggle: kept for the window, every lecture page.
+    private func setColumn(shown: Bool) {
+        storedVisibility = (shown ? YourNotesVisibility.shown : .hidden).rawValue
+    }
+
+    /// `auto`: open from 1160 pt of detail width (D: the page and the open column), closed under
+    /// 1120, unchanged between (a resize near the line never flips it). Not while the agent panel
+    /// has the column's place: it comes back as it was.
+    private func followWidth() {
+        guard !agentPanelExpanded, pageWidth > 0 else { return }
+        let detail = pageWidth + (isColumnShown ? columnWidth : 0)
+        let opens = detail >= Self.opensFrom ? true : detail < Self.closesBelow ? false : opensByWidth
+        Self.lastOpensByWidth = opens
+        guard opens != opensByWidth else { return }
+        // The window's width decides, not the student: no slide in or out.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { opensByWidth = opens }
+    }
+
+    /// `auto`'s last decision in this run: the next lecture page opens with its column as the
+    /// last one had it (the window is usually as wide), so the column is there from the page's
+    /// first frame rather than sliding in after the first measure. Open at first (wide windows).
+    @MainActor private static var lastOpensByWidth = true
 
     // MARK: Header
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private func header(zoom: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 4 * zoom) {
             Text(verbatim: page.lecture?.title.isEmpty == false ? page.lecture?.title ?? "" : String(localized: "Lecture"))
-                .font(.title.weight(.semibold))
-                .tracking(-0.3)
+                .font(zoom == 1 ? .title.weight(.semibold) : .system(size: 22 * zoom, weight: .semibold))
+                .tracking(-0.3 * zoom)
                 .fixedSize(horizontal: false, vertical: true)
-            meta
-                .font(.system(size: 12))
+            meta(zoom: zoom)
+                .font(.system(size: 12 * zoom))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             HStack(spacing: 8) {
@@ -83,7 +211,8 @@ public struct LectureNotesPage: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
+                // Typing in Your notes: ↩ is the note's.
+                .keyboardShortcut(typingInColumn ? nil : KeyboardShortcut.defaultAction)
                 if studyCoach != nil, page.hasQuestions {
                     Button {
                         practice()
@@ -95,16 +224,17 @@ public struct LectureNotesPage: View {
                 }
                 moreMenu
             }
+            // The buttons are chrome: they never zoom.
             .padding(.top, 10)
         }
     }
 
-    private var meta: Text {
+    private func meta(zoom: CGFloat) -> Text {
         var parts: [Text] = []
         if let number = page.lecture?.number { parts.append(Text("Lecture \(number)")) }
         if let held = page.lecture?.heldAt { parts.append(Text(verbatim: SessionText(locale: locale, timeZone: timeZone).day(held))) }
         if let duration = page.duration, duration > 0 {
-            parts.append(Text(verbatim: TimeText.clock(duration)).font(.mono(11.5)).monospacedDigit())
+            parts.append(Text(verbatim: TimeText.clock(duration)).font(.mono(11.5 * zoom)).monospacedDigit())
         }
         if let range = page.range { parts.append(Text(verbatim: range.pagesText)) }
         var result = Text(verbatim: "")
@@ -230,23 +360,24 @@ final class WriteAgainUndoTarget {}
 
 /// Keep in mind (the brief's third zone, at the end): the lecture's tracked items on one line
 /// each: [ring = due, bar = class, filled = done | title with its faint source glyph | day, mono
-/// time]; tracked items, never Claude's wording.
+/// time]; tracked items, never Claude's wording. Its words grow with the content zoom.
 private struct KeepInMindBlock: View {
     let items: [TrackedItem]
     let trails: [TrackedItem.ID: [SourceTrailEntry]]
     let course: Course?
     let text: SessionText
+    var zoom: CGFloat = 1
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 3 * zoom) {
             Text("Keep in mind")
-                .font(.subheadline.weight(.semibold))
+                .font(zoom == 1 ? .subheadline.weight(.semibold) : .system(size: 11 * zoom, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     if index > 0 {
-                        Hairline().padding(.leading, 22)
+                        Hairline().padding(.leading, 22 * zoom)
                     }
                     row(item)
                 }
@@ -257,21 +388,21 @@ private struct KeepInMindBlock: View {
     private func row(_ item: TrackedItem) -> some View {
         let done = item.status == .done
         let color = Color.course(course)
-        return HStack(spacing: 12) {
+        return HStack(spacing: 12 * zoom) {
             Group {
                 if done {
-                    Circle().fill(color).frame(width: 10, height: 10)
-                        .overlay(Image(systemName: "checkmark").font(.system(size: 6, weight: .heavy)).foregroundStyle(.white))
+                    Circle().fill(color).frame(width: 10 * zoom, height: 10 * zoom)
+                        .overlay(Image(systemName: "checkmark").font(.system(size: 6 * zoom, weight: .heavy)).foregroundStyle(.white))
                 } else if item.kind == .announcement {
-                    RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 4, height: 18)
+                    RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 4 * zoom, height: 18 * zoom)
                 } else {
                     DueRing(color: color)
                 }
             }
-            .frame(width: 10)
+            .frame(width: 10 * zoom)
             HStack(spacing: 6) {
                 Text(verbatim: item.title)
-                    .font(.body.weight(done ? .regular : .medium))
+                    .font(.system(size: 13 * zoom, weight: done ? .regular : .medium))
                     .foregroundStyle(done ? .secondary : .primary)
                     .lineLimit(1)
                 SourceTrailButton(entries: trails[item.id] ?? [], now: Date(), inCalendar: item.calendarEventID != nil)
@@ -281,13 +412,39 @@ private struct KeepInMindBlock: View {
                 if item.isAllDay {
                     Text(verbatim: text.day(due))
                 } else {
-                    Text("\(Text(verbatim: text.day(due))), \(Text(verbatim: DayText.time(due, timeZone: text.timeZone)).font(.mono(11.5)).foregroundStyle(.secondary))")
+                    Text("\(Text(verbatim: text.day(due))), \(Text(verbatim: DayText.time(due, timeZone: text.timeZone)).font(.mono(11.5 * zoom)).foregroundStyle(.secondary))")
                 }
             }
         }
-        .font(.system(size: 13))
+        .font(.system(size: 13 * zoom))
         .foregroundStyle(done ? .secondary : .primary)
-        .frame(minHeight: 31)
+        .frame(minHeight: 31 * zoom)
+    }
+}
+
+/// Reads the content zoom `.contentZoomable()` sets below the page's root.
+private struct ZoomReader<Content: View>: View {
+    @ViewBuilder let content: (CGFloat) -> Content
+    @Environment(\.contentZoom) private var zoom
+
+    var body: some View {
+        content(zoom)
+    }
+}
+
+/// Your notes, left out entirely while the agent panel is expanded into the window's trailing
+/// column (DESIGN 6.4: never two inspectors; a hidden inspector still kept its column's room).
+private struct YourNotesInspector<Column: View>: ViewModifier {
+    let isPanelExpanded: Bool
+    let isPresented: Binding<Bool>
+    @ViewBuilder let column: () -> Column
+
+    func body(content: Content) -> some View {
+        if isPanelExpanded {
+            content
+        } else {
+            content.inspector(isPresented: isPresented, content: column)
+        }
     }
 }
 
