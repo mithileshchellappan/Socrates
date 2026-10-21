@@ -28,6 +28,11 @@ final class NotesTextView: NSTextView {
         if changed { notesCoordinator?.widthChanged() }
     }
 
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        notesCoordinator?.liveResizeEnded()
+    }
+
     override func layout() {
         super.layout()
         notesCoordinator?.positionOverlays()
@@ -148,18 +153,33 @@ final class NotesTextView: NSTextView {
 }
 
 /// The document's glue: draws the input as units (only what changed is replaced, so streaming
-/// never rebuilds what is on screen), keeps the height, the marks drawn while hovered or asked
-/// about, the chevrons and the capsule, and the Ask popover.
+/// never rebuilds what is on screen), indents the prose by the page's inset (again, attributes
+/// only, when the width changes: at most every 100 ms during a live resize, once more at its end),
+/// keeps the height, the reading section (nl §4.4), the marks drawn while hovered or asked about,
+/// the chevrons and the capsule, and the Ask popover. A zoom change builds the attributes again
+/// (nothing is parsed again) and keeps the selection and the reading line's character in place.
 @MainActor
 final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutManagerDelegate, NotesDocumentActions {
     weak var textView: NotesTextView?
     weak var controller: LectureNotesController?
     var onHeight: ((CGFloat) -> Void)?
+    /// The page's Your notes column follows the section being read (nil: the overview).
+    var onReadingSection: ((String?) -> Void)?
     private(set) var input: NotesDocumentInput?
     private var units: [NotesUnit] = []
     private var build = NotesBuild()
-    private var renderings: [LectureNotesStyle: NoteTextRendering] = [:]
     private let anchors = NotesAnchorCache()
+    private let parsed = NotesParseCache()
+    /// The inset the prose is indented by now (blocks at the measure read it).
+    private let measure = NotesLayoutBox()
+    /// The container width the indents were last applied for.
+    private var indentedWidth: CGFloat = -1
+    private var indentTask: Task<Void, Never>?
+    private var lastIndent = ContinuousClock.now
+    /// The headings' lines (view coordinates), after the last layout.
+    private var headingRects: [(key: String, rect: CGRect)]?
+    private var readingSection: String??
+    private var restoreTask: Task<Void, Never>?
     private var lastHeight: CGFloat = -1
     private var chevronViews: [String: NSView] = [:]
     private var capsule: NSView?
@@ -174,7 +194,6 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
     private var observedClip: NSClipView?
     private var pendingInvalidate = false
     private var hoveredMark: LectureNotesMark.ID?
-    private var lastWidth: CGFloat = 0
     var hoveredHeading: String? {
         didSet { positionOverlays() }
     }
@@ -183,76 +202,121 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
 
     // MARK: Drawing the input
 
-    func rendering(for input: NotesDocumentInput) -> NoteTextRendering {
-        if let existing = renderings[input.style] { return existing }
-        let controller = controller
-        let rendering = NoteTextRendering(
-            style: input.style == .page ? .document : .inspector, services: controller?.services, lectureID: input.lectureID,
-            professor: input.professor, open: controller?.openDestination ?? OpenDestinationAction { _ in },
-            onLink: { link in
-                guard let controller else { return false }
-                switch link {
-                case .slide(let source):
-                    guard let page = source.pageNumber else { return false }
-                    controller.open(.slide(lecture: source.lectureID ?? input.lectureID, page: page))
-                case .time(let source):
-                    guard let time = source.time else { return false }
-                    controller.open(.moment(lecture: source.lectureID ?? input.lectureID, recording: source.recordingID, seconds: time))
-                }
-                return true
-            }
-        )
-        renderings[input.style] = rendering
-        return rendering
-    }
-
     func apply(_ input: NotesDocumentInput) {
         guard input != self.input, let textView, let storage = textView.textStorage else { return }
+        let previous = self.input
         self.input = input
-        let width = textView.textContainer?.size.width ?? 600
-        lastWidth = width
-        let builder = NotesDocumentBuilder(
-            input: input, containerWidth: width, actions: self, noteRendering: rendering(for: input), anchors: anchors
-        )
+        // Only the page's inset moved (a resize): indent again, build nothing.
+        if var same = previous {
+            same.inset = input.inset
+            if same == input {
+                scheduleIndents()
+                return
+            }
+        }
+        let zoomed = previous.map { $0.zoom != input.zoom } ?? false
+        let anchor = zoomed ? readingAnchor() : nil
+        let selection = textView.selectedRanges
+        let width = containerWidth
+        // The text kept on screen was indented for another width or inset: again, with the rest.
+        let reindent = abs(width - indentedWidth) > 0.5 || measure.inset != input.inset
+        measure.inset = input.inset
+        indentedWidth = width
+        let builder = NotesDocumentBuilder(input: input, actions: self, anchors: anchors, parsed: parsed, measure: measure)
         let next = builder.build()
         // Keep the units that did not change (their text and attachments stay on screen).
         var first = 0
         while first < min(units.count, next.units.count), units[first].signature == next.units[first].signature { first += 1 }
-        if first < units.count || first < next.units.count {
-            let keptLength = units[..<first].reduce(0) { $0 + $1.text.length }
-            let replacement = NSMutableAttributedString()
-            for unit in next.units[first...] { replacement.append(unit.text) }
-            let range = NSRange(location: keptLength, length: max(0, storage.length - keptLength))
-            let selection = textView.selectedRange()
+        let replaces = first < units.count || first < next.units.count
+        let keptLength = units[..<first].reduce(0) { $0 + $1.text.length }
+        if replaces || reindent {
             storage.beginEditing()
-            storage.replaceCharacters(in: range, with: replacement)
+            if reindent {
+                let kept = NSRange(location: 0, length: replaces ? min(keptLength, storage.length) : storage.length)
+                NotesIndent.apply(to: storage, in: kept, inset: input.inset, width: width)
+            }
+            if replaces {
+                let replacement = NSMutableAttributedString()
+                for unit in next.units[first...] { replacement.append(unit.text) }
+                NotesIndent.apply(to: replacement, inset: input.inset, width: width)
+                storage.replaceCharacters(in: NSRange(location: keptLength, length: max(0, storage.length - keptLength)), with: replacement)
+            }
             storage.endEditing()
-            if NSMaxRange(selection) <= keptLength { textView.setSelectedRange(selection) }
+        }
+        if replaces {
             units = Array(units[..<first]) + Array(next.units[first...])
+            // The same text (a zoom or appearance change): the selection stays as it was.
+            let ranges = selection.map(\.rangeValue)
+            if zoomed || ranges.allSatisfy({ NSMaxRange($0) <= keptLength }), ranges.allSatisfy({ NSMaxRange($0) <= storage.length }) {
+                textView.selectedRanges = selection
+            }
         }
         build = next
+        headingRects = nil
         applyRenderingMarks()
         controller?.syncOrphans(found: next.found, orphaned: next.orphaned)
         sizeChanged()
         positionOverlays()
+        if let anchor { restore(anchor) }
+        updateReadingSection()
     }
 
-    /// The column's width changed: the headings' chips stay at the line's end.
+    private var containerWidth: CGFloat {
+        textView?.textContainer?.size.width ?? 600
+    }
+
+    /// The text view's width changed: the prose is indented again (the heading chips' tab with it).
     func widthChanged() {
-        guard let textView, let storage = textView.textStorage else { return }
-        let width = textView.textContainer?.size.width ?? 600
-        guard abs(width - lastWidth) > 0.5 else { return }
-        lastWidth = width
-        storage.beginEditing()
-        storage.enumerateAttribute(.notesHeading, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-            guard value != nil, let style = storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle,
-                  let mutable = style.mutableCopy() as? NSMutableParagraphStyle
-            else { return }
-            mutable.tabStops = [NSTextTab(textAlignment: .right, location: max(40, width), options: [:])]
-            storage.addAttribute(.paragraphStyle, value: mutable, range: range)
+        scheduleIndents()
+    }
+
+    func liveResizeEnded() {
+        indentTask?.cancel()
+        indentTask = nil
+        applyIndents()
+    }
+
+    /// The view is going away.
+    func stopTasks() {
+        indentTask?.cancel()
+        indentTask = nil
+        restoreTask?.cancel()
+        scrollTask?.cancel()
+        onReadingSection = nil
+    }
+
+    /// Indents now, or during a live resize at most every 100 ms (once more at its end).
+    private func scheduleIndents() {
+        guard let textView else { return }
+        guard textView.inLiveResize || textView.window?.inLiveResize == true else {
+            applyIndents()
+            return
         }
+        guard indentTask == nil else { return }
+        let wait = max(.zero, .milliseconds(100) - (ContinuousClock.now - lastIndent))
+        indentTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: wait)
+            guard let self, !Task.isCancelled else { return }
+            self.indentTask = nil
+            self.applyIndents()
+        }
+    }
+
+    /// Every paragraph's style again for the current inset and width, in one editing transaction:
+    /// attributes only, the attachments at the measure re-measure through their providers.
+    private func applyIndents() {
+        guard let textView, let storage = textView.textStorage, let input else { return }
+        let width = containerWidth
+        guard abs(width - indentedWidth) > 0.5 || measure.inset != input.inset else { return }
+        lastIndent = .now
+        indentedWidth = width
+        measure.inset = input.inset
+        storage.beginEditing()
+        NotesIndent.apply(to: storage, inset: input.inset, width: width)
         storage.endEditing()
+        headingRects = nil
         sizeChanged()
+        positionOverlays()
     }
 
     // MARK: Height and viewport
@@ -260,6 +324,7 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
     func sizeChanged() {
         guard let textView, let layout = textView.textLayoutManager else { return }
         layout.ensureLayout(for: layout.documentRange)
+        headingRects = nil
         let height = ceil(layout.usageBoundsForTextContainer.height + textView.textContainerInset.height * 2)
         textView.needsLayout = true
         guard abs(height - lastHeight) > 0.5 else { return }
@@ -277,6 +342,7 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
             layout.invalidateLayout(for: layout.documentRange)
             self.sizeChanged()
             self.positionOverlays()
+            self.updateReadingSection()
         }
     }
 
@@ -288,11 +354,72 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
         observedClip = clip
         clip.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(clipScrolled(_:)), name: NSView.boundsDidChangeNotification, object: clip)
+        updateReadingSection()
     }
 
     @objc private func clipScrolled(_ notification: Notification) {
         textView?.textLayoutManager?.textViewportLayoutController.layoutViewport()
         if capsule != nil { hideCapsule() }
+        updateReadingSection()
+    }
+
+    // MARK: Reading section (nl §4.4) and the reading line
+
+    /// The reading line in the view's coordinates: the visible top plus a third of the visible
+    /// height of the screen's scroll view.
+    private func readingLine() -> (y: CGFloat, top: CGFloat)? {
+        guard let textView, let clip = textView.enclosingScrollView?.contentView else { return nil }
+        let visible = clip.bounds
+        let top = textView.convert(CGPoint(x: visible.minX, y: visible.minY), from: clip).y
+        let line = textView.convert(CGPoint(x: visible.minX, y: visible.minY + visible.height / 3), from: clip).y
+        return (line, top)
+    }
+
+    /// The section being read: the last whose heading starts above the reading line; nil while
+    /// the overview is at it. Published only when it changes.
+    func updateReadingSection() {
+        guard let onReadingSection, let line = readingLine() else { return }
+        let rects = cachedHeadingRects()
+        let section = rects.last { $0.rect.minY <= line.y }?.key
+        guard readingSection != .some(section) else { return }
+        readingSection = .some(section)
+        Task { @MainActor in onReadingSection(section) }
+    }
+
+    /// The character at the reading line and its distance below the visible top.
+    private func readingAnchor() -> (offset: Int, below: CGFloat)? {
+        guard let textView, let layout = textView.textLayoutManager, let content = textView.textContentStorage,
+              let line = readingLine()
+        else { return nil }
+        let origin = textView.textContainerOrigin
+        guard let fragment = layout.textLayoutFragment(for: CGPoint(x: 1, y: line.y - origin.y)) else { return nil }
+        let offset = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+        return (offset, origin.y + fragment.layoutFragmentFrame.minY - line.top)
+    }
+
+    /// After a zoom change: the anchor's character back where it was below the visible top, once
+    /// the view is as tall as its new text.
+    private func restore(_ anchor: (offset: Int, below: CGFloat)) {
+        restoreTask?.cancel()
+        restoreTask = Task { @MainActor [weak self] in
+            for _ in 0..<20 {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard let self, !Task.isCancelled, let textView = self.textView, let layout = textView.textLayoutManager,
+                      let clip = textView.enclosingScrollView?.contentView,
+                      let range = self.textRange(NSRange(location: anchor.offset, length: 0)),
+                      let fragment = layout.textLayoutFragment(for: range.location)
+                else { return }
+                // SwiftUI sizes the view a moment after the text is laid out.
+                guard abs(textView.bounds.height - self.lastHeight) < 1 else { continue }
+                let y = textView.textContainerOrigin.y + fragment.layoutFragmentFrame.minY - anchor.below
+                let target = clip.convert(CGPoint(x: 0, y: y), from: textView)
+                let documentHeight = clip.documentView?.frame.height ?? 0
+                let top = min(max(0, target.y), max(0, documentHeight - clip.bounds.height))
+                clip.scroll(to: CGPoint(x: clip.bounds.minX, y: top))
+                textView.enclosingScrollView?.reflectScrolledClipView(clip)
+                return
+            }
+        }
     }
 
     /// Scrolls the screen so the section's heading is at the top (Review's Follow).
@@ -349,29 +476,32 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
 
     /// A heading's line in the view's coordinates.
     private func headingRect(_ key: String) -> CGRect? {
-        guard let textView, let layout = textView.textLayoutManager else { return nil }
+        cachedHeadingRects().first { $0.key == key }?.rect
+    }
+
+    /// Every heading's line in the view's coordinates, in order: measured once after a layout
+    /// (the reading section asks at every scrolled point).
+    private func cachedHeadingRects() -> [(key: String, rect: CGRect)] {
+        if let headingRects { return headingRects }
+        guard let textView, let layout = textView.textLayoutManager else { return [] }
+        var rects: [(key: String, rect: CGRect)] = []
         var offset = 0
+        let origin = textView.textContainerOrigin
         for unit in units {
-            if unit.role == .heading, unit.section == key {
-                guard let range = textRange(NSRange(location: offset, length: 0)),
-                      let fragment = layout.textLayoutFragment(for: range.location)
-                else { return nil }
+            if unit.role == .heading, let range = textRange(NSRange(location: offset, length: 0)),
+               let fragment = layout.textLayoutFragment(for: range.location) {
                 let frame = fragment.layoutFragmentFrame
                 let line = fragment.textLineFragments.first?.typographicBounds ?? CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
-                let origin = textView.textContainerOrigin
-                return CGRect(x: origin.x + frame.minX, y: origin.y + frame.minY + line.minY, width: frame.width, height: line.height)
+                rects.append((unit.section, CGRect(x: origin.x + frame.minX, y: origin.y + frame.minY + line.minY, width: frame.width, height: line.height)))
             }
             offset += unit.text.length
         }
-        return nil
+        headingRects = rects
+        return rects
     }
 
     func heading(at point: CGPoint) -> String? {
-        for unit in units where unit.role == .heading {
-            guard let rect = headingRect(unit.section) else { continue }
-            if point.y >= rect.minY - 4, point.y <= rect.maxY + 4 { return unit.section }
-        }
-        return nil
+        cachedHeadingRects().first { point.y >= $0.rect.minY - 4 && point.y <= $0.rect.maxY + 4 }?.key
     }
 
     func chevron(at point: CGPoint) -> String? {
@@ -551,32 +681,12 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
             highlight.target = self
             insert(highlight)
         }
-        if let note = studentNote(at: point) {
-            let edit = NSMenuItem(title: String(localized: "Edit in Review"), action: #selector(menuEditInReview(_:)), keyEquivalent: "")
-            edit.target = self
-            edit.representedObject = note.id.uuidString
-            insert(edit)
-        }
         if index > 0, menu.items.count > index { menu.insertItem(.separator(), at: index) }
     }
 
     @objc private func menuAsk() { controller?.ask() }
 
     @objc private func menuHighlight() { controller?.toggleHighlight() }
-
-    @objc private func menuEditInReview(_ sender: NSMenuItem) {
-        guard let id = (sender.representedObject as? String).flatMap(UUID.init(uuidString:)),
-              let note = input?.studentNotes.first(where: { $0.id == id })
-        else { return }
-        controller?.editInReview(note)
-    }
-
-    private func studentNote(at point: CGPoint) -> Note? {
-        guard let textView, let storage = textView.textStorage else { return nil }
-        let index = textView.characterIndexForInsertion(at: point)
-        guard index < storage.length, let id = storage.attribute(.notesStudentNote, at: index, effectiveRange: nil) as? String else { return nil }
-        return input?.studentNotes.first { $0.id.uuidString == id }
-    }
 
     // MARK: Ask
 
@@ -645,10 +755,6 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
         controller?.continueInChat(mark)
     }
 
-    func editInReview(_ note: Note) {
-        controller?.editInReview(note)
-    }
-
     // MARK: NSTextLayoutManagerDelegate
 
     nonisolated func textLayoutManager(
@@ -657,16 +763,11 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
         if let paragraph = textElement as? NSTextParagraph, paragraph.attributedString.length > 0 {
             let attributes = paragraph.attributedString.attributes(at: 0, effectiveRange: nil)
             if let kind = attributes[.notesCallout] as? String {
-                let dark = MainActor.assumeIsolated { self.input?.isDark ?? false }
-                return NotesCalloutFragment(textElement: textElement, range: textElement.elementRange, kind: kind, isDark: dark)
-            }
-            if attributes[.notesStudentNote] != nil {
-                let style = MainActor.assumeIsolated { self.input?.style ?? .page }
-                if let fragment = NoteTextRendering.layoutFragment(
-                    for: textElement, in: textLayoutManager, style: style == .page ? .document : .inspector
-                ) {
-                    return fragment
-                }
+                let (dark, zoom) = MainActor.assumeIsolated { (self.input?.isDark ?? false, self.input?.zoom ?? 1) }
+                let inset = attributes[.notesInset] as? CGFloat ?? 0
+                return NotesCalloutFragment(
+                    textElement: textElement, range: textElement.elementRange, kind: kind, isDark: dark, inset: inset, zoom: zoom
+                )
             }
         }
         return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange)
@@ -857,6 +958,7 @@ private struct CapsuleSurface: ViewModifier {
 struct NotesTextHost: NSViewRepresentable {
     let input: NotesDocumentInput
     let controller: LectureNotesController
+    var onReadingSection: ((String?) -> Void)?
     let onHeight: (CGFloat) -> Void
 
     func makeCoordinator() -> NotesTextCoordinator {
@@ -867,6 +969,7 @@ struct NotesTextHost: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.controller = controller
         coordinator.onHeight = onHeight
+        coordinator.onReadingSection = onReadingSection
         let textView = NotesTextView(usingTextLayoutManager: true)
         coordinator.textView = textView
         controller.coordinator = coordinator
@@ -895,12 +998,14 @@ struct NotesTextHost: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.controller = controller
         coordinator.onHeight = onHeight
+        coordinator.onReadingSection = onReadingSection
         controller.coordinator = coordinator
         coordinator.apply(input)
     }
 
     static func dismantleNSView(_ view: NotesTextView, coordinator: NotesTextCoordinator) {
         coordinator.hideCapsule()
+        coordinator.stopTasks()
         if coordinator.controller?.isFocused == true { coordinator.focusChanged(false) }
     }
 }

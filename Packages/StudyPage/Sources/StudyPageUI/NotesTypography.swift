@@ -14,27 +14,65 @@ public enum LectureNotesStyle: Hashable, Sendable {
     case inspector
 }
 
-/// The notes' sizes (mockups 30–33: `.pg`, `.nt h4`, `.nt h5`, `.call`, `.kept`, `.code`, `.tbl`).
+/// The notes' sizes (mockups 30–35: `.pg`, `.nt h4`, `.nt h5`, `.call`, `.kept`, `.code`, `.tbl`),
+/// times the content zoom (nl, docs/plan-notes-layout.md §11: View ▸ Zoom In / Out scales every
+/// size of the notes, as Word does).
 struct NotesMetrics: Hashable, Sendable {
     let style: LectureNotesStyle
+    /// `\.contentZoom` (1 = 100 %).
+    let zoom: CGFloat
 
-    var body: CGFloat { style == .page ? 14 : 13 }
-    var lineHeight: CGFloat { style == .page ? 21.7 : 18.85 }
+    init(style: LectureNotesStyle, zoom: CGFloat = 1) {
+        self.style = style
+        self.zoom = zoom
+    }
+
+    /// `points` at the zoom.
+    func scaled(_ points: CGFloat) -> CGFloat { points * zoom }
+
+    var body: CGFloat { scaled(style == .page ? 14 : 13) }
+    var lineHeight: CGFloat { scaled(style == .page ? 21.7 : 18.85) }
     /// Space after a paragraph (the mockup's 12 pt margin less the line's leading).
-    var paragraphSpacing: CGFloat { style == .page ? 12 : 9 }
+    var paragraphSpacing: CGFloat { scaled(style == .page ? 12 : 9) }
     /// A section heading (`h4`): 15 semibold, 30 pt above, 8 below.
-    var sectionHeading: CGFloat { style == .page ? 15 : 13.5 }
-    var sectionSpacingBefore: CGFloat { style == .page ? 30 : 20 }
+    var sectionHeading: CGFloat { scaled(style == .page ? 15 : 13.5) }
+    var sectionSpacingBefore: CGFloat { scaled(style == .page ? 30 : 20) }
     /// A sub-heading inside a section (`h5`: "Worked example", "Check yourself"): 13 semibold.
-    var subheading: CGFloat { style == .page ? 13 : 12.5 }
+    var subheading: CGFloat { scaled(style == .page ? 13 : 12.5) }
     /// Callouts, kept answers, tables, professor quotes: 13 pt.
-    var small: CGFloat { style == .page ? 13 : 12.5 }
-    var code: CGFloat { style == .page ? 12 : 11.5 }
-    var chip: CGFloat { 10.5 }
+    var small: CGFloat { scaled(style == .page ? 13 : 12.5) }
+    var code: CGFloat { scaled(style == .page ? 12 : 11.5) }
+    var chip: CGFloat { scaled(10.5) }
+    /// A display formula.
+    var displayMath: CGFloat { scaled(style == .page ? 17 : 15) }
     /// Figures: chart 180, diagram up to 260.
-    var chartHeight: CGFloat { style == .page ? 180 : 150 }
-    /// The widest a slide is drawn (`.slide`: 352 × 198).
-    var slideWidth: CGFloat { style == .page ? 352 : 296 }
+    var chartHeight: CGFloat { scaled(style == .page ? 180 : 150) }
+    /// The widest a slide is drawn: on the page it breaks out to at most 640 (nl, §1), centred; in
+    /// Review's pane 296.
+    var slideWidth: CGFloat { scaled(style == .page ? 640 : 296) }
+}
+
+/// The notes page's widths (nl, docs/plan-notes-layout.md §1, §11), from the page's width C (the
+/// detail column, less Your notes while it is open) and the content zoom z: side margins 52 (22
+/// when C < 640), the text at most 780 z wide (`measure`), code, tables, diagrams and charts at
+/// most 1120 z (`wide`), both centred, so prose sits `inset` in from the figures' edges.
+public struct NotesPageLayout: Hashable, Sendable {
+    /// The text's width.
+    public let measure: CGFloat
+    /// The breakouts' width (and the text view's).
+    public let wide: CGFloat
+    /// The page's side margin.
+    public let margin: CGFloat
+
+    /// The prose's indent on each side of `wide`.
+    public var inset: CGFloat { max(0, (wide - measure) / 2) }
+
+    public init(pageWidth: CGFloat, zoom: CGFloat = 1) {
+        margin = pageWidth < 640 ? 22 : 52
+        let available = max(120, floor(pageWidth - 2 * margin))
+        measure = min(available, floor(780 * zoom))
+        wide = min(available, floor(1120 * zoom))
+    }
 }
 
 /// The notes' inks (DESIGN 3.1): Claude's sentences secondary, emphasis primary, the student's

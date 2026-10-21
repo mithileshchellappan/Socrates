@@ -13,9 +13,10 @@ public enum NotesChipTarget: Hashable, Sendable {
     }
 }
 
-/// Everything the notes document is drawn from: the current version, the student's marks and
-/// notes, the professor's rows, the lecture's slides and recordings, and the view's own state
-/// (folded sections, open answers). Equal inputs draw the same document.
+/// Everything the notes document is drawn from: the current version, the student's marks, the
+/// professor's rows, the lecture's slides and recordings, the page's inset and the content zoom,
+/// and the view's own state (folded sections, open answers). Equal inputs draw the same document.
+/// The student's own notes are not part of it (nl: they sit beside the text, in Your notes).
 struct NotesDocumentInput: Equatable {
     struct LectureRef: Equatable {
         var id: Lecture.ID
@@ -26,10 +27,13 @@ struct NotesDocumentInput: Equatable {
     var style: LectureNotesStyle
     /// The appearance the inks and formula images are drawn for.
     var isDark = false
+    /// `\.contentZoom`: every size of the document is multiplied by it.
+    var zoom: CGFloat = 1
+    /// The prose's indent on each side of the text view (`NotesPageLayout.inset`; 0 in Review's
+    /// pane). A change re-indents the paragraphs, nothing is built again.
+    var inset: CGFloat = 0
     var notes: LectureNotes?
     var marks: [LectureNotesMark] = []
-    /// The lecture's notes (live: a note written later in Review shows in place).
-    var studentNotes: [Note] = []
     /// The lecture's exam hints and highlights (the professor's words for `quote` fences).
     var quotes: [Annotation] = []
     /// Lecture keys (`ChatCitation.key`) of the course's lectures.

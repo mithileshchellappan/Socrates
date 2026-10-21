@@ -13,9 +13,10 @@ import UniformTypeIdentifiers
 /// prose and lists as such; code → paragraphs with the code mark; formulas, diagrams, charts and
 /// tables → inline images (`ImageRenderer` at 2×); slides → slide clips; professor quotes → Notes'
 /// quote paragraph; chips → slide and time refs; highlights → the note's highlight; kept answers →
-/// the question and the answer as paragraphs; the student's notes → their own blocks. Claude's
-/// words carry the `ai` mark (grey with one sparkle per block until the student edits them). The
-/// copy never updates.
+/// the question and the answer as paragraphs. Claude's words carry the `ai` mark (grey with one
+/// sparkle per block until the student edits them). The copy never updates. nl: Claude's text
+/// only: an older version's `note` fences are left out (`LectureNotesFormat.withoutNoteFences`),
+/// the student's notes are notes already.
 public enum LectureNotesExport {
     /// Writes the note and returns it (nil: the lecture has no notes text).
     @MainActor
@@ -31,9 +32,10 @@ public enum LectureNotesExport {
         return try await services.records.save(note)
     }
 
-    /// Copy as Markdown (⋯): the source with chips as their labels ("S13", "37:59").
+    /// Copy as Markdown (⋯): the source with chips as their labels ("S13", "37:59"), without
+    /// `note` fences.
     public static func markdown(_ notes: LectureNotes) -> String {
-        LectureNotesText.readable(notes.body)
+        LectureNotesText.readable(LectureNotesFormat.withoutNoteFences(notes.body))
     }
 
     @MainActor
@@ -60,7 +62,7 @@ public enum LectureNotesExport {
             var blocks: [NoteBlock] = []
             let title = lecture.number.map { "Lecture \($0) · \(lecture.title)" } ?? lecture.title
             blocks.append(NoteBlock(type: .heading, text: title, level: 1))
-            let document = LectureNotesFormat.parse(notes.body)
+            let document = LectureNotesFormat.parse(LectureNotesFormat.withoutNoteFences(notes.body))
             let titles = Dictionary(notes.sections.map { ($0.key, $0.title) }, uniquingKeysWith: { first, _ in first })
             let marks = rows.marks.filter { $0.removedAt == nil }
             for part in document.parts {
@@ -250,8 +252,7 @@ public enum LectureNotesExport {
                     source: SourceRef(kind: .transcript, lectureID: lecture.id, recordingID: row.recordingID, time: row.startTime, quote: text)
                 )]
             case .note:
-                guard let key = NotesNoteRef.parse(fence.body), let note = rows.notes.first(where: { ChatCitation.key($0.id) == key }) else { return [] }
-                return note.blocks
+                return []
             case .check:
                 let items = NotesCheckItem.parse(fence.body)
                 guard !items.isEmpty else { return [] }
