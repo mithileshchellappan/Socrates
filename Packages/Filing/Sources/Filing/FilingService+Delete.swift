@@ -76,6 +76,8 @@ extension FilingService {
     /// - A course goes with its lectures (as above), its decks (unless a lecture of another course
     ///   links them), recordings, sessions and weekly slots, items, mail rules, plan blocks,
     ///   practice and search chunks. The student's notes stay, unlinked from it and its lectures.
+    ///   mt: its materials (with their sections and coverage) and the role-material documents no
+    ///   other course's material uses (their pages; the files wait like a deck's).
     ///
     /// Every row an `ON DELETE CASCADE` removes is kept in the result, and every `SET NULL` it
     /// clears is noted, so `restore(_:)` puts the library back exactly. Files are never removed
@@ -106,6 +108,10 @@ extension FilingService {
             var blobs: [BlobRef] = []
             for deckID in plan.decks {
                 if let blob = try Deck.find(deckID).fetchOne(db)?.blob { blobs.append(blob) }
+            }
+            // mt: the course's material documents that go with it.
+            for documentID in plan.documents {
+                if let blob = try StudyDocument.find(documentID).fetchOne(db)?.blob { blobs.append(blob) }
             }
             blobs += try RecordingSegment.where { $0.recordingID.in(plan.recordings) }.fetchAll(db).compactMap(\.blob)
 
@@ -193,6 +199,8 @@ extension FilingService {
         var unlinks: [(Deck.ID, Lecture.ID)] = []
         /// A deleted course's lectures: the student's notes on them stay, unlinked first.
         var keptNotesOf: [Lecture.ID] = []
+        /// mt: a deleted course's role-material documents no other course's material uses.
+        var documents: [StudyDocument.ID] = []
     }
 
     static func deletionPlan(_ item: LibraryItem, in db: Database) throws -> DeletionPlan {
@@ -249,6 +257,12 @@ extension FilingService {
                     WHERE s."deck_id" = d."id" AND l."course_id" <> ?1)
                 ORDER BY d."imported_at"
                 """, arguments: [id]).compactMap(UUID.init(uuidString:))
+            // mt: its materials go through the cascade; the documents of their files and
+            // snapshots go too unless a material of another course uses them.
+            plan.documents = try Self.materialDocuments(ofCourse: id, in: db)
+            if !plan.documents.isEmpty {
+                plan.selectors.append(.init(table: "document", column: "id", values: plan.documents))
+            }
         }
         if !plan.decks.isEmpty {
             plan.selectors.append(.init(table: "deck", column: "id", values: plan.decks))
@@ -262,6 +276,27 @@ extension FilingService {
             plan.selectors.append(.init(table: "recording", column: "id", values: plan.recordings))
         }
         return plan
+    }
+
+    /// mt: the role-material documents of a course's materials that no other course's material
+    /// uses (a course delete takes them with it).
+    static func materialDocuments(ofCourse id: String, in db: Database) throws -> [StudyDocument.ID] {
+        try String.fetchAll(db, sql: """
+            SELECT DISTINCT d."id" FROM "document" d
+            JOIN "course_material" m ON m."document_id" = d."id"
+            WHERE m."course_id" = ?1 AND d."role" = 'material'
+              AND NOT EXISTS (SELECT 1 FROM "course_material" o WHERE o."document_id" = d."id" AND o."course_id" <> ?1)
+            ORDER BY d."added_at"
+            """, arguments: [id]).compactMap(UUID.init(uuidString:))
+    }
+
+    /// mt: how many materials a course delete takes (the confirmation's "4 materials"); 0 for
+    /// anything but a course.
+    public func materialCount(_ item: LibraryItem) async throws -> Int {
+        guard case .course(let courseID) = item else { return 0 }
+        return try await services.database.read { db in
+            try CourseMaterial.where { $0.courseID.eq(courseID) }.fetchCount(db)
+        }
     }
 
     static func summary(_ item: LibraryItem, rows: DeletedRows, in db: Database) throws -> DeletionSummary {

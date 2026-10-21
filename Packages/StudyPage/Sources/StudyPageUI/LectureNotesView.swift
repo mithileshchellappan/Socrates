@@ -126,7 +126,7 @@ public struct LectureNotesView: View {
         return NotesDocumentInput(
             lectureID: lectureID, style: style, isDark: colorScheme == .dark, zoom: zoom, inset: layout?.inset ?? 0, notes: current,
             marks: rows.marks.filter { $0.removedAt == nil }, quotes: rows.quotes, lectures: lectures,
-            recordings: recordings, hasRecording: !rows.recordings.isEmpty, deck: rows.deck,
+            recordings: recordings, materials: rows.materials, hasRecording: !rows.recordings.isEmpty, deck: rows.deck,
             pages: rows.range.map { $0.firstPage...$0.lastPage }, professor: professor, folded: controller.folded,
             answersOpen: controller.answersOpen, unavailable: unavailable, canWriteAgain: rows.canWrite
         )
@@ -188,6 +188,8 @@ struct LectureNotesRows: Equatable, Sendable {
     var recordings: [Recording] = []
     var range: LectureSlideRange?
     var deck: Deck?
+    /// mt: the course's materials by key (`[[mat …]]` chips).
+    var materials: [String: NotesMaterialRef] = [:]
     /// A new version could be written now (`LectureNotesRepository.source`).
     var canWrite = false
 
@@ -211,6 +213,7 @@ struct LectureNotesRequest: FetchKeyRequest {
             let courseID = lecture.courseID
             rows.course = try Course.find(courseID).fetchOne(db)
             rows.lectures = try Lecture.where { $0.courseID.eq(courseID) }.fetchAll(db)
+            rows.materials = try NotesMaterialRef.load(courseID: courseID, in: db)
         }
         rows.recordings = try Recording.where { $0.lectureID.eq(reference) }.order { $0.startedAt.asc() }.fetchAll(db)
         rows.range = try LectureSlides.current(lectureID: id, in: db)

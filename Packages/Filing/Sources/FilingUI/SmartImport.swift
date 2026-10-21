@@ -101,7 +101,13 @@ private struct DragLayer: View {
             if let ghost = center.previewGhost, let drag = center.drag {
                 DropGhostPreview(ghost: ghost, location: drag.location)
             }
-            if let drag = center.drag, !drag.isOverRow, !drag.predictions.isEmpty {
+            if let drag = center.drag, !drag.isOverRow, let material = drag.material {
+                // mt: a book or paper: "Materials · Book".
+                MaterialHUD(prediction: material)
+                    .offset(x: drag.anchor.x, y: drag.anchor.y)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            } else if let drag = center.drag, !drag.isOverRow, !drag.predictions.isEmpty {
                 DropHUD(predictions: drag.predictions, targeted: drag.targeted) { target, frame in
                     center.hudFrames[target] = frame
                 }
@@ -111,6 +117,7 @@ private struct DragLayer: View {
             }
         }
         .animation(.smooth(duration: 0.18), value: center.drag?.predictions.isEmpty)
+        .animation(.smooth(duration: 0.18), value: center.drag?.material == nil)
     }
 }
 

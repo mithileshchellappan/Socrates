@@ -360,12 +360,16 @@ struct NotesChip: View {
     enum Kind {
         case slide
         case moment
+        /// mt: a course material's page (`book` + "§6.2 · p. 214", secondary on the quiet fill).
+        case material
     }
 
     let text: String
     var kind: Kind = .slide
     /// 10.5 at 100 %.
     var size: CGFloat = 10.5
+    /// The material's title (a material chip).
+    var help: String?
     let action: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
@@ -376,6 +380,9 @@ struct NotesChip: View {
                 if kind == .moment {
                     Image(systemName: "play.fill")
                         .imageScale(.small)
+                } else if kind == .material {
+                    Image(systemName: "book")
+                        .font(.system(size: size - 1.5))
                 }
                 Text(verbatim: text)
                     .monospacedDigit()
@@ -387,7 +394,8 @@ struct NotesChip: View {
             .background(kind == .moment ? AnyShapeStyle(Color.accentSoft(colorScheme)) : AnyShapeStyle(.quaternary), in: Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(Text(verbatim: text))
+        .help(Text(verbatim: help ?? ""))
+        .accessibilityLabel(Text(verbatim: help.map { "\($0), \(text)" } ?? text))
     }
 }
 

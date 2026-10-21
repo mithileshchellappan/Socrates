@@ -220,6 +220,9 @@ public struct AgentCatalog: Sendable, Hashable {
         // md: the kept documents, one line each (≤ 1,600 characters).
         lines += try DocumentCatalog.lines(db: db) { tokens.token($0) }
 
+        // mt: the courses' materials, one line each (≤ 1,600 characters).
+        lines += try MaterialCatalog.lines(db: db) { tokens.token($0) }
+
         // mc: the study coach (measured at the start of today, so it changes only with the data).
         lines += try CoachCatalog.lines(db: db, now: now) { tokens.token($0) }
 

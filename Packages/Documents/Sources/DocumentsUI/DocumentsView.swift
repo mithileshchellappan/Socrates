@@ -19,7 +19,8 @@ public struct DocumentsView: View {
     let page: Int?
     let launch: DocumentsLaunch
 
-    @FetchAll(StudyDocument.order { $0.addedAt.desc() }) private var documents
+    /// The student's own documents only (mt: course materials' files are role `material`).
+    @FetchAll(StudyDocument.where { $0.role.eq(DocumentRole.personal) }.order { $0.addedAt.desc() }) private var documents
     @FetchAll(Course.order { ($0.sortOrder, $0.name) }) private var courses
     @Environment(\.documentActions) private var actions
     @Environment(\.studyServices) private var services

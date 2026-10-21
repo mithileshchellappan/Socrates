@@ -572,9 +572,9 @@ private struct TopicRow: View {
             if coach != nil {
                 Button("Practice This Topic") { practice() }
             }
-            if let reading, let url = reading.url {
+            if let reading, reading.url != nil || reading.materialID != nil {
                 Button {
-                    openURL(url)
+                    ReadingOpening.open(reading, openURL: openURL, openDestination: openDestination)
                 } label: {
                     Text("Read \(reading.section.isEmpty ? reading.title : reading.section) · \(DurationText.string(minutes: reading.minutes))")
                 }
@@ -604,6 +604,20 @@ private struct TopicRow: View {
     }
 }
 
+/// mt: a reading opens its page in the browser, or (a section of a course book) the reader at
+/// the section.
+@MainActor
+enum ReadingOpening {
+    static func open(_ reading: StudyReading, openURL: OpenURLAction, openDestination: OpenDestinationAction) {
+        if let materialID = reading.materialID {
+            let link = MaterialLink.first(in: reading.sources) ?? MaterialLink(id: materialID, page: nil)
+            openDestination(link.destination)
+        } else if let url = reading.url {
+            openURL(url)
+        }
+    }
+}
+
 /// [book | title + source glyph | "Slides 5–21" | "1 h 15 min"]; a click opens it.
 private struct ReadingRow: View {
     let reading: StudyReading
@@ -611,6 +625,7 @@ private struct ReadingRow: View {
     let isHovered: Bool
 
     @Environment(\.openURL) private var openURL
+    @Environment(\.openDestination) private var openDestination
 
     var body: some View {
         HStack(spacing: 10) {
@@ -644,7 +659,7 @@ private struct ReadingRow: View {
         .rowHover(isHovered)
         .contentShape(Rectangle())
         .onTapGesture {
-            if let url = reading.url { openURL(url) }
+            ReadingOpening.open(reading, openURL: openURL, openDestination: openDestination)
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)

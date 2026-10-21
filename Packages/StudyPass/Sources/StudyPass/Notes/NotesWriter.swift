@@ -45,6 +45,8 @@ public struct NotesWriter: Sendable {
     let services: StudyServices
     let client: ClaudeClient?
     let figureCheck: (any NotesFigureChecking)?
+    /// mt: the course materials' passages (Search's retriever): ≤ 3 book passages per version.
+    let passages: (any MaterialPassages)?
     let now: @Sendable () -> Date
 
     /// The body is written at most this often while it streams.
@@ -55,11 +57,12 @@ public struct NotesWriter: Sendable {
 
     public init(
         services: StudyServices, client: ClaudeClient?, figureCheck: (any NotesFigureChecking)? = nil,
-        now: @escaping @Sendable () -> Date = { Date() }
+        passages: (any MaterialPassages)? = nil, now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
         self.client = client
         self.figureCheck = figureCheck
+        self.passages = passages
         self.now = now
     }
 
@@ -116,7 +119,7 @@ public struct NotesWriter: Sendable {
         }
 
         let resuming = notes.hasText
-        guard let material = try await services.database.read({ db in try NotesMaterial.load(notes, keepSections: resuming, in: db) }) else {
+        guard var material = try await services.database.read({ db in try NotesMaterial.load(notes, keepSections: resuming, in: db) }) else {
             let inputs = try await services.database.read { db in try LectureNotesRepository.inputs(lectureID: notes.lectureID, in: db) }
             Self.log.notice(
                 "Notes \(key, privacy: .public) wait for their material: nothing to write v\(notes.version, privacy: .public) from the \(notes.source.rawValue, privacy: .public) (lecture \(ChatCitation.key(notes.lectureID), privacy: .public): \(inputs.summary, privacy: .public))"
@@ -124,7 +127,12 @@ public struct NotesWriter: Sendable {
             try await repository.waitForMaterial(notesID)
             return .waitingForMaterial
         }
-        let system = NotesPrompt.system(german: material.isGerman)
+        // mt: the course book's passages for the sections the lecture covers (on device).
+        if let passages {
+            material.book = await NotesBookPassages.pick(material, passages: passages, database: services.database)
+            material.chips.materialMarkers = Set(material.book.map(\.cite))
+        }
+        let system = NotesPrompt.system(german: material.isGerman, book: !material.book.isEmpty)
         let hash = NotesPrompt.inputHash(
             system: system, text: NotesPrompt.text(material, kept: nil, remaining: material.sections), imagePages: material.imagePages,
             deck: material.deck

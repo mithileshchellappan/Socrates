@@ -324,6 +324,9 @@ enum ReviewNoteLinks {
             // A chip without a recording key is on the lecture's first recording.
             let recording = recording ?? (lecture == model.lecture.id ? model.recordings.first?.id : nil)
             return open(.time(SourceRef(kind: .transcript, lectureID: lecture, recordingID: recording, time: seconds)), model: model)
+        case .material:
+            // mt: a book chip opens the reader (the notes' own handling).
+            return false
         }
     }
     #endif

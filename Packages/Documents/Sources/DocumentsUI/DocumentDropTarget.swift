@@ -69,18 +69,20 @@ private struct DocumentDropDelegate: DropDelegate {
 #endif
 
 /// What the Documents screen takes: `StudyDocument.acceptedTypes`, by the file's extension.
-enum DocumentFileTypes {
-    static func isAccepted(_ url: URL) -> Bool {
+public enum DocumentFileTypes {
+    public static func isAccepted(_ url: URL) -> Bool {
         url.isFileURL && StudyDocument.fileKind(forFileName: url.lastPathComponent) != nil
     }
 }
 
 /// The accent ring while accepted files hover (as `EmptyDropPrompt`'s): accent soft with a
-/// 1.5 pt accent border, 12 in from the reader's edges.
-struct DocumentDropRing: View {
+/// 1.5 pt accent border, 12 in from the reader's edges. Public for MaterialsUI (the shelf's ring).
+public struct DocumentDropRing: View {
     @Environment(\.colorScheme) private var colorScheme
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         shape
             .fill(Color.accentSoft(colorScheme))

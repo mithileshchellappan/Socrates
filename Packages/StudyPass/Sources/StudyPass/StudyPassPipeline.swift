@@ -109,12 +109,45 @@ public actor StudyPassPipeline {
     /// ln: lectures whose study pass the student re-ran (`rerun`): their next synthesis queues a
     /// new version of their notes (`queueAfterStudyPass(rerun: true)`).
     private var rerunNotes: Set<Lecture.ID> = []
+    /// mt: the course materials' passages (Search's retriever; nil: no cover units).
+    private var passages: (any MaterialPassages)?
+    /// mt: lectures whose notes wait for their cover unit (queued when it settles).
+    private var notesAfterCover: Set<Lecture.ID> = []
+    /// mt: the cover input gathered per lecture, by what it was gathered from.
+    private var coverCache: [Lecture.ID: (signature: String, input: CoverInput)] = [:]
 
-    public init(services: StudyServices, client: ClaudeClient?, now: @escaping @Sendable () -> Date = { Date() }) {
+    /// - Parameter passages: mt: the course materials' passages (Search's `MaterialRetriever`);
+    ///   nil: no `cover` units (an existing one stays as it is).
+    public init(
+        services: StudyServices, client: ClaudeClient?, passages: (any MaterialPassages)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.services = services
         self.client = client
+        self.passages = passages
         self.now = now
         writer = StudyWriter(database: services.database, store: services.records)
+    }
+
+    /// mt: sets the course materials' passages after launch (the app makes the retriever later).
+    public func setMaterialPassages(_ passages: (any MaterialPassages)?) {
+        self.passages = passages
+        coverCache = [:]
+    }
+
+    /// mt: a course's materials got their sections (`MaterialLibrary`'s `onSectionsReady`): its
+    /// lectures with a written synthesis get their `cover` unit, one Haiku call each, in the
+    /// background, one at a time. Returns at once.
+    public func queueCoverBackfill(courseID: Course.ID) async {
+        let lectures = (try? await services.database.read { db in
+            try Lecture.where { $0.courseID.eq(courseID) }.select(\.id).fetchAll(db)
+        }) ?? []
+        for id in lectures {
+            coverCache[id] = nil
+            settled[id] = nil
+            transient.remove(id)
+        }
+        Task { await self.wake() }
     }
 
     /// `settled` across launches: `AppPaths.caches/StudyPass/settled.json`.
@@ -370,7 +403,14 @@ public actor StudyPassPipeline {
                 StudyPass.log.error("Study pass planning failed: \(String(describing: error), privacy: .public)")
                 return .finishedForNow
             }
-            guard case let (material, rows, units)? = planned else { return .finished }
+            guard case let (material, rows, units)? = planned else {
+                await flushNotesAfterCover(lectureID)
+                return .finished
+            }
+            // mt: notes that waited for a cover unit that will not run now (skipped, failed, gone).
+            if notesAfterCover.contains(lectureID), !units.contains(where: { $0.0.stage == .cover && $0.0.state == .pending && !$0.1.skip }) {
+                await flushNotesAfterCover(lectureID)
+            }
             guard case let (unit, spec)? = Self.next(units, blocked: blockedStages(at: date)) else {
                 if Self.next(units) != nil { return .blocked }
                 generationStart[lectureID] = nil
@@ -430,7 +470,8 @@ public actor StudyPassPipeline {
             return (material, try PassRows.load(lectureID, in: db))
         }
         guard case let (material, rows)? = loaded else { return nil }
-        let specs = StudyPlanner.plan(material, rows: rows)
+        let cover = try await coverPlan(material, rows: rows)
+        let specs = StudyPlanner.plan(material, rows: rows, cover: cover)
         let store = services.records
         let units = try await services.database.write { db in
             try StudyPlanner.reconcile(specs, lectureID: lectureID, in: db, store: store, now: date)
@@ -439,7 +480,9 @@ public actor StudyPassPipeline {
     }
 
     /// The next unit to run: the first pending read; the synthesis once no read is pending;
-    /// research once the synthesis is not pending. Nil when that unit's stage is `blocked`.
+    /// research once the synthesis is not pending. Nil when that unit's stage is `blocked`. mt:
+    /// the cover unit once the synthesis is not pending, research once it is not pending either
+    /// (book first).
     static func next(_ units: [(StudyUnit, UnitSpec)], blocked: Set<StudyStage> = []) -> (StudyUnit, UnitSpec)? {
         let pending = units.filter { $0.0.state == .pending && !$0.1.skip }
         if let read = pending.first(where: { $0.0.stage == .read }) { return blocked.contains(.read) ? nil : read }
@@ -447,7 +490,9 @@ public actor StudyPassPipeline {
             return blocked.contains(.synthesize) ? nil : synthesis
         }
         let synthesisPending = units.contains { $0.0.stage == .synthesize && $0.0.state == .pending }
-        guard !synthesisPending, !blocked.contains(.research) else { return nil }
+        guard !synthesisPending else { return nil }
+        if let cover = pending.first(where: { $0.0.stage == .cover }) { return blocked.contains(.cover) ? nil : cover }
+        guard !blocked.contains(.research) else { return nil }
         return pending.first { $0.0.stage == .research }
     }
 
@@ -493,6 +538,10 @@ public actor StudyPassPipeline {
                 model: ResearchStage.model, maxTokens: ResearchStage.maxTokens, effort: ResearchStage.effort,
                 messages: [.user(prompt.text)], system: system, tools: ResearchStage.tools,
                 outputFormat: .jsonSchema(prompt.schema))
+        case .cover:
+            request = MessageRequest(
+                model: CoverStage.model, maxTokens: CoverStage.maxTokens, effort: CoverStage.effort,
+                messages: [.user(prompt.text)], system: system, outputFormat: .jsonSchema(prompt.schema))
         }
         let firstMaxTokens = request.maxTokens
         var apiCallID: APICall.ID?
@@ -512,6 +561,9 @@ public actor StudyPassPipeline {
                 case .research(let pick):
                     let answer = try message.decodeJSON(ResearchStage.Answer.self)
                     result = await ResearchStage.verify(answer, pick: pick, material: material, check: webCheck, apiCallID: apiCallID)
+                case .cover(let input):
+                    let answer = try message.decodeJSON(CoverStage.Answer.self)
+                    result = input.map { CoverStage.verify(answer, input: $0, material: material, apiCallID: apiCallID) } ?? UnitResult()
                 }
                 if stopped || Task.isCancelled { return .stopped }
                 let written = try await writer.finish(unit.id, expectedHash: unit.inputHash, result: result, apiCallID: apiCallID, now: now())
@@ -523,7 +575,18 @@ public actor StudyPassPipeline {
                 }
                 // ln: the lecture's notes are written after its synthesis (the first time, once more
                 // when they came from the slides alone, or after the student re-ran the pass).
-                if case .synthesize = spec.work { await queueNotes(material.lecture.id) }
+                // mt: when the lecture gets a cover unit, its notes wait for it (their book passages).
+                if case .synthesize = spec.work {
+                    if await coverFollows(material.lecture) {
+                        notesAfterCover.insert(material.lecture.id)
+                    } else {
+                        await queueNotes(material.lecture.id)
+                    }
+                }
+                if case .cover = spec.work {
+                    notesAfterCover.remove(material.lecture.id)
+                    await queueNotes(material.lecture.id)
+                }
                 // ma: a synthesis with said-in-class admin or deadline rows is a new fact for the
                 // app agent's triage (dates, rooms, rules said in class); one event per version.
                 if case .synthesize = spec.work,
@@ -586,6 +649,61 @@ public actor StudyPassPipeline {
                 return .failed
             }
         }
+    }
+
+    // MARK: - Cover (mt)
+
+    /// Whether a lecture's `cover` unit will be planned (a retriever and a coverable material).
+    private func coverFollows(_ lecture: Lecture) async -> Bool {
+        guard passages != nil else { return false }
+        let courseID = lecture.courseID
+        let coverable = (try? await services.database.read { db in try MaterialRepository.coverable(courseID: courseID, in: db) }) ?? []
+        return !coverable.isEmpty
+    }
+
+    private func flushNotesAfterCover(_ lectureID: Lecture.ID) async {
+        guard notesAfterCover.remove(lectureID) != nil else { return }
+        await queueNotes(lectureID)
+    }
+
+    /// The lecture's cover unit: none, the existing one kept (no retriever), or its input
+    /// gathered on device (cached while the topics and the course's materials stay the same).
+    func coverPlan(_ material: LectureMaterial, rows: PassRows) async throws -> CoverPlan {
+        let existing = rows.units(.cover).first
+        guard let passages else { return existing.map { .keep($0) } ?? .none }
+        let topics = rows.annotations(.topic, of: .synthesize)
+        guard !topics.isEmpty else { return .none }
+        let courseID = material.lecture.courseID
+        let loaded = try await services.database.read { db in
+            let coverable = try MaterialRepository.coverable(courseID: courseID, in: db)
+            var sections: [CourseMaterial.ID: [MaterialSection]] = [:]
+            for item in coverable { sections[item.id] = try MaterialRepository.sections(of: item.id, in: db) }
+            return (coverable, sections)
+        }
+        let (coverable, sections) = loaded
+        guard !coverable.isEmpty else { return .none }
+        let signature = (topics.map { "\($0.id)|\($0.body)|\($0.pageNumber ?? 0)-\($0.lastPage ?? 0)" }
+            + coverable.map { "\($0.id)|\($0.updatedAt.timeIntervalSince1970)|\(sections[$0.id]?.count ?? 0)" })
+            .joined(separator: "\n")
+        if let cached = coverCache[material.lecture.id], cached.signature == signature { return .input(cached.input) }
+        var summaries: [Int: String] = [:]
+        for row in rows.annotations(.summary, of: .read) {
+            if let page = row.pageNumber, summaries[page] == nil { summaries[page] = row.body }
+        }
+        let database = services.database
+        let input = try await CoverInput.gather(
+            material: material, rows: rows, coverable: coverable, sections: sections, summaries: summaries, passages: passages,
+            openings: { item, section in
+                guard let documentID = item.documentID else { return "" }
+                let page = section.firstPage
+                return (try? await database.read { db in
+                    try StudyDocumentPage.where { $0.documentID.eq(documentID) && $0.pageNumber.eq(page) }.select(\.text).fetchOne(db)
+                }) ?? ""
+            }
+        )
+        guard let input else { return .none }
+        coverCache[material.lecture.id] = (signature, input)
+        return .input(input)
     }
 
     /// ln: `LectureNotesRepository.queueAfterStudyPass` once a synthesis unit is written.

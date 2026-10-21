@@ -8,6 +8,7 @@ import Foundation
 import Filing
 import GRDB
 import MailIntelligence
+import Materials
 import Search
 import StudyCore
 import StudyPass
@@ -50,6 +51,9 @@ public actor AppAgent {
     /// md: the app's document bank (the Mac; nil: none). The panel's `keep_document` reaches it
     /// through `specs(…, documents:)`; the queue's `document` tasks need only the rows.
     let documents: DocumentBank?
+    /// mt: the app's material library (the Mac; nil: none): add_material's Undo, the card's
+    /// sections reaching the cover backfill.
+    let materials: MaterialLibrary?
     let now: @Sendable () -> Date
 
     /// The activity log and write path of every automatic change.
@@ -82,6 +86,7 @@ public actor AppAgent {
         filing: FilingService? = nil,
         advisor: (any FilingAdvisor)? = nil,
         documents: DocumentBank? = nil,
+        materials: MaterialLibrary? = nil,
         notesWriter: NotesWriter? = nil,
         wakeProcessing: @escaping @Sendable () async -> Void = {},
         now: @escaping @Sendable () -> Date = { Date() }
@@ -96,16 +101,18 @@ public actor AppAgent {
         self.filing = filing
         self.advisor = advisor
         self.documents = documents
+        self.materials = materials
         self.now = now
         let changeLog = ChangeLog(
-            services: services, memory: memory, filing: filing, documents: documents, wakeProcessing: wakeProcessing, now: now
+            services: services, memory: memory, filing: filing, documents: documents, materials: materials, wakeProcessing: wakeProcessing,
+            now: now
         )
         self.changeLog = changeLog
         let quit = QuitSignal()
         self.quit = quit
         queue = AgentTaskQueue(
             services: services, client: client, runtime: runtime, studyPass: studyPass, coach: coach, notesWriter: notesWriter,
-            taskSpec: specs.task, quit: quit, now: now
+            materials: materials, taskSpec: specs.task, quit: quit, now: now
         )
         triage = FactTriage(services: services, client: client, changeLog: changeLog, quit: quit, now: now)
         reminders = ReminderCenter(services: services, changeLog: changeLog, now: now)
@@ -132,12 +139,12 @@ public actor AppAgent {
     /// or their Undo queued alignment.
     public static func specs(
         services: StudyServices, search: SearchEngine, drafter: ReplyDrafter?, memory: DeadlineMemory, coach: CoachEngine? = nil,
-        documents: DocumentBank? = nil, wakeProcessing: @escaping @Sendable () async -> Void = {},
+        documents: DocumentBank? = nil, materials: MaterialLibrary? = nil, wakeProcessing: @escaping @Sendable () async -> Void = {},
         now: @escaping @Sendable () -> Date = { Date() }
     ) -> Specs {
         let deps = AppAgentChat.Services(
             services: services, search: search, drafter: drafter, memory: memory, coach: coach, documents: documents,
-            wakeProcessing: wakeProcessing, now: now
+            materials: materials, wakeProcessing: wakeProcessing, now: now
         )
         return Specs(
             additional: [.app: { try AppAgentChat.spec(deps) }],
@@ -189,6 +196,8 @@ public actor AppAgent {
         // mail-, (md) documents- or web-group task's result, or (md) a file sent as its text (Word,
         // RTF, Pages, a long PDF's first pages). A web task it spawns then gets no input summary.
         var untrusted = (history.compactMap(\.context).flatMap(\.attachments) + whole).contains(where: AttachmentBlocks.sentAsText)
+        // mt: a passage of a course material the student took to the panel is material text.
+        if context.materialPassage != nil || history.contains(where: { $0.context?.context?.materialPassage != nil }) { untrusted = true }
         if let conversation {
             let repository = AgentTaskRepository(store: services.records)
             for task in try await repository.unreported(parent: conversation) {
@@ -534,7 +543,7 @@ public actor AppAgent {
     /// Whether a finished task's result is untrusted text: it had mail, (md) documents or web pages
     /// to read (a fetched page can steer what a web task answers).
     static func carriesUntrustedResult(_ task: AgentTask) -> Bool {
-        let untrusted: [AgentToolGroup] = [.mail, .documents, .web]
+        let untrusted: [AgentToolGroup] = [.mail, .documents, .materials, .web]
         return task.finishedAt != nil && task.tools.contains(where: untrusted.contains) && !(task.result ?? "").isEmpty
     }
 

@@ -117,6 +117,8 @@ struct NotesAnswerView: View {
             URL(string: "socrates-chip://slide/\(lecture.uuidString)/\(page)")
         case .moment(let lecture, let recording, let seconds):
             URL(string: "socrates-chip://moment/\(lecture.uuidString)/\(Int(seconds))/\(recording?.uuidString ?? "-")")
+        case .material(let id, let page, _, _):
+            URL(string: "socrates-chip://material/\(id.uuidString)/\(page.map(String.init) ?? "-")")
         }
     }
 
@@ -131,6 +133,10 @@ struct NotesAnswerView: View {
             guard parts.count >= 2, let seconds = Int(parts[1]) else { return nil }
             let recording = parts.count >= 3 ? UUID(uuidString: parts[2]) : nil
             return .moment(lecture: lecture, recording: recording, seconds: Double(seconds))
+        case "material":
+            guard let ref = chips.materials.values.first(where: { $0.material.id == lecture }) else { return nil }
+            let page = parts.count >= 2 ? Int(parts[1]) : nil
+            return .material(id: lecture, page: page, label: ref.label(page: page), title: ref.material.title)
         default:
             return nil
         }

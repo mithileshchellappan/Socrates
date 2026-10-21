@@ -19,9 +19,9 @@ extension SearchHit {
             .notes(course.map { .course($0) } ?? .all, note: id)
         case .document(let id, let page):
             .documents(id, page: page)
-        case .material:
-            // mt: the reader (`StudyDestination.material`, workstream B) is not routed yet.
-            nil
+        case .material(let id, let page):
+            // mt: the reader at the page (a link's hit opens its page in the browser: `url`).
+            .material(id, page: page)
         case nil:
             nil
         }

@@ -77,8 +77,9 @@ public actor SearchIndexer {
                     SELECT id, lecture_id, layer, kind, deck_id, page_number, body, detail, hidden_at FROM annotation
                     """)
             case "document":
-                // The summary task writes title, summary, facts…: none of it is in a chunk.
-                SQLRequest<Row>(sql: "SELECT id, text_state, language FROM document")
+                // The summary task writes title, summary, facts…: none of it is in a chunk (mt:
+                // the role decides the chunks' kind).
+                SQLRequest<Row>(sql: "SELECT id, text_state, language, role FROM document")
             default:
                 SQLRequest<Row>(sql: "SELECT * FROM \"\(table)\"")
             }
@@ -373,11 +374,15 @@ public actor SearchIndexer {
         let reference = StudyDocument.ID?.some(documentID)
         guard let (document, pages) = source else {
             try await deleteChunks(kind: .document) { $0.documentID.eq(reference) }
+            try await deleteChunks(kind: .material) { $0.documentID.eq(reference) }
             return 0
         }
         let version = pages.map(\.updatedAt).max() ?? document.updatedAt
         let drafts = builder.documentChunks(document: document, pages: pages, version: version, now: now())
-        try await replace(drafts, kind: .document) { $0.documentID.eq(reference) }
+        // mt: a document's chunks are of one kind (its role's); the other kind's go.
+        let kind = ChunkBuilder.chunkKind(of: document)
+        try await deleteChunks(kind: kind == .material ? .document : .material) { $0.documentID.eq(reference) }
+        try await replace(drafts, kind: kind) { $0.documentID.eq(reference) }
         return drafts.count
     }
 

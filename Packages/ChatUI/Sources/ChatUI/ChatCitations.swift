@@ -32,6 +32,8 @@ struct CitationRows: Equatable, Sendable {
     var lectures: [String: [LectureRow]] = [:]
     /// md: kept documents by key, the same way (`DocumentCitations`).
     var documents: [String: [DocumentCitationRow]] = [:]
+    /// mt: course materials by key, the same way (`MaterialCitations`).
+    var materials: [String: [MaterialCitationRow]] = [:]
     var isLoaded = false
 
     static func load(_ database: any DatabaseReader) async throws -> CitationRows {
@@ -71,6 +73,7 @@ struct CitationRows: Equatable, Sendable {
                 ))
             }
             rows.documents = try DocumentCitations.rows(db)
+            rows.materials = try MaterialCitations.rows(db)
             return rows
         }
     }
@@ -84,11 +87,14 @@ enum CheckedCitation: Hashable, Sendable {
     case web(URL)
     /// md: a kept document at a page (nil: the document); its title is the chip's help.
     case document(id: StudyDocument.ID, page: Int?, title: String)
+    /// mt: a course material at a PDF page (nil: the material); `label` the chip's ("§6.2 · p.
+    /// 214"), its title the chip's help.
+    case material(id: CourseMaterial.ID, page: Int?, label: String, title: String)
 
     var lectureID: Lecture.ID? {
         switch self {
         case .slide(let id, _, _), .moment(let id, _, _, _): id
-        case .web, .document: nil
+        case .web, .document, .material: nil
         }
     }
 }
@@ -132,9 +138,8 @@ struct CitationCheck: Sendable {
             return .failure(DropError(.changeMarker))
         case .document(let key, let page):
             return DocumentCitations.check(key: key, page: page, rows: rows)
-        case .material:
-            // mt: the material chip (workstream B) checks the key and page against the rows.
-            return .failure(DropError(.unknownMaterial))
+        case .material(let key, let page):
+            return MaterialCitations.check(key: key, page: page, rows: rows)
         case .web(let url):
             guard let key = Self.normalized(url), let found = webPages[key] else { return .failure(DropError(.pageNotInResults)) }
             return .success(.web(found))
@@ -263,6 +268,8 @@ struct AnswerText: Equatable {
         case web
         /// md: `doc.on.doc` + "p. 12" (or the clipped title), as web's; opens the Documents screen.
         case document
+        /// mt: `book` + "§6.2 · p. 214" (or a link's host), as web's; opens the material.
+        case material
     }
 
     struct Chip: Equatable {
@@ -369,6 +376,8 @@ struct AnswerText: Equatable {
             return host.replacingOccurrences(of: "-", with: "\u{2011}")
         case .document(_, let page, let title):
             return DocumentCitations.label(page: page, title: title)
+        case .material(_, _, let label, _):
+            return label
         }
     }
 
@@ -378,6 +387,7 @@ struct AnswerText: Equatable {
         case .moment: .time
         case .web: .web
         case .document: .document
+        case .material: .material
         }
     }
 
@@ -389,6 +399,7 @@ struct AnswerText: Equatable {
             .lecture(id, ReviewTarget(time: Double(seconds), plays: true, recordingID: recording))
         case .web: nil
         case .document(let id, let page, _): .documents(id, page: page)
+        case .material(let id, let page, _, _): .material(id, page: page)
         }
     }
 
@@ -416,6 +427,8 @@ struct AnswerText: Equatable {
             url
         case .document(let id, let page, _):
             DocumentCitations.link(id: id, page: page)
+        case .material(let id, let page, _, _):
+            MaterialCitations.link(id: id, page: page)
         }
     }
 
@@ -432,6 +445,8 @@ struct AnswerText: Equatable {
             return destination(.moment(lecture: id, number: nil, recording: UUID(uuidString: parts[1]), seconds: seconds))
         case "doc":
             return DocumentCitations.destination(linkParts: parts)
+        case "mat":
+            return MaterialCitations.destination(linkParts: parts)
         default:
             return nil
         }
@@ -491,10 +506,14 @@ struct AnswerText: Equatable {
         label.link = link(chip.citation)
         let run = ChipRun(index: chip.index, style: chip.style)
         switch chip.style {
-        case .web, .document:
+        case .web, .document, .material:
             var glyph = AttributedString(nbsp)
             glyph.link = label.link
-            let symbol = chip.style == .web ? "globe" : DocumentCitations.glyph
+            let symbol = switch chip.style {
+            case .web: "globe"
+            case .material: MaterialCitations.glyph
+            default: DocumentCitations.glyph
+            }
             return Text("\(Text(glyph))\(Text(Image(systemName: symbol)))\(Text(label))")
                 .font(.system(size: 10.5))
                 .baselineOffset(1)
@@ -577,14 +596,14 @@ struct AnswerChipRenderer: TextRenderer {
     private func background(_ style: AnswerText.Style) -> GraphicsContext.Shading {
         switch style {
         case .time: .color(Color.accentSoft(colorScheme))
-        case .slide, .web, .document: .color(Color(red: 120 / 255, green: 120 / 255, blue: 128 / 255).opacity(colorScheme == .dark ? 0.20 : 0.10))
+        case .slide, .web, .document, .material: .color(Color(red: 120 / 255, green: 120 / 255, blue: 128 / 255).opacity(colorScheme == .dark ? 0.20 : 0.10))
         }
     }
 
     private func foreground(_ style: AnswerText.Style) -> GraphicsContext.Shading {
         switch style {
         case .time: .color(.accentColor)
-        case .slide, .web, .document: .color(.secondary)
+        case .slide, .web, .document, .material: .color(.secondary)
         }
     }
 }

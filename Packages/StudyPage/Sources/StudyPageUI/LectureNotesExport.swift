@@ -32,10 +32,29 @@ public enum LectureNotesExport {
         return try await services.records.save(note)
     }
 
-    /// Copy as Markdown (⋯): the source with chips as their labels ("S13", "37:59"), without
-    /// `note` fences.
-    public static func markdown(_ notes: LectureNotes) -> String {
-        LectureNotesText.readable(LectureNotesFormat.withoutNoteFences(notes.body))
+    /// Copy as Markdown (⋯): the source with chips as their labels ("S13", "37:59"; mt: a book
+    /// chip "§6.2 · p. 214" from `materials`, the course's by key), without `note` fences.
+    public static func markdown(_ notes: LectureNotes, materials: [String: NotesMaterialRef] = [:]) -> String {
+        LectureNotesText.readable(withMaterialLabels(LectureNotesFormat.withoutNoteFences(notes.body), materials: materials))
+    }
+
+    /// The text with every `[[mat …]]` marker of a known material as its chip's label.
+    static func withMaterialLabels(_ text: String, materials: [String: NotesMaterialRef]) -> String {
+        guard text.contains("[[mat "), !materials.isEmpty else { return text }
+        var result = ""
+        for piece in ChatCitation.pieces(of: text) {
+            switch piece {
+            case .text(let words):
+                result += words
+            case .citation(.material(let key, let page)):
+                if let ref = materials[key.lowercased()] {
+                    result += ref.label(page: page).replacingOccurrences(of: "\u{00A0}", with: " ")
+                }
+            case .citation(let citation):
+                result += citation.marker
+            }
+        }
+        return result
     }
 
     @MainActor
@@ -55,7 +74,7 @@ public enum LectureNotesExport {
             for other in rows.lectures { lectures[ChatCitation.key(other.id)] = .init(id: other.id, number: other.number) }
             var recordings: [String: Recording.ID] = [:]
             for recording in rows.recordings { recordings[ChatCitation.key(recording.id)] = recording.id }
-            chips = NotesChipResolver(lectureID: lecture.id, lectures: lectures, recordings: recordings)
+            chips = NotesChipResolver(lectureID: lecture.id, lectures: lectures, recordings: recordings, materials: rows.materials)
         }
 
         mutating func blocks() async throws -> [NoteBlock] {
@@ -141,6 +160,9 @@ public enum LectureNotesExport {
                             type: .timeRef, text: TimeText.clock(seconds),
                             source: SourceRef(kind: .transcript, lectureID: lecture, recordingID: recording, time: seconds)
                         ))
+                    case .material(_, _, let label, _):
+                        // mt: a book chip stays its readable label in the note.
+                        result.append(NoteInline(text: label.replacingOccurrences(of: "\u{00A0}", with: " "), marks: [.ai]))
                     }
                 case .math(let latex):
                     if let media = try await mediaImage(MathImageView(latex: latex, size: 15, display: false), width: nil) {

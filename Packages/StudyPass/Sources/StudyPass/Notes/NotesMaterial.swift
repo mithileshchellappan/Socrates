@@ -83,6 +83,9 @@ struct NotesMaterial: Sendable {
     var imagePages: [Int]
     var language: String
     var chips: NotesChips
+    /// mt (docs/plan-materials.md §3.5): ≤ 3 passages of the course's book for the sections the
+    /// lecture covers (picked on device, `NotesBookPassages`); in the input hash.
+    var book: [NotesBookPassage] = []
 
     var isGerman: Bool { language.lowercased().hasPrefix("de") }
     /// The transcript is of more than one recording (each part has its own moment chip).

@@ -8,7 +8,8 @@ extension ChunkBuilder {
     static let documentWindow = 600
 
     /// A kept document's pages cut into windows of at most `documentWindow` characters at
-    /// paragraph or sentence ends, each a chunk of kind `document` with its page (`page_number`),
+    /// paragraph or sentence ends, each a chunk of kind `document` (mt: `material` for a document
+    /// of role `material`, a course material's file or a link's snapshot) with its page (`page_number`),
     /// `source_id` = `document_id` = the document, and never a `course_id` (a course delete must
     /// not cascade them, nor a re-cut fail on a course that is gone; the document's courses are
     /// `document.course_ids`).
@@ -16,11 +17,12 @@ extension ChunkBuilder {
         let known = document.language.prefix(2).lowercased()
         let stated = known == "de" || known == "en"
         var drafts: [ChunkRow] = []
+        let kind = Self.chunkKind(of: document)
         for page in pages.sorted(by: { $0.pageNumber < $1.pageNumber }) {
             for text in Self.windows(of: page.text) {
                 let language = stated ? known : lemmatizer.language(of: text, fallback: "en")
                 drafts.append(ChunkRow(
-                    kind: .document,
+                    kind: kind,
                     sourceID: document.id,
                     pageNumber: page.pageNumber,
                     documentID: document.id,
@@ -33,6 +35,11 @@ extension ChunkBuilder {
             }
         }
         return drafts
+    }
+
+    /// mt: a course material's pages are chunks of kind `material`, the student's own documents `document`.
+    static func chunkKind(of document: StudyDocument) -> SearchChunkKind {
+        document.role == .material ? .material : .document
     }
 
     /// A page's text as windows of at most `documentWindow` characters: whole paragraphs while

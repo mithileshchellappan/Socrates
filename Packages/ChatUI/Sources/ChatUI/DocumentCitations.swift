@@ -27,7 +27,8 @@ enum DocumentCitations {
     /// The kept documents by key (`ChatCitation.key`); a key two documents share names neither.
     static func rows(_ db: Database) throws -> [String: [DocumentCitationRow]] {
         var rows: [String: [DocumentCitationRow]] = [:]
-        for document in try StudyDocument.all.fetchAll(db) {
+        // The student's own documents (mt: a material's file is cited as `[[mat …]]`).
+        for document in try StudyDocument.where({ $0.role.eq(DocumentRole.personal) }).fetchAll(db) {
             rows[document.key, default: []].append(DocumentCitationRow(id: document.id, title: document.title, pageCount: document.pageCount))
         }
         return rows
@@ -65,11 +66,14 @@ enum DocumentCitations {
     }
 
     /// The help over a run of text with document chips: their titles (a chip is a run of one
-    /// `Text`, which has no help of its own).
+    /// `Text`, which has no help of its own). mt: material chips' titles too.
     static func help(_ answer: AnswerText) -> String? {
         var titles: [String] = []
         for chip in answer.chips {
             guard case .document(_, _, let title) = chip.citation, !titles.contains(title) else { continue }
+            titles.append(title)
+        }
+        for title in MaterialCitations.titles(answer) where !titles.contains(title) {
             titles.append(title)
         }
         return titles.isEmpty ? nil : titles.joined(separator: "\n")

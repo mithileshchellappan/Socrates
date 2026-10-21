@@ -1,15 +1,53 @@
 import Foundation
 import StudyCore
+import StudyUI
 
-/// Where a chip in the notes points (a slide or a moment of a lecture).
+/// Where a chip in the notes points (a slide or a moment of a lecture; mt: a page of a course
+/// material, its chip "§6.2 · p. 214" with the material's title as help).
 public enum NotesChipTarget: Hashable, Sendable {
     case slide(lecture: Lecture.ID, page: Int)
     case moment(lecture: Lecture.ID, recording: Recording.ID?, seconds: Double)
+    case material(id: CourseMaterial.ID, page: Int?, label: String, title: String)
 
-    public var lectureID: Lecture.ID {
+    /// The lecture a slide or moment chip names (nil: a material's).
+    public var lectureID: Lecture.ID? {
         switch self {
         case .slide(let lecture, _), .moment(let lecture, _, _): lecture
+        case .material: nil
         }
+    }
+}
+
+/// A course material as the notes' `[[mat …]]` chips are checked and labelled (mt): the key
+/// names it, a page must lie within it, its sections give "§6.2".
+public struct NotesMaterialRef: Equatable, Sendable {
+    public var material: CourseMaterial
+    public var sections: [MaterialSection]
+
+    public init(material: CourseMaterial, sections: [MaterialSection]) {
+        self.material = material
+        self.sections = sections
+    }
+
+    /// "§6.2 · p. 214" (non-breaking).
+    public func label(page: Int?) -> String {
+        MaterialText.citeLabel(section: page.flatMap { MaterialSection.holding(page: $0, in: sections) }, material: material, pdfPage: page)
+    }
+
+    /// The course's materials by key; a key two share names neither (left out).
+    public static func load(courseID: Course.ID, in db: Database) throws -> [String: NotesMaterialRef] {
+        let materials = try MaterialRepository.materials(of: courseID, in: db)
+        guard !materials.isEmpty else { return [:] }
+        let ids = materials.map(\.id)
+        let sections = try MaterialSection.where { $0.materialID.in(ids) }.order { $0.sortOrder.asc() }.fetchAll(db)
+        var byKey: [String: [CourseMaterial]] = [:]
+        for material in materials { byKey[material.key, default: []].append(material) }
+        var refs: [String: NotesMaterialRef] = [:]
+        for (key, found) in byKey where found.count == 1 {
+            guard let material = found.first else { continue }
+            refs[key] = NotesMaterialRef(material: material, sections: sections.filter { $0.materialID == material.id })
+        }
+        return refs
     }
 }
 
@@ -40,6 +78,8 @@ struct NotesDocumentInput: Equatable {
     var lectures: [String: LectureRef] = [:]
     /// Recording keys of this lecture.
     var recordings: [String: Recording.ID] = [:]
+    /// mt: the course's materials by key (`[[mat …]]` chips).
+    var materials: [String: NotesMaterialRef] = [:]
     var hasRecording = false
     /// The lecture's slides.
     var deck: Deck?
@@ -57,16 +97,18 @@ struct NotesDocumentInput: Equatable {
     var outline: [LectureNotesSection] { notes?.sections ?? [] }
 
     var chips: NotesChipResolver {
-        NotesChipResolver(lectureID: lectureID, lectures: lectures, recordings: recordings)
+        NotesChipResolver(lectureID: lectureID, lectures: lectures, recordings: recordings, materials: materials)
     }
 }
 
 /// Citations to chips: a lecture key of the course (`ChatCitation.key`) to its lecture, a
-/// recording key of this lecture to its recording.
+/// recording key of this lecture to its recording, a material key of the course to its material
+/// (mt; the page within it).
 struct NotesChipResolver: Equatable, Sendable {
     var lectureID: Lecture.ID
     var lectures: [String: NotesDocumentInput.LectureRef]
     var recordings: [String: Recording.ID]
+    var materials: [String: NotesMaterialRef] = [:]
 
     func target(_ citation: ChatCitation) -> NotesChipTarget? {
         switch citation {
@@ -78,9 +120,10 @@ struct NotesChipResolver: Equatable, Sendable {
             return .moment(lecture: lecture.id, recording: recording.flatMap { recordings[$0] }, seconds: Double(seconds))
         case .web, .change, .document:
             return nil
-        case .material:
-            // mt: the book chip ("§6.2 · p. 214", workstream B) is not drawn yet.
-            return nil
+        case .material(let key, let page):
+            guard let ref = materials[key.lowercased()] else { return nil }
+            if let page, page < 1 || page > ref.material.pageCount { return nil }
+            return .material(id: ref.material.id, page: page, label: ref.label(page: page), title: ref.material.title)
         }
     }
 

@@ -21,8 +21,23 @@ struct StudyWriter: Sendable {
             annotation.createdAt = now
             return store.stamp(annotation)
         }
+        let coverage = result.coverage.map { row in
+            var row = row
+            row.studyUnitID = unitID
+            row.createdAt = now
+            return store.stamp(row)
+        }
+        let readings = result.readings.map { reading in
+            var reading = reading
+            reading.studyUnitID = unitID
+            reading.createdAt = now
+            return store.stamp(reading)
+        }
         return try await database.write { db in
             guard var unit = try StudyUnit.find(unitID).fetchOne(db), unit.inputHash == expectedHash else { return false }
+            if unit.stage == .cover {
+                try Self.replaceCover(unitID: unitID, coverage: coverage, readings: readings, in: db)
+            }
             var hidden: [String: Date] = [:]
             for row in try Annotation.where({ $0.studyUnitID.eq(unitID) && $0.hiddenAt.isNot(nil) }).fetchAll(db) {
                 if let date = row.hiddenAt { hidden[Self.hiddenKey(row)] = date }
@@ -46,6 +61,37 @@ struct StudyWriter: Sendable {
             let stamped = store.stamp(unit)
             try StudyUnit.upsert { stamped }.execute(db)
             return true
+        }
+    }
+
+    /// mt: a `cover` unit's own rows replaced: its coverage (never the student's rows, which carry
+    /// no unit) and its book readings (one the student finished or hid keeps that, by section).
+    static func replaceCover(unitID: StudyUnit.ID, coverage: [MaterialCoverage], readings: [StudyReading], in db: Database) throws {
+        let pass: [CoverageSource] = [.pass, .lecturer]
+        try MaterialCoverage.where { $0.studyUnitID.eq(unitID) && $0.source.in(pass) }.delete().execute(db)
+        for row in coverage {
+            try MaterialCoverage.upsert { row }.execute(db)
+        }
+        let old = try StudyReading.where { $0.studyUnitID.eq(unitID) && $0.reason.eq(ReadingReason.book) }.fetchAll(db)
+        var kept: [MaterialSection.ID: StudyReading] = [:]
+        for reading in old {
+            if let section = reading.materialSectionID { kept[section] = reading }
+        }
+        if !old.isEmpty { try StudyReading.where { $0.id.in(old.map(\.id)) }.delete().execute(db) }
+        for reading in readings {
+            var row = reading
+            if let section = reading.materialSectionID, let before = kept[section] {
+                // The same reading (its plan blocks keep pointing at it).
+                row = StudyReading(
+                    id: before.id, courseID: reading.courseID, lectureID: reading.lectureID, topicID: reading.topicID,
+                    topic: reading.topic, title: reading.title, section: reading.section, byline: reading.byline,
+                    firstPage: reading.firstPage, lastPage: reading.lastPage, minutes: reading.minutes, reason: reading.reason,
+                    sources: reading.sources, sortOrder: before.sortOrder, studyUnitID: reading.studyUnitID, apiCallID: reading.apiCallID,
+                    doneAt: before.doneAt, hiddenAt: before.hiddenAt, createdBy: reading.createdBy, createdAt: before.createdAt,
+                    updatedAt: reading.updatedAt, materialID: reading.materialID, materialSectionID: reading.materialSectionID
+                )
+            }
+            try StudyReading.upsert { row }.execute(db)
         }
     }
 

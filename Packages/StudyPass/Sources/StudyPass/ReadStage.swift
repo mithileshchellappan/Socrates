@@ -6,6 +6,9 @@ import StudyCore
 /// What a unit's verified answer writes (one transaction, `StudyWriter`).
 struct UnitResult: Sendable {
     var annotations: [Annotation] = []
+    /// mt: a `cover` unit's coverage rows and book readings (replaced with the unit's rows).
+    var coverage: [MaterialCoverage] = []
+    var readings: [StudyReading] = []
     /// Read units: the AI corrections per line of the block (every line of the block is a key,
     /// empty = none), relative to `original_text`.
     var patches: [TranscriptSegment.ID: [TranscriptPatch]]?

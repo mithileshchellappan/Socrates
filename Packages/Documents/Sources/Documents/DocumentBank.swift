@@ -45,6 +45,9 @@ public actor DocumentBank {
     private var resumeWork: Task<Void, Never>?
     private var cleanupWork: Task<Void, Never>?
     private var started = false
+    /// mt: told when a role-material document's text was read (nil) or failed (its sentence),
+    /// before its card is queued (`MaterialLibrary` finds sections, printed pages and the cover).
+    private var materialObserver: (@Sendable (StudyDocument.ID, String?) async -> Void)?
 
     public init(services: StudyServices, now: @escaping @Sendable () -> Date = { Date() }) {
         self.services = services
@@ -103,6 +106,14 @@ public actor DocumentBank {
         }
     }
 
+    /// mt: the course materials' library watches role-material documents being read: `observer`
+    /// runs after a material's text is stored (error nil) or failed (the readable sentence), on
+    /// the reader, before its card (the `document` task) is queued. One observer; a later call
+    /// replaces it.
+    public func observeMaterialReads(_ observer: @escaping @Sendable (StudyDocument.ID, String?) async -> Void) {
+        materialObserver = observer
+    }
+
     // MARK: - Adding
 
     /// Adds files (a drop, Import…; security-scoped URLs are accessed here): one addition per file
@@ -110,13 +121,15 @@ public actor DocumentBank {
     /// over `StudyDocument.maximumBytes` or unreadable are skipped (logged); throws a
     /// `DocumentReadError` only when no file could be taken ("This file is larger than 200 MB.").
     /// Reading starts at once off the main actor; the summary is queued when the text is read.
+    /// mt: `role` `.material` keeps a course material's file (never on the Documents screen, its
+    /// chunks of kind `material`); a file kept already keeps its row (and role) as it is.
     @discardableResult
-    public func add(_ urls: [URL], by author: Author = .user) async throws -> [DocumentAddition] {
+    public func add(_ urls: [URL], role: DocumentRole = .personal, by author: Author = .user) async throws -> [DocumentAddition] {
         var additions: [DocumentAddition] = []
         var firstError: DocumentReadError?
         for url in urls {
             do {
-                additions.append(try await add(url, by: author))
+                additions.append(try await add(url, role: role, by: author))
             } catch let error as DocumentReadError {
                 DocumentsModule.log.notice("A file was not kept: \(error.sentence, privacy: .public)")
                 firstError = firstError ?? error
@@ -129,11 +142,13 @@ public actor DocumentBank {
         return additions
     }
 
-    private func add(_ url: URL, by author: Author) async throws -> DocumentAddition {
+    private func add(_ url: URL, role: DocumentRole, by author: Author) async throws -> DocumentAddition {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let values = try? url.resourceValues(forKeys: [.contentTypeKey, .isDirectoryKey, .isPackageKey, .fileSizeKey])
         let type = values?.contentType ?? UTType(filenameExtension: url.pathExtension) ?? .data
+        // mt: an EPUB book is refused with the sentence asking for its PDF.
+        if DocumentReadError.isEPUB(type, fileName: url.lastPathComponent) { throw DocumentReadError.epub }
         guard let kind = StudyDocument.fileKind(for: type) else { throw DocumentReadError.unsupported }
         let blobs = services.blobs
         let blob: BlobRef
@@ -155,7 +170,7 @@ public actor DocumentBank {
         guard (blob.byteCount ?? 0) <= Int64(StudyDocument.maximumBytes) else { throw DocumentReadError.tooLarge }
         let fileName = url.lastPathComponent
         return try await keep(
-            blob: blob, fileName: fileName, type: type, byteCount: Int(blob.byteCount ?? 0), author: author
+            blob: blob, fileName: fileName, type: type, byteCount: Int(blob.byteCount ?? 0), role: role, author: author
         )
     }
 
@@ -189,23 +204,44 @@ public actor DocumentBank {
 
     /// A file the student attached on the agent panel ("keep this"): its bytes are in the
     /// BlobStore already.
-    public func add(attachment: AgentAttachment, by author: Author = .agent) async throws -> DocumentAddition {
+    public func add(attachment: AgentAttachment, role: DocumentRole = .personal, by author: Author = .agent) async throws -> DocumentAddition {
         guard services.blobs.contains(attachment.blob) else { throw DocumentReadError.missing }
         let type = UTType(attachment.contentType) ?? UTType(filenameExtension: (attachment.fileName as NSString).pathExtension) ?? .data
+        if DocumentReadError.isEPUB(type, fileName: attachment.fileName) { throw DocumentReadError.epub }
         guard StudyDocument.fileKind(for: type) != nil else { throw DocumentReadError.unsupported }
         guard attachment.byteCount <= StudyDocument.maximumBytes else { throw DocumentReadError.tooLarge }
         return try await keep(
-            blob: attachment.blob, fileName: attachment.fileName, type: type, byteCount: attachment.byteCount, author: author
+            blob: attachment.blob, fileName: attachment.fileName, type: type, byteCount: attachment.byteCount, role: role, author: author
         )
+    }
+
+    /// mt: a link's readable text (a README, a page) kept as a role-material snapshot document
+    /// (Markdown, read like any text file): search, `read_material` and the card read it. The
+    /// same text kept before comes back (`isNew` false).
+    public func add(text: String, fileName: String, role: DocumentRole = .material, by author: Author = .user) async throws -> DocumentAddition {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw DocumentReadError.noText }
+        let blobs = services.blobs
+        let data = Data(text.utf8)
+        let blob = try await Task.detached(priority: .utility) {
+            do {
+                return try blobs.put(data, fileExtension: "md")
+            } catch {
+                throw DocumentReadError.unreadable
+            }
+        }.value
+        let type = UTType("net.daringfireball.markdown") ?? .plainText
+        return try await keep(blob: blob, fileName: fileName, type: type, byteCount: data.count, role: role, author: author)
     }
 
     /// The row for a file in the BlobStore (its text and summary pending; the file name without
     /// its extension as the title until the summary names it), then reading.
-    private func keep(blob: BlobRef, fileName: String, type: UTType, byteCount: Int, author: Author) async throws -> DocumentAddition {
+    private func keep(
+        blob: BlobRef, fileName: String, type: UTType, byteCount: Int, role: DocumentRole, author: Author
+    ) async throws -> DocumentAddition {
         let date = now()
         let stem = (fileName as NSString).deletingPathExtension
         let addition = try await documents.add(StudyDocument(
-            title: stem.isEmpty ? fileName : stem, fileName: fileName, fileType: type.identifier, blobSHA256: blob.sha256,
+            title: stem.isEmpty ? fileName : stem, fileName: fileName, fileType: type.identifier, role: role, blobSHA256: blob.sha256,
             blobPath: blob.relativePath, byteCount: byteCount, createdBy: author, addedAt: date, updatedAt: date
         ))
         if addition.isNew {
@@ -241,6 +277,7 @@ public actor DocumentBank {
             guard let document = try await documents.document(id), document.textState == .pending else { return }
             guard let blob = document.blob, services.blobs.contains(blob) else {
                 try await documents.setTextFailed(id, error: DocumentReadError.missing.sentence)
+                await materialRead(document, error: DocumentReadError.missing.sentence)
                 return
             }
             let url = services.blobs.url(for: blob)
@@ -257,6 +294,7 @@ public actor DocumentBank {
             } catch let error as DocumentReadError {
                 if Task.isCancelled || work.isCancelled { return }
                 try await documents.setTextFailed(id, error: error.sentence)
+                await materialRead(document, error: error.sentence)
                 return
             }
             if Task.isCancelled || work.isCancelled { return }
@@ -272,11 +310,22 @@ public actor DocumentBank {
                 Read a document: \(pages.count) pages, \(pages.filter(\.isOCR).count) by OCR \
                 in \(elapsed.formatted(.units(allowed: [.seconds, .milliseconds])), privacy: .public)
                 """)
+            // mt: a course material's sections, printed pages and cover come before its card.
+            await materialRead(document, error: nil)
             try await documents.queueSummary(id, model: Self.summaryModel, effort: Self.summaryEffort, by: document.createdBy)
         } catch {
             DocumentsModule.log.error("Reading a document failed: \(String(describing: error), privacy: .private)")
-            if !Task.isCancelled { try? await documents.setTextFailed(id, error: DocumentReadError.unreadable.sentence) }
+            if !Task.isCancelled {
+                try? await documents.setTextFailed(id, error: DocumentReadError.unreadable.sentence)
+                if let document = try? await documents.document(id) { await materialRead(document, error: DocumentReadError.unreadable.sentence) }
+            }
         }
+    }
+
+    /// mt: tells the materials' library a role-material document was read or failed.
+    private func materialRead(_ document: StudyDocument, error: String?) async {
+        guard document.role == .material, let observer = materialObserver else { return }
+        await observer(document.id, error)
     }
 
     // MARK: - Deleting

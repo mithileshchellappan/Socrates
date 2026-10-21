@@ -38,6 +38,11 @@ public enum StudyDestination: Hashable, Sendable {
     /// Lectures (the sidebar keeps the course's Lectures row selected; the toolbar's Back returns to
     /// the list).
     case lectureNotes(Lecture.ID)
+    /// mt: a course material (docs/plan-materials.md §2.1): a PDF opens in the reader pushed full
+    /// width on its course's Materials, at `page` (1-based PDF page; nil: where the student was);
+    /// a link opens in the browser; another file in Quick Look. From a book chip, a search hit, a
+    /// further-reading row or a book reading.
+    case material(CourseMaterial.ID, page: Int?)
 
     public static func lecture(_ id: Lecture.ID) -> StudyDestination { .lecture(id, ReviewTarget()) }
 

@@ -3,6 +3,7 @@ import Deadlines
 import Documents
 import Filing
 import Foundation
+import Materials
 import StudyCore
 
 /// The activity log and the one write path of every automatic change (docs/plan-agent.md §4):
@@ -181,6 +182,8 @@ public struct ChangeLog: Sendable {
     /// md: the app's document bank, for Undo of `keep_document` (it stops reading the document;
     /// nil: a bank of its own).
     let documents: DocumentBank?
+    /// mt: the app's material library, for Undo of `add_material` (nil: one of its own).
+    let materials: MaterialLibrary?
     /// mr: wakes the lecture processor after a change or its Undo queued `align` jobs (a deck
     /// linked, unlinked or put back).
     let wakeProcessing: @Sendable () async -> Void
@@ -191,13 +194,15 @@ public struct ChangeLog: Sendable {
     /// `documents` (md): the app's document bank. `wakeProcessing` (mr): the processor's `wake()`.
     public init(
         services: StudyServices, memory: DeadlineMemory? = nil, filing: FilingService? = nil, documents: DocumentBank? = nil,
-        wakeProcessing: @escaping @Sendable () async -> Void = {}, now: @escaping @Sendable () -> Date = { Date() }
+        materials: MaterialLibrary? = nil, wakeProcessing: @escaping @Sendable () async -> Void = {},
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
         let memory = memory
         onChange = { await memory?.didChange() }
         self.filing = filing
         self.documents = documents
+        self.materials = materials
         self.wakeProcessing = wakeProcessing
         self.now = now
     }
@@ -231,6 +236,10 @@ public struct ChangeLog: Sendable {
             if change.kind == .courseRemove { return try await undoCourseRemoval(change, at: date) }
             if change.kind == .courseAdd { return try await undoCourseAdd(change, at: date) }
             if change.kind == .documentAdd { return try await undoDocumentAdd(change, at: date) }
+            // mt: course materials (added, kind, the course's book, a lecture's coverage).
+            if change.targetTable == .material || change.targetTable == .materialCoverage {
+                return try await undoMaterialChange(change, at: date)
+            }
             // ln: a version of a lecture's notes the agent queued.
             if change.targetTable == .lectureNotes { return try await undoLectureNotes(change, at: date) }
         }

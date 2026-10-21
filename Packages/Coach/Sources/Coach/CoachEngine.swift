@@ -435,6 +435,16 @@ public actor CoachEngine: StudyCoaching {
             scheduleRunOut(at: (block.startedAt ?? now()).addingTimeInterval(Double(block.minutes * 60)))
             guard let readingID = block.readingID, let reading = try await store.fetch(StudyReading.self, id: readingID) else { return .none }
             if let url = reading.url ?? block.url { return .url(url) }
+            // mt: a section of a course book opens the reader there (StudyUI's `MaterialLink.url`).
+            if let materialID = reading.materialID {
+                let page = reading.sources.first { $0.kind == .material && $0.materialID == materialID }?.pageNumber
+                var components = URLComponents()
+                components.scheme = "socrates"
+                components.host = "material"
+                components.path = "/" + materialID.uuidString.lowercased()
+                if let page { components.queryItems = [URLQueryItem(name: "page", value: String(page))] }
+                if let url = components.url { return .url(url) }
+            }
             // No link: the reading's recall questions.
             if let sessionID = try? await createRound(StudyScope(kind: .reading, courseIDs: [reading.courseID], readingID: readingID), size: .questions(3), blockID: block.id) {
                 try await plans.setState(block.id, .started, sessionID: sessionID)

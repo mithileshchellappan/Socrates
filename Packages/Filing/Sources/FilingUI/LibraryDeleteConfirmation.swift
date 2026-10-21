@@ -37,7 +37,7 @@ struct LibraryDeleteConfirmationModifier: ViewModifier {
                 Button("Delete", role: .destructive) { confirm(pending) }
                 Button("Cancel", role: .cancel) {}
             } message: { pending in
-                if let message = LibraryDeleteText.message(pending.item, pending.summary, lectures: pending.lectures) {
+                if let message = LibraryDeleteText.message(pending.item, pending.summary, lectures: pending.lectures, materials: pending.materials) {
                     Text(verbatim: message)
                 }
             }
@@ -73,7 +73,7 @@ enum LibraryDeleteText {
     /// What goes with it besides the item itself; nil when nothing of the student's does. mr: a
     /// deck several lectures use names them first ("DC Lecture 2 and DC Lecture 3 lose these
     /// slides.").
-    static func message(_ item: StudyCore.LibraryItem, _ summary: DeletionSummary, lectures: [String] = []) -> String? {
+    static func message(_ item: StudyCore.LibraryItem, _ summary: DeletionSummary, lectures: [String] = [], materials: Int = 0) -> String? {
         var parts: [(text: String, isSingular: Bool)] = []
         switch item {
         case .deck:
@@ -112,6 +112,8 @@ enum LibraryDeleteText {
             if summary.lectures > 0 { parts.append((counted(summary.lectures, "lecture"), summary.lectures == 1)) }
             if summary.slides > 0 { parts.append((counted(summary.slides, "slide"), summary.slides == 1)) }
             if summary.recordings > 0 { parts.append((counted(summary.recordings, "recording"), summary.recordings == 1)) }
+            // mt: its materials (books, papers, references, links).
+            if materials > 0 { parts.append((counted(materials, "material"), materials == 1)) }
             if summary.inkPages > 0 { parts.append((String(localized: "your ink"), true)) }
             if summary.practisedQuestions > 0 {
                 parts.append((counted(summary.practisedQuestions, "practised question"), summary.practisedQuestions == 1))

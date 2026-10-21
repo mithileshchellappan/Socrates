@@ -1,5 +1,6 @@
 import Filing
 import Foundation
+import Materials
 import Observation
 import os
 import StudyCore
@@ -23,6 +24,8 @@ public final class FilingCenter {
         public var targeted: HUDTarget?
         /// Over a sidebar row: the row shows the destination instead.
         public var isOverRow: Bool
+        /// mt: a dragged book or paper (the HUD says "Materials · Book" instead of a lecture).
+        public var material: MaterialPrediction?
     }
 
     /// A drop target inside the HUD.
@@ -114,6 +117,12 @@ public final class FilingCenter {
     /// md: window drops of files smart import never takes (Word, RTF, Pages, text, images) go to
     /// the document bank, with an "Added to Documents" toast (`DocumentDrop.swift`). Nil: filed.
     public var documents: DocumentDropHandler?
+    /// mt: books and papers among dropped or imported PDFs go to the course's materials
+    /// (`MaterialDrop.swift`); nil (the iPhone, previews): filed as before.
+    public var materials: MaterialDropHandler?
+    /// mt: the course whose screen shows (its Lectures, Slides, Materials…; set by the app): a book
+    /// or paper dropped on the window goes to its Materials. Nil: the course it matches.
+    public var screenCourse: Course.ID?
 
     /// Seconds a confident toast stays (while not hovered).
     @ObservationIgnored var toastLifetime: Duration = .seconds(8)
@@ -140,11 +149,27 @@ public final class FilingCenter {
         syncPrediction()
         predictTask?.cancel()
         let service = service
+        let classifies = materials != nil
+        let screenCourse = screenCourse
         predictTask = Task { [weak self] in
-            let files = await urls()
+            var files = await urls()
             guard !files.isEmpty, !Task.isCancelled else { return }
-            let predictions = await service.predict(files)
+            // mt: books and papers are materials (the HUD says so); the rest is predicted as before.
+            var material: MaterialPrediction?
+            if classifies {
+                let (found, rest) = await MaterialDropHandler.classify(files)
+                if let first = found.first {
+                    let (url, reading) = first
+                    let courses = (try? await service.courses()) ?? []
+                    let course = screenCourse.flatMap { id in courses.first { $0.id == id } }
+                        ?? MaterialCourseMatch.course(for: reading, fileName: url.lastPathComponent, among: courses)
+                    material = MaterialPrediction(course: course, kind: reading.kind, pageCount: reading.pageCount)
+                }
+                files = rest
+            }
+            let predictions = files.isEmpty ? [] : await service.predict(files)
             guard !Task.isCancelled, let self, var drag = self.drag else { return }
+            drag.material = material
             drag.predictions = predictions
             if !self.followsCursor(predictions) {
                 drag.anchor = self.hudAnchor(for: drag.location)
@@ -261,6 +286,20 @@ public final class FilingCenter {
     }
 
     private func file(_ urls: [URL], to destination: FilingDestination?, openChange: Bool) async {
+        var urls = urls
+        // mt: books and papers go to the materials of the course dropped on (or shown, or matched).
+        if let materials, urls.contains(where: { $0.pathExtension.lowercased() == "pdf" }) {
+            var course = screenCourse
+            if let destination { course = await service.courseID(of: destination) ?? course }
+            let courses = (try? await service.courses()) ?? []
+            urls = await materials.take(urls, course: course, courses: courses)
+            guard !urls.isEmpty else { return }
+        }
+        await fileAsDeck(urls, to: destination, openChange: openChange)
+    }
+
+    /// Files `urls` as smart import always did (a toast's Change… → Slides files a book as a deck).
+    func fileAsDeck(_ urls: [URL], to destination: FilingDestination?, openChange: Bool = false) async {
         var urls = urls
         if let timetableDrop {
             let timetables = urls.filter(FilingTypes.isTimetable)
@@ -445,6 +484,8 @@ public final class FilingCenter {
         /// mr: a deck's lectures ("DC Lecture 2", "DC Lecture 3"): a shared deck's confirmation
         /// names every lecture that loses it.
         public var lectures: [String] = []
+        /// mt: a course's materials that go with it ("… and 4 materials are deleted with it.").
+        public var materials = 0
     }
 
     /// Set to ask for the confirmation; cleared by Delete or Cancel.
@@ -460,7 +501,8 @@ public final class FilingCenter {
                 if case .deck(let deckID) = item {
                     lectures = try await service.lectureNames(usingDeck: deckID)
                 }
-                pendingDeletion = PendingDeletion(item: item, summary: summary, lectures: lectures)
+                let materials = try await service.materialCount(item)
+                pendingDeletion = PendingDeletion(item: item, summary: summary, lectures: lectures, materials: materials)
             } catch {
                 Self.log.error("Reading what a delete takes failed: \(String(describing: error), privacy: .public)")
             }

@@ -141,7 +141,7 @@ struct FurtherReadingBlock: View {
             VStack(alignment: .leading, spacing: 10 * zoom) {
                 ForEach(readings) { reading in
                     HStack(alignment: .firstTextBaseline, spacing: 8 * zoom) {
-                        FurtherReadingRow(title: reading.body, byline: reading.detail, url: Self.url(of: reading))
+                        FurtherReadingRow(reading: reading)
                             .zoomScaled(zoom)
                         if showsSlides, let page = reading.pageNumber {
                             SlideChip(page: page) {

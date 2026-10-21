@@ -2,6 +2,28 @@
 
 Milestone md, the document bank (PRD "Document bank", 2026-10-19). Two products: `Documents` (logic, workstream A: this part) and `DocumentsUI` (the screen, workstream B). No automated test suite at present; verified by building; the integrator makes one live check.
 
+## Materials (mt, workstream A: the library, links, search, the agent, drops)
+
+docs/plan-materials.md §1–9 and its "Build plan (mt)". `Materials` depends on Documents, StudyCore and ClaudeKit; no SwiftUI (PDFKit an `internal import`). No tests; verified by building.
+
+### Checklist
+
+- [x] Documents: `DocumentBank.add(_:role:by:)`, `add(attachment:role:by:)`, `add(text:fileName:role:by:)` (a link's snapshot, Markdown); `observeMaterialReads` (the library hears a role-material document read or failed, before its card is queued); EPUB refused ("EPUB books can’t be read yet. Add the PDF."); the launch resume reads and queues both roles.
+- [x] `MaterialClassifier` (slides / book / paper / other, code, ≤ 300 ms, §2.4), `SectionReader` (outline → contents pages → headings by type size; exercises / front / back; stable keys; printed offset from labels, else running heads, ≥ 60 %), covers through `MaterialCovers`.
+- [x] `LinkFetcher` (§6): GitHub REST unauthenticated (403/429 waits for the reset, row pending), one GET for pages (title, description, favicon ≤ 64 KB PNG/ICO/JPEG stored as PNG, readable text in code), password field or < 500 characters → title only, `application/pdf` → a file material (≤ 200 MB), arXiv abstract → PDF, http / private / local → link card, never fetched.
+- [x] `MaterialCard` (Haiku, `materials.card`, `--json-schema`, input by code as data; authors and year checked against the text, sections ±2 pages, the kind changes only a guess, the course's book by title), `ChapterSummarizer` (`materials.chapter`, ≤ 12,000 characters).
+- [x] `MaterialLibrary` (actor, `MaterialLibraryActions`; `start()` resumes pending files and links; `add(attachment:to:kind:by:)`, `add(link:to:by:)`, `addWanted(title:byline:to:by:)` for the agent; `move(_:to:)` and `coverURL(of:)` for the drop toast; `sectionsLanded` for the card's sections).
+- [x] Search: role-material documents chunk as kind `material` (no `course_id`); one semantic unit per document, vectors reused by text hash; `.materials` scope through `course_material.document_id` (also personal documents a material uses), `SearchQuery.materialID` / `pages`; the Materials group (after Your notes, before Documents); `MaterialRetriever: MaterialPassages`.
+- [x] AppAgent: `MaterialTools.swift` (catalog section, `search_materials`, `read_material` with the 10,000 / 40,000 budget, `add_material`, actions `set_material_kind`, `set_primary_material`, `set_lecture_coverage` with change rows and Undo), the `document` runner's role branch (the card), the `material_chapter` runner (one at a time, quiet), the context line for Materials and the reader, the documents tools on role `personal` only, `materials` in spawn_task (never with web).
+- [x] Filing / FilingUI: the classifier first for every dropped or imported PDF; books and papers to the course's materials (row, lecture, session, `FilingCenter.screenCourse`, else matched by title, authors, glossary, else a needs-course toast); HUD "Materials · Book" / "640 pages"; toast with the cover, "Book · 640 pages", Undo, Change… (Materials / Slides per course); a course delete carries its materials and their role-material documents (Undo restores them), the confirmation counts materials.
+- [x] Built once each (`taskpolicy -b swift build -j 4`): Documents (Materials), Search, AppAgent, Filing.
+
+### Requests for the integrator
+
+- Wiring (Mac): `let library = MaterialLibrary(services: s, bank: bank) { material in await <StudyPass>.queueCoverBackfill(courseID: material.courseID) }`, `await library.start()` after `bank.start()`; `AppAgent.specs(…, materials: library)` and `AppAgent(…, materials: library)`; `filingCenter.materials = MaterialDropHandler(library: library)`; `filingCenter.screenCourse` = the course whose screen shows (nil elsewhere); `MaterialRetriever(engine: <the app's SearchEngine>)` into the study pass and `NotesAsker`; `\.materialLibrary` = the library.
+- `api_call.purpose` `materials.card`, `materials.chapter` are new (usage screen, docs/modules.md). `DeletionSummary` has no materials count (StudyCore): FilingUI counts them itself (`FilingService.materialCount`); a field there later would be cleaner.
+- Not built (lean): a window drop matched through the module handbook's literature or slide citations (§2.4 second and third fallbacks); title, authors and glossary only.
+
 ## Documents (logic, workstream A)
 
 Depends on StudyCore and ClaudeKit. No SwiftUI. PDFKit, Vision and (Mac only, Word/RTF) AppKit are `internal import`s, so none of them is in the module's interface (as Capture's `DeckText`); nothing here draws.

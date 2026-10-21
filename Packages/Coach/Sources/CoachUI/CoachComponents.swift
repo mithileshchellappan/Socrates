@@ -464,7 +464,12 @@ struct CoachRouter {
                 openDestination(.calendar)
             }
         case .url(let url):
-            openURL(url)
+            // mt: a book reading's Read block opens the reader at its section.
+            if let link = MaterialLink(url: url) {
+                openDestination(link.destination)
+            } else {
+                openURL(url)
+            }
         case .examSheet(let courseID):
             return courseID
         case .none:

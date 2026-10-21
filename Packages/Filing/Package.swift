@@ -18,6 +18,9 @@ let package = Package(
         .package(path: "../StudyUI"),
         .package(path: "../Capture"),
         .package(path: "../Processing"),
+        // mt: books and papers dropped on a course become its materials (`MaterialClassifier`,
+        // `MaterialLibrary`): FilingUI only.
+        .package(path: "../Documents"),
         // Already in the graph through SQLiteData (same pin as AppAgent); used directly for the
         // schema-driven snapshot of what a delete removes (rows, `PRAGMA foreign_key_list`).
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0")
@@ -38,7 +41,8 @@ let package = Package(
                 "Filing",
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "StudyUI", package: "StudyUI"),
-                .product(name: "Processing", package: "Processing")
+                .product(name: "Processing", package: "Processing"),
+                .product(name: "Materials", package: "Documents")
             ]
         ),
     ],

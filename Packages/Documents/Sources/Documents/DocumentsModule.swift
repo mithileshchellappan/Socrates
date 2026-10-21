@@ -53,6 +53,16 @@ public struct DocumentReadError: Error, Hashable, Sendable, LocalizedError, Cust
         "This Pages file has no preview to read. Export it as PDF in Pages and add that.")
     /// The iPhone reads no Word, RTF or Pages files (documents never sync; the phone has no bank).
     public static let macOnly = DocumentReadError("Word, RTF and Pages files are read on the Mac.")
+    /// mt: an EPUB book (no native renderer; the PDF is asked for).
+    public static let epub = DocumentReadError("EPUB books can’t be read yet. Add the PDF.")
+
+    /// mt: whether `type` (or a file name's extension) is an EPUB book.
+    public static func isEPUB(_ type: UTType?, fileName: String = "") -> Bool {
+        if (fileName as NSString).pathExtension.lowercased() == "epub" { return true }
+        guard let type else { return false }
+        return type.identifier == "org.idpf.epub-container" || type.identifier == "org.idpf.epub-folder"
+            || UTType("org.idpf.epub-container").map(type.conforms(to:)) == true
+    }
 }
 
 /// One page of text as the extractor read it (`StudyDocumentPage` once stored).

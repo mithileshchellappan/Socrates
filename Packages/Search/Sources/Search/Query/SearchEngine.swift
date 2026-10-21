@@ -444,9 +444,24 @@ struct Retrieval {
         let rank = table == "search_fts" ? "bm25(search_fts, 1.0, 0.4)" : "bm25(\(table))"
         var arguments: StatementArguments = [expression]
         var filter = ""
-        if query.scope != .all || query.courseID != nil || query.lectureID != nil {
+        if query.scope != .all || query.courseID != nil || query.lectureID != nil || MaterialScope.applies(to: query) {
             filter = "AND rowid IN (SELECT id FROM search_chunk c WHERE c.kind IN (\(kindFilter))"
-            if let courseID = query.courseID {
+            if query.scope == .materials {
+                // mt: the course's materials (and the pages asked for), through `course_material`.
+                let materials = MaterialScope.condition(query, alias: "c")
+                filter += " AND \(materials.sql)"
+                arguments += materials.arguments
+            } else if MaterialScope.applies(to: query) {
+                // mt: material chunks carry no course: they join `course_material` instead.
+                let materials = MaterialScope.condition(query, alias: "c")
+                if let courseID = query.courseID {
+                    filter += " AND ((c.kind <> 'material' AND c.course_id = ?) OR (c.kind = 'material' AND \(materials.sql)))"
+                    arguments += [courseID.storageText]
+                } else {
+                    filter += " AND (c.kind <> 'material' OR \(materials.sql))"
+                }
+                arguments += materials.arguments
+            } else if let courseID = query.courseID {
                 filter += " AND c.course_id = ?"
                 arguments += [courseID.storageText]
             }
@@ -574,11 +589,26 @@ struct Retrieval {
         if !documentIDs.isEmpty {
             for document in try StudyDocument.where({ $0.id.in(documentIDs) }).fetchAll(db) { documentTitles[document.id] = document.title }
         }
+        // mt: the materials of the hits' documents (the course's when filtered), their sections.
+        let materialDocuments = Array(Set(chunks.values.compactMap { chunk -> StudyDocument.ID? in
+            chunk.kind == .material || (query.scope == .materials && chunk.kind == .document) ? chunk.documentID : nil
+        }))
+        let materials = try MaterialHits.materials(of: materialDocuments, query: query, in: db)
 
         var hits: [SearchHit] = []
         var mailSeen: Set<MailMessage.ID> = []
         for entry in chosen {
             guard let meta = chunks[entry.candidate.id] else { continue }
+            if meta.kind == .material || (query.scope == .materials && meta.kind == .document) {
+                // mt: a window of a course material's page: the reader at that page (a link opens
+                // in the browser).
+                guard let documentID = meta.documentID, let found = materials[documentID] else { continue }
+                hits.append(MaterialHits.hit(
+                    meta, material: found.material, sections: found.sections, all: entry.all,
+                    snippet: Snippet.make(text: meta.text, lemmaText: meta.lemmaText, matchers: matchers)
+                ))
+                continue
+            }
             if meta.kind == .document {
                 // A window of a kept document's page: the Documents screen at that page.
                 guard let documentID = meta.documentID, let title = documentTitles[documentID] else { continue }
@@ -708,6 +738,7 @@ struct Retrieval {
         var groups: [SearchGroup] = []
         var index: [SearchGroup.Kind: Int] = [:]
         var notes: [SearchHit] = []
+        var materials: [SearchHit] = []
         var documents: [SearchHit] = []
         var web: [SearchHit] = []
         var mail: [SearchHit] = []
@@ -715,6 +746,9 @@ struct Retrieval {
             let kind: SearchGroup.Kind
             if hit.kind == .note {
                 notes.append(hit)
+                continue
+            } else if hit.materialID != nil {
+                materials.append(hit)
                 continue
             } else if hit.kind == .document {
                 documents.append(hit)
@@ -750,6 +784,8 @@ struct Retrieval {
         for group in groups where !courseOrder.contains(group.course?.id) { courseOrder.append(group.course?.id) }
         var ordered = courseOrder.flatMap { courseID in groups.filter { $0.course?.id == courseID } }
         if !notes.isEmpty { ordered.append(SearchGroup(kind: .notes, course: nil, lecture: nil, deck: nil, hits: notes)) }
+        // mt: the course materials, after the notes and before the kept documents.
+        if !materials.isEmpty { ordered.append(SearchGroup(kind: .materials, course: nil, lecture: nil, deck: nil, hits: materials)) }
         // md: the kept documents, after the notes and before the web.
         if !documents.isEmpty { ordered.append(SearchGroup(kind: .documents, course: nil, lecture: nil, deck: nil, hits: documents)) }
         if !web.isEmpty { ordered.append(SearchGroup(kind: .web, course: nil, lecture: nil, deck: nil, hits: web)) }

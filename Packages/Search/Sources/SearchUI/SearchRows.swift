@@ -80,7 +80,7 @@ struct SearchHitRow: View {
         switch kind {
         case .transcript: .system(size: 13)
         case .slide: .system(size: 11)
-        case .mail, .document: .system(size: 12)
+        case .mail, .document, .material: .system(size: 12)
         default: .system(size: 14, weight: .medium)
         }
     }
@@ -92,6 +92,8 @@ struct SearchHitRow: View {
         case .mail: "envelope"
         // md: a kept document (the Documents row's glyph; never notes' doc.text).
         case .document: "doc.on.doc"
+        // mt: a course material's page.
+        case .material: "book"
         default: "pencil"
         }
     }
@@ -100,7 +102,7 @@ struct SearchHitRow: View {
     static func glyphStyle(_ kind: SearchChunkKind) -> AnyShapeStyle {
         switch kind {
         case .note: AnyShapeStyle(.tint)
-        case .mail, .document: AnyShapeStyle(.secondary)
+        case .mail, .document, .material: AnyShapeStyle(.secondary)
         default: AnyShapeStyle(Color.professor)
         }
     }
@@ -304,6 +306,16 @@ struct SearchGroupHeader: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.primary)
                     .layoutPriority(1)
+            } else if group.kind == .materials {
+                // mt: the course materials' pages, after "Your notes", before Documents.
+                Image(systemName: "book.closed")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
+                Text("Materials")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                    .layoutPriority(1)
             } else if group.kind == .web {
                 Image(systemName: "globe")
                     .foregroundStyle(.secondary)
@@ -320,7 +332,7 @@ struct SearchGroupHeader: View {
                     .foregroundStyle(.primary)
                     .layoutPriority(1)
             }
-            if let subtitle = isCollapsed && [.notes, .mail, .documents].contains(group.kind) ? collapsedLabel : subtitle, !subtitle.isEmpty {
+            if let subtitle = isCollapsed && [.notes, .mail, .documents, .materials].contains(group.kind) ? collapsedLabel : subtitle, !subtitle.isEmpty {
                 Text(verbatim: subtitle)
                     .foregroundStyle(.secondary)
             }
@@ -394,6 +406,10 @@ extension SearchResults {
         case .document:
             // md: "Modulhandbuch M.Sc. Informatik · p. 3".
             return [hit.title, hit.page.map { "p.\u{00A0}\($0)" }].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+        case .material:
+            // mt: "Data Centers: Principles in Practice · §6.3 · p. 223" (the printed page).
+            return [hit.title, hit.materialSection, hit.printedPage?.replacingOccurrences(of: " ", with: "\u{00A0}")]
+                .compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
         default:
             var parts: [String] = []
             var place = course.map { $0.shortName.isEmpty ? $0.name : $0.shortName } ?? ""

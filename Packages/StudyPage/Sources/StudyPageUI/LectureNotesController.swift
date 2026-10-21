@@ -108,6 +108,8 @@ final class LectureNotesController {
             openDestination(.lecture(lecture, ReviewTarget(page: page)))
         case .moment(let lecture, let recording, let seconds):
             openDestination(.lecture(lecture, ReviewTarget(time: seconds, plays: true, recordingID: recording)))
+        case .material(let id, let page, _, _):
+            openDestination(.material(id, page: page))
         }
     }
 

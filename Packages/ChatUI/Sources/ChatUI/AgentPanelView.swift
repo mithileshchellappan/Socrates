@@ -39,6 +39,9 @@ struct AgentPanelView: View {
     @State private var showsMemory = false
     /// The compact panel's task line, composer and notice, measured (the thread gets the rest).
     @State private var bottomHeight: CGFloat = 52
+    /// mt: the kind of the material the reader shows (the prompt names a book or a paper).
+    @State private var materialKind: MaterialKind?
+    @Dependency(\.defaultDatabase) private var database
 
     init(
         style: Style,
@@ -141,6 +144,13 @@ struct AgentPanelView: View {
             }
         }
         .frame(maxHeight: style == .expanded ? .infinity : nil, alignment: .top)
+        .task(id: context.materialID) {
+            guard let id = context.materialID else {
+                materialKind = nil
+                return
+            }
+            materialKind = try? await database.read { db in try CourseMaterial.find(id).fetchOne(db)?.kind }
+        }
         .onChange(of: newest, initial: true) { _, newest in
             // The conversation on screen stays the one it opened on: a newer one (a question from
             // the phone, a reminder's) never takes the thread over by itself.
@@ -172,15 +182,25 @@ struct AgentPanelView: View {
     /// panel, "Ask a follow-up…".
     private var prompt: Text {
         if model.askedSinceOpen || model.pending != nil { return Text("Ask a follow-up…") }
-        return Self.prompt(for: context)
+        return Self.prompt(for: context, materialKind: materialKind)
     }
 
-    static func prompt(for context: AgentContext) -> Text {
+    /// mt: in a material's reader (a page in view) the prompt names it, "Ask about this book" /
+    /// "Ask about this paper", and a passage taken to the panel "Ask about the selection"; the
+    /// shelf stays "Ask about this course".
+    static func prompt(for context: AgentContext, materialKind: MaterialKind? = nil) -> Text {
         switch context.screen {
         case .today: Text("Ask about today")
         case .calendar: Text("Ask about this week")
         case .mail: context.mailMessageID == nil ? Text("Ask about your mail") : Text("Ask about this mail")
         case .lecture: Text("Ask about this lecture")
+        case .course where context.materialPassage != nil: Text("Ask about the selection")
+        case .course where context.materialID != nil && context.materialPage != nil:
+            switch materialKind {
+            case .book?: Text("Ask about this book")
+            case .paper?: Text("Ask about this paper")
+            default: Text("Ask about this document")
+            }
         case .course: Text("Ask about this course")
         case .notes: context.noteID == nil ? Text("Ask about your lectures") : Text("Ask about this note")
         case .search: context.selection.isEmpty ? Text("Ask about your lectures") : Text("Ask about the selection")

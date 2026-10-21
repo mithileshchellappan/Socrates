@@ -17,6 +17,8 @@ extension AnnotationKind {
 struct PassRows: Sendable {
     var units: [StudyUnit]
     var annotations: [Annotation]
+    /// mt: the lecture's coverage that counts (`MaterialCoverage.effective`): book first.
+    var coverage: [MaterialCoverage] = []
 
     static func load(_ lectureID: Lecture.ID, in db: Database) throws -> PassRows {
         let stages = StudyPlanner.stages
@@ -24,7 +26,13 @@ struct PassRows: Sendable {
         let annotations = try Annotation
             .where { $0.lectureID.eq(lectureID) && $0.studyUnitID.isNot(nil) }
             .fetchAll(db)
-        return PassRows(units: units, annotations: annotations)
+        let coverage = MaterialCoverage.effective(try MaterialCoverage.where { $0.lectureID.eq(lectureID) }.fetchAll(db))
+        return PassRows(units: units, annotations: annotations, coverage: coverage)
+    }
+
+    /// Folded titles of the topics a course book covers at its core (research skips them).
+    var bookTopics: Set<String> {
+        Set(coverage.filter { $0.strength == .core && !$0.topic.isEmpty }.map { TextFolding.fold($0.topic) })
     }
 
     func units(_ stage: StudyStage) -> [StudyUnit] {
@@ -84,6 +92,8 @@ struct UnitSpec: Sendable {
         case read(ReadBlock)
         case synthesize
         case research(ResearchPick)
+        /// mt: the sections the lecture covers (nil: an existing unit kept as it is).
+        case cover(CoverInput?)
     }
 
     var stage: StudyStage
@@ -93,6 +103,15 @@ struct UnitSpec: Sendable {
     var inputHash: String
     /// Too little to read (no call): `skipped`.
     var skip: Bool
+}
+
+/// mt: whether the lecture gets a `cover` unit (CoverStage), decided before planning.
+enum CoverPlan: Sendable {
+    /// No unit: no coverable material, or no topics yet.
+    case none
+    /// No retriever on this device now: an existing unit stays as it is (never deleted).
+    case keep(StudyUnit)
+    case input(CoverInput)
 }
 
 /// Plans a lecture's units (plan §3.1). Local, no call.
@@ -108,10 +127,12 @@ enum StudyPlanner {
     static let researchPrefix = "research:"
     /// The pass's own stages. mc: other stages (the coach's `quiz` units) share `study_unit` and
     /// are never planned, reset, failed or deleted by the pass.
-    static let stages: [StudyStage] = [.read, .synthesize, .research]
+    static let stages: [StudyStage] = [.read, .synthesize, .cover, .research]
 
-    /// Reads first (in page or time order), then the synthesis, then the research picks.
-    static func plan(_ material: LectureMaterial, rows: PassRows) -> [UnitSpec] {
+    /// Reads first (in page or time order), then the synthesis, then (mt) the cover unit, then the
+    /// research picks; a pick whose topic a course book covers at its core is skipped (book
+    /// first), unless its web run is done already (its rows stay).
+    static func plan(_ material: LectureMaterial, rows: PassRows, cover: CoverPlan = .none) -> [UnitSpec] {
         var specs: [UnitSpec] = []
         for block in readBlocks(material) {
             let prompt = ReadStage.prompt(block, in: material)
@@ -128,14 +149,32 @@ enum StudyPlanner {
             stage: .synthesize, key: synthesisKey, work: .synthesize, prompt: skipSynthesis ? nil : synthesis,
             inputHash: synthesis.inputHash(model: SynthesisStage.model, effort: SynthesisStage.effort), skip: skipSynthesis))
 
+        switch cover {
+        case .none:
+            break
+        case .keep(let unit):
+            specs.append(UnitSpec(stage: .cover, key: CoverStage.key, work: .cover(nil), prompt: nil, inputHash: unit.inputHash, skip: true))
+        case .input(let input):
+            let prompt = CoverStage.prompt(input)
+            let skip = input.candidates.isEmpty
+            specs.append(UnitSpec(
+                stage: .cover, key: CoverStage.key, work: .cover(input), prompt: skip ? nil : prompt,
+                inputHash: prompt.inputHash(model: CoverStage.model, effort: CoverStage.effort), skip: skip))
+        }
+
         var researchKeys: Set<String> = []
+        let bookTopics = rows.bookTopics
         for pick in researchPicks(rows) {
             let key = pick.unitKey
             guard researchKeys.insert(key).inserted else { continue }
             let prompt = ResearchStage.prompt(pick, in: material)
-            specs.append(UnitSpec(
-                stage: .research, key: key, work: .research(pick),
-                prompt: prompt, inputHash: prompt.inputHash(model: ResearchStage.model, effort: ResearchStage.effort), skip: false))
+            let hash = prompt.inputHash(model: ResearchStage.model, effort: ResearchStage.effort)
+            let done = rows.units(.research).contains { $0.key == key && $0.state == .done }
+            if !done, bookTopics.contains(TextFolding.fold(pick.title)) {
+                specs.append(UnitSpec(stage: .research, key: key, work: .research(pick), prompt: nil, inputHash: hash + ":book", skip: true))
+                continue
+            }
+            specs.append(UnitSpec(stage: .research, key: key, work: .research(pick), prompt: prompt, inputHash: hash, skip: false))
         }
         return specs
     }

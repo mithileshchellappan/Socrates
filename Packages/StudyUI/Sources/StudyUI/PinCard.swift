@@ -69,29 +69,56 @@ public struct PinCardQuote: View {
 
 /// A further reading source the study pass verified: its title (12.5 medium, secondary: the AI
 /// found it) over "byline · 🌐 domain" (11 pt, tertiary). A click opens the page in the browser.
+/// mt: a section of a course book (`material`) shows `book` before its title, its byline
+/// ("Jo Example · pp. 214–221") under the title's start, and opens the reader at its page.
 public struct FurtherReadingRow: View {
     private let title: String
     private let byline: String?
     private let url: URL?
+    private let material: MaterialLink?
     @Environment(\.openURL) private var openURL
+    @Environment(\.openDestination) private var openDestination
 
-    public init(title: String, byline: String?, url: URL?) {
+    public init(title: String, byline: String?, url: URL?, material: MaterialLink? = nil) {
         self.title = title
         self.byline = byline
         self.url = url
+        self.material = material
+    }
+
+    /// A further-reading row as the study pass wrote it: a book section (its `.material`
+    /// citation) or a web page (its `.web` citation).
+    public init(reading: Annotation) {
+        self.init(
+            title: reading.body, byline: reading.detail,
+            url: reading.citations.first { $0.kind == .web && $0.url != nil }?.url,
+            material: MaterialLink.first(in: reading.citations)
+        )
     }
 
     public var body: some View {
         Button {
-            if let url { openURL(url) }
+            if let material {
+                openDestination(material.destination)
+            } else if let url {
+                openURL(url)
+            }
         } label: {
             VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .lineSpacing(1)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    if material != nil {
+                        Image(systemName: "book")
+                            .font(.system(size: 11))
+                            .frame(width: 13)
+                            .accessibilityHidden(true)
+                    }
+                    Text(title)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineSpacing(1)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(.secondary)
                 if let line = sourceLine {
                     line
                         .font(.subheadline)
@@ -99,6 +126,7 @@ public struct FurtherReadingRow: View {
                         .monospacedDigit()
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .padding(.leading, material == nil ? 0 : 18)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -106,7 +134,7 @@ public struct FurtherReadingRow: View {
         }
         .buttonStyle(.plain)
         #if os(macOS)
-        .pointerStyle(url == nil ? .default : .link)
+        .pointerStyle(url == nil && material == nil ? .default : .link)
         #endif
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isLink)
@@ -115,7 +143,7 @@ public struct FurtherReadingRow: View {
     /// "Barham et al. · SOSP 2003 · 🌐 dl.acm.org".
     private var sourceLine: Text? {
         let byline = byline?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let domain = url.flatMap(Self.domain)
+        let domain = material == nil ? url.flatMap(Self.domain) : nil
         switch (byline.isEmpty, domain) {
         case (true, nil): return nil
         case (false, nil): return Text(byline)
@@ -125,7 +153,7 @@ public struct FurtherReadingRow: View {
     }
 
     /// The host without "www.": "dl.acm.org".
-    public static func domain(_ url: URL) -> String? {
+    nonisolated public static func domain(_ url: URL) -> String? {
         guard var host = url.host(), !host.isEmpty else { return nil }
         if host.hasPrefix("www.") { host.removeFirst(4) }
         return host

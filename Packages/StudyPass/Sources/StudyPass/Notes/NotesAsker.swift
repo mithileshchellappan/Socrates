@@ -21,6 +21,8 @@ import Synchronization
 public struct NotesAsker: LectureNotesAsking {
     let services: StudyServices
     let client: ClaudeClient?
+    /// mt: the course materials' passages: ≤ 2 book passages from the section's covered pages.
+    let passages: (any MaterialPassages)?
     let now: @Sendable () -> Date
 
     static let transcriptWordLimit = 2_500
@@ -28,9 +30,13 @@ public struct NotesAsker: LectureNotesAsking {
     static let updateInterval: Duration = .milliseconds(100)
     static let log = Log.logger(category: "lecture-notes")
 
-    public init(services: StudyServices, client: ClaudeClient?, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(
+        services: StudyServices, client: ClaudeClient?, passages: (any MaterialPassages)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.services = services
         self.client = client
+        self.passages = passages
         self.now = now
     }
 
@@ -72,14 +78,25 @@ public struct NotesAsker: LectureNotesAsking {
             continuation.yield(NotesAskUpdate(isFinished: true, error: "The summary could not be read."))
             return
         }
-        guard let grounding else {
+        guard var grounding else {
             continuation.yield(NotesAskUpdate(isFinished: true, error: "This summary is gone."))
             return
+        }
+        // mt: the course book's passages for this section, searched with the selection's words.
+        if let passages {
+            let lectureID = request.lectureID
+            if let courseID = try? await services.database.read({ db in try Lecture.find(lectureID).fetchOne(db)?.courseID }) {
+                grounding.book = await NotesBookPassages.pick(
+                    selection: request.passage + " " + request.question, sectionTitle: grounding.sectionTitle, lectureID: lectureID,
+                    courseID: courseID, passages: passages, database: services.database
+                )
+                grounding.chips.materialMarkers = Set(grounding.book.map(\.cite))
+            }
         }
         let message = MessageRequest(
             model: ClaudeModel(rawValue: model), maxTokens: LectureNotesCalls.askMaxTokens,
             effort: Effort(rawValue: LectureNotesCalls.askEffort) ?? .low, messages: [.user(Self.text(request, grounding: grounding))],
-            system: MessageRequest.systemPrompt(Self.system(style: request.style))
+            system: MessageRequest.systemPrompt(Self.system(style: request.style, book: !grounding.book.isEmpty))
         )
         let buffer = AskBuffer()
         let clock = ContinuousClock()
@@ -135,7 +152,7 @@ public struct NotesAsker: LectureNotesAsking {
 
     // MARK: - Prompt
 
-    static func system(style: NotesAskStyle?) -> String {
+    static func system(style: NotesAskStyle?, book: Bool = false) -> String {
         let program = UniversityProfile.current.program.trimmingCharacters(in: .whitespacesAndNewlines)
         let level = program.isEmpty ? "" : " Their programme: \(program); answer at that level."
         var text = """
@@ -156,6 +173,12 @@ public struct NotesAsker: LectureNotesAsking {
         case .example?: text += "\n\nGive a concrete example with small numbers from the lecture's setting."
         case .why?: text += "\n\nExplain why: the problem it solves and what it builds on."
         case nil: break
+        }
+        if book {
+            // mt (docs/plan-materials.md §3.5).
+            text += "\n\n<book> holds up to two passages of the course's own book: use one to deepen or give the book's "
+                + "example, cite it with its cite marker exactly as given ([[mat …]]), quote at most two sentences; the "
+                + "lecture stays the answer's spine."
         }
         text += """
 
@@ -202,6 +225,14 @@ public struct NotesAsker: LectureNotesAsking {
             text += "</transcript>\n"
         }
         if !g.glossary.isEmpty { text += "<glossary>\(PromptText.escape(g.glossary.joined(separator: "; ")))</glossary>\n" }
+        if !g.book.isEmpty {
+            text += "<book>\n"
+            for passage in g.book {
+                text += "<book_passage cite=\"\(passage.cite)\" section=\"\(PromptText.escape(passage.section))\" pages=\"\(passage.pages)\">"
+                text += "\(PromptText.escape(passage.text))</book_passage>\n"
+            }
+            text += "</book>\n"
+        }
         if !g.notes.isEmpty {
             text += "<student_notes>\n" + g.notes.map { "<note>\(PromptText.escape(PromptText.clipped($0, limit: 800)))</note>" }.joined(separator: "\n") + "\n</student_notes>\n"
         }
@@ -249,6 +280,8 @@ public struct NotesAsker: LectureNotesAsking {
         var preferences: [String]
         var recentQuestions: [String]
         var chips: NotesChips
+        /// mt: ≤ 2 passages of the course's book (`NotesBookPassages`).
+        var book: [NotesBookPassage] = []
 
         /// The chip pattern of a moment on `recording` ("[[KEY t]]", "[[KEY/REC t]]").
         func momentPattern(_ recording: Recording.ID?) -> String {

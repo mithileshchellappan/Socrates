@@ -172,15 +172,17 @@ enum IndexState {
         }
 
         // md: kept documents whose text is read: windows of their pages, versioned by the newest
-        // page (`setText` and Undo's `restore` stamp them); never a course.
+        // page (`setText` and Undo's `restore` stamp them); never a course. mt: a role-material
+        // document's chunks are of kind `material` (a chunk of the other kind counts as moved).
         for row in try Row.fetchAll(db, sql: """
             SELECT d.id AS id, d.text_state AS state,
               (SELECT count(*) FROM document_page p WHERE p.document_id = d.id AND \(String(format: blank, "p.text"))) AS expected,
               (SELECT max(p.updated_at) FROM document_page p WHERE p.document_id = d.id) AS version,
-              (SELECT count(*) FROM search_chunk c WHERE c.kind = 'document' AND c.document_id = d.id) AS have,
-              (SELECT max(c.source_updated_at) FROM search_chunk c WHERE c.kind = 'document' AND c.document_id = d.id) AS indexed,
-              (SELECT count(*) FROM search_chunk c WHERE c.kind = 'document' AND c.document_id = d.id
-                 AND (c.course_id IS NOT NULL OR c.source_id IS NOT d.id)) AS moved
+              (SELECT count(*) FROM search_chunk c WHERE c.kind IN ('document', 'material') AND c.document_id = d.id) AS have,
+              (SELECT max(c.source_updated_at) FROM search_chunk c WHERE c.kind IN ('document', 'material') AND c.document_id = d.id) AS indexed,
+              (SELECT count(*) FROM search_chunk c WHERE c.kind IN ('document', 'material') AND c.document_id = d.id
+                 AND (c.course_id IS NOT NULL OR c.source_id IS NOT d.id
+                      OR c.kind IS NOT (CASE d.role WHEN 'material' THEN 'material' ELSE 'document' END))) AS moved
             FROM document d
             """) {
             let state: String = row["state"]
@@ -239,7 +241,7 @@ enum IndexState {
             """)
         removed += db.changesCount
         // md: a deleted document's chunks go by cascade; a chunk without one never stays.
-        try db.execute(sql: "DELETE FROM search_chunk WHERE kind = 'document' AND document_id IS NULL")
+        try db.execute(sql: "DELETE FROM search_chunk WHERE kind IN ('document', 'material') AND document_id IS NULL")
         removed += db.changesCount
         return removed
     }

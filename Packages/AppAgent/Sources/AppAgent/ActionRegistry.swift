@@ -237,6 +237,7 @@ extension ActionRegistry {
         let delegate = DelegateTools(services: deps.services)
         let documents = deps.documentTools
         let notes = LectureNotesTools(writes: writes)
+        let materials = deps.materialTools(chatSource: true)
         let any = writes.sources
         let chat = ["chat"]
         var actions: [AgentAction] = [
@@ -428,11 +429,33 @@ extension ActionRegistry {
                 ],
                 sources: chat, studentOnly: true
             ),
+            // mt: course materials.
+            AgentAction(
+                materials.setMaterialKind, summary: "Sets whether a course material is a book, a paper or a reference.",
+                keywords: [
+                    "material", "materials", "book", "Buch", "paper", "reference", "Referenz", "kind", "is", "not", "textbook",
+                    "Lehrbuch", "Artikel", "article",
+                ],
+                sources: chat, studentOnly: true
+            ),
+            AgentAction(
+                materials.setPrimaryMaterial, summary: "Makes a material the course's book (first on the shelf, first for passages).",
+                keywords: ["course", "book", "textbook", "Lehrbuch", "Kursbuch", "main", "primary", "Hauptbuch", "Buch", "material"],
+                sources: chat, studentOnly: true
+            ),
+            AgentAction(
+                materials.setLectureCoverage, summary: "Records whether a lecture covers a chapter or section of a course's book.",
+                keywords: [
+                    "cover", "covers", "covered", "chapter", "Kapitel", "section", "Abschnitt", "behandelt", "lecture", "Vorlesung",
+                    "book", "Buch", "doesn't", "nicht",
+                ],
+                sources: chat, studentOnly: true
+            ),
         ]
         return try ActionRegistry(actions)
     }
 
-    /// How many actions `app` registers (the catalog's "actions" line); ln added three, and
-    /// merge_lectures one (2026-10-21).
-    static func appCount(documents: Bool) -> Int { documents ? 27 : 26 }
+    /// How many actions `app` registers (the catalog's "actions" line); ln added three,
+    /// merge_lectures one (2026-10-21), mt three (the materials').
+    static func appCount(documents: Bool) -> Int { documents ? 30 : 29 }
 }

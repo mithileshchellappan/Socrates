@@ -372,6 +372,12 @@ final class NotesDocumentBuilder {
             return InlineViewAttachment(
                 NotesChip(text: text, kind: .moment, size: size) { actions?.open(target) }, plainText: text, baseline: -scaled(3.5)
             )
+        case .material(_, _, let label, let title):
+            // mt: the book chip, web's shape with `book`; Copy takes "§6.2 · p. 214".
+            let plain = label.replacingOccurrences(of: "\u{00A0}", with: " ")
+            return InlineViewAttachment(
+                NotesChip(text: label, kind: .material, size: size, help: title) { actions?.open(target) }, plainText: plain, baseline: -scaled(3.5)
+            )
         }
     }
 

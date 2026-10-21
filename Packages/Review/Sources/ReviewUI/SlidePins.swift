@@ -108,7 +108,7 @@ struct SlidePins<Ink: View>: View {
             AnnotationPin(.ai) {
                 PinCard {
                     ForEach(readings) { reading in
-                        FurtherReadingRow(title: reading.body, byline: reading.detail, url: FurtherReadingBlock.url(of: reading))
+                        FurtherReadingRow(reading: reading)
                     }
                 }
             }

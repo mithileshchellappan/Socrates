@@ -277,10 +277,18 @@ public struct LectureNotesPage: View {
                 .font(zoom == 1 ? .title.weight(.semibold) : .system(size: 22 * zoom, weight: .semibold))
                 .tracking(-0.3 * zoom)
                 .fixedSize(horizontal: false, vertical: true)
-            meta(zoom: zoom)
-                .font(.system(size: 12 * zoom))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 6 * zoom) {
+                meta(zoom: zoom)
+                    .font(.system(size: 12 * zoom))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                // mt: the course book's chapters this lecture covers ("Ch. 6"), opening the reader.
+                if let book = page.book {
+                    BookChip(book.label, help: book.help) {
+                        openDestination(.material(book.materialID, page: book.page))
+                    }
+                }
+            }
             HStack(spacing: 8) {
                 Button {
                     openDestination(.lecture(lectureID, ReviewTarget()))
@@ -333,7 +341,7 @@ public struct LectureNotesPage: View {
             Button("Edit as Note") { editAsNote() }
                 .disabled(page.current?.hasText != true || editing)
             Button("Copy as Markdown") {
-                if let notes = page.current { Pasteboard.copy(LectureNotesExport.markdown(notes)) }
+                if let notes = page.current { Pasteboard.copy(LectureNotesExport.markdown(notes, materials: page.materials)) }
             }
             .disabled(page.current?.hasText != true)
         } label: {
@@ -558,6 +566,10 @@ struct LectureNotesPageData: Equatable, Sendable {
     var hasQuestions = false
     var items: [TrackedItem] = []
     var trails: [TrackedItem.ID: [SourceTrailEntry]] = [:]
+    /// mt: the course book's chapters the lecture covers (core coverage), for the meta line's chip.
+    var book: LectureBookChip?
+    /// mt: the course's materials by key (Copy as Markdown labels `[[mat …]]` chips).
+    var materials: [String: NotesMaterialRef] = [:]
 
     static let empty = LectureNotesPageData()
 }
@@ -570,7 +582,11 @@ struct LectureNotesPageRequest: FetchKeyRequest {
         let id = lectureID
         let reference = Lecture.ID?.some(id)
         data.lecture = try Lecture.find(id).fetchOne(db)
-        if let courseID = data.lecture?.courseID { data.course = try Course.find(courseID).fetchOne(db) }
+        if let courseID = data.lecture?.courseID {
+            data.course = try Course.find(courseID).fetchOne(db)
+            data.materials = try NotesMaterialRef.load(courseID: courseID, in: db)
+            data.book = try LectureBookChip.load(lectureID: id, in: db)
+        }
         data.duration = try Recording.where { $0.lectureID.eq(reference) }.order { $0.startedAt.asc() }.fetchOne(db)?.duration
         data.range = try LectureSlides.current(lectureID: id, in: db)
         let versions = try LectureNotesRepository.versions(lectureID: id, in: db)
@@ -592,6 +608,47 @@ struct LectureNotesPageRequest: FetchKeyRequest {
     }
 }
 #endif
+
+/// The meta line's book chip (mt, docs/plan-materials.md §2.5): "Ch. 6" or "Ch. 6, 7", the course
+/// book's chapters the lecture covers (a core section of them, `MaterialCoverage.effective`); its
+/// help the book's title and the chapters with their printed first pages; a click opens the
+/// reader at the first chapter.
+struct LectureBookChip: Equatable, Sendable {
+    var materialID: CourseMaterial.ID
+    var label: String
+    var help: String
+    /// The first chapter's first PDF page.
+    var page: Int
+
+    static func load(lectureID: Lecture.ID, in db: Database) throws -> LectureBookChip? {
+        let covered = MaterialCoverage.effective(try MaterialCoverage.where { $0.lectureID.eq(lectureID) }.fetchAll(db))
+            .filter { $0.strength == .core }
+        guard !covered.isEmpty else { return nil }
+        let materialIDs = Array(Set(covered.map(\.materialID)))
+        let found: [CourseMaterial] = try CourseMaterial.where { $0.id.in(materialIDs) }.fetchAll(db)
+        let books = found.filter { material in material.kind == MaterialKind.book && material.state == MaterialState.ready }
+        guard let book = books.sorted(by: CourseMaterial.shelfOrder).first else { return nil }
+        let bookID = book.id
+        let sections: [MaterialSection] = try MaterialSection.where { $0.materialID.eq(bookID) }.fetchAll(db)
+        var byID: [MaterialSection.ID: MaterialSection] = [:]
+        for section in sections { byID[section.id] = section }
+        var chapters: [MaterialSection] = []
+        for row in covered where row.materialID == book.id {
+            guard let chapter = byID[row.sectionID]?.chapter(in: sections), !chapter.number.isEmpty,
+                  !chapters.contains(where: { $0.id == chapter.id }) else { continue }
+            chapters.append(chapter)
+        }
+        chapters.sort { $0.firstPage < $1.firstPage }
+        guard let first = chapters.first else { return nil }
+        let lines = chapters.map { chapter in
+            "\(chapter.number) \(chapter.title)" + (chapter.printedFirst.map { " · p. \($0)" } ?? "")
+        }
+        return LectureBookChip(
+            materialID: book.id, label: MaterialText.chapters(chapters.map(\.number)),
+            help: ([book.title] + lines).joined(separator: "\n"), page: first.firstPage
+        )
+    }
+}
 
 /// The mini determinate ring of a lecture whose notes are being written (`.sig .pr`): accent on
 /// the fill-2 track, 12 pt.

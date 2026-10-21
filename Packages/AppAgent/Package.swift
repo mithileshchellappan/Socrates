@@ -55,6 +55,10 @@ let package = Package(
                 .product(name: "Coach", package: "Coach"),
                 .product(name: "Filing", package: "Filing"),
                 .product(name: "Documents", package: "Documents"),
+                // mt: course materials (`MaterialLibrary`, `MaterialCard`, `ChapterSummarizer`):
+                // the materials tools, add_material, the `document` runner's role branch and the
+                // `material_chapter` runner.
+                .product(name: "Materials", package: "Documents"),
                 .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),

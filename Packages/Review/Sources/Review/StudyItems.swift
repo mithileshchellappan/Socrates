@@ -50,7 +50,10 @@ public struct StudyItems: Equatable, Sendable {
         examHints.sort(by: Self.inTimeOrder)
         professorItems.sort(by: Self.inTimeOrder)
         saidInClass.sort(by: Self.inTimeOrder)
-        furtherReading.sort { ($0.pageNumber ?? .max, $0.createdAt) < ($1.pageNumber ?? .max, $1.createdAt) }
+        // mt: on each slide a course book's section first (a `.material` citation), then the web.
+        furtherReading.sort {
+            ($0.pageNumber ?? .max, Self.isBook($0) ? 0 : 1, $0.createdAt) < ($1.pageNumber ?? .max, Self.isBook($1) ? 0 : 1, $1.createdAt)
+        }
     }
 
     public var isEmpty: Bool {
@@ -61,6 +64,11 @@ public struct StudyItems: Equatable, Sendable {
     /// The lecture-wide blocks (exam hints, only said in class) have something to show.
     public var hasLectureWideItems: Bool {
         !examHints.isEmpty || !saidInClass.isEmpty
+    }
+
+    /// A further-reading row into a course material (the study pass's `cover` unit).
+    static func isBook(_ row: Annotation) -> Bool {
+        row.citations.contains { $0.kind == .material && $0.materialID != nil }
     }
 
     public func furtherReading(page: Int) -> [Annotation] {

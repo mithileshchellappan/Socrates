@@ -39,7 +39,8 @@ public struct SearchQuery: Hashable, Sendable {
             case .materialWithoutNotes: [.transcript, .slide, .furtherReading]
             case .web: [.furtherReading]
             case .documents: [.document]
-            case .materials: [.material]
+            // Personal documents count only through a `course_material` row (`MaterialScope`).
+            case .materials: [.material, .document]
             }
         }
     }
@@ -57,6 +58,10 @@ public struct SearchQuery: Hashable, Sendable {
     public var alternatives: [String]
     /// At most this many hits.
     public var limit: Int
+    /// mt: only this course material's pages (its document's chunks of kind `material`); nil = any.
+    public var materialID: CourseMaterial.ID?
+    /// mt: only these PDF page ranges of the materials (a section's pages); empty = all pages.
+    public var pages: [ClosedRange<Int>]
 
     public init(
         _ text: String,
@@ -64,7 +69,9 @@ public struct SearchQuery: Hashable, Sendable {
         courseID: Course.ID? = nil,
         lectureID: Lecture.ID? = nil,
         alternatives: [String] = [],
-        limit: Int = 100
+        limit: Int = 100,
+        materialID: CourseMaterial.ID? = nil,
+        pages: [ClosedRange<Int>] = []
     ) {
         self.text = text
         self.scope = scope
@@ -72,6 +79,8 @@ public struct SearchQuery: Hashable, Sendable {
         self.lectureID = lectureID
         self.alternatives = alternatives
         self.limit = limit
+        self.materialID = materialID
+        self.pages = pages
     }
 
     /// True when there is nothing to search for (an empty query shows nothing).

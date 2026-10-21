@@ -472,7 +472,8 @@ public struct SearchResultsView: View {
 
     /// A web row opens its page in the browser; any other hit its place in the app.
     private func open(_ hit: SearchHit) {
-        if hit.kind == .furtherReading, let url = hit.url {
+        if hit.kind == .furtherReading || hit.kind == .material, let url = hit.url {
+            // mt: a link material's hit opens its page in the browser too.
             recordQuery()
             openURL(url)
             return
@@ -530,7 +531,8 @@ public struct SearchResultsView: View {
 
 extension SearchHit {
     /// The hit as one of the tutor's sources (M5); nil for mail and (md) documents (never a source:
-    /// a kept document is personal, untrusted text the agent reads only with its own tools).
+    /// a kept document is personal, untrusted text the agent reads only with its own tools). mt: a
+    /// course material's page is (course content; the app agent holds no web tools).
     public var chatSource: ChatSource? {
         let kind: ChatSource.Kind
         switch self.kind {
@@ -538,11 +540,12 @@ extension SearchHit {
         case .slide: kind = .slide
         case .note: kind = .note
         case .furtherReading: kind = .furtherReading
+        case .material: kind = .material
         default: return nil
         }
         let plain = text.isEmpty ? String(snippet.characters) : text
         return ChatSource(
             kind: kind, courseID: courseID, lectureID: lectureID, deckID: deckID, page: page, recordingID: recordingID,
-            time: time, noteID: noteID, annotationID: annotationID, text: plain)
+            time: time, noteID: noteID, annotationID: annotationID, text: plain, materialID: materialID)
     }
 }

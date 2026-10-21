@@ -13,6 +13,8 @@ struct FilingToastStack: View {
         VStack(alignment: .trailing, spacing: 8) {
             // md: drops into the document bank.
             if let documents = center.documents { DocumentToastList(handler: documents) }
+            // mt: books and papers dropped on a course.
+            if let materials = center.materials { MaterialToastList(handler: materials, center: center) }
             ForEach(center.toasts) { toast in
                 FilingToastView(
                     toast: toast,

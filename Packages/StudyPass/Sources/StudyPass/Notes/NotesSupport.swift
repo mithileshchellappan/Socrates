@@ -18,6 +18,8 @@ struct NotesChips: Sendable {
 
     /// By lecture key; a key two lectures share names neither.
     var lectures: [String: Target]
+    /// mt: the `[[mat …]]` markers the book passages given gave (the only ones kept).
+    var materialMarkers: Set<String> = []
 
     /// The course's lectures (`courseID`); `extraPages` adds pages one lecture's chips may name
     /// beyond its range (a capture's deck without a range).
@@ -59,9 +61,9 @@ struct NotesChips: Sendable {
             return found.duration <= 0 ? seconds < 6 * 3_600 : Double(seconds) <= found.duration + 1
         case .web, .change, .document:
             return false
-        case .material:
-            // mt: book passages' markers (workstream B: only those given in the input).
-            return false
+        case .material(let key, let page):
+            // mt: only a marker of a book passage given in the input.
+            return materialMarkers.contains(ChatCitation.material(key: key.lowercased(), page: page).marker)
         }
     }
 

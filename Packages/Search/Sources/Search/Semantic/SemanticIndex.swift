@@ -314,12 +314,24 @@ public actor SemanticIndex: SemanticSearching {
         guard !vectors.isEmpty else { return [] }
         var allowedSlides: Set<Int64>?
         if let lectureID = query.lectureID { allowedSlides = try await slideChunks(of: lectureID) }
+        // mt: material chunks carry no course; the course, material and pages filter joins
+        // `course_material` (`MaterialScope`).
+        var allowedMaterial: Set<Int64>?
+        if MaterialScope.applies(to: query) {
+            let scoped = query
+            allowedMaterial = try await database.read { db in try MaterialScope.chunkIDs(scoped, in: db) }
+        }
         let scores = matrix.bestScores(for: vectors)
         let kinds = Set(query.scope.kinds.map(\.rawValue))
         let course = query.courseID?.storageText
         let lecture = query.lectureID?.storageText
         var candidates: [(Int, Float)] = []
         for row in 0..<matrix.rows where kinds.contains(matrix.kinds[row]) {
+            if let allowedMaterial, MaterialScope.governs(matrix.kinds[row], scope: query.scope) {
+                guard allowedMaterial.contains(matrix.chunkIDs[row]) else { continue }
+                candidates.append((row, scores[row]))
+                continue
+            }
             if let course, matrix.courseIDs[row] != course { continue }
             if let lecture, matrix.lectureIDs[row] != lecture, allowedSlides?.contains(matrix.chunkIDs[row]) != true { continue }
             candidates.append((row, scores[row]))
