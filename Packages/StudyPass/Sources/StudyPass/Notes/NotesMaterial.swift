@@ -29,10 +29,9 @@ struct NotesMaterial: Sendable {
         var flagged: Bool
     }
 
+    /// One of the student's notes: read by the writer, never placed in the text (nl).
     struct StudentNote: Sendable {
         var id: Note.ID
-        /// The first 8 hex of its id (`[[note 7f3a20c1]]`).
-        var key: String
         var page: Int?
         var time: Double?
         var text: String
@@ -171,7 +170,7 @@ struct NotesMaterial: Sendable {
             guard note.pageNumber != nil || note.audioTime != nil else { continue }
             let text = NoteBlock.plainText(of: (try? NoteBlock.decode(note.blocksJSON)) ?? []).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
-            notesOut.append(StudentNote(id: note.id, key: ChatCitation.key(note.id), page: note.pageNumber, time: note.audioTime, text: text))
+            notesOut.append(StudentNote(id: note.id, page: note.pageNumber, time: note.audioTime, text: text))
         }
 
         // Preferences and the length rule.

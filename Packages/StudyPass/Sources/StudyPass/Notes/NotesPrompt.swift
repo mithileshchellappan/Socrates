@@ -5,13 +5,16 @@ import StudyCore
 
 /// The notes writer's prompt (docs/plan-lecture-notes.md §2, §5): the format of
 /// `LectureNotesFormat` with the section keys and order given, the typed fences, the professor's
-/// words only as `quote` moments of given rows, the student's notes only as given `note` markers,
-/// said-in-class explanations in their section with their moment chips, per-section word budgets,
-/// `box` only on slides whose image was sent. All material is delimited as data; never the
-/// professor's voice; no web. Order for the CLI's cache: system, the lecture pack, the request.
+/// words only as `quote` moments of given rows, said-in-class explanations in their section with
+/// their moment chips, per-section word budgets, `box` only on slides whose image was sent. The
+/// student's notes and flags steer the text (explained more fully) but are never placed or quoted
+/// in it (nl, docs/plan-notes-layout.md §5: they show beside it, in Your notes). All material is
+/// delimited as data; never the professor's voice; no web. Order for the CLI's cache: system, the
+/// lecture pack, the request.
 enum NotesPrompt {
-    /// Part of every version's `input_hash`: bump it when the prompt changes.
-    static let promptVersion = 2
+    /// Part of every version's `input_hash`: bump it when the prompt changes. The hash is only
+    /// stored with a version; nothing queues notes again when it changes (nl: 3, no `note` fences).
+    static let promptVersion = 3
 
     static func system(german: Bool) -> String {
         """
@@ -42,7 +45,7 @@ enum NotesPrompt {
         What was said in class and is not on the slides (<said>: explanations, examples, questions from the room \
         and their answers) belongs in its section with its moment chip: these notes are the only place the student \
         will find it. Where the student wrote a note or flagged a moment, explain that part more fully and answer what \
-        the note asks.
+        it asks. Their notes are shown beside your text, so never copy them into it.
 
         Chips: after a claim, cite where it comes from with a marker: [[KEY S12]] a slide of this lecture (KEY = the \
         lecture's key), [[KEY 37:59]] a moment (the lecture's moment_chip with t \
@@ -69,8 +72,6 @@ enum NotesPrompt {
         moment attribute copied exactly, nothing else in the block. Every exam hint once, in its section, where it \
         fits; at most two highlights per section. Exam relevance is never your claim: say nothing about the exam \
         yourself.
-        - note: one of the student's own notes, ONLY as its given marker ([[note 7f3a20c1]]), each once, where it \
-        belongs.
         - check: Check yourself, the last block of every section: 2 or 3 questions, each as three lines "Q: the \
         question", "A: the answer (complete, one to three sentences)", "F: short", "F: explain" or "F: calculation". \
         Questions about what the lecture teaches, never about the slides or the professor; no question gives away \
@@ -141,10 +142,10 @@ enum NotesPrompt {
                 let text = PromptText.clipped(note.text, limit: 1_200)
                 words += TextRules.wordCount(text)
                 guard words <= NotesMaterial.noteWordLimit else { break }
-                var attributes = "marker=\"\(NotesNoteRef.marker(note.id))\""
+                var attributes = ""
                 if let page = note.page { attributes += " slide=\"\(page)\"" }
                 if let time = note.time { attributes += " t=\"\(PromptText.clock(time))\"" }
-                pack += "<note \(attributes)>\(PromptText.escape(text))</note>\n"
+                pack += "<note\(attributes)>\(PromptText.escape(text))</note>\n"
             }
             pack += "</student_notes>\n"
         }

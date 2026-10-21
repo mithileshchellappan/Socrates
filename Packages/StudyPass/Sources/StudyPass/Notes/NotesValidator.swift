@@ -8,10 +8,12 @@ import StudyCore
 ///   its heading; the heading is the section's title;
 /// - chips checked against the course's lectures, slide ranges and recording lengths;
 /// - `quote` only at an exam hint's or highlight's moment (`NotesQuoteRef.matches`), each row once,
-///   at most two highlights a section; `note` only for the lecture's notes, each once; every exam
-///   hint and every student note appears exactly once (code places the missing ones in their
-///   section by time, else by slide, before Check yourself); every said-in-class row is cited by
-///   its moment (±20 s; slides only, its slide), else code places it there as a bullet with its chip;
+///   at most two highlights a section; every exam hint appears exactly once (code places the
+///   missing ones in their section by time, else by slide, before Check yourself); every
+///   said-in-class row is cited by its moment (±20 s; slides only, its slide), else code places it
+///   there as a bullet with its chip;
+/// - nl: no `note` fence (the student's notes show beside the text, in Your notes): any is dropped
+///   and none is placed; `LectureNotesSection.noteIDs` is written empty;
 /// - `check` parses (at most 3; one per section, last); a `slide` of this lecture's range, one a
 ///   section, its `box` only on a slide whose image was sent; figures through the figure checker
 ///   (nil: structural checks), at most two a section and twelve a lecture; open fences dropped;
@@ -36,7 +38,6 @@ struct NotesValidator: Sendable {
         var blocks: [Block] = []
         var checks: [NotesCheckItem] = []
         var quotes: [Annotation.ID] = []
-        var notes: [Note.ID] = []
         var slides = 0
         var figures = 0
         var written = false
@@ -59,7 +60,6 @@ struct NotesValidator: Sendable {
         var problems: [Problem] = []
         var drops = DropLog()
         var quoted: Set<Annotation.ID> = []
-        var placedNotes: Set<Note.ID> = []
         var figures = 0
     }
 
@@ -142,7 +142,8 @@ struct NotesValidator: Sendable {
                 switch fence.kind {
                 case .slide: slide(fence, section: &section, draft: &draft)
                 case .quote: quote(fence, section: &section, draft: &draft)
-                case .note: note(fence, section: &section, draft: &draft)
+                // nl: the student's notes are never inside the text.
+                case .note: draft.drops.drop("note.inline")
                 case .check: check(fence, section: &section, draft: &draft)
                 case .math, .diagram, .chart: figure(fence, position: position, section: &section, draft: &draft)
                 case .code:
@@ -220,17 +221,6 @@ struct NotesValidator: Sendable {
         draft.quoted.insert(row.id)
         section.quotes.append(row.id)
         section.blocks.append(.fence(info: "quote", body: material.moment(row.startTime ?? 0)))
-    }
-
-    private func note(_ fence: NotesFence, section: inout Section, draft: inout Draft) {
-        guard let key = NotesNoteRef.parse(fence.body), let note = material.notes.first(where: { $0.key == key }),
-              !draft.placedNotes.contains(note.id) else {
-            draft.drops.drop("note.unknown")
-            return
-        }
-        draft.placedNotes.insert(note.id)
-        section.notes.append(note.id)
-        section.blocks.append(.fence(info: "note", body: NotesNoteRef.marker(note.id)))
     }
 
     private func check(_ fence: NotesFence, section: inout Section, draft: inout Draft) {
@@ -343,7 +333,7 @@ struct NotesValidator: Sendable {
         var drops: DropLog
     }
 
-    /// The checked text, outline and questions; the missing exam hints and notes placed.
+    /// The checked text, outline and questions; the missing exam hints placed.
     func build(_ draft: Draft, apiCallID: APICall.ID?, now: Date) -> Result {
         var draft = draft
         // Every exam hint once.
@@ -353,14 +343,6 @@ struct NotesValidator: Sendable {
             draft.sections[position].quotes.append(row.id)
             draft.sections[position].blocks.append(.fence(info: "quote", body: material.moment(row.startTime ?? 0)))
             draft.drops.drop("placed.exam_hint")
-        }
-        // Every student note once.
-        for note in material.notes where !draft.placedNotes.contains(note.id) {
-            guard let position = sectionIndex(time: note.time, page: note.page, in: draft) else { continue }
-            draft.placedNotes.insert(note.id)
-            draft.sections[position].notes.append(note.id)
-            draft.sections[position].blocks.append(.fence(info: "note", body: NotesNoteRef.marker(note.id)))
-            draft.drops.drop("placed.note")
         }
         // Every said-in-class row: Review shows only the notes once they are written, so a row the
         // text does not cite goes into its section as a bullet with its chip.
@@ -407,7 +389,8 @@ struct NotesValidator: Sendable {
                     entry.questionIDs.append(question.id)
                 }
             }
-            entry.noteIDs = section.notes
+            // nl: the column stays in the schema; the notes are no longer placed in the text.
+            entry.noteIDs = []
             entry.quoteIDs = section.quotes
             entry.hasExamHint = section.quotes.contains { id in material.professor.first { $0.id == id }?.kind == .examHint }
             outline.append(entry)
@@ -467,7 +450,7 @@ struct NotesValidator: Sendable {
         return placed.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     }
 
-    /// Where a missing exam hint or note goes: the section being explained at that time, else the
+    /// Where a missing exam hint or said-in-class row goes: the section being explained at that time, else the
     /// one whose slides hold the page, else the nearest section before that page.
     func sectionIndex(time: Double?, page: Int?, in draft: Draft) -> Int? {
         let sections = draft.sections.map(\.outline)
