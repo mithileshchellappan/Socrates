@@ -524,6 +524,9 @@ public struct StudyReading: StudyRecord {
     @Column("created_by") public var createdBy: Author
     @Column("created_at") public var createdAt: Date
     @Column("updated_at") public var updatedAt: Date
+    /// mt (v18): a reading in a course material (reason `book`): opens the reader at the section.
+    @Column("material_id") public var materialID: CourseMaterial.ID?
+    @Column("material_section_id") public var materialSectionID: MaterialSection.ID?
 
     public init(
         id: UUID = UUID(),
@@ -550,7 +553,9 @@ public struct StudyReading: StudyRecord {
         hiddenAt: Date? = nil,
         createdBy: Author = .agent,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        materialID: CourseMaterial.ID? = nil,
+        materialSectionID: MaterialSection.ID? = nil
     ) {
         self.id = id
         self.courseID = courseID
@@ -559,6 +564,8 @@ public struct StudyReading: StudyRecord {
         self.topic = topic
         self.title = title
         self.section = section
+        self.materialID = materialID
+        self.materialSectionID = materialSectionID
         self.byline = byline
         self.firstPage = firstPage
         self.lastPage = lastPage

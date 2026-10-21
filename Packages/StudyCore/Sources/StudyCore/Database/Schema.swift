@@ -9,7 +9,7 @@ import SQLiteData
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names, and no foreign-key
 /// cycle or self-reference among synced tables (a back-reference is a plain id column, v17).
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -92,6 +92,10 @@ public enum Schema {
             try rebuild(db, "agent_event", as: v17AgentEvent, dropping: ["task_id"])
             try rebuild(db, "study_session", as: v17StudySession, dropping: ["block_id", "retake_of"])
         }
+        // mt, additive only (new tables, nullable columns and a defaulted one): course materials.
+        migrator.registerMigration("v18") { db in
+            try db.execute(sql: v18)
+        }
         return migrator
     }
 
@@ -114,6 +118,7 @@ public enum Schema {
         "document", "document_page",
         "university_profile",
         "lecture_notes", "lecture_notes_mark",
+        "course_material", "material_section", "material_coverage",
     ]
 
     /// md: library tables that stay on the Mac and never sync (PRD "Document bank": documents never
@@ -1413,6 +1418,112 @@ public enum Schema {
         CREATE INDEX "lecture_notes_mark_api_call" ON "lecture_notes_mark"("api_call_id");
 
         ALTER TABLE "agent_memory" ADD COLUMN "notes_rule" TEXT;
+        """
+
+    /// v18 (mt, docs/plan-materials.md §4): course materials (books, papers, references, links).
+    /// - `document.role`: `personal` (every earlier row; the Documents screen) or `material` (a
+    ///   course material's file or a link's snapshot). The bank keeps every file and its text (Mac
+    ///   only, as before); one file in two courses is one document;
+    /// - `course_material` (synced): one material of a course, a file (`document_id`: plain TEXT,
+    ///   no foreign key, since a synced table never points into the Mac-only `document`) or a link
+    ///   (`url`); its card (title, byline, year, summary, facts), state, printed-page offset and
+    ///   where the reader was;
+    /// - `material_section` (synced): a material's chapters and sections (PDF pages), keyed by
+    ///   `MaterialSection.key` (stable across re-reads), with the chapter summary once written;
+    /// - `material_coverage` (synced): which lectures cover which sections (the study pass's
+    ///   `cover` unit, a lecturer naming it, or the student's correction);
+    /// - `study_reading.material_id` / `material_section_id`: a reading in the course's book.
+    /// No foreign-key cycle: course_material → course; material_section → course_material;
+    /// material_coverage → lecture, course_material, material_section, annotation,
+    /// transcript_segment, study_unit, api_call; study_reading → course_material, material_section.
+    static let v18 = """
+        ALTER TABLE "document" ADD COLUMN "role" TEXT NOT NULL ON CONFLICT REPLACE DEFAULT 'personal';
+        CREATE INDEX "document_role" ON "document"("role");
+
+        CREATE TABLE "course_material" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "course_id" TEXT NOT NULL REFERENCES "course"("id") ON DELETE CASCADE,
+          "kind" TEXT NOT NULL DEFAULT 'reference',
+          "kind_source" TEXT NOT NULL DEFAULT 'guess',
+          "is_primary" INTEGER NOT NULL DEFAULT 0,
+          "state" TEXT NOT NULL DEFAULT 'pending',
+          "error" TEXT,
+          "title" TEXT NOT NULL DEFAULT '',
+          "byline" TEXT NOT NULL DEFAULT '',
+          "year" INTEGER,
+          "url" TEXT,
+          "document_id" TEXT,
+          "page_count" INTEGER NOT NULL DEFAULT 0,
+          "printed_offset" INTEGER,
+          "summary" TEXT NOT NULL DEFAULT '',
+          "summary_source" TEXT,
+          "facts" TEXT NOT NULL DEFAULT '{}',
+          "fetched_at" TEXT,
+          "text_sha256" TEXT,
+          "last_page" INTEGER,
+          "sort_order" INTEGER NOT NULL DEFAULT 0,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "created_by" TEXT NOT NULL DEFAULT 'user',
+          "added_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "course_material_course" ON "course_material"("course_id", "sort_order");
+        CREATE INDEX "course_material_document" ON "course_material"("document_id");
+        CREATE INDEX "course_material_state" ON "course_material"("state");
+        CREATE INDEX "course_material_api_call" ON "course_material"("api_call_id");
+
+        CREATE TABLE "material_section" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "material_id" TEXT NOT NULL REFERENCES "course_material"("id") ON DELETE CASCADE,
+          "key" TEXT NOT NULL DEFAULT '',
+          "number" TEXT NOT NULL DEFAULT '',
+          "title" TEXT NOT NULL DEFAULT '',
+          "level" INTEGER NOT NULL DEFAULT 1,
+          "kind" TEXT NOT NULL DEFAULT 'chapter',
+          "first_page" INTEGER NOT NULL DEFAULT 1,
+          "last_page" INTEGER NOT NULL DEFAULT 1,
+          "printed_first" TEXT,
+          "source" TEXT NOT NULL DEFAULT 'outline',
+          "summary" TEXT NOT NULL DEFAULT '',
+          "summary_hash" TEXT,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "sort_order" INTEGER NOT NULL DEFAULT 0,
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "material_section_material" ON "material_section"("material_id", "sort_order");
+        CREATE INDEX "material_section_api_call" ON "material_section"("api_call_id");
+
+        CREATE TABLE "material_coverage" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "lecture_id" TEXT NOT NULL REFERENCES "lecture"("id") ON DELETE CASCADE,
+          "material_id" TEXT NOT NULL REFERENCES "course_material"("id") ON DELETE CASCADE,
+          "section_id" TEXT NOT NULL REFERENCES "material_section"("id") ON DELETE CASCADE,
+          "topic_id" TEXT REFERENCES "annotation"("id") ON DELETE SET NULL,
+          "topic" TEXT NOT NULL DEFAULT '',
+          "score" REAL NOT NULL DEFAULT 0,
+          "strength" TEXT NOT NULL DEFAULT 'partial',
+          "source" TEXT NOT NULL DEFAULT 'pass',
+          "covers" INTEGER NOT NULL DEFAULT 1,
+          "quote" TEXT,
+          "transcript_segment_id" TEXT REFERENCES "transcript_segment"("id") ON DELETE SET NULL,
+          "study_unit_id" TEXT REFERENCES "study_unit"("id") ON DELETE CASCADE,
+          "api_call_id" TEXT REFERENCES "api_call"("id") ON DELETE SET NULL,
+          "created_by" TEXT NOT NULL DEFAULT 'agent',
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
+        CREATE INDEX "material_coverage_lecture" ON "material_coverage"("lecture_id");
+        CREATE INDEX "material_coverage_material" ON "material_coverage"("material_id");
+        CREATE INDEX "material_coverage_section" ON "material_coverage"("section_id");
+        CREATE INDEX "material_coverage_topic" ON "material_coverage"("topic_id");
+        CREATE INDEX "material_coverage_segment" ON "material_coverage"("transcript_segment_id");
+        CREATE INDEX "material_coverage_unit" ON "material_coverage"("study_unit_id");
+        CREATE INDEX "material_coverage_api_call" ON "material_coverage"("api_call_id");
+
+        ALTER TABLE "study_reading" ADD COLUMN "material_id" TEXT REFERENCES "course_material"("id") ON DELETE SET NULL;
+        ALTER TABLE "study_reading" ADD COLUMN "material_section_id" TEXT REFERENCES "material_section"("id") ON DELETE SET NULL;
+        CREATE INDEX "study_reading_material" ON "study_reading"("material_id");
+        CREATE INDEX "study_reading_material_section" ON "study_reading"("material_section_id");
         """
 
     /// v17 (sync): the foreign keys that made cycles among synced tables become plain id columns

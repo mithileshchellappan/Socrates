@@ -23,10 +23,15 @@ public struct SearchQuery: Hashable, Sendable {
         /// Never part of `material`: documents hold personal data and untrusted text, and the
         /// tutor's material reaches web tools.
         case documents
+        /// mt: the course materials' pages (books, papers, references, link snapshots; the agent's
+        /// `search_materials`; All's Materials group). Course-filtered through
+        /// `course_material.document_id`. Not the tutor's `material` scope (that one reaches web
+        /// tools; material text is untrusted and never sits beside them).
+        case materials
 
         public var kinds: [SearchChunkKind] {
             switch self {
-            case .all: [.transcript, .slide, .note, .furtherReading, .mail, .document]
+            case .all: [.transcript, .slide, .note, .furtherReading, .mail, .document, .material]
             case .lectures: [.transcript, .slide]
             case .notes: [.note]
             case .mail: [.mail]
@@ -34,6 +39,7 @@ public struct SearchQuery: Hashable, Sendable {
             case .materialWithoutNotes: [.transcript, .slide, .furtherReading]
             case .web: [.furtherReading]
             case .documents: [.document]
+            case .materials: [.material]
             }
         }
     }
@@ -86,6 +92,8 @@ public enum SearchTarget: Hashable, Sendable {
     case note(Note.ID, course: Course.ID?)
     /// md: a kept document at a page (the Documents screen with it selected).
     case document(StudyDocument.ID, page: Int?)
+    /// mt: a course material at a PDF page (the reader; a link opens in the browser: `url`).
+    case material(CourseMaterial.ID, page: Int?)
 }
 
 /// Marks the matched words in a `SearchHit.snippet`; SearchUI highlights these runs.
@@ -126,6 +134,12 @@ public struct SearchHit: Identifiable, Hashable, Sendable {
     public var annotationID: Annotation.ID? = nil
     /// md: a document hit's document (`kind == .document`; `title` its title, `page` its page).
     public var documentID: StudyDocument.ID? = nil
+    /// mt: a material hit's material (`kind == .material`; `title` its title, `page` the PDF page,
+    /// `documentID` its document), the section holding the page ("§6.2", `MaterialSection.citeLabel`)
+    /// and the printed page ("p. 214", `CourseMaterial.pageLabel`).
+    public var materialID: CourseMaterial.ID? = nil
+    public var materialSection: String? = nil
+    public var printedPage: String? = nil
     /// M5: the chunk's whole text (the line, the slide's text, the note, "title · byline"), for
     /// the tutor's sources (`snippet` may be a window of it).
     public var text: String = ""
@@ -144,6 +158,9 @@ public struct SearchGroup: Identifiable, Hashable, Sendable {
         case mail
         /// md: "Documents", the kept documents (after the notes, before Web).
         case documents
+        /// mt: "Materials", the course materials (after Your notes, before Documents; collapsed to
+        /// its best hit like Notes and Mail).
+        case materials
     }
 
     public var kind: Kind

@@ -121,6 +121,9 @@ public struct StudyDocument: StudyRecord {
     /// The uniform type identifier of the original ("com.adobe.pdf").
     @Column("file_type") public var fileType: String
     public var kind: DocumentKind
+    /// mt (v18): `personal` (the Documents screen) or `material` (a course material's file or a
+    /// link's snapshot: never on the Documents screen or in the documents tools).
+    public var role: DocumentRole
     @Column("blob_sha256") public var blobSHA256: String
     /// Path relative to the BlobStore root.
     @Column("blob_path") public var blobPath: String
@@ -160,6 +163,7 @@ public struct StudyDocument: StudyRecord {
         fileName: String,
         fileType: String,
         kind: DocumentKind = .other,
+        role: DocumentRole = .personal,
         blobSHA256: String = "",
         blobPath: String = "",
         byteCount: Int = 0,
@@ -187,6 +191,7 @@ public struct StudyDocument: StudyRecord {
         self.fileName = fileName
         self.fileType = fileType
         self.kind = kind
+        self.role = role
         self.blobSHA256 = blobSHA256
         self.blobPath = blobPath
         self.byteCount = byteCount

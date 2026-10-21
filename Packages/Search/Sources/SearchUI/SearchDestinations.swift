@@ -19,6 +19,9 @@ extension SearchHit {
             .notes(course.map { .course($0) } ?? .all, note: id)
         case .document(let id, let page):
             .documents(id, page: page)
+        case .material:
+            // mt: the reader (`StudyDestination.material`, workstream B) is not routed yet.
+            nil
         case nil:
             nil
         }

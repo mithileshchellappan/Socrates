@@ -12,10 +12,15 @@ public struct DocumentRepository: Sendable {
 
     // MARK: Reading
 
-    /// Every document, newest first (the Documents list, the agent's catalog).
-    public func all() async throws -> [StudyDocument] {
+    /// Every document of `role`, newest first: by default the student's own (the Documents list,
+    /// the agent's catalog; mt: course materials' files and snapshots are role `material`); nil:
+    /// every document.
+    public func all(role: DocumentRole? = .personal) async throws -> [StudyDocument] {
         try await store.database.read { db in
-            try StudyDocument.order { $0.addedAt.desc() }.fetchAll(db)
+            if let role {
+                return try StudyDocument.where { $0.role.eq(role) }.order { $0.addedAt.desc() }.fetchAll(db)
+            }
+            return try StudyDocument.order { $0.addedAt.desc() }.fetchAll(db)
         }
     }
 

@@ -118,6 +118,9 @@ public struct ChatSource: Hashable, Sendable, Codable {
         case slide
         case note
         case furtherReading = "further_reading"
+        /// mt: a page of a course material (`materialID`, `page` = its PDF page). Course content:
+        /// the app agent holds no web tools.
+        case material
     }
 
     public var kind: Kind
@@ -132,6 +135,8 @@ public struct ChatSource: Hashable, Sendable, Codable {
     public var noteID: Note.ID?
     /// A further-reading row.
     public var annotationID: Annotation.ID?
+    /// mt: a course material hit.
+    public var materialID: CourseMaterial.ID?
     /// The hit's text as plain text (the line, the slide's text, the note, "title · byline"),
     /// at most `textLimit` characters.
     public var text: String
@@ -148,8 +153,10 @@ public struct ChatSource: Hashable, Sendable, Codable {
         time: Double? = nil,
         noteID: Note.ID? = nil,
         annotationID: Annotation.ID? = nil,
-        text: String
+        text: String,
+        materialID: CourseMaterial.ID? = nil
     ) {
+        self.materialID = materialID
         self.kind = kind
         self.courseID = courseID
         self.lectureID = lectureID

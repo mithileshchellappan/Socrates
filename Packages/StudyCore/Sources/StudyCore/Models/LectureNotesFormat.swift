@@ -578,6 +578,7 @@ public enum LectureNotesText {
         case .web(let url): url.host() ?? url.absoluteString
         case .change: ""
         case .document(_, let page): page.map { "p\($0)" } ?? ""
+        case .material(_, let page): page.map { "p\($0)" } ?? ""
         }
     }
 

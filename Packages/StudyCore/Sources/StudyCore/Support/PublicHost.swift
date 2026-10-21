@@ -1,10 +1,11 @@
 import Darwin
 import Foundation
 
-/// Which hosts the app's own source check may reach (M5, docs/plan-m5.md §5.1: SSRF from
-/// prompt-injected pages). A research run names URLs a web page could have planted; the check
-/// fetches them from the student's Mac, so a URL must never reach the Mac itself, the local
-/// network or a link-local service. Only public hosts over https:
+/// Which hosts the app's own fetches may reach (M5, docs/plan-m5.md §5.1: SSRF from
+/// prompt-injected pages; moved from StudyPass in mt for the links of course materials). A
+/// research run names URLs a web page could have planted, and a material's link may come from a
+/// pasted or dropped URL; the app fetches them from the student's Mac, so a URL must never reach
+/// the Mac itself, the local network or a link-local service. Only public hosts over https:
 ///
 /// - refused names: `localhost` and `*.localhost`, `*.local` (mDNS), `*.internal`, and single-label
 ///   names ("router", "nas"), which only resolve through local search domains;
@@ -15,12 +16,12 @@ import Foundation
 ///   addresses by their IPv4 part; the old site-local fec0::/10.
 ///
 /// The name is resolved with `getaddrinfo` off the caller's executor; a name that does not
-/// resolve is refused. Redirect hops get the same check (`WebCheck.RedirectGuard`). URLSession
+/// resolve is refused. Redirect hops get the same check (`PublicFetch.RedirectGuard`). URLSession
 /// resolves again when it connects, so a name that changes its answer in between (DNS
-/// rebinding) is not caught; the check only reads public pages' titles, never sends anything.
-enum PublicHost {
+/// rebinding) is not caught; the fetches only read public pages, never send anything.
+public enum PublicHost {
     /// The URL is https and its host passes `allowsName` and resolves only to public addresses.
-    static func allows(_ url: URL) async -> Bool {
+    public static func allows(_ url: URL) async -> Bool {
         guard url.scheme?.lowercased() == "https", let host = url.host(percentEncoded: false), allowsName(host) else {
             return false
         }
@@ -30,7 +31,7 @@ enum PublicHost {
     }
 
     /// The host's text alone (no resolution): not a local name, and an IP literal must be public.
-    static func allowsName(_ host: String) -> Bool {
+    public static func allowsName(_ host: String) -> Bool {
         let name = bareHost(host)
         guard !name.isEmpty else { return false }
         if let v4 = ipv4(name) { return isPublic(v4: v4) }
@@ -46,14 +47,14 @@ enum PublicHost {
     }
 
     /// Lower case, without brackets ("[::1]") or a trailing dot.
-    static func bareHost(_ host: String) -> String {
+    public static func bareHost(_ host: String) -> String {
         var name = host.lowercased().trimmingCharacters(in: .whitespaces)
         if name.hasPrefix("["), name.hasSuffix("]") { name = String(name.dropFirst().dropLast()) }
         while name.hasSuffix(".") { name.removeLast() }
         return name
     }
 
-    static func isIPLiteral(_ host: String) -> Bool {
+    public static func isIPLiteral(_ host: String) -> Bool {
         ipv4(host) != nil || ipv6(host) != nil
     }
 
@@ -62,7 +63,7 @@ enum PublicHost {
     /// Every address `host` resolves to is public; false when it does not resolve. Runs
     /// `getaddrinfo` (blocking) on the concurrent executor, never on an actor.
     @concurrent
-    static func resolvesPublicly(_ host: String) async -> Bool {
+    public static func resolvesPublicly(_ host: String) async -> Bool {
         var hints = addrinfo()
         hints.ai_family = AF_UNSPEC
         hints.ai_socktype = SOCK_STREAM
@@ -97,21 +98,21 @@ enum PublicHost {
     // MARK: Addresses
 
     /// The four bytes of a dotted IPv4 literal ("10.0.0.1"); nil otherwise.
-    static func ipv4(_ text: String) -> [UInt8]? {
+    public static func ipv4(_ text: String) -> [UInt8]? {
         var address = in_addr()
         guard inet_pton(AF_INET, text, &address) == 1 else { return nil }
         return withUnsafeBytes(of: address.s_addr) { Array($0) }
     }
 
     /// The sixteen bytes of an IPv6 literal ("::1", "fe80::1%en0"); nil otherwise.
-    static func ipv6(_ text: String) -> [UInt8]? {
+    public static func ipv6(_ text: String) -> [UInt8]? {
         let address = text.split(separator: "%", maxSplits: 1).first.map(String.init) ?? text
         var value = in6_addr()
         guard inet_pton(AF_INET6, address, &value) == 1 else { return nil }
         return withUnsafeBytes(of: value) { Array($0) }
     }
 
-    static func isPublic(v4 bytes: [UInt8]) -> Bool {
+    public static func isPublic(v4 bytes: [UInt8]) -> Bool {
         guard bytes.count == 4 else { return false }
         let (a, b) = (bytes[0], bytes[1])
         switch a {
@@ -125,7 +126,7 @@ enum PublicHost {
         }
     }
 
-    static func isPublic(v6 bytes: [UInt8]) -> Bool {
+    public static func isPublic(v6 bytes: [UInt8]) -> Bool {
         guard bytes.count == 16 else { return false }
         let prefixZero = bytes[0..<10].allSatisfy { $0 == 0 }
         // ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compatible): the IPv4 part decides.

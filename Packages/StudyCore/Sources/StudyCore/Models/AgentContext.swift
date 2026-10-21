@@ -33,7 +33,7 @@ public struct AgentContext: Hashable, Sendable, Codable {
 
     public var screen: Screen
     public var courseID: Course.ID?
-    /// A course's own screen: "lectures", "slides", "notes", "settings".
+    /// A course's own screen: "lectures", "slides", "materials" (mt), "notes", "settings".
     public var courseScreen: String?
     public var lectureID: Lecture.ID?
     /// The recording the player shows (nil: the lecture's first).
@@ -66,6 +66,12 @@ public struct AgentContext: Hashable, Sendable, Codable {
     /// ln: a passage of a lecture's notes the student took to the panel (Continue in Chat), with
     /// the Ask exchange so far.
     public var notesPassage: NotesPassageContext?
+    /// mt: the focused material (a shelf tile or row, the open reader).
+    public var materialID: CourseMaterial.ID?
+    /// mt: the reader's page in view (1-based PDF page).
+    public var materialPage: Int?
+    /// mt: the reader's selection the student asks about (Ask About Selection), as data.
+    public var materialPassage: MaterialPassageContext?
 
     public init(
         screen: Screen,
@@ -85,8 +91,14 @@ public struct AgentContext: Hashable, Sendable, Codable {
         itemID: TrackedItem.ID? = nil,
         sessionID: LectureSession.ID? = nil,
         documentID: StudyDocument.ID? = nil,
-        notesPassage: NotesPassageContext? = nil
+        notesPassage: NotesPassageContext? = nil,
+        materialID: CourseMaterial.ID? = nil,
+        materialPage: Int? = nil,
+        materialPassage: MaterialPassageContext? = nil
     ) {
+        self.materialID = materialID
+        self.materialPage = materialPage
+        self.materialPassage = materialPassage
         self.screen = screen
         self.courseID = courseID
         self.courseScreen = courseScreen
@@ -139,6 +151,9 @@ public struct AgentContext: Hashable, Sendable, Codable {
         merged.sessionID = other.sessionID ?? sessionID
         merged.documentID = other.documentID ?? documentID
         merged.notesPassage = other.notesPassage ?? notesPassage
+        merged.materialID = other.materialID ?? materialID
+        merged.materialPage = other.materialPage ?? materialPage
+        merged.materialPassage = other.materialPassage ?? materialPassage
         return merged
     }
 }

@@ -176,6 +176,9 @@ public struct SourceRef: Hashable, Sendable, Codable {
         public static let note: Self = "note"
         /// A timetable file the student dropped (a campus management system's `.ics`): exam dates.
         public static let timetable: Self = "timetable"
+        /// mt: a course material (`materialID`; `pageNumber` its 1-based PDF page, `title` the
+        /// section's "6.2 Logical clocks"): a book further-reading row.
+        public static let material: Self = "material"
     }
 
     public var kind: Kind
@@ -191,6 +194,8 @@ public struct SourceRef: Hashable, Sendable, Codable {
     public var title: String?
     /// Short exact quote from the source.
     public var quote: String?
+    /// mt: the `course_material` of a `.material` source.
+    public var materialID: UUID?
 
     public init(
         kind: Kind,
@@ -202,9 +207,11 @@ public struct SourceRef: Hashable, Sendable, Codable {
         mailMessageID: String? = nil,
         url: URL? = nil,
         title: String? = nil,
-        quote: String? = nil
+        quote: String? = nil,
+        materialID: UUID? = nil
     ) {
         self.kind = kind
+        self.materialID = materialID
         self.lectureID = lectureID
         self.deckID = deckID
         self.pageNumber = pageNumber
@@ -430,4 +437,7 @@ public struct SearchChunkKind: StringKind {
     public static let slide: Self = "slide"
     /// A note (`note_id`, plus its lecture/slide anchors).
     public static let note: Self = "note"
+    /// mt: a window of one page of a course material's file or snapshot (`document_id`,
+    /// `page_number`; never a `course_id`: the course filter joins `course_material.document_id`).
+    public static let material: Self = "material"
 }

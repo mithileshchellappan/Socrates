@@ -3,10 +3,9 @@ import Deadlines
 import Foundation
 import StudyCore
 
-/// The app's own check of a source the research run named (plan §4 "Web"): an ephemeral
-/// `URLSession` (no cookies, no cache), GET over https only and to public hosts only
-/// (`PublicHost`: never the Mac itself, the local network or link-local; every redirect hop is
-/// checked the same way and refused otherwise), 8 s, at most 1 MB read. A source is
+/// The app's own check of a source the research run named (plan §4 "Web"): StudyCore's
+/// `PublicFetch` (an ephemeral session without cookies or cache, GET over https only and to public
+/// hosts only, every redirect hop checked the same way), 8 s, at most 1 MB read. A source is
 /// kept when the answer is 2xx and at least 70 % of the title's words appear in the page's
 /// `<title>`, its `citation_title`, or its first 64 KB of text (a PDF: its Title metadata). A DOI
 /// is checked against `api.crossref.org/works/<doi>` instead and linked as `doi.org/<doi>`. Pages
@@ -24,20 +23,10 @@ struct WebCheck: Sendable {
     static let textPrefixBytes = 64 << 10
     static let requiredShare = 0.7
 
-    let session: URLSession
+    /// StudyCore's public https fetch (mt: moved there, shared with the links of course materials).
+    let fetcher = PublicFetch(userAgent: "Socrates/1 (source check)", timeout: Self.timeout)
 
-    init() {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieAcceptPolicy = .never
-        configuration.httpShouldSetCookies = false
-        configuration.httpCookieStorage = nil
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        configuration.timeoutIntervalForRequest = Self.timeout
-        configuration.timeoutIntervalForResource = Self.timeout
-        configuration.httpAdditionalHeaders = ["User-Agent": "Socrates/1 (source check)"]
-        session = URLSession(configuration: configuration)
-    }
+    init() {}
 
     /// The source when the check confirms it, else nil.
     func verify(title: String, url: String, doi: String?) async -> Verified? {
@@ -60,47 +49,12 @@ struct WebCheck: Sendable {
 
     // MARK: Fetching
 
-    /// GET with the 8 s and 1 MB limits: the bytes, the content type and the final URL; nil
-    /// unless 2xx. Public https hosts only (`PublicHost`): the first request and every redirect
-    /// hop (a refused hop ends with the redirect's own 3xx, so nil). The Crossref lookup too.
+    /// GET with the 8 s and 1 MB limits (`PublicFetch`: public https hosts only, every redirect
+    /// hop too): the bytes, the content type and the final URL; nil unless 2xx. The Crossref
+    /// lookup too.
     func fetch(_ url: URL) async -> (Data, String, URL)? {
-        guard await PublicHost.allows(url) else {
-            StudyPass.log.notice("Source check refused a non-public host")
-            return nil
-        }
-        let request: URLRequest = {
-            var request = URLRequest(url: url, timeoutInterval: Self.timeout)
-            request.httpMethod = "GET"
-            request.httpShouldHandleCookies = false
-            return request
-        }()
-        let session = session
-        do {
-            return try await withThrowingTaskGroup(of: (Data, String, URL)?.self) { group in
-                group.addTask {
-                    let (bytes, response) = try await session.bytes(for: request, delegate: RedirectGuard())
-                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
-                    var data = Data()
-                    data.reserveCapacity(64 << 10)
-                    for try await byte in bytes {
-                        data.append(byte)
-                        if data.count >= Self.maximumBytes { break }
-                    }
-                    let type = http.value(forHTTPHeaderField: "Content-Type") ?? ""
-                    return (data, type.lowercased(), http.url ?? url)
-                }
-                group.addTask {
-                    try await Task.sleep(for: .seconds(Self.timeout))
-                    return nil
-                }
-                let first = try await group.next() ?? nil
-                group.cancelAll()
-                return first
-            }
-        } catch {
-            StudyPass.log.info("Source check failed for \(url.host ?? "?", privacy: .public): \(String(describing: error), privacy: .public)")
-            return nil
-        }
+        guard let response = await fetcher.get(url, maximumBytes: Self.maximumBytes), response.isSuccess else { return nil }
+        return (response.data, response.contentType, response.url)
     }
 
     /// Crossref's record of a DOI as text (titles, container, authors, years); nil when unknown.
@@ -123,20 +77,6 @@ struct WebCheck: Sendable {
         }
         let text = parts.joined(separator: " ")
         return text.isEmpty ? nil : text
-    }
-
-    /// Refuses a redirect hop to anything but a public https host (`PublicHost`).
-    final class RedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
-        func urlSession(
-            _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-            newRequest request: URLRequest
-        ) async -> URLRequest? {
-            guard let url = request.url, await PublicHost.allows(url) else {
-                StudyPass.log.notice("Source check refused a redirect to a non-public host")
-                return nil
-            }
-            return request
-        }
     }
 
     // MARK: Matching

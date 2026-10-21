@@ -78,6 +78,9 @@ struct NotesChipResolver: Equatable, Sendable {
             return .moment(lecture: lecture.id, recording: recording.flatMap { recordings[$0] }, seconds: Double(seconds))
         case .web, .change, .document:
             return nil
+        case .material:
+            // mt: the book chip ("§6.2 · p. 214", workstream B) is not drawn yet.
+            return nil
         }
     }
 

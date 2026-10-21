@@ -121,6 +121,9 @@ struct CitationCheck: Sendable {
         case ambiguousDocument = "document_ambiguous"
         /// md: its page is not one of the document's pages.
         case pageOutsideDocument = "document_page_outside"
+        /// mt: a material marker whose key names no course material, or two, or whose page is not
+        /// in it.
+        case unknownMaterial = "material_unknown"
     }
 
     func check(_ citation: ChatCitation) -> Result<CheckedCitation, DropError> {
@@ -129,6 +132,9 @@ struct CitationCheck: Sendable {
             return .failure(DropError(.changeMarker))
         case .document(let key, let page):
             return DocumentCitations.check(key: key, page: page, rows: rows)
+        case .material:
+            // mt: the material chip (workstream B) checks the key and page against the rows.
+            return .failure(DropError(.unknownMaterial))
         case .web(let url):
             guard let key = Self.normalized(url), let found = webPages[key] else { return .failure(DropError(.pageNotInResults)) }
             return .success(.web(found))

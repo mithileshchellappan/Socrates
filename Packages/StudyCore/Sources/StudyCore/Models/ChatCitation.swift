@@ -12,6 +12,7 @@ import os
 /// | `[[web https://…]]` | a web page |
 /// | `[[change 1a2b3c4d]]` | an automatic change (ma: `agent_change` whose id starts with it), drawn as a change row |
 /// | `[[doc 3f2a9c1e p12]]` | page 12 of a kept document (md: `document` whose id starts with it); `[[doc 3f2a9c1e]]` the document |
+/// | `[[mat 3f2a9c1e p231]]` | PDF page 231 of a course material (mt: `course_material` whose id starts with it); `[[mat 7b20c4d1]]` the material (a link) |
 ///
 /// Parsing is pure; whether a marker may show is decided from the rows (ChatUI): the key must
 /// name exactly one lecture, the slide be a page of its deck, the moment lie in the recording, a
@@ -30,6 +31,15 @@ public enum ChatCitation: Hashable, Sendable {
     /// md: a kept document (the document bank), by the first 8 hex of its id, at a 1-based page
     /// (`document_page.page_number`; nil: the document as a whole).
     case document(key: String, page: Int?)
+    /// mt: a course material (`course_material`), by the first 8 hex of its id, at a 1-based PDF
+    /// page (nil: the material as a whole, e.g. a link). The chip shows the printed page
+    /// ("§6.2 · p. 214"); the marker always carries the PDF page.
+    case material(key: String, page: Int?)
+
+    /// The citation of a course material, at a PDF page.
+    public static func material(_ id: CourseMaterial.ID, page: Int? = nil) -> ChatCitation {
+        .material(key: key(id), page: page)
+    }
 
     /// The citation of a kept document, at a page.
     public static func document(_ id: StudyDocument.ID, page: Int? = nil) -> ChatCitation {
@@ -56,7 +66,7 @@ public enum ChatCitation: Hashable, Sendable {
     public var lectureKey: String? {
         switch self {
         case .slide(let lecture, _), .moment(let lecture, _, _): lecture
-        case .web, .change, .document: nil
+        case .web, .change, .document, .material: nil
         }
     }
 
@@ -74,6 +84,7 @@ public enum ChatCitation: Hashable, Sendable {
         case .web(let url): "[[web \(url.absoluteString)]]"
         case .change(let key): "[[change \(key)]]"
         case .document(let key, let page): "[[doc \(key)\(page.map { " p\($0)" } ?? "")]]"
+        case .material(let key, let page): "[[mat \(key)\(page.map { " p\($0)" } ?? "")]]"
         }
     }
 
@@ -106,7 +117,8 @@ public enum ChatCitation: Hashable, Sendable {
             self = .web(url)
             return
         }
-        if body.hasPrefix("doc ") {
+        if body.hasPrefix("doc ") || body.hasPrefix("mat ") {
+            let isMaterial = body.hasPrefix("mat ")
             let parts = body.dropFirst(4).split(separator: " ")
             guard (1...2).contains(parts.count), Self.isKey(parts[0]) else { return nil }
             var page: Int?
@@ -117,7 +129,7 @@ public enum ChatCitation: Hashable, Sendable {
                 }
                 page = number
             }
-            self = .document(key: String(parts[0]), page: page)
+            self = isMaterial ? .material(key: String(parts[0]), page: page) : .document(key: String(parts[0]), page: page)
             return
         }
         if body.hasPrefix("change ") {
@@ -147,7 +159,7 @@ public enum ChatCitation: Hashable, Sendable {
     /// whether or not the rest parses.
     static func looksLikeMarker(_ body: Substring) -> Bool {
         let trimmed = body.drop { $0 == " " }
-        let kinds = ["key ", "change ", "web ", "doc "]
+        let kinds = ["key ", "change ", "web ", "doc ", "mat "]
         if kinds.contains(where: { trimmed.hasPrefix($0) }) { return true }
         let head = trimmed.prefix(8)
         return head.count == 8 && head.allSatisfy(\.isHexDigit)
@@ -158,7 +170,7 @@ public enum ChatCitation: Hashable, Sendable {
     }
 
     /// The answer as text and citations in order. A marker the model got wrong (it starts as one:
-    /// a key, "key ", "change ", "web ", "doc ") is dropped with its gap, never shown raw; any
+    /// a key, "key ", "change ", "web ", "doc ", "mat ") is dropped with its gap, never shown raw; any
     /// other "[[" stays text (code). Adjacent text runs are merged; a space before a citation stays
     /// in the text before it.
     public static func pieces(of text: String) -> [ChatAnswerPiece] {

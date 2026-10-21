@@ -321,6 +321,14 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     public var semester: SemesterValues?
     // agent_memory (ln: a `preference` memory's notes length, `notes_rule`)
     public var notesRule: NotesRule?
+    // course_material (mt: `material_kind`, `material_primary`) and material_coverage
+    // (`material_coverage`)
+    public var materialKind: MaterialKind?
+    public var materialKindSource: MaterialKindSource?
+    /// `material_primary`: the course's primary material before / after (nil: none).
+    public var materialID: CourseMaterial.ID?
+    /// `material_coverage`: the student's row (nil with `exists` false: there was none).
+    public var coverage: MaterialCoverageValues?
 
     public init(
         exists: Bool? = nil,
@@ -358,8 +366,16 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         spanUpdatedAt: Date? = nil,
         universityProfile: UniversityProfile? = nil,
         semester: SemesterValues? = nil,
-        notesRule: NotesRule? = nil
+        notesRule: NotesRule? = nil,
+        materialKind: MaterialKind? = nil,
+        materialKindSource: MaterialKindSource? = nil,
+        materialID: CourseMaterial.ID? = nil,
+        coverage: MaterialCoverageValues? = nil
     ) {
+        self.materialKind = materialKind
+        self.materialKindSource = materialKindSource
+        self.materialID = materialID
+        self.coverage = coverage
         self.exists = exists
         self.startsAt = startsAt
         self.endsAt = endsAt

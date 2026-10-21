@@ -200,7 +200,7 @@ public struct TutorChat: Sendable {
         let moment = source.time.map { library.momentCite(lectureID, recording: source.recordingID, seconds: $0) }
         switch source.kind {
         case .transcript: return moment ?? slide
-        case .slide, .note, .furtherReading: return slide ?? moment
+        case .slide, .note, .furtherReading, .material: return slide ?? moment
         }
     }
 }

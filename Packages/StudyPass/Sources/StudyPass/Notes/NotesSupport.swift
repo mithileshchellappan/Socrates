@@ -59,6 +59,9 @@ struct NotesChips: Sendable {
             return found.duration <= 0 ? seconds < 6 * 3_600 : Double(seconds) <= found.duration + 1
         case .web, .change, .document:
             return false
+        case .material:
+            // mt: book passages' markers (workstream B: only those given in the input).
+            return false
         }
     }
 

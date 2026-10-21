@@ -28,6 +28,10 @@ public enum Log {
     /// ln: queueing, writing and setting aside lecture notes (StudyPass's `NotesWriter` logs here
     /// too): every version that is not written says why, at notice level or above.
     public static let lectureNotes = logger(category: "lecture-notes")
+    /// mt: course materials (adding, reading, sections, links, cards, coverage).
+    public static let materials = logger(category: "materials")
+    /// Public https fetches (`PublicFetch`: the study pass's source check, links of materials).
+    public static let web = logger(category: "web")
 
     /// A state-machine write (a task or job row moving on: finish, pause) that must not fail
     /// silently: a failure is logged and the write tried once more after a moment. Nil when both

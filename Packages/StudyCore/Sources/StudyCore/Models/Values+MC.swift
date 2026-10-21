@@ -342,6 +342,9 @@ public struct ReadingReason: StringKind {
     public static let depth: Self = "depth"
     /// The student added it (through the agent).
     public static let user: Self = "user"
+    /// mt: a section of the course's book a lecture covers (the study pass's `cover` unit;
+    /// `material_id`, `material_section_id`). The coach schedules it only by its gap-fill rules.
+    public static let book: Self = "book"
 }
 
 // MARK: - Plan rules (situational choices, kept in agent memory)

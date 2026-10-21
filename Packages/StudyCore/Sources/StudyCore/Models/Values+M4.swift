@@ -59,6 +59,10 @@ public struct StudyStage: StringKind {
     public static let synthesize: Self = "synthesize"
     /// Haiku with Claude Code's WebSearch/WebFetch only, one per picked topic: further reading.
     public static let research: Self = "research"
+    /// mt: Haiku, one per lecture, after `synthesize` and before `research`, only while the course
+    /// has a ready file material with sections: which sections the lecture covers
+    /// (`material_coverage`), book further reading and book readings. Candidates picked on device.
+    public static let cover: Self = "cover"
 
     /// `api_call.purpose` prefix of the study pass's calls.
     public static let callPurposePrefix = "study."
