@@ -8,6 +8,7 @@ import MailUI
 import NotesUI
 import ReviewUI
 import StudyCore
+import StudyUI
 import SwiftUI
 
 @main
@@ -104,6 +105,11 @@ struct SocratesApp: App {
                 // mc: Practice (a round's choices, Play Sentence, Next; an exam's Flag, Previous /
                 // Next Question, Pause, Submit), published by the round and exam screens.
                 PracticeCommands()
+                // nl: View ▸ Actual Size ⌘0, Zoom In ⌘+ / ⌘=, Zoom Out ⌘− (the course screens'
+                // reading content; off where no zoomable screen shows). Mac only.
+                #if os(macOS)
+                ContentZoomCommands()
+                #endif
             }
         }
 
