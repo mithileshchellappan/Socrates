@@ -8,10 +8,11 @@ import PackageDescription
 //                    evaluator, the Mermaid subset parsed and laid out in pure Swift, `CodeLexer`,
 //                    text-quote anchors for the student's marks.
 //   StudyPageUI      platform UI: the block views (SwiftMath formulas, Swift Charts, diagrams in a
-//                    Canvas, code, tables, callouts, slides with the student's ink, professor
-//                    quotes from their rows, the student's notes as Notes draws them), the figure
-//                    checker, and `LectureNotesView`: one read-only TextKit 2 document with
-//                    select-and-ask, kept answers and highlights.
+//                    Canvas, code, tables, callouts, slides, professor quotes from their rows), the
+//                    figure checker, `LectureNotesView`: one read-only TextKit 2 document with
+//                    select-and-ask, kept answers and highlights, at the page's width with its
+//                    figures breaking out (`NotesPageLayout`, nl), and `YourNotesColumn`: the
+//                    student's own notes and ink for the lecture beside it, edited in place.
 let package = Package(
     name: "StudyPage",
     platforms: [.macOS(.v26), .iOS(.v26)],
@@ -24,8 +25,8 @@ let package = Package(
         .package(path: "../StudyUI"),
         // Slide figures draw pages with `SlideDeck` / `SlideImageView`.
         .package(path: "../Capture"),
-        // The student's notes inside the lecture notes are drawn as Notes draws them, and the
-        // document reuses NotesUI's TextKit 2 attachment machinery.
+        // Your notes edits the student's notes with Notes' editor (`SlideNoteEditor`, `NoteEditor`),
+        // and the document reuses NotesUI's TextKit 2 attachment machinery.
         .package(path: "../Notes"),
         // Formulas (MIT; its math fonts under the GUST and SIL OFL licences, MIT for the bundle's
         // tables: tools/oss/notices.tsv).

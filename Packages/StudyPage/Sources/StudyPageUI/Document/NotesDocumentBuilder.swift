@@ -16,7 +16,6 @@ protocol NotesDocumentActions: NotesSizeObserver {
     func keptAnswerHovered(_ mark: LectureNotesMark.ID, _ hovered: Bool)
     func removeKept(_ mark: LectureNotesMark)
     func continueInChat(_ mark: LectureNotesMark)
-    func editInReview(_ note: Note)
 }
 
 /// One paragraph of the document (with its newline) and what it is drawn from: a unit whose
@@ -42,20 +41,26 @@ struct NotesBuild {
     var orphaned: Set<LectureNotesMark.ID> = []
 }
 
-/// The notes as one read-only TextKit document (docs/plan-lecture-notes.md §2): the overview with
-/// the document's one sparkle, then one section per topic (heading with its chip and the amber
-/// star, Claude's prose in grey with primary emphasis, figures, the professor's quotes, the
-/// student's notes in primary, Check yourself), the student's highlights and kept answers.
+/// The notes as one read-only TextKit document (docs/plan-lecture-notes.md §2, docs/plan-notes-
+/// layout.md §3): the overview with the document's one sparkle, then one section per topic
+/// (heading with its chip and the amber star, Claude's prose in grey with primary emphasis,
+/// figures, the professor's quotes, Check yourself), the student's highlights and kept answers.
+/// The student's own notes are not drawn in it (nl: they are beside it, in Your notes; an older
+/// version's `note` fence draws as nothing). Paragraphs are built without the page's prose inset
+/// (`.notesBaseStyle`); the coordinator indents them (`NotesIndent`), so a width change never
+/// builds anything again. Code, tables, diagrams, charts and slides break out to the full width.
 @MainActor
 final class NotesDocumentBuilder {
     let input: NotesDocumentInput
     let metrics: NotesMetrics
-    let containerWidth: CGFloat
     weak var actions: (any NotesDocumentActions)?
-    let noteRendering: NoteTextRendering
     /// Marks already found in an unchanged section text (kept by the view across builds).
     let anchors: NotesAnchorCache
-    /// Changes everything (style, appearance): part of every signature.
+    /// The body and Markdown already parsed (a zoom or appearance change parses nothing again).
+    let parsed: NotesParseCache
+    /// The page's inset, for blocks at the measure.
+    let measure: NotesLayoutBox
+    /// Changes everything (style, appearance, zoom): part of every signature.
     let stamp: String
 
     private var dark: Bool { input.isDark }
@@ -63,17 +68,19 @@ final class NotesDocumentBuilder {
     private var greyInk: NSColor { NotesNSInk.secondary(dark) }
 
     init(
-        input: NotesDocumentInput, containerWidth: CGFloat, actions: any NotesDocumentActions, noteRendering: NoteTextRendering,
-        anchors: NotesAnchorCache
+        input: NotesDocumentInput, actions: any NotesDocumentActions, anchors: NotesAnchorCache, parsed: NotesParseCache,
+        measure: NotesLayoutBox
     ) {
         self.input = input
-        metrics = NotesMetrics(style: input.style)
-        self.containerWidth = containerWidth
+        metrics = NotesMetrics(style: input.style, zoom: input.zoom)
         self.actions = actions
-        self.noteRendering = noteRendering
         self.anchors = anchors
-        stamp = "\(input.style)|\(input.isDark)"
+        self.parsed = parsed
+        self.measure = measure
+        stamp = "\(input.style)|\(input.isDark)|\(input.zoom)"
     }
+
+    private func scaled(_ points: CGFloat) -> CGFloat { metrics.scaled(points) }
 
     // MARK: The document
 
@@ -83,7 +90,7 @@ final class NotesDocumentBuilder {
             build.units = placeholderDocument()
             return build
         }
-        let document = LectureNotesFormat.parse(notes.body)
+        let document = parsed.document(notes.body)
         let writing = notes.state == .generating || notes.state == .paused || notes.state == .queued
         let lastKey = document.parts.last?.key
         var sectionsUnits: [(key: String, heading: [NotesUnit], body: [NotesUnit])] = []
@@ -223,20 +230,20 @@ final class NotesDocumentBuilder {
     }
 
     /// Before the text: the outline's headings over skeleton lines while queued, writing or paused.
-    /// No Claude Code, or a version that failed before its first words: the headings with the
-    /// student's notes in place and one line saying why (failed: the triangle and Write Again…).
-    /// No version at all (nothing to write from yet): nothing, never a skeleton that waits forever.
+    /// No Claude Code, or a version that failed before its first words: the headings and one line
+    /// saying why (failed: the triangle and Write Again…). No version at all (nothing to write
+    /// from yet): nothing, never a skeleton that waits forever.
     private func placeholderDocument() -> [NotesUnit] {
         var units: [NotesUnit] = []
         let outline = input.outline
         if let sentence = input.unavailable {
-            units = headingsWithStudentNotes(outline)
+            units = outline.map { headingUnit($0, title: $0.title) }
             units.append(lineUnit(sentence, sectionKey: outline.last?.key ?? LectureNotesFormat.overviewKey))
             return units
         }
         guard let notes = input.notes else { return [] }
         if notes.state == .failed || notes.state == .done || notes.state == .cancelled {
-            units = headingsWithStudentNotes(outline)
+            units = outline.map { headingUnit($0, title: $0.title) }
             units.append(failureUnit(notes, sectionKey: outline.last?.key ?? LectureNotesFormat.overviewKey))
             return units
         }
@@ -251,25 +258,6 @@ final class NotesDocumentBuilder {
         if outline.isEmpty {
             units.append(skeletonUnit(LectureNotesFormat.overviewKey, widths: [0.94, 0.82, 0.5]))
         }
-        return units
-    }
-
-    /// The outline's headings with the student's notes under the section they belong to (by slide,
-    /// else by time); the rest after the last.
-    private func headingsWithStudentNotes(_ outline: [LectureNotesSection]) -> [NotesUnit] {
-        var units: [NotesUnit] = []
-        var remaining = input.studentNotes.filter { !$0.isBlank }
-        for section in outline {
-            units.append(headingUnit(section, title: section.title))
-            let inSection = remaining.filter { note in
-                if let page = note.pageNumber { return section.covers(page: page) }
-                if let time = note.audioTime, let start = section.startTime { return time >= start && time < (section.endTime ?? .infinity) }
-                return false
-            }
-            remaining.removeAll { note in inSection.contains { $0.id == note.id } }
-            for note in inSection { units.append(studentNoteUnit(note, sectionKey: section.key)) }
-        }
-        for note in remaining { units.append(studentNoteUnit(note, sectionKey: outline.last?.key ?? LectureNotesFormat.overviewKey)) }
         return units
     }
 
@@ -297,15 +285,22 @@ final class NotesDocumentBuilder {
 
     private var bodyFont: NSFont { NSFont.systemFont(ofSize: metrics.body) }
 
-    private func base(_ sectionKey: String, role: NotesRole, font: NSFont? = nil, color: NSColor? = nil, style: NSParagraphStyle? = nil) -> [NSAttributedString.Key: Any] {
+    /// A paragraph's attributes. Its style is the base style the page's inset is added to
+    /// (`NotesIndent`); a breakout (`atMeasure` false) keeps its style as it is, the full width.
+    private func base(
+        _ sectionKey: String, role: NotesRole, font: NSFont? = nil, color: NSColor? = nil, style: NSParagraphStyle? = nil, atMeasure: Bool = true
+    ) -> [NSAttributedString.Key: Any] {
         let font = font ?? bodyFont
-        return [
+        let style = style ?? paragraphStyle(font: font)
+        var attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: color ?? greyInk,
-            .paragraphStyle: style ?? paragraphStyle(font: font),
+            .paragraphStyle: style,
             .notesSection: sectionKey,
             .notesRole: role.rawValue
         ]
+        if atMeasure { attributes[.notesBaseStyle] = style }
+        return attributes
     }
 
     private func unit(_ signature: String, _ text: NSAttributedString, section: String, role: NotesRole) -> NotesUnit {
@@ -322,15 +317,17 @@ final class NotesDocumentBuilder {
     /// verified exam hint, its one chip at the line's end (a moment, else its first slide).
     func headingUnit(_ section: LectureNotesSection, title: String) -> NotesUnit {
         let font = NSFont.systemFont(ofSize: metrics.sectionHeading, weight: .semibold)
-        let style = paragraphStyle(spacingBefore: metrics.sectionSpacingBefore - metrics.paragraphSpacing, spacing: 8, font: font, lineHeight: font.pointSize + 5)
-        style.tabStops = [NSTextTab(textAlignment: .right, location: max(40, containerWidth), options: [:])]
+        let style = paragraphStyle(
+            spacingBefore: metrics.sectionSpacingBefore - metrics.paragraphSpacing, spacing: scaled(8), font: font, lineHeight: font.pointSize + scaled(5)
+        )
+        // The chip's tab is set at the measure's end with the inset (`NotesIndent`).
         style.tailIndent = 0
         var attributes = base(section.key, role: .heading, font: font, color: labelInk, style: style)
         attributes[.notesHeading] = section.key
         let text = NSMutableAttributedString(string: title, attributes: attributes)
-        if section.hasExamHint, let star = ImageAttachment.symbol("star", size: metrics.sectionHeading - 3, weight: .semibold, color: NotesNSInk.professor(dark)) {
+        if section.hasExamHint, let star = ImageAttachment.symbol("star", size: metrics.sectionHeading - scaled(3), weight: .semibold, color: NotesNSInk.professor(dark)) {
             text.append(NSAttributedString(string: " ", attributes: attributes))
-            text.append(ImageAttachment.string(star, baseline: -1, plainText: "", attributes: attributes))
+            text.append(ImageAttachment.string(star, baseline: -scaled(1), plainText: "", attributes: attributes))
         }
         var chipSignature = ""
         if let chip = headingChip(section) {
@@ -341,7 +338,7 @@ final class NotesDocumentBuilder {
             chipSignature = chip.signature
         }
         let folded = input.folded.contains(section.key)
-        return unit("h|\(section.key)|\(title)|\(section.hasExamHint)|\(chipSignature)|\(folded)|\(Int(containerWidth))", text, section: section.key, role: .heading)
+        return unit("h|\(section.key)|\(title)|\(section.hasExamHint)|\(chipSignature)|\(folded)", text, section: section.key, role: .heading)
     }
 
     private func headingChip(_ section: LectureNotesSection) -> (attachment: NotesAttachment, signature: String)? {
@@ -356,22 +353,23 @@ final class NotesDocumentBuilder {
         return nil
     }
 
-    /// A chip: `TimeChip` (a moment) or `SlideChip`, "L2 · S14" for another lecture's.
+    /// A chip: a moment (play glyph, accent) or a slide ("S13"; "L2 · S14" for another lecture's),
+    /// at the zoom's size.
     private func chipAttachment(_ target: NotesChipTarget) -> NotesAttachment {
         let actions = actions
+        let size = metrics.chip
         switch target {
         case .slide(let lecture, let page):
             let prefix = lecture == input.lectureID ? nil : input.lectures.values.first { $0.id == lecture }?.number.map { "L\($0)" }
             let text = prefix.map { "\($0) · S\(page)" } ?? "S\(page)"
-            if prefix == nil {
-                return InlineViewAttachment(SlideChip(page: page) { actions?.open(target) }, plainText: text)
-            }
-            return InlineViewAttachment(PrefixedSlideChip(text: text) { actions?.open(target) }, plainText: text)
+            return InlineViewAttachment(
+                NotesChip(text: text, size: size) { actions?.open(target) }, plainText: text, baseline: -scaled(3.5)
+            )
         case .moment(_, _, let seconds):
             let prefix = target.lectureID == input.lectureID ? nil : input.lectures.values.first { $0.id == target.lectureID }?.number.map { "L\($0)" }
+            let text = prefix.map { "\($0) · \(TimeText.clock(seconds))" } ?? TimeText.clock(seconds)
             return InlineViewAttachment(
-                TimeChip(seconds, prefix: prefix, showsPlayGlyph: true) { actions?.open(target) },
-                plainText: prefix.map { "\($0) · \(TimeText.clock(seconds))" } ?? TimeText.clock(seconds)
+                NotesChip(text: text, kind: .moment, size: size) { actions?.open(target) }, plainText: text, baseline: -scaled(3.5)
             )
         }
     }
@@ -390,7 +388,7 @@ final class NotesDocumentBuilder {
         for (blockIndex, block) in part.blocks.enumerated() {
             switch block {
             case .markdown(let text):
-                for (index, markdown) in MarkdownBlock.blocks(text, alerts: true).enumerated() {
+                for (index, markdown) in parsed.blocks(text).enumerated() {
                     if case .heading(level: 2, text: _) = markdown, !titleSkipped {
                         titleSkipped = true
                         continue
@@ -415,8 +413,8 @@ final class NotesDocumentBuilder {
         case .paragraph(let text):
             let attributes = base(sectionKey, role: .body)
             let content = NSMutableAttributedString()
-            if sparkle, let mark = ImageAttachment.symbol("sparkle", size: metrics.body - 1, color: NotesNSInk.ai(dark)) {
-                content.append(ImageAttachment.string(mark, baseline: -2, plainText: "", attributes: attributes))
+            if sparkle, let mark = ImageAttachment.symbol("sparkle", size: metrics.body - scaled(1), color: NotesNSInk.ai(dark)) {
+                content.append(ImageAttachment.string(mark, baseline: -scaled(2), plainText: "", attributes: attributes))
                 content.append(NSAttributedString(string: " ", attributes: attributes))
                 sparkle = false
             }
@@ -424,17 +422,19 @@ final class NotesDocumentBuilder {
             return [unit("p|\(id)|\(text)|\(content.length)", content, section: sectionKey, role: .body)]
         case .heading(_, let text):
             let font = NSFont.systemFont(ofSize: metrics.subheading, weight: .semibold)
-            let style = paragraphStyle(spacingBefore: max(4, 18 - metrics.paragraphSpacing), spacing: 6, font: font, lineHeight: font.pointSize + 5)
+            let style = paragraphStyle(
+                spacingBefore: max(scaled(4), scaled(18) - metrics.paragraphSpacing), spacing: scaled(6), font: font, lineHeight: font.pointSize + scaled(5)
+            )
             let attributes = base(sectionKey, role: .body, font: font, color: labelInk, style: style)
             return [unit("h5|\(text)", inline(text, attributes: attributes, emphasisColor: labelInk), section: sectionKey, role: .body)]
         case .list(let items):
             return items.enumerated().map { index, item in
-                let indent: CGFloat = 22 + CGFloat(item.depth) * 18
-                let style = paragraphStyle(spacing: index == items.count - 1 ? metrics.paragraphSpacing : 4, font: bodyFont)
+                let indent = scaled(22 + CGFloat(item.depth) * 18)
+                let style = paragraphStyle(spacing: index == items.count - 1 ? metrics.paragraphSpacing : scaled(4), font: bodyFont)
                 style.headIndent = indent
                 style.firstLineHeadIndent = 0
                 style.tabStops = [
-                    NSTextTab(textAlignment: .right, location: indent - 7, options: [:]), NSTextTab(textAlignment: .left, location: indent, options: [:])
+                    NSTextTab(textAlignment: .right, location: indent - scaled(7), options: [:]), NSTextTab(textAlignment: .left, location: indent, options: [:])
                 ]
                 let attributes = base(sectionKey, role: .body, style: style)
                 let text = NSMutableAttributedString(string: "\t", attributes: attributes)
@@ -447,11 +447,13 @@ final class NotesDocumentBuilder {
                 return unit("li|\(id).\(index)|\(item.marker)|\(item.depth)|\(item.text)", text, section: sectionKey, role: .body)
             }
         case .table(let table):
+            // A breakout: the page's full width.
             let attachment = HostedBlockAttachment(
-                TableBlockView(table: table, size: metrics.small), estimate: CGFloat(table.rows.count + 1) * 31, margin: 2,
+                TableBlockView(table: table, size: metrics.small, zoom: metrics.zoom, fills: input.style == .page),
+                estimate: CGFloat(table.rows.count + 1) * scaled(31), margin: 2,
                 plainText: ([table.header] + table.rows).map { $0.joined(separator: "\t") }.joined(separator: "\n")
             )
-            return [blockUnit(attachment, signature: "tb|\(id)|\(table.header)|\(table.rows)", sectionKey: sectionKey, spacing: 14)]
+            return [blockUnit(attachment, signature: "tb|\(id)|\(table.header)|\(table.rows)", sectionKey: sectionKey, spacing: scaled(14), breakout: true)]
         case .code(let code, let language):
             return [codeUnit(code, language: language, sectionKey: sectionKey, id: id)]
         case .quote(let text):
@@ -459,8 +461,8 @@ final class NotesDocumentBuilder {
         case .callout(let kind, let text):
             return [calloutUnit(kind: kind.rawValue, text: text, sectionKey: sectionKey, id: id)]
         case .rule:
-            let attachment = HostedBlockAttachment(Hairline(), estimate: 1, margin: 6)
-            return [blockUnit(attachment, signature: "hr|\(id)", sectionKey: sectionKey, spacing: 8)]
+            let attachment = HostedBlockAttachment(Hairline(), estimate: 1, margin: 6, measure: measure)
+            return [blockUnit(attachment, signature: "hr|\(id)", sectionKey: sectionKey, spacing: scaled(8))]
         }
     }
 
@@ -468,11 +470,11 @@ final class NotesDocumentBuilder {
     /// text, so it reads and selects with the rest; the fragment draws the fill.
     private func calloutUnit(kind: String, text: String, sectionKey: String, id: String) -> NotesUnit {
         let isQuote = kind == "quote"
-        let style = paragraphStyle(spacingBefore: isQuote ? 2 : 12, spacing: isQuote ? metrics.paragraphSpacing : 26, font: bodyFont)
-        let indent: CGFloat = isQuote ? 12 : 40
+        let style = paragraphStyle(spacingBefore: scaled(isQuote ? 2 : 12), spacing: isQuote ? metrics.paragraphSpacing : scaled(26), font: bodyFont)
+        let indent = scaled(isQuote ? 12 : 40)
         style.headIndent = indent
         style.firstLineHeadIndent = indent
-        style.tailIndent = isQuote ? 0 : -14
+        style.tailIndent = isQuote ? 0 : -scaled(14)
         var attributes = base(sectionKey, role: .body, style: style)
         attributes[.notesCallout] = kind
         let joined = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
@@ -528,24 +530,29 @@ final class NotesDocumentBuilder {
         return result
     }
 
-    /// A block attachment on a line of its own.
-    private func blockUnit(_ attachment: NotesAttachment, signature: String, sectionKey: String, role: NotesRole = .body, spacingBefore: CGFloat = 2, spacing: CGFloat = 14) -> NotesUnit {
+    /// A block attachment on a line of its own: at the measure (indented with the prose; its
+    /// attachment built with `measure`), or a breakout at the text view's full width.
+    private func blockUnit(
+        _ attachment: NotesAttachment, signature: String, sectionKey: String, role: NotesRole = .body, spacingBefore: CGFloat? = nil,
+        spacing: CGFloat? = nil, breakout: Bool = false
+    ) -> NotesUnit {
         attachment.host = actions
         let style = NSMutableParagraphStyle()
-        style.paragraphSpacingBefore = spacingBefore
-        style.paragraphSpacing = spacing
-        var attributes = base(sectionKey, role: role, style: style)
+        style.paragraphSpacingBefore = spacingBefore ?? scaled(2)
+        style.paragraphSpacing = spacing ?? scaled(14)
+        var attributes = base(sectionKey, role: role, style: style, atMeasure: !breakout)
         attributes[.attachment] = attachment.attachment()
         return unit(signature, NSAttributedString(string: "\u{FFFC}", attributes: attributes), section: sectionKey, role: role)
     }
 
+    /// Code: a breakout at the page's full width.
     private func codeUnit(_ code: String, language: String, sectionKey: String, id: String) -> NotesUnit {
         let lines = max(1, code.split(separator: "\n", omittingEmptySubsequences: false).count)
         let attachment = HostedBlockAttachment(
-            CodeBlockView(code: code, language: language, size: metrics.code), estimate: CGFloat(lines) * metrics.code * 1.5 + 24,
-            plainText: code
+            CodeBlockView(code: code, language: language, size: metrics.code, zoom: metrics.zoom),
+            estimate: CGFloat(lines) * metrics.code * 1.5 + scaled(24), plainText: code
         )
-        return blockUnit(attachment, signature: "code|\(id)|\(language)|\(code)", sectionKey: sectionKey, spacing: 16)
+        return blockUnit(attachment, signature: "code|\(id)|\(language)|\(code)", sectionKey: sectionKey, spacing: scaled(16), breakout: true)
     }
 
     // MARK: Fences
@@ -555,56 +562,69 @@ final class NotesDocumentBuilder {
         if fence.kind == .code {
             return [codeUnit(fence.body, language: fence.language, sectionKey: sectionKey, id: id)]
         }
+        // nl: an older version's `note` fence (the student's notes are beside the text now).
+        if fence.kind == .note { return [] }
         guard fence.isClosed else {
-            // A placeholder at about the block's final height until its fence closes.
+            // A placeholder at about the block's final height until its fence closes: figures break
+            // out, the rest sits at the measure.
             let height: CGFloat = switch fence.kind {
-            case .chart: metrics.chartHeight + 20
-            case .diagram: 160
-            case .slide: metrics.slideWidth * 9 / 16 + 26
-            case .math: 30
-            default: 40
+            case .chart: metrics.chartHeight + scaled(20)
+            case .diagram: scaled(160)
+            case .slide: metrics.slideWidth * 9 / 16 + scaled(26)
+            case .math: scaled(30)
+            default: scaled(40)
             }
-            return [blockUnit(HostedBlockAttachment(PlaceholderBlock(height: height), estimate: height, margin: 2), signature: "ph|\(id)|\(fence.kind)", sectionKey: sectionKey)]
+            let breakout = fence.kind == .chart || fence.kind == .diagram || fence.kind == .slide
+            let attachment = HostedBlockAttachment(PlaceholderBlock(height: height), estimate: height, margin: 2, measure: breakout ? nil : measure)
+            return [blockUnit(attachment, signature: "ph|\(id)|\(fence.kind)", sectionKey: sectionKey, breakout: breakout)]
         }
         switch fence.kind {
         case .math:
             let latex = fence.body.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !latex.isEmpty else { return [] }
-            let size = metrics.style == .page ? 17.0 : 15.0
-            let style = paragraphStyle(spacingBefore: 4, spacing: 16, font: bodyFont)
+            let style = paragraphStyle(spacingBefore: scaled(4), spacing: scaled(16), font: bodyFont)
             style.alignment = .center
             let attributes = base(sectionKey, role: .body, color: labelInk, style: style)
-            if let image = MathRendering.image(latex, size: size, display: true, color: labelInk) {
-                return [unit(signature, ImageAttachment.string(image, baseline: -6, plainText: latex, attributes: attributes), section: sectionKey, role: .body)]
+            if let image = MathRendering.image(latex, size: metrics.displayMath, display: true, color: labelInk) {
+                return [unit(signature, ImageAttachment.string(image, baseline: -scaled(6), plainText: latex, attributes: attributes), section: sectionKey, role: .body)]
             }
             return [unit(signature, NSAttributedString(string: InlineMath.unicode(latex) ?? latex, attributes: attributes), section: sectionKey, role: .body)]
         case .diagram:
+            // A breakout: spread to the page's width up to a cap, else centred (the page; in Review's
+            // pane as before, at its natural size from the leading edge).
             guard case .success(let diagram) = Diagram.parse(fence.body) else { return [] }
             let layout = DiagramLayout.layout(diagram)
-            let attachment = HostedBlockAttachment(DiagramView(diagram: diagram), estimate: layout.size.height, plainText: fence.body)
-            return [blockUnit(attachment, signature: signature, sectionKey: sectionKey, spacingBefore: 6, spacing: 14)]
+            let attachment = HostedBlockAttachment(
+                DiagramView(diagram: diagram, scale: metrics.zoom, spreads: input.style == .page),
+                estimate: layout.size.height * metrics.zoom, plainText: fence.body
+            )
+            return [blockUnit(attachment, signature: signature, sectionKey: sectionKey, spacingBefore: scaled(6), spacing: scaled(14), breakout: true)]
         case .chart:
+            // A breakout at the page's width; it keeps its height.
             guard case .success(let spec) = ChartSpec.parse(fence.body) else { return [] }
             let attachment = HostedBlockAttachment(
-                ChartBlockView(spec: spec, height: metrics.chartHeight), estimate: metrics.chartHeight + 44, plainText: spec.title ?? ""
+                ChartBlockView(spec: spec, height: metrics.chartHeight, zoom: metrics.zoom), estimate: metrics.chartHeight + scaled(44),
+                plainText: spec.title ?? ""
             )
-            return [blockUnit(attachment, signature: signature, sectionKey: sectionKey, spacingBefore: 6, spacing: 14)]
+            return [blockUnit(attachment, signature: signature, sectionKey: sectionKey, spacingBefore: scaled(6), spacing: scaled(14), breakout: true)]
         case .slide:
+            // A breakout at most 640 wide (Review's pane: 296), centred on the page, its chip under its
+            // leading edge; never the student's ink (nl: it is in Your notes and on Review's slide).
             guard let ref = NotesSlideRef.parse(fence.body), case .slide(let key, let page) = ref.citation,
                   input.lectures[key]?.id == input.lectureID, let deck = input.deck,
                   input.pages.map({ $0.contains(page) }) ?? true
             else { return [] }
-            let width = min(metrics.slideWidth, containerWidth)
+            let width = metrics.slideWidth
             let actions = actions
             let lecture = input.lectureID
             let attachment = HostedBlockAttachment(
                 SlideFigureView(
-                    deck: deck, page: page, box: ref.box, caption: ref.caption, width: width, services: actions?.services,
-                    openSlide: { actions?.open(.slide(lecture: lecture, page: page)) }
+                    deck: deck, page: page, maxWidth: width, centred: input.style == .page, box: ref.box, caption: ref.caption,
+                    zoom: metrics.zoom, services: actions?.services, openSlide: { actions?.open(.slide(lecture: lecture, page: page)) }
                 ),
-                estimate: width * 9 / 16 + 26, plainText: "S\(page)"
+                estimate: width * 9 / 16 + scaled(26), plainText: "S\(page)"
             )
-            return [blockUnit(attachment, signature: signature + "|\(Int(width))", sectionKey: sectionKey, spacingBefore: 6, spacing: 18)]
+            return [blockUnit(attachment, signature: signature, sectionKey: sectionKey, spacingBefore: scaled(6), spacing: scaled(18), breakout: true)]
         case .quote:
             guard let citation = NotesQuoteRef.parse(fence.body), case .moment(_, _, let seconds) = citation,
                   let row = input.quotes.first(where: { NotesQuoteRef.matches($0, seconds: seconds) })
@@ -612,45 +632,23 @@ final class NotesDocumentBuilder {
             let actions = actions
             let lecture = input.lectureID
             let attachment = HostedBlockAttachment(
-                ProfessorQuoteView(annotation: row, size: metrics.small) { time in
+                ProfessorQuoteView(annotation: row, size: metrics.small, zoom: metrics.zoom) { time in
                     actions?.open(.moment(lecture: lecture, recording: row.recordingID, seconds: time))
                 },
-                estimate: 40, margin: 2, plainText: "“\(row.body)”"
+                estimate: scaled(40), margin: 2, plainText: "“\(row.body)”", measure: measure
             )
-            return [blockUnit(attachment, signature: signature + "|\(row.id)|\(row.body)", sectionKey: sectionKey, spacingBefore: 4, spacing: 16)]
-        case .note:
-            guard let key = NotesNoteRef.parse(fence.body),
-                  let note = input.studentNotes.first(where: { ChatCitation.key($0.id) == key }), !note.isBlank
-            else { return [] }
-            return [studentNoteUnit(note, sectionKey: sectionKey)]
-        case .check, .code:
+            return [blockUnit(attachment, signature: signature + "|\(row.id)|\(row.body)", sectionKey: sectionKey, spacingBefore: scaled(4), spacing: scaled(16))]
+        case .note, .check, .code:
             return []
         }
-    }
-
-    /// The student's note, as Notes draws it (primary, no sparkle), with its `SlideChip`: live,
-    /// so a note written later in Review shows here without a new version.
-    func studentNoteUnit(_ note: Note, sectionKey: String) -> NotesUnit {
-        let rendered = NSMutableAttributedString(attributedString: noteRendering.text(note.blocks))
-        let whole = NSRange(location: 0, length: rendered.length)
-        rendered.addAttributes([
-            .notesSection: sectionKey, .notesRole: NotesRole.studentNote.rawValue, .notesStudentNote: note.id.uuidString
-        ], range: whole)
-        if let page = note.pageNumber {
-            var attributes = rendered.length > 0 ? rendered.attributes(at: rendered.length - 1, effectiveRange: nil) : base(sectionKey, role: .studentNote)
-            attributes[.attachment] = chipAttachment(.slide(lecture: input.lectureID, page: page)).attachment()
-            attributes[.link] = nil
-            rendered.append(NSAttributedString(string: " ", attributes: attributes.filter { $0.key != .attachment }))
-            rendered.append(NSAttributedString(string: "\u{FFFC}", attributes: attributes))
-        }
-        return unit("n|\(note.id)|\(note.updatedAt.timeIntervalSinceReferenceDate)", rendered, section: sectionKey, role: .studentNote)
     }
 
     /// Check yourself: the sub-heading, the numbered questions, one folded "Answers" disclosure;
     /// open, the answers numbered under it.
     private func checkUnits(_ fence: NotesFence, sectionKey: String, index: Int) -> [NotesUnit] {
         guard fence.isClosed else {
-            return [blockUnit(HostedBlockAttachment(PlaceholderBlock(height: 60), estimate: 60, margin: 2), signature: "ph|check|\(index)", sectionKey: sectionKey)]
+            let attachment = HostedBlockAttachment(PlaceholderBlock(height: scaled(60)), estimate: scaled(60), margin: 2, measure: measure)
+            return [blockUnit(attachment, signature: "ph|check|\(index)", sectionKey: sectionKey)]
         }
         let items = NotesCheckItem.parse(fence.body)
         guard !items.isEmpty else { return [] }
@@ -662,9 +660,11 @@ final class NotesDocumentBuilder {
         let isOpen = input.answersOpen.contains(key)
         let actions = actions
         let disclosure = HostedBlockAttachment(
-            AnswersDisclosure(isOpen: isOpen) { actions?.toggleAnswers(key) }, estimate: 20, margin: 0
+            AnswersDisclosure(isOpen: isOpen, zoom: metrics.zoom) { actions?.toggleAnswers(key) }, estimate: scaled(20), margin: 0, measure: measure
         )
-        units.append(blockUnit(disclosure, signature: "ans|\(key)|\(isOpen)", sectionKey: sectionKey, spacingBefore: 0, spacing: isOpen ? 4 : metrics.paragraphSpacing))
+        units.append(blockUnit(
+            disclosure, signature: "ans|\(key)|\(isOpen)", sectionKey: sectionKey, spacingBefore: 0, spacing: isOpen ? scaled(4) : metrics.paragraphSpacing
+        ))
         if isOpen {
             for (number, item) in items.enumerated() {
                 units += numbered(number + 1, item.answer, sectionKey: sectionKey, id: "a\(index).\(number)", last: number == items.count - 1)
@@ -689,25 +689,27 @@ final class NotesDocumentBuilder {
         let actions = actions
         let attachment = HostedBlockAttachment(
             KeptAnswerView(
-                mark: mark, orphaned: orphaned, size: metrics.small, chips: input.chips,
+                mark: mark, orphaned: orphaned, size: metrics.small, zoom: metrics.zoom, chips: input.chips,
                 open: { actions?.open($0) },
                 hovered: { actions?.keptAnswerHovered(mark.id, $0) },
                 remove: { actions?.removeKept(mark) },
                 continueInChat: { actions?.continueInChat(mark) }
             ),
-            estimate: 90, margin: 0,
-            plainText: "\(mark.question ?? "")\n\(LectureNotesText.readable(mark.answer ?? ""))"
+            estimate: scaled(90), margin: 0,
+            plainText: "\(mark.question ?? "")\n\(LectureNotesText.readable(mark.answer ?? ""))", measure: measure
         )
         return blockUnit(
             attachment, signature: "k|\(mark.id)|\(mark.updatedAt.timeIntervalSinceReferenceDate)|\(orphaned)", sectionKey: sectionKey,
-            role: .kept, spacingBefore: 0, spacing: 16
+            role: .kept, spacingBefore: 0, spacing: scaled(16)
         )
     }
 
     private func skeletonUnit(_ sectionKey: String, widths: [CGFloat]) -> NotesUnit {
         let height = CGFloat(widths.count) * metrics.lineHeight
-        let attachment = HostedBlockAttachment(SkeletonLines(widths: widths, lineHeight: metrics.lineHeight), estimate: height, margin: 5)
-        return blockUnit(attachment, signature: "sk|\(sectionKey)|\(widths)", sectionKey: sectionKey, role: .chrome, spacingBefore: 0, spacing: 6)
+        let attachment = HostedBlockAttachment(
+            SkeletonLines(widths: widths, lineHeight: metrics.lineHeight), estimate: height, margin: 5, measure: measure
+        )
+        return blockUnit(attachment, signature: "sk|\(sectionKey)|\(widths)", sectionKey: sectionKey, role: .chrome, spacingBefore: 0, spacing: scaled(6))
     }
 
     private func progressUnit(_ notes: LectureNotes, sectionKey: String) -> NotesUnit {
@@ -719,26 +721,29 @@ final class NotesDocumentBuilder {
             let target = Double(max(1, notes.targetWords ?? 2_000))
             kind = .writing(min(0.98, max(0.02, words / target)))
         }
-        let attachment = HostedBlockAttachment(NotesProgressLine(kind: kind), estimate: 26, margin: 0)
+        let attachment = HostedBlockAttachment(NotesProgressLine(kind: kind, zoom: metrics.zoom), estimate: scaled(26), margin: 0, measure: measure)
         let signature: String = switch kind {
         case .writing(let fraction): "pr|w|\(Int(fraction * 100))"
         case .paused(let until): "pr|p|\(until.timeIntervalSinceReferenceDate)"
         }
-        return blockUnit(attachment, signature: signature, sectionKey: sectionKey, role: .chrome, spacingBefore: 2, spacing: 4)
+        return blockUnit(attachment, signature: signature, sectionKey: sectionKey, role: .chrome, spacingBefore: scaled(2), spacing: scaled(4))
     }
 
     private func failureUnit(_ notes: LectureNotes, sectionKey: String) -> NotesUnit {
         let actions = actions
         let canWrite = input.canWriteAgain
         let attachment = HostedBlockAttachment(
-            NotesFailureLine(reason: notes.error, canWrite: canWrite) { actions?.writeAgain() }, estimate: 26, margin: 2
+            NotesFailureLine(reason: notes.error, canWrite: canWrite, zoom: metrics.zoom) { actions?.writeAgain() }, estimate: scaled(26), margin: 2,
+            measure: measure
         )
-        return blockUnit(attachment, signature: "fail|\(canWrite)|\(notes.error ?? "")", sectionKey: sectionKey, role: .chrome, spacingBefore: 8)
+        return blockUnit(attachment, signature: "fail|\(canWrite)|\(notes.error ?? "")", sectionKey: sectionKey, role: .chrome, spacingBefore: scaled(8))
     }
 
     private func lineUnit(_ sentence: String, sectionKey: String) -> NotesUnit {
-        let font = NSFont.systemFont(ofSize: 12)
-        let attributes = base(sectionKey, role: .chrome, font: font, color: greyInk, style: paragraphStyle(spacingBefore: 10, font: font, lineHeight: 17))
+        let font = NSFont.systemFont(ofSize: scaled(12))
+        let attributes = base(
+            sectionKey, role: .chrome, font: font, color: greyInk, style: paragraphStyle(spacingBefore: scaled(10), font: font, lineHeight: scaled(17))
+        )
         return unit("line|\(sentence)", NSAttributedString(string: sentence, attributes: attributes), section: sectionKey, role: .chrome)
     }
 }
@@ -769,40 +774,47 @@ final class NotesAnchorCache {
     }
 }
 
-/// "S13", or "L2 · S14" for another lecture's slide: `SlideChip`'s capsule with a prefix.
-struct PrefixedSlideChip: View {
-    let text: String
-    let action: () -> Void
+/// The notes' body and Markdown blocks as parsed (nl, §11): a zoom or appearance change builds the
+/// document's attributes again without parsing anything again. Holds the last body's parse and
+/// the blocks of up to 2,048 Markdown runs.
+@MainActor
+final class NotesParseCache {
+    private var lastBody: String?
+    private var lastDocument: LectureNotesDocument?
+    private var markdown: [String: [MarkdownBlock]] = [:]
 
-    var body: some View {
-        Button(action: action) {
-            Text(verbatim: text)
-                .monospacedDigit()
-                .font(.chip)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 1)
-                .foregroundStyle(.secondary)
-                .background(.quaternary, in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(verbatim: text))
+    func document(_ body: String) -> LectureNotesDocument {
+        if body == lastBody, let lastDocument { return lastDocument }
+        let document = LectureNotesFormat.parse(body)
+        lastBody = body
+        lastDocument = document
+        return document
+    }
+
+    func blocks(_ text: String) -> [MarkdownBlock] {
+        if let blocks = markdown[text] { return blocks }
+        if markdown.count >= 2_048 { markdown.removeAll(keepingCapacity: true) }
+        let blocks = MarkdownBlock.blocks(text, alerts: true)
+        markdown[text] = blocks
+        return blocks
     }
 }
 
 /// The one "Answers" disclosure under Check yourself (folded by default).
 struct AnswersDisclosure: View {
     let isOpen: Bool
+    var zoom: CGFloat = 1
     let toggle: () -> Void
 
     var body: some View {
         Button(action: toggle) {
-            HStack(spacing: 6) {
+            HStack(spacing: 6 * zoom) {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 9 * zoom, weight: .bold))
                     .foregroundStyle(.tertiary)
                     .rotationEffect(.degrees(isOpen ? 90 : 0))
                 Text("Answers")
-                    .font(.system(size: 12))
+                    .font(.system(size: 12 * zoom))
                     .foregroundStyle(.secondary)
             }
             .contentShape(Rectangle())
@@ -818,10 +830,11 @@ struct AnswersDisclosure: View {
 struct NotesFailureLine: View {
     let reason: String?
     var canWrite = true
+    var zoom: CGFloat = 1
     let writeAgain: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 6 * zoom) {
             Image(systemName: "exclamationmark.triangle")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
@@ -838,7 +851,7 @@ struct NotesFailureLine: View {
                 .fixedSize()
                 .padding(.leading, 2)
         }
-        .font(.system(size: 12))
+        .font(.system(size: 12 * zoom))
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
     }

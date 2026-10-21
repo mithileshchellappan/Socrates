@@ -8,6 +8,8 @@ import SwiftUI
 struct ChartBlockView: View {
     let spec: ChartSpec
     let height: CGFloat
+    /// The notes' content zoom: the title, axes, legend and caption grow with the text.
+    var zoom: CGFloat = 1
 
     /// Series colours that keep clear of the reserved meanings (DESIGN 3.1).
     static let palette: [Color] = [.indigo, .teal, .pink, .brown, .blue, .mint]
@@ -25,10 +27,10 @@ struct ChartBlockView: View {
 
     var body: some View {
         let names = seriesNames
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 6 * zoom) {
             if let title = spec.title, !title.isEmpty {
                 Text(verbatim: title)
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.system(size: 12.5 * zoom, weight: .semibold))
                     .foregroundStyle(.primary)
             }
             plot(names: names)
@@ -38,7 +40,7 @@ struct ChartBlockView: View {
             }
             if let caption = spec.caption, !caption.isEmpty {
                 Text(verbatim: caption)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12 * zoom))
                     .foregroundStyle(.secondary)
             }
         }
@@ -92,7 +94,7 @@ struct ChartBlockView: View {
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
                     .annotation(position: .top, alignment: .leading) {
                         Text(verbatim: mark.label)
-                            .font(.system(size: 11))
+                            .font(.system(size: 11 * zoom))
                             .foregroundStyle(.secondary)
                     }
             }
@@ -103,20 +105,20 @@ struct ChartBlockView: View {
             AxisMarks { _ in
                 AxisGridLine().foregroundStyle(Color.primary.opacity(0.09))
                 AxisTick().foregroundStyle(Color.primary.opacity(0.25))
-                AxisValueLabel().font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.secondary)
+                AxisValueLabel().font(.system(size: 11 * zoom, design: .monospaced)).foregroundStyle(Color.secondary)
             }
         }
         .chartYAxis {
             AxisMarks(position: .leading) { _ in
                 AxisGridLine().foregroundStyle(Color.primary.opacity(0.09))
-                AxisValueLabel().font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.secondary)
+                AxisValueLabel().font(.system(size: 11 * zoom, design: .monospaced)).foregroundStyle(Color.secondary)
             }
         }
         .chartXAxisLabel {
-            if let title = spec.x?.title { Text(verbatim: title).font(.system(size: 11)).foregroundStyle(.secondary) }
+            if let title = spec.x?.title { Text(verbatim: title).font(.system(size: 11 * zoom)).foregroundStyle(.secondary) }
         }
         .chartYAxisLabel {
-            if let title = spec.y?.title { Text(verbatim: title).font(.system(size: 11)).foregroundStyle(.secondary) }
+            if let title = spec.y?.title { Text(verbatim: title).font(.system(size: 11 * zoom)).foregroundStyle(.secondary) }
         }
         if spec.kind != .bar, spec.x?.scale == .log || spec.y?.scale == .log {
             base
@@ -130,7 +132,7 @@ struct ChartBlockView: View {
     }
 
     private func legend(_ names: [String]) -> some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 16 * zoom) {
             ForEach(Array(names.enumerated()), id: \.offset) { index, name in
                 HStack(spacing: 6) {
                     Path { path in
@@ -143,7 +145,7 @@ struct ChartBlockView: View {
                 }
             }
         }
-        .font(.system(size: 11))
+        .font(.system(size: 11 * zoom))
         .foregroundStyle(.secondary)
     }
 }

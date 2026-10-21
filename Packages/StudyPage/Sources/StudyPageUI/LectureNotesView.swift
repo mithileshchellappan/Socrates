@@ -24,13 +24,20 @@ import SwiftUI
 ///
 /// The view is as tall as its text (the host scrolls); it hangs its fold chevrons 18 pt into the
 /// margin on both sides. It does not queue notes: the page and the pane do (`queueIfNeeded`).
+///
+/// nl (docs/plan-notes-layout.md §3–5, §11): on the page (`layout`) the text view is the page's
+/// `wide`, the prose indented to the measure, code, tables, diagrams, charts and slides breaking
+/// out; every size times `\.contentZoom`. The student's notes and ink are never drawn in it (they
+/// are in Your notes); the section being read goes to `onReadingSection`.
 public struct LectureNotesView: View {
     private let lectureID: Lecture.ID
     private let style: LectureNotesStyle
+    private let layout: NotesPageLayout?
     private let followPage: Int?
     private let onChip: ((NotesChipTarget) -> Bool)?
     private let writeAgain: (() -> Void)?
     private let onChatPassage: ((NotesPassageContext?) -> Void)?
+    private let onReadingSection: ((String?) -> Void)?
 
     @Fetch private var rows: LectureNotesRows
     @State private var controller: LectureNotesController
@@ -43,10 +50,13 @@ public struct LectureNotesView: View {
     @Environment(\.lectureNotesAsker) private var asker
     @Environment(\.lectureNotesUnavailable) private var unavailable
     @Environment(\.lectureNotesPreview) private var preview
+    @Environment(\.contentZoom) private var zoom
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.undoManager) private var undoManager
 
     /// - Parameters:
+    ///   - layout: the page's widths (`.page`; the view is framed at `wide` by the page); nil:
+    ///     Review's pane, the text at the view's width, no breakouts.
     ///   - followPage: Review's slide on screen while Follow is on: the view scrolls to the section
     ///     whose slides hold it (nil: no following).
     ///   - onChip: a chip was clicked; return true when the host handled it.
@@ -54,17 +64,21 @@ public struct LectureNotesView: View {
     ///     version without text); nil: queued at once (`LectureNotesWriteAgain`).
     ///   - onChatPassage: Continue in Chat's passage for the host to send with its own context (nil
     ///     when it should stop going); nil: the view publishes it (`.agentContext`).
+    ///   - onReadingSection: the section under the reading line (a third down the screen) when it
+    ///     changes; nil at the overview (the page's Your notes column marks its slides).
     public init(
-        lectureID: Lecture.ID, style: LectureNotesStyle = .page, followPage: Int? = nil,
+        lectureID: Lecture.ID, style: LectureNotesStyle = .page, layout: NotesPageLayout? = nil, followPage: Int? = nil,
         onChip: ((NotesChipTarget) -> Bool)? = nil, writeAgain: (() -> Void)? = nil,
-        onChatPassage: ((NotesPassageContext?) -> Void)? = nil
+        onChatPassage: ((NotesPassageContext?) -> Void)? = nil, onReadingSection: ((String?) -> Void)? = nil
     ) {
         self.lectureID = lectureID
         self.style = style
+        self.layout = layout
         self.followPage = followPage
         self.onChip = onChip
         self.writeAgain = writeAgain
         self.onChatPassage = onChatPassage
+        self.onReadingSection = onReadingSection
         _rows = Fetch(wrappedValue: .empty, LectureNotesRequest(lectureID: lectureID))
         _controller = State(initialValue: LectureNotesController(lectureID: lectureID, style: style))
     }
@@ -84,7 +98,7 @@ public struct LectureNotesView: View {
         controller.notes = input.notes
         controller.marks = input.marks
         controller.chips = input.chips
-        return NotesTextHost(input: input, controller: controller) { height = $0 }
+        return NotesTextHost(input: input, controller: controller, onReadingSection: onReadingSection) { height = $0 }
             .frame(height: max(20, height))
             .padding(.horizontal, -NotesTextView.chevronMargin)
             .focusedSceneValue(\.lectureNotesAsk, controller.askCommand)
@@ -110,8 +124,8 @@ public struct LectureNotesView: View {
         for recording in rows.recordings { recordings[ChatCitation.key(recording.id)] = recording.id }
         let professor = rows.course?.professors.first.map { String(localized: "Prof. \(SourceTrailText.surname($0))") }
         return NotesDocumentInput(
-            lectureID: lectureID, style: style, isDark: colorScheme == .dark, notes: current,
-            marks: rows.marks.filter { $0.removedAt == nil }, studentNotes: rows.notes, quotes: rows.quotes, lectures: lectures,
+            lectureID: lectureID, style: style, isDark: colorScheme == .dark, zoom: zoom, inset: layout?.inset ?? 0, notes: current,
+            marks: rows.marks.filter { $0.removedAt == nil }, quotes: rows.quotes, lectures: lectures,
             recordings: recordings, hasRecording: !rows.recordings.isEmpty, deck: rows.deck,
             pages: rows.range.map { $0.firstPage...$0.lastPage }, professor: professor, folded: controller.folded,
             answersOpen: controller.answersOpen, unavailable: unavailable, canWriteAgain: rows.canWrite
@@ -152,8 +166,7 @@ public struct LectureNotesView: View {
     /// section).
     private func follow(force: Bool = false) {
         guard let page = followPage, let notes = LectureNotes.current(of: rows.versions), notes.hasText,
-              let section = notes.sections.first(where: { $0.covers(page: page) })
-                ?? notes.sections.last(where: { ($0.firstPage ?? .max) <= page })
+              let section = LectureNotesSection.holding(page: page, in: notes.sections)
         else { return }
         guard force || followed != section.key else { return }
         followed = section.key
@@ -162,13 +175,12 @@ public struct LectureNotesView: View {
     }
 }
 
-/// The rows the notes are drawn from, in one observed read: every version, the student's marks
-/// and notes, the professor's exam hints and highlights, the lecture with its course's lectures,
-/// recordings and slides.
+/// The rows the notes are drawn from, in one observed read: every version, the student's marks,
+/// the professor's exam hints and highlights, the lecture with its course's lectures, recordings
+/// and slides. Not the student's notes (nl: Your notes reads those).
 struct LectureNotesRows: Equatable, Sendable {
     var versions: [LectureNotes] = []
     var marks: [LectureNotesMark] = []
-    var notes: [Note] = []
     var quotes: [Annotation] = []
     var lecture: Lecture?
     var course: Course?
@@ -191,7 +203,6 @@ struct LectureNotesRequest: FetchKeyRequest {
         var rows = LectureNotesRows()
         rows.versions = try LectureNotesRepository.versions(lectureID: id, in: db)
         rows.marks = try LectureNotesMark.where { $0.lectureID.eq(id) && $0.removedAt.is(nil) }.order { $0.createdAt.asc() }.fetchAll(db)
-        rows.notes = try Note.where { $0.lectureID.eq(reference) }.order { ($0.pageNumber, $0.createdAt) }.fetchAll(db)
         rows.quotes = try Annotation
             .where { $0.lectureID.eq(reference) && $0.hiddenAt.is(nil) && $0.kind.in([AnnotationKind.examHint, AnnotationKind.highlight]) }
             .fetchAll(db)

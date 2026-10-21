@@ -67,10 +67,13 @@ public struct DiagramLayout: Equatable, Sendable {
     public static let nodeFontSize: CGFloat = 12
     public static let edgeFontSize: CGFloat = 11
 
-    public static func layout(_ diagram: Diagram) -> DiagramLayout {
-        switch diagram.kind {
-        case .sequence: SequenceLayout(diagram).layout()
-        case .flowchart, .state: GraphLayout(diagram).layout()
+    /// - Parameter spread: at least 1: the horizontal distances between node and lifeline centres
+    ///   times this (nl: a diagram spread to the page's width); sizes and labels stay as they are.
+    public static func layout(_ diagram: Diagram, spread: CGFloat = 1) -> DiagramLayout {
+        let spread = max(1, spread)
+        return switch diagram.kind {
+        case .sequence: SequenceLayout(diagram, spread: spread).layout()
+        case .flowchart, .state: GraphLayout(diagram, spread: spread).layout()
         }
     }
 
@@ -115,10 +118,13 @@ struct GraphLayout {
     let diagram: Diagram
     /// The layer axis: down (y) or right (x).
     let alongIsY: Bool
+    /// The horizontal distances between centres times this.
+    let spread: CGFloat
 
-    init(_ diagram: Diagram) {
+    init(_ diagram: Diagram, spread: CGFloat = 1) {
         self.diagram = diagram
         alongIsY = diagram.direction == .down
+        self.spread = spread
     }
 
     static let nodeGap: CGFloat = 22
@@ -184,7 +190,7 @@ struct GraphLayout {
 
         // Map (along, across) centres to x, y.
         func point(_ a: CGFloat, _ c: CGFloat) -> CGPoint {
-            alongIsY ? CGPoint(x: c, y: a) : CGPoint(x: a, y: c)
+            alongIsY ? CGPoint(x: c * spread, y: a) : CGPoint(x: a * spread, y: c)
         }
         var result = DiagramLayout(size: .zero)
         var rects: [CGRect] = []
@@ -577,9 +583,12 @@ struct GraphLayout {
 
 struct SequenceLayout {
     let diagram: Diagram
+    /// The distances between lifelines times this.
+    let spread: CGFloat
 
-    init(_ diagram: Diagram) {
+    init(_ diagram: Diagram, spread: CGFloat = 1) {
         self.diagram = diagram
+        self.spread = spread
     }
 
     func layout() -> DiagramLayout {
@@ -635,7 +644,7 @@ struct SequenceLayout {
 
         let firstHalf = (headSizes.first?.width ?? 56) / 2
         var centers: [CGFloat] = [max(firstHalf, leading) + 2]
-        for gap in gaps { centers.append((centers.last ?? 0) + gap) }
+        for gap in gaps { centers.append((centers.last ?? 0) + gap * spread) }
         var result = DiagramLayout(size: .zero)
         for (i, participant) in participants.enumerated() {
             let size = headSizes[i]

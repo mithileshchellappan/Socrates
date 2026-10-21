@@ -10,6 +10,8 @@ struct NotesAnswerView: View {
     let text: String
     let size: CGFloat
     var sparkle = true
+    /// The notes' content zoom (a kept answer in the notes; the Ask popover stays at 1).
+    var zoom: CGFloat = 1
     let chips: NotesChipResolver
     let open: (NotesChipTarget) -> Void
 
@@ -64,9 +66,9 @@ struct NotesAnswerView: View {
                 }
             }
         case .markdown(.table(let table)):
-            TableBlockView(table: table, size: size - 0.5)
+            TableBlockView(table: table, size: size - 0.5 * zoom, zoom: zoom)
         case .markdown(.code(let code, let language)):
-            CodeBlockView(code: code, language: language, size: size - 1.5)
+            CodeBlockView(code: code, language: language, size: size - 1.5 * zoom, zoom: zoom)
         case .markdown(.rule):
             Hairline()
         case .fence(let fence):
@@ -81,13 +83,13 @@ struct NotesAnswerView: View {
         } else {
             switch fence.kind {
             case .math:
-                MathBlockView(latex: fence.body.trimmingCharacters(in: .whitespacesAndNewlines), size: size + 2)
+                MathBlockView(latex: fence.body.trimmingCharacters(in: .whitespacesAndNewlines), size: size + 2 * zoom)
             case .diagram:
-                if case .success(let diagram) = Diagram.parse(fence.body) { DiagramView(diagram: diagram) }
+                if case .success(let diagram) = Diagram.parse(fence.body) { DiagramView(diagram: diagram, scale: zoom) }
             case .chart:
-                if case .success(let spec) = ChartSpec.parse(fence.body) { ChartBlockView(spec: spec, height: 130) }
+                if case .success(let spec) = ChartSpec.parse(fence.body) { ChartBlockView(spec: spec, height: 130 * zoom, zoom: zoom) }
             case .code:
-                CodeBlockView(code: fence.body, language: fence.language, size: size - 1.5)
+                CodeBlockView(code: fence.body, language: fence.language, size: size - 1.5 * zoom, zoom: zoom)
             case .slide, .quote, .note, .check:
                 EmptyView()
             }
@@ -96,7 +98,7 @@ struct NotesAnswerView: View {
 
     private func prose(_ text: String, sparkle: Bool) -> some View {
         let chips = chips
-        let drawn = InlineText.text(text, size: size, chip: { citation in
+        let drawn = InlineText.text(text, size: size, chipSize: 10.5 * zoom, chip: { citation in
             guard let target = chips.target(citation) else { return nil }
             return Self.url(target)
         })
@@ -104,7 +106,7 @@ struct NotesAnswerView: View {
         return Text("\(leading)\(drawn)")
             .font(.system(size: size))
             .foregroundStyle(.secondary)
-            .lineSpacing(3)
+            .lineSpacing(3 * zoom)
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
     }
@@ -143,6 +145,8 @@ struct KeptAnswerView: View {
     let mark: LectureNotesMark
     let orphaned: Bool
     let size: CGFloat
+    /// The notes' content zoom.
+    var zoom: CGFloat = 1
     let chips: NotesChipResolver
     let open: (NotesChipTarget) -> Void
     let hovered: (Bool) -> Void
@@ -151,25 +155,25 @@ struct KeptAnswerView: View {
     @State private var isHovered = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 4 * zoom) {
             if orphaned {
                 Text(verbatim: "“\(Self.quoted(mark.exact))”")
-                    .font(.system(size: size - 1))
+                    .font(.system(size: size - zoom))
                     .foregroundStyle(.secondary)
-                    .padding(.bottom, 2)
+                    .padding(.bottom, 2 * zoom)
             }
             if let question = mark.question, !question.isEmpty {
                 Text(verbatim: question)
                     .font(.system(size: size, weight: .medium))
                     .foregroundStyle(.primary)
             }
-            NotesAnswerView(text: mark.answer ?? "", size: size, chips: chips, open: open)
+            NotesAnswerView(text: mark.answer ?? "", size: size, zoom: zoom, chips: chips, open: open)
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 14 * zoom)
+        .padding(.top, 10 * zoom)
+        .padding(.bottom, 8 * zoom)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isHovered ? AnyShapeStyle(.fill.secondary) : AnyShapeStyle(QuietFill()), in: .rect(cornerRadius: 10))
+        .background(isHovered ? AnyShapeStyle(.fill.secondary) : AnyShapeStyle(QuietFill()), in: .rect(cornerRadius: 10 * zoom))
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering

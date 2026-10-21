@@ -6,38 +6,79 @@ import SwiftUI
 /// surface with a 0.5 pt separator, labels 12 pt primary, edges 1 pt secondary with arrowheads,
 /// edge labels 11 pt secondary on the page's background, lifelines dashed tertiary, replies dashed.
 /// Wider than the column: it scrolls sideways.
+///
+/// nl (docs/plan-notes-layout.md §3, §11): drawn at `scale` (the content zoom: shapes and labels
+/// together, as vectors). With `spreads` (the notes page, where a diagram breaks out to the page's
+/// width) a diagram narrower than its line spreads: the gaps between its nodes and lifelines grow
+/// up to 1.6 times, the labels keep their size, and what is left is centred. Its height never
+/// changes with the width.
 struct DiagramView: View {
+    /// The most a diagram's gaps grow.
+    static let spreadCap: CGFloat = 1.6
+
     let diagram: Diagram
     let layout: DiagramLayout
+    let scale: CGFloat
+    let spreads: Bool
+    @State private var lineWidth: CGFloat = 0
 
-    init(diagram: Diagram) {
+    init(diagram: Diagram, scale: CGFloat = 1, spreads: Bool = false) {
         self.diagram = diagram
+        self.scale = scale
+        self.spreads = spreads
         layout = DiagramLayout.layout(diagram)
     }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            canvas
-            ScrollView(.horizontal) { canvas }
-                .scrollIndicators(.automatic)
+        let drawn = spreadLayout
+        Group {
+            if spreads {
+                ViewThatFits(in: .horizontal) {
+                    canvas(drawn)
+                        .frame(maxWidth: .infinity)
+                    ScrollView(.horizontal) { canvas(drawn) }
+                        .scrollIndicators(.automatic)
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { lineWidth = $0 }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    canvas(drawn)
+                    ScrollView(.horizontal) { canvas(drawn) }
+                        .scrollIndicators(.automatic)
+                }
+            }
         }
         .accessibilityElement()
         .accessibilityLabel(Text("Diagram"))
         .accessibilityValue(Text(verbatim: diagram.spokenDescription))
     }
 
-    private var canvas: some View {
-        DiagramCanvas(layout: layout)
-            .frame(width: layout.size.width, height: layout.size.height)
+    /// The layout spread toward the line's width (in steps of 0.05, so a live resize lays out a
+    /// few times, not at every point), or as laid out.
+    private var spreadLayout: DiagramLayout {
+        let natural = layout.size.width * scale
+        guard spreads, natural > 0, lineWidth > natural + 1 else { return layout }
+        let factor = min(Self.spreadCap, lineWidth / natural)
+        let stepped = (factor * 20).rounded(.down) / 20
+        guard stepped > 1 else { return layout }
+        return DiagramLayout.layout(diagram, spread: stepped)
+    }
+
+    private func canvas(_ layout: DiagramLayout) -> some View {
+        DiagramCanvas(layout: layout, scale: scale)
+            .frame(width: layout.size.width * scale, height: layout.size.height * scale)
     }
 }
 
 struct DiagramCanvas: View {
     let layout: DiagramLayout
+    /// Shapes and labels drawn at this scale (vectors: sharp at any zoom).
+    var scale: CGFloat = 1
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Canvas { context, _ in
+            context.scaleBy(x: scale, y: scale)
             let separator = colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.14)
             let card = colorScheme == .dark ? Color(white: 0.17) : Color(white: 0.965)
             let line = Color.secondary

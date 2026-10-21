@@ -111,11 +111,6 @@ final class LectureNotesController {
         }
     }
 
-    func editInReview(_ note: Note) {
-        guard let lecture = note.lectureID else { return }
-        openDestination(.lecture(lecture, ReviewTarget(page: note.pageNumber, time: note.pageNumber == nil ? note.audioTime : nil)))
-    }
-
     func writeAgain() {
         if let onWriteAgain {
             onWriteAgain()
