@@ -43,6 +43,12 @@ import SwiftUI
 // and DC Lecture 3's from the slides, `33-notes-writing` (writing) and `33-notes-paused` (its row
 // set to paused in the clone). Opening the notes never queues any in a render.
 //
+// nl (mockups 34–35): on a copy of .data/parity/nl/library (`tools/parity/seed --nl-sample full`)
+// `34-notes-wide` (1600 × 1000, Your notes open by width, slide 21's group marked),
+// `35-notes-closed` and `35-notes-open` (1180 × 740), with `--zoom 1.3` also `nl-notes-zoom`
+// (34's window at 130 %); on a copy of .data/parity/nl-empty/library `35-notes-empty`. These
+// shots keep their mockup's window size whatever `--size`.
+//
 // `03-review-cl` (a library with Computational Linguistics L1, e.g. the M1 library): that review
 // where it left off. `--review-layout` sets Review's stored layout ("share,transcript,rail", 1 =
 // collapsed) in the registration domain (nothing is written to any defaults file).
@@ -216,6 +222,11 @@ struct RenderShot {
     var examSheet: Course.ID?
     /// ln: a selection, the capsule, the Ask popover or a scroll drawn on the notes.
     var notesPreview: LectureNotesPreview?
+    /// nl: the Your notes column shown or hidden whatever the width (nil: by the width).
+    var yourNotes: YourNotesVisibility?
+    /// nl: the window's size for this shot (the mockup's), whatever `--size`; the PNG's name
+    /// carries no size.
+    var size: CGSize?
     var prepare: ((AppModel, CGSize) async throws -> Void)?
 }
 
@@ -246,8 +257,8 @@ struct ParityRender {
         let size = options.windowSize ?? ParityMode.windowSize
         // `08-course-1800x1130-light.png` for a size other than the mockups'.
         // `-z130` for a content zoom (`--zoom 1.3`).
-        let sizeSuffix = (options.windowSize.map { "-\(Int($0.width))x\(Int($0.height))" } ?? "")
-            + (options.zoom.map { "-z\(Int(($0 * 100).rounded()))" } ?? "")
+        let zoomSuffix = options.zoom.map { "-z\(Int(($0 * 100).rounded()))" } ?? ""
+        let sizeSuffix = (options.windowSize.map { "-\(Int($0.width))x\(Int($0.height))" } ?? "") + zoomSuffix
         let copy = URL.temporaryDirectory.appending(path: "ParityRender-\(UUID().uuidString)", directoryHint: .isDirectory)
         // An APFS clone: every run starts from the same data; nothing is written to the library.
         try FileManager.default.copyItem(at: options.library, to: copy)
@@ -393,6 +404,7 @@ struct ParityRender {
             }
             shots += try await mdShots(services: services)
             shots += try await lnShots(dc: dc, services: services)
+            shots += try await nlShots(dc: dc, services: services, zoomed: options.zoom != nil)
             if options.mc { shots = try mcShots(dc: dc, services: services) }
             if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
             if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
@@ -409,8 +421,9 @@ struct ParityRender {
                 model.showPreviewCapture(capture)
             }
             for scheme in options.schemes {
-                let url = options.output.appending(path: "\(shot.name)\(sizeSuffix)-\(scheme == .dark ? "dark" : "light").png")
-                try await draw(shot, scheme: scheme, model: model, size: size, settle: options.settle, to: url)
+                let suffix = shot.size == nil ? sizeSuffix : zoomSuffix
+                let url = options.output.appending(path: "\(shot.name)\(suffix)-\(scheme == .dark ? "dark" : "light").png")
+                try await draw(shot, scheme: scheme, model: model, size: shot.size ?? size, settle: options.settle, to: url)
                 print(url.path(percentEncoded: false))
             }
             model.filingCenter?.endPreviewDrag()
@@ -507,6 +520,41 @@ struct ParityRender {
                 try await repository.pause(current.id, until: Date().addingTimeInterval(2 * 3600))
             })
         }
+        return shots
+    }
+
+    /// nl: the notes page at the window's width with Your notes beside it (mockups 34–35) on a copy
+    /// of .data/parity/nl/library (DC Lecture 2's own note, its notes and ink): `34-notes-wide`
+    /// (1600 × 1000, the column open by width, scrolled into "VM memory sharing and ballooning" so
+    /// slide 21's group is marked), `35-notes-closed` (1180 × 740, closed by width) and
+    /// `35-notes-open` (the column shown); with `--zoom`, `nl-notes-zoom` (34's window at that
+    /// zoom). On a copy of .data/parity/nl-empty/library (no note, no ink): `35-notes-empty`.
+    static func nlShots(dc: Course, services: StudyServices, zoomed: Bool) async throws -> [RenderShot] {
+        guard let (_, lecture2) = try? ParityMode.lecture("DC", 2, services: services),
+              try await !LectureNotesRepository(store: services.records).versions(lectureID: lecture2.id).isEmpty
+        else { return [] }
+        let id = lecture2.id
+        let own = try await services.database.read { db in
+            let notes = try Note.where { $0.lectureID.eq(Lecture.ID?.some(id)) }.fetchCount(db)
+            guard let range = try LectureSlides.current(lectureID: id, in: db) else { return notes }
+            let ink = try SlideInk
+                .where { $0.deckID.eq(range.deckID) && $0.pageNumber >= range.firstPage && $0.pageNumber <= range.lastPage }
+                .fetchCount(db)
+            return notes + ink
+        }
+        let window = RenderShot.Window.main(ParityMode.Launch(selection: .lectureNotes(id, course: dc.id)))
+        let wide = CGSize(width: 1600, height: 1000)
+        let narrow = CGSize(width: 1180, height: 740)
+        guard own > 0 else {
+            return [RenderShot(name: "35-notes-empty", window: window, yourNotes: .shown, size: narrow)]
+        }
+        let reading = LectureNotesPreview(reveal: "loads a small driver into the guest")
+        var shots = [
+            RenderShot(name: "34-notes-wide", window: window, notesPreview: reading, size: wide),
+            RenderShot(name: "35-notes-closed", window: window, size: narrow),
+            RenderShot(name: "35-notes-open", window: window, yourNotes: .shown, size: narrow)
+        ]
+        if zoomed { shots.append(RenderShot(name: "nl-notes-zoom", window: window, notesPreview: reading, size: wide)) }
         return shots
     }
 
@@ -617,6 +665,7 @@ struct ParityRender {
                 // ln: opening a lecture's notes or Review's Whole lecture never queues notes here.
                 .environment(\.lectureNotesQueuesOnOpen, false)
                 .environment(\.lectureNotesPreview, shot.notesPreview)
+                .environment(\.yourNotesVisibilityOverride, shot.yourNotes)
                 .environment(model)
             )
         case .live:
