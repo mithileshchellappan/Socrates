@@ -1,5 +1,6 @@
 import CalendarSync
 import Courses
+import QuickLook
 import StudyCore
 import StudyUI
 import SwiftUI
@@ -46,6 +47,7 @@ public struct CourseSettingsView: View {
     @State private var newMailRule: MailRule?
     @State private var importsCalendar = false
     @State private var undoTarget = UndoTarget()
+    @State private var quickLook = DeckQuickLookState()
     /// Stands in for the exam form until the course has one (saved once it is edited).
     @State private var examFormPlaceholder = CourseRule(kind: .examForm, title: String(localized: "Exam form"))
     @FocusState private var nameFocused: Bool
@@ -95,6 +97,10 @@ public struct CourseSettingsView: View {
         .toolbar { toolbar }
         .fileImporter(isPresented: $importsCalendar, allowedContentTypes: calendarTypes, allowsMultipleSelection: true) { result in
             importCalendar(result)
+        }
+        .quickLookPreview($quickLook.url)
+        .onChange(of: quickLook.url) { old, new in
+            if let old, old != new { DeckFiles.removePreview(old) }
         }
         .onAppear { adopt(course) }
         .onChange(of: course) { adopt(course) }
@@ -199,7 +205,11 @@ public struct CourseSettingsView: View {
                 GhostDeckRow(tag: nextClassTag, importFiles: importFiles, importDropped: importDropped)
             } else {
                 ForEach(decks) { item in
-                    DeckRow(item: item, text: sessionText) { changeDeck(item.deck.id) }
+                    DeckRow(
+                        item: item, text: sessionText,
+                        change: { changeDeck(item.deck.id) },
+                        quickLook: { quickLook.open(item.deck, services: services) }
+                    )
                 }
             }
         }
@@ -537,11 +547,23 @@ final class UndoTarget {}
 
 // MARK: - Slides
 
-/// A deck of the course with the lecture it belongs to.
+/// A deck of the course with the lectures that use it.
 struct CourseDeck: Hashable, Sendable, Identifiable {
     var deck: Deck
-    var lecture: Lecture?
+    /// The lectures whose slides are a range of the deck, in the order they were held.
+    var uses: [DeckUse]
+    /// The lecture the deck was filed to, for its tag line while no lecture uses it.
+    var filedLecture: Lecture?
     var id: Deck.ID { deck.id }
+}
+
+/// A lecture's range of a deck (`LectureSlides.lectures(usingDeck:)`).
+struct DeckUse: Hashable, Sendable, Identifiable {
+    var lecture: Lecture
+    var range: LectureSlideRange
+    /// The deck is the lecture's current slides (the ones its review shows).
+    var isCurrent: Bool
+    var id: Lecture.ID { lecture.id }
 }
 
 struct CourseDecksRequest: FetchKeyRequest {
@@ -551,53 +573,88 @@ struct CourseDecksRequest: FetchKeyRequest {
         let decks = try Deck.where { $0.courseID.eq(courseID) }.fetchAll(db)
         let lectures = try Lecture.where { $0.courseID.eq(courseID) }.fetchAll(db)
         let byID = Dictionary(lectures.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Each lecture's current deck, read once.
+        var currentDecks: [Lecture.ID: Deck.ID] = [:]
+        var checked: Set<Lecture.ID> = []
+        func currentDeck(of lectureID: Lecture.ID) throws -> Deck.ID? {
+            if checked.insert(lectureID).inserted {
+                currentDecks[lectureID] = try LectureSlides.current(lectureID: lectureID, in: db)?.deckID
+            }
+            return currentDecks[lectureID]
+        }
         var items: [CourseDeck] = []
         for deck in decks {
-            let spanLectures = try LectureDeckSpan
-                .where { $0.deckID.eq(deck.id) && $0.startTime.is(nil) }
-                .fetchAll(db)
-                .compactMap { byID[$0.lectureID] }
-            var lecture = spanLectures.min { ($0.heldAt ?? .distantFuture) < ($1.heldAt ?? .distantFuture) }
-            if lecture == nil {
-                let filing = try Filing.where { $0.deckID.eq(deck.id) }.order { $0.createdAt.desc() }.fetchOne(db)
-                lecture = filing?.lectureID.flatMap { byID[$0] }
+            var uses: [DeckUse] = []
+            for range in try LectureSlides.lectures(usingDeck: deck.id, in: db) {
+                guard let lecture = byID[range.lectureID] else { continue }
+                let isCurrent = try currentDeck(of: lecture.id) == deck.id
+                uses.append(DeckUse(lecture: lecture, range: range, isCurrent: isCurrent))
             }
-            items.append(CourseDeck(deck: deck, lecture: lecture))
+            var filed: Lecture?
+            if uses.isEmpty {
+                let filing = try Filing.where { $0.deckID.eq(deck.id) }.order { $0.createdAt.desc() }.fetchOne(db)
+                filed = filing?.lectureID.flatMap { byID[$0] }
+            }
+            items.append(CourseDeck(deck: deck, uses: uses, filedLecture: filed))
         }
-        return items.sorted { lhs, rhs in
-            let lhsDate = lhs.lecture?.heldAt ?? lhs.deck.importedAt
-            let rhsDate = rhs.lecture?.heldAt ?? rhs.deck.importedAt
-            return lhsDate > rhsDate
+        func date(_ item: CourseDeck) -> Date {
+            item.uses.first?.lecture.heldAt ?? item.filedLecture?.heldAt ?? item.deck.importedAt
         }
+        return items.sorted { date($0) > date($1) }
     }
 }
 
-/// A filed deck: its title, the lecture it is tagged with, and Change (mockup 08: 50 pt rows);
-/// its menu has Change… and Delete… (the window confirms, Edit ▸ Undo brings it back).
+/// A filed deck (mockup 08: 50 pt rows): its title over its lecture(s) and day. A click opens the
+/// review of the lecture that uses it, at the first page of that lecture's range; with several
+/// lectures a menu of them ("Lecture 2 · slides 1–23"); with none, Quick Look. Its context menu
+/// is `DeckMenu` (Open in Review, Quick Look, Show in Finder, Change…, Delete…).
 struct DeckRow: View {
     let item: CourseDeck
     let text: SessionText
     let change: () -> Void
-    @Environment(\.deleteFromLibrary) private var deleteFromLibrary
+    let quickLook: () -> Void
+    @Environment(\.openDestination) private var openDestination
 
     var body: some View {
-        DeckRowLayout(title: item.deck.title.isEmpty ? item.deck.fileName : item.deck.title, tag: tag) {
-            Button("Change", action: change)
-                .headerActionStyle(inset: 4)
-                .controlSize(.small)
-        }
-        .contentShape(Rectangle())
-        .contextMenu {
-            Button("Change…", action: change)
-            if let deleteFromLibrary {
-                Divider()
-                Button("Delete…", role: .destructive) { deleteFromLibrary(.deck(item.deck.id)) }
+        Group {
+            if item.uses.count > 1 {
+                Menu {
+                    DeckLectureItems(item: item)
+                } label: {
+                    layout
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+            } else {
+                Button(action: open) { layout }
             }
+        }
+        .buttonStyle(DeckRowButtonStyle())
+        .contextMenu { DeckMenu(item: item, change: change, quickLook: quickLook) }
+    }
+
+    private var layout: some View {
+        DeckRowLayout(title: item.deck.title.isEmpty ? item.deck.fileName : item.deck.title, tag: tag) {
+            EmptyView()
         }
     }
 
+    private func open() {
+        if let use = item.uses.first {
+            DeckOpening.open(use, with: openDestination)
+        } else {
+            quickLook()
+        }
+    }
+
+    /// "Lecture 2 · Tue 13 Oct"; "Lecture 2, Lecture 3 · Tue 13 Oct" for a deck several lectures use.
     private var tag: String? {
-        guard let lecture = item.lecture else { return nil }
+        if !item.uses.isEmpty {
+            var parts = [item.uses.map { DeckText.name(of: $0.lecture) }.joined(separator: ", ")]
+            if let held = item.uses.first?.lecture.heldAt { parts.append(text.day(held)) }
+            return parts.joined(separator: " · ")
+        }
+        guard let lecture = item.filedLecture else { return nil }
         var parts: [String] = []
         if let number = lecture.number {
             parts.append(String(localized: "Lecture \(number)"))

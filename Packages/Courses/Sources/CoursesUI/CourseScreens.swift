@@ -1,4 +1,5 @@
 import Courses
+import QuickLook
 import StudyCore
 import StudyUI
 import SwiftUI
@@ -141,8 +142,11 @@ private struct LectureListRow: View {
     }
 }
 
-/// A course's slides (sidebar ▸ course ▸ Slides): Course Settings' Slides group on its own, with
-/// Change on each deck; Import in the toolbar. Without decks the screen is one drop target for the
+/// A course's slides (sidebar ▸ course ▸ Slides): one list row per deck (`DeckRow`, system list
+/// selection) in a 760 pt column. A click opens the review of the lecture that uses the deck (a
+/// menu of them when several do; Quick Look when none does); ↩ opens the selected deck, Space
+/// toggles its Quick Look; the row's menu has Open in Review, Quick Look, Show in Finder, Change…
+/// and Delete…. Import in the toolbar. Without decks the screen is one drop target for the
 /// course's slides; files dropped on the list are filed into the course too.
 public struct CourseSlidesView: View {
     private let courseID: Course.ID
@@ -150,8 +154,12 @@ public struct CourseSlidesView: View {
 
     @FetchOne private var course: Course?
     @Fetch private var decks: [CourseDeck]
+    @Environment(\.openDestination) private var openDestination
+    @Environment(\.studyServices) private var services
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
+    @State private var selection: Deck.ID?
+    @State private var quickLook = DeckQuickLookState()
 
     public init(courseID: Course.ID, changeDeck: @escaping (Deck.ID) -> Void = { _ in }) {
         self.courseID = courseID
@@ -165,18 +173,55 @@ public struct CourseSlidesView: View {
             if decks.isEmpty {
                 EmptyDropPrompt(systemImage: "rectangle.on.rectangle", line: "Drop the slides (PDF) here.", target: .course(courseID))
             } else {
-                CourseScreenColumn {
-                    SettingsGroup("Slides") {
-                        ForEach(decks) { item in
-                            DeckRow(item: item, text: SessionText(locale: locale, timeZone: timeZone)) { changeDeck(item.deck.id) }
-                        }
-                    }
-                }
-                .importDropTarget(.course(courseID))
+                list
+                    .importDropTarget(.course(courseID))
             }
         }
         .screenTitle(String(localized: "Slides"), subtitle: course?.name ?? "")
         .toolbar { CourseImportToolbarItem(courseID: courseID) }
+        .quickLookPreview($quickLook.url)
+        .onChange(of: quickLook.url) { old, new in
+            if let old, old != new { DeckFiles.removePreview(old) }
+        }
+    }
+
+    private var list: some View {
+        List(selection: $selection) {
+            ForEach(decks) { item in
+                DeckRow(
+                    item: item, text: SessionText(locale: locale, timeZone: timeZone),
+                    change: { changeDeck(item.deck.id) },
+                    quickLook: { quickLook.open(item.deck, services: services) }
+                )
+                .tag(item.id)
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+            }
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .onKeyPress(.return) {
+            guard let selected else { return .ignored }
+            DeckOpening.openFirst(selected, with: openDestination) { quickLook.open(selected.deck, services: services) }
+            return .handled
+        }
+        .onKeyPress(.space) {
+            guard let selected else { return .ignored }
+            quickLook.toggle(selected.deck, services: services)
+            return .handled
+        }
+        .onChange(of: decks.map(\.id)) { _, ids in
+            if let selection, !ids.contains(selection) { self.selection = nil }
+        }
+        .frame(maxWidth: 784, alignment: .leading)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.fieldBackground)
+    }
+
+    private var selected: CourseDeck? {
+        guard let selection else { return nil }
+        return decks.first { $0.id == selection }
     }
 }
 
