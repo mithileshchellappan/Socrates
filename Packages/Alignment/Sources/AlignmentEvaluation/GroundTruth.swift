@@ -1,11 +1,11 @@
 import Alignment
+import Foundation
 
-/// Verified slide timelines for the fixtures (from listening to the recordings). The timelines
-/// belong to the git-ignored fixtures and are not published: the two below are empty, so an
-/// evaluation run scores nothing until a fixture's own timeline is filled in locally.
+/// A verified slide timeline for a fixture lecture, read from the fixture's git-ignored
+/// `truth.json` (see ``LectureFixture/load(directory:)``).
 ///
 /// Where the truth only knows two slide starts, every slide in between is accepted (a segment
-/// "5:00"–"12:00" with 19…23 is "one of 19–23"); text-identical slides are interchangeable.
+/// "5:00"–"12:00" with "19-23" is "one of 19–23"); text-identical slides are listed together.
 /// Gaps between segments are unknown and not scored.
 public struct GroundTruth: Hashable, Sendable {
     public struct Segment: Hashable, Sendable {
@@ -48,31 +48,46 @@ func time(_ text: String) -> Double {
     text.split(separator: ":").reduce(0) { $0 * 60 + (Double($1) ?? 0) }
 }
 
-private func slides(_ pages: ClosedRange<Int>) -> Set<AlignmentTarget> {
-    Set(pages.map(AlignmentTarget.slide))
-}
-
-private func segment(_ start: String, _ end: String, _ allowed: Set<AlignmentTarget>) -> GroundTruth.Segment {
-    GroundTruth.Segment(start: time(start), end: time(end), allowed: allowed)
-}
-
-private func boundary(_ at: String, _ targets: Set<AlignmentTarget>, approximate: Bool = false) -> GroundTruth.Boundary {
-    GroundTruth.Boundary(time: time(at), targets: targets, approximate: approximate)
-}
-
 extension GroundTruth {
-    /// Fixture lecture A (an invented name; its timeline stays with the private fixture).
-    public static let clL1 = GroundTruth(segments: [], boundaries: [], end: 0)
+    /// `truth.json`: `{"name": "…", "transcript": "<srt in the folder>", "end": "m:ss",
+    /// "segments": [["m:ss", "m:ss", "13-14,off"], …], "boundaries": [["m:ss", "15"], ["m:ss", "off", "~"], …]}`
+    /// ("~" marks an approximate boundary).
+    struct File: Decodable {
+        var name: String
+        var transcript: String
+        var end: String
+        var segments: [[String]]
+        var boundaries: [[String]]
+    }
 
-    /// Fixture lecture B (an invented name; its timeline stays with the private fixture).
-    public static let dcL2 = GroundTruth(segments: [], boundaries: [], end: 0)
+    init(_ file: File, source: String) throws {
+        segments = try file.segments.map { row in
+            guard row.count == 3 else { throw FixtureError.malformed(source) }
+            return Segment(start: time(row[0]), end: time(row[1]), allowed: try Self.targets(row[2], source: source))
+        }
+        boundaries = try file.boundaries.map { row in
+            guard row.count == 2 || row.count == 3 && row[2] == "~" else { throw FixtureError.malformed(source) }
+            return Boundary(time: time(row[0]), targets: try Self.targets(row[1], source: source), approximate: row.count == 3)
+        }
+        end = time(file.end)
+    }
 
-    /// Keeps the helpers above in use for a fixture's own timeline (`segment`, `boundary`, `slides`).
-    static func timeline(segments: [(String, String, ClosedRange<Int>)], end: String) -> GroundTruth {
-        GroundTruth(
-            segments: segments.map { segment($0.0, $0.1, slides($0.2)) },
-            boundaries: segments.map { boundary($0.0, slides($0.2)) },
-            end: time(end)
-        )
+    /// "13-14,off" → slides 13 and 14, or off.
+    static func targets(_ text: String, source: String) throws -> Set<AlignmentTarget> {
+        var targets: Set<AlignmentTarget> = []
+        for item in text.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces) }) {
+            if item == "off" {
+                targets.insert(.off)
+                continue
+            }
+            let bounds = item.split(separator: "-").compactMap { Int($0) }
+            guard (1...2).contains(bounds.count), bounds.count == item.split(separator: "-").count,
+                  let first = bounds.first, let last = bounds.last, first <= last else {
+                throw FixtureError.malformed(source)
+            }
+            targets.formUnion((first...last).map(AlignmentTarget.slide))
+        }
+        guard !targets.isEmpty else { throw FixtureError.malformed(source) }
+        return targets
     }
 }

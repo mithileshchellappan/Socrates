@@ -29,6 +29,15 @@ public struct FixtureLibrary: Sendable {
         return nil
     }
 
+    /// Every fixture folder with a `truth.json`, by folder name.
+    public func fixtures() throws -> [LectureFixture] {
+        let folders = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        return try folders
+            .filter { FileManager.default.fileExists(atPath: $0.appending(path: "truth.json").path(percentEncoded: false)) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .map { try LectureFixture.load(directory: $0) }
+    }
+
     public func lecture(_ fixture: LectureFixture) throws -> LoadedLecture {
         let directory = root.appending(path: fixture.directory, directoryHint: .isDirectory)
         let slides = try Self.loadSlides(directory.appending(path: "slides.json"))
@@ -59,28 +68,25 @@ public enum FixtureError: Error, Equatable {
     case malformed(String)
 }
 
-/// A fixture lecture with verified ground truth.
+/// A fixture lecture with verified ground truth: a folder of `.data/fixtures` (git-ignored) with
+/// `slides.json`, the transcript and `truth.json` (``GroundTruth``).
 public struct LectureFixture: Hashable, Sendable, CustomStringConvertible {
     public var name: String
     public var directory: String
     public var transcriptFile: String
     public var truth: GroundTruth
 
-    public static let clL1 = LectureFixture(
-        name: "CL L1",
-        directory: "cl-l1",
-        transcriptFile: "whisper-fixed.srt",
-        truth: .clL1
-    )
-
-    public static let dcL2 = LectureFixture(
-        name: "DC L2",
-        directory: "dc-l2",
-        transcriptFile: "whisper-mc0.srt",
-        truth: .dcL2
-    )
-
-    public static let all: [LectureFixture] = [.clL1, .dcL2]
+    /// Reads `<directory>/truth.json`.
+    public static func load(directory: URL) throws -> LectureFixture {
+        let url = directory.appending(path: "truth.json")
+        let file = try JSONDecoder().decode(GroundTruth.File.self, from: Data(contentsOf: url))
+        return LectureFixture(
+            name: file.name,
+            directory: directory.lastPathComponent,
+            transcriptFile: file.transcript,
+            truth: try GroundTruth(file, source: url.path(percentEncoded: false))
+        )
+    }
 
     public var description: String { name }
 }

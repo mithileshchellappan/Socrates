@@ -42,7 +42,7 @@ enum Numbering {
     }
 
     /// A numbered heading: "2 Virtualization Basics" → (2, "Virtualization Basics"),
-    /// "I: Introduction" → (1, "Introduction"), "Lecture 3: Cloud Storage" → (3, "Cloud Storage").
+    /// "I: Introduction" → (1, "Introduction"), "Lecture 3: Storage Systems" → (3, "Storage Systems").
     /// A bare Roman numeral needs a colon or period after it ("I am" is not lecture 1).
     static func numberedTitle(_ line: String) -> (number: Int, title: String)? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)

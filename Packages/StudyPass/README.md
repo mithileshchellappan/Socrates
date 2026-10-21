@@ -131,4 +131,4 @@ the deck most of the recording's slide spans are on, whole, as before.
 
 Pipeline hook: after a synthesis unit is written, `LectureNotesRepository.queueAfterStudyPass(lectureID:)`; after `rerun(lectureID:)`, the same with `rerun: true` once its synthesis lands.
 
-Wiring (integrator): `NotesWriter(services:, client: .studyPortal, figureCheck: <StudyPage's checker>)` into `AppAgent(…, notesWriter:)`; `NotesAsker(services:, client:)` as `\.lectureNotesAsker` on the Mac's main window.
+Wiring (integrator): `NotesWriter(services:, client: .socrates(services:), figureCheck: <StudyPage's checker>)` into `AppAgent(…, notesWriter:)`; `NotesAsker(services:, client:)` as `\.lectureNotesAsker` on the Mac's main window.

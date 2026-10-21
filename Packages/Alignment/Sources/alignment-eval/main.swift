@@ -1,4 +1,5 @@
-// Evaluates the aligner on the M0 fixtures and prints Markdown tables for docs/eval/alignment-m0.md.
+// Evaluates the aligner on the fixture lectures (every `.data/fixtures` folder with a truth.json)
+// and prints Markdown tables.
 //
 //   swift run -c release --package-path Packages/Alignment alignment-eval [--timeline] [--set name=value ...]
 //
@@ -104,7 +105,7 @@ let aligner = SlideAligner(parameters: parameters)
 if let sweepIndex = arguments.firstIndex(of: "--sweep"), sweepIndex + 1 < arguments.endIndex {
     let spec = arguments[sweepIndex + 1].split(separator: "=", maxSplits: 1).map(String.init)
     let library = FixtureLibrary.locate()
-    let lectures = LectureFixture.all.compactMap { try? library?.lecture($0) }
+    let lectures = ((try? library?.fixtures()) ?? []).compactMap { try? library?.lecture($0) }
     for value in spec[1].split(separator: ",").map(String.init) {
         var swept = parameters
         apply(spec[0], value, to: &swept)
@@ -135,7 +136,15 @@ if let sweepIndex = arguments.firstIndex(of: "--sweep"), sweepIndex + 1 < argume
 }
 
 if let library = FixtureLibrary.locate() {
-    for fixture in LectureFixture.all {
+    let fixtures: [LectureFixture]
+    do {
+        fixtures = try library.fixtures()
+    } catch {
+        print("Fixtures unreadable: \(error)\n")
+        fixtures = []
+    }
+    if fixtures.isEmpty { print("No fixture folder with a truth.json.\n") }
+    for fixture in fixtures {
         guard let lecture = try? library.lecture(fixture) else {
             print("\(fixture.name): fixture missing\n")
             continue

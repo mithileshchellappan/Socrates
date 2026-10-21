@@ -223,7 +223,7 @@ struct MailRuleRow: View {
                     TextField("Value", text: $value)
                         .labelsHidden()
                         .textFieldStyle(.plain)
-                        // A long platform course keeps its start and its term ("Spanish A1.1 … (WS 2026/27)").
+                        // A long platform course keeps its start and its term ("Data Centers: Architecture and Operation … (WS 2026/27)").
                         .truncationMode(.middle)
                         .focused($focused)
                         .onSubmit(commit)

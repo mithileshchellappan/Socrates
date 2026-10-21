@@ -86,14 +86,6 @@ struct Report: Encodable {
     var accuracy: Accuracy?
     var failures: [String]
 
-    static func truth(named name: String) -> (String, GroundTruth)? {
-        switch name {
-        case "cl-l1": (name, .clL1)
-        case "dc-l2": (name, .dcL2)
-        default: nil
-        }
-    }
-
     static func make(
         services: StudyServices,
         imported: ImportedLecture,

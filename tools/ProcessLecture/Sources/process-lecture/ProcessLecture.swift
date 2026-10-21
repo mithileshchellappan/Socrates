@@ -9,8 +9,11 @@ import Transcription
 // process-lecture: runs one lecture through the same import + processing code the app uses and
 // prints what landed in the database. Output contains lecture text: keep libraries under .data/.
 //
-//   process-lecture run     --audio A [--deck PDF] --library DIR [--course NAME] [--language en] [--truth cl-l1] [--json OUT]
-//   process-lecture capture --audio A  --deck PDF  --library DIR --stamps "5:00=12,…" [--start-page 1] [--truth cl-l1] [--json OUT]
+//   process-lecture run     --audio A [--deck PDF] --library DIR [--course NAME] [--language en] [--truth FIXTURE] [--json OUT]
+//   process-lecture capture --audio A  --deck PDF  --library DIR --stamps "m:ss=page,…" [--start-page N] [--truth FIXTURE] [--json OUT]
+//
+// `--truth` names a fixture folder with a `truth.json` (git-ignored, see `LectureFixture`); the
+// report then scores the alignment against it.
 //
 // `capture` first writes a lecture package from the audio, as live capture would (48 kHz CAF,
 // 5-minute segments, a start event on --start-page and one slide event per stamp), then imports
@@ -25,7 +28,7 @@ struct Options {
     var language = "en"
     var stamps: [CaptureStamp] = []
     var startPage: Int?
-    var truth: String?
+    var truth: URL?
     var json: URL?
 
     static func parse(_ arguments: [String]) throws -> Options {
@@ -42,7 +45,7 @@ struct Options {
             case "--course": options.course = value
             case "--language": options.language = value
             case "--start-page": options.startPage = Int(value)
-            case "--truth": options.truth = value
+            case "--truth": options.truth = URL(filePath: value, directoryHint: .isDirectory)
             case "--json": options.json = URL(filePath: value)
             case "--stamps":
                 options.stamps = try value.split(separator: ",").map { item in
@@ -62,7 +65,7 @@ struct Options {
 struct Usage: Error, CustomStringConvertible {
     var description: String {
         """
-        usage: process-lecture run     --audio FILE [--deck PDF] --library DIR [--course NAME] [--language en] [--truth cl-l1|dc-l2] [--json OUT]
+        usage: process-lecture run     --audio FILE [--deck PDF] --library DIR [--course NAME] [--language en] [--truth FIXTURE] [--json OUT]
                process-lecture capture --audio FILE --deck PDF --library DIR --stamps "m:ss=page,…" [--start-page N] [--truth …] [--json OUT]
         """
     }
@@ -162,7 +165,10 @@ struct ProcessLecture {
 
         let report = try await Report.make(
             services: services, imported: imported, stamps: options.stamps, startPage: options.startPage,
-            truth: options.truth.flatMap(Report.truth(named:)),
+            truth: try options.truth.map { folder in
+                let fixture = try LectureFixture.load(directory: folder)
+                return (fixture.name, fixture.truth)
+            },
             times: Report.Times(
                 model: modelSeconds, importing: importSeconds, processing: processSeconds,
                 transcribe: stageTimes.seconds(.transcribe), align: stageTimes.seconds(.align),
