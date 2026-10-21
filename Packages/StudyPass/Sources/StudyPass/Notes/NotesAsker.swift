@@ -69,11 +69,11 @@ public struct NotesAsker: LectureNotesAsking {
             grounding = try await services.database.read { db in try Grounding.load(request, in: db) }
         } catch {
             Self.log.error("Ask grounding unreadable: \(ReadableError.kind(of: error), privacy: .public)")
-            continuation.yield(NotesAskUpdate(isFinished: true, error: "The notes could not be read."))
+            continuation.yield(NotesAskUpdate(isFinished: true, error: "The summary could not be read."))
             return
         }
         guard let grounding else {
-            continuation.yield(NotesAskUpdate(isFinished: true, error: "These notes are gone."))
+            continuation.yield(NotesAskUpdate(isFinished: true, error: "This summary is gone."))
             return
         }
         let message = MessageRequest(

@@ -989,7 +989,7 @@ struct NotesTextHost: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.size = NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude)
-        textView.setAccessibilityLabel(String(localized: "Lecture notes"))
+        textView.setAccessibilityLabel(String(localized: "Lecture summary"))
         coordinator.apply(input)
         return textView
     }

@@ -10,11 +10,20 @@ extension LectureNotes {
     /// The writer found nothing to write from (`LectureNotesRepository.waitForMaterial`): not an
     /// error, so no triangle. The version waits: it is never the current notes, and a new one is
     /// queued when the material arrives (`requeueWaiting`) or the lecture is opened again.
-    public static let nothingToWriteFrom = "There is nothing to write these notes from yet."
+    public static let nothingToWriteFrom = "There is nothing to write this summary from yet."
+
+    /// The sentence before the notes were called Summary (2026-10-22): rows that wait with it
+    /// still wait.
+    static let nothingToWriteFromBefore = "There is nothing to write these notes from yet."
+
+    /// Either sentence (`nothingToWriteFrom`, `nothingToWriteFromBefore`).
+    public static let nothingToWriteFromSentences = [nothingToWriteFrom, nothingToWriteFromBefore]
 
     /// A version set aside because there was nothing to write it from (a `failed` row with that
     /// sentence and no text; rows written before 2026-10-21 look the same).
-    public var isWaitingForMaterial: Bool { state == .failed && error == Self.nothingToWriteFrom && !hasText }
+    public var isWaitingForMaterial: Bool {
+        state == .failed && error.map(Self.nothingToWriteFromSentences.contains) == true && !hasText
+    }
 
     /// A version that can be the current notes: neither discarded, cancelled nor waiting for its
     /// material.
@@ -138,14 +147,14 @@ public struct LectureNotesRepository: Sendable {
     @discardableResult
     public func requeueWaiting() async throws -> [LectureNotes] {
         let stamp = store.currentDate
-        let sentence = LectureNotes.nothingToWriteFrom
+        let sentences = LectureNotes.nothingToWriteFromSentences.map { String?.some($0) }
         let any = try await store.database.read { db in
-            try LectureNotes.where { $0.state.eq(LectureNotesState.failed) && $0.error.eq(String?.some(sentence)) }.fetchCount(db)
+            try LectureNotes.where { $0.state.eq(LectureNotesState.failed) && $0.error.in(sentences) }.fetchCount(db)
         }
         guard any > 0 else { return [] }
         return try await store.database.write { db in
             let waiting = try LectureNotes
-                .where { $0.state.eq(LectureNotesState.failed) && $0.error.eq(String?.some(sentence)) }
+                .where { $0.state.eq(LectureNotesState.failed) && $0.error.in(sentences) }
                 .fetchAll(db)
                 .filter(\.isWaitingForMaterial)
             var queued: [LectureNotes] = []
@@ -244,9 +253,9 @@ public struct LectureNotesRepository: Sendable {
             return nil
         }
         let name = lecture.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = lecture.number.map { "Notes: Lecture \($0)" + (name.isEmpty ? "" : " · \(name)") } ?? "Notes: \(name.isEmpty ? "Lecture" : name)"
+        let title = lecture.number.map { "Summary: Lecture \($0)" + (name.isEmpty ? "" : " · \(name)") } ?? "Summary: \(name.isEmpty ? "Lecture" : name)"
         let task = AgentTask(
-            kind: .lectureNotes, title: String(title.prefix(80)), goal: "Write the lecture's notes.",
+            kind: .lectureNotes, title: String(title.prefix(80)), goal: "Write the lecture's summary.",
             model: LectureNotesCalls.writeModel, effort: LectureNotesCalls.writeEffort, tools: [],
             courseID: lecture.courseID, lectureID: lectureID, createdBy: createdBy, createdAt: now, updatedAt: now
         )

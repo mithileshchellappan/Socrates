@@ -405,7 +405,7 @@ extension ActionRegistry {
             ),
             // ln: lecture notes.
             AgentAction(
-                notes.writeLectureNotes, summary: "Writes a lecture's notes again as a new version (optionally with what to change).",
+                notes.writeLectureNotes, summary: "Writes a lecture's summary (its notes) again as a new version (optionally with what to change).",
                 keywords: [
                     "notes", "lecture", "write", "again", "rewrite", "regenerate", "redo", "version", "Mitschrift", "Skript",
                     "Zusammenfassung", "summary", "neu", "nochmal", "erneut", "more", "mehr",
@@ -413,16 +413,19 @@ extension ActionRegistry {
                 sources: chat, studentOnly: true
             ),
             AgentAction(
-                notes.setNotesLength, summary: "Sets how long lecture notes are written: concise, standard or thorough (a course or all).",
+                notes.setNotesLength, summary: "Sets how long lecture summaries are written: concise, standard or thorough (a course or all).",
                 keywords: [
-                    "notes", "length", "shorter", "longer", "concise", "thorough", "detailed", "brief", "kürzer", "länger", "ausführlich",
-                    "knapp", "Mitschrift", "Länge",
+                    "notes", "summary", "summaries", "length", "shorter", "longer", "concise", "thorough", "detailed", "brief", "kürzer",
+                    "länger", "ausführlich", "knapp", "Mitschrift", "Zusammenfassung", "Länge",
                 ],
                 sources: chat, studentOnly: true
             ),
             AgentAction(
-                notes.keepNotesAnswer, summary: "Keeps an answer on a lecture's notes under the passage it explains.",
-                keywords: ["keep", "add", "notes", "answer", "save", "behalten", "hinzufügen", "speichern", "Antwort", "Mitschrift", "passage"],
+                notes.keepNotesAnswer, summary: "Keeps an answer on a lecture's summary under the passage it explains.",
+                keywords: [
+                    "keep", "add", "notes", "summary", "answer", "save", "behalten", "hinzufügen", "speichern", "Antwort", "Mitschrift",
+                    "Zusammenfassung", "passage",
+                ],
                 sources: chat, studentOnly: true
             ),
         ]

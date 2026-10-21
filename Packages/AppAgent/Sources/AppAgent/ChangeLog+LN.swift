@@ -21,9 +21,9 @@ extension ChangeLog {
         guard !quote.isEmpty else { return .refused("A change needs the exact words it comes from.") }
         let repository = LectureNotesRepository(store: services.records)
         let versions = try await repository.versions(lectureID: lectureID)
-        if versions.contains(where: { $0.state.isOpen }) { return .unchanged("Its notes are being written already.") }
+        if versions.contains(where: { $0.state.isOpen }) { return .unchanged("Its summary is being written already.") }
         guard let notes = try await repository.queue(lectureID: lectureID, request: request, createdBy: .agent) else {
-            return .refused("There is nothing to write its notes from yet (no slides, or its study pass has not finished).")
+            return .refused("There is nothing to write its summary from yet (no slides, or its study pass has not finished).")
         }
         let store = services.records
         let date = now()
@@ -34,7 +34,7 @@ extension ChangeLog {
             } ?? "Lecture"
             let summary = notes.request.map { "Writing again: \($0)" } ?? "Writing again"
             var change = AgentChange(
-                kind: .lectureNotes, targetTable: .lectureNotes, targetID: notes.id, title: String("Notes: \(name)".prefix(AgentChange.titleLimit)),
+                kind: .lectureNotes, targetTable: .lectureNotes, targetID: notes.id, title: String("Summary: \(name)".prefix(AgentChange.titleLimit)),
                 summary: String(summary.prefix(AgentChange.summaryLimit)), before: AgentChangeValues(exists: false),
                 after: AgentChangeValues(exists: true), sourceKind: origin.sourceKind, taskID: origin.taskID, eventID: origin.eventID, quote: quote,
                 confidence: 1, model: origin.model, apiCallID: origin.apiCallID, appliedAt: date, createdAt: date, updatedAt: date
@@ -91,7 +91,7 @@ extension ChangeLog {
         guard !text.isEmpty else { return .refused("The rule needs a text.") }
         let active = try AgentMemory.where { $0.forgottenAt.is(nil) }.fetchAll(db)
         let replaced = active.filter { $0.notesRule != nil && $0.notesRule?.courseID == rule.courseID }
-        if replaced.contains(where: { $0.notesRule == rule }) { return .unchanged("The notes are written that long already.") }
+        if replaced.contains(where: { $0.notesRule == rule }) { return .unchanged("Summaries are written that long already.") }
         guard active.count - replaced.count < AgentMemory.activeLimit else {
             return .refused("\(AgentMemory.activeLimit) memories are kept at most. Forget one first.")
         }
@@ -138,7 +138,7 @@ extension ChangeLog {
         try LectureNotesMark.upsert { row }.execute(db)
         var change = AgentChange(
             kind: .notesAnswer, targetTable: .lectureNotesMark, targetID: row.id, title: String(question.prefix(AgentChange.titleLimit)),
-            summary: "Kept on the lecture's notes", before: AgentChangeValues(exists: false), after: AgentChangeValues(exists: true),
+            summary: "Kept on the lecture's summary", before: AgentChangeValues(exists: false), after: AgentChangeValues(exists: true),
             sourceKind: origin.sourceKind, taskID: origin.taskID, eventID: origin.eventID, quote: quote, confidence: 1, model: origin.model,
             apiCallID: origin.apiCallID, appliedAt: now, createdAt: now, updatedAt: now
         )

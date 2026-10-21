@@ -133,15 +133,16 @@ public struct AgentCatalog: Sendable, Hashable {
             """) {
             if let id: UUID = row["lecture_id"], let kind: String = row["kind"], let count: Int = row["n"] { studyItems[id, default: [:]][kind] = count }
         }
-        // ln: each lecture's current notes ("notes · 2,140 words", or while they are written).
+        // ln: each lecture's current notes, named Summary to the student ("summary · 2,140 words", or
+        // while it is written).
         var lectureNotes: [UUID: String] = [:]
         let versions = try LectureNotes.where { $0.discardedAt.is(nil) }.fetchAll(db)
         for (lectureID, own) in Dictionary(grouping: versions, by: \.lectureID) {
             guard let current = LectureNotes.current(of: own) else { continue }
             switch current.state {
-            case .done: lectureNotes[lectureID] = "notes · \(Self.grouped(NotesWords.count(current.body))) words"
-            case .queued, .generating, .paused: lectureNotes[lectureID] = "notes being written"
-            case .failed: lectureNotes[lectureID] = "notes failed"
+            case .done: lectureNotes[lectureID] = "summary · \(Self.grouped(NotesWords.count(current.body))) words"
+            case .queued, .generating, .paused: lectureNotes[lectureID] = "summary being written"
+            case .failed: lectureNotes[lectureID] = "summary failed"
             default: break
             }
         }

@@ -162,7 +162,7 @@ final class LectureNotesController {
 
     func removeKept(_ mark: LectureNotesMark) {
         guard let repository else { return }
-        remove([mark.id], repository: repository, name: String(localized: "Remove from Notes"))
+        remove([mark.id], repository: repository, name: String(localized: "Remove from Summary"))
     }
 
     /// Continue in Chat: the passage and the exchange so far go to the agent panel as context.

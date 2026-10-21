@@ -50,7 +50,7 @@ public struct NotesWriter: Sendable {
     /// The body is written at most this often while it streams.
     static let writeInterval: Duration = .milliseconds(100)
     static let repairMaxTokens = 6_000
-    static let failure = "The notes could not be written."
+    static let failure = "The summary could not be written."
     static let log = Log.lectureNotes
 
     public init(
@@ -162,7 +162,7 @@ public struct NotesWriter: Sendable {
                 case .refusal?:
                     // What a declined call wrote is not kept.
                     Self.log.error("Notes \(key, privacy: .public) failed: Claude declined (refusal)")
-                    let sentence = "Claude declined to write these notes."
+                    let sentence = "Claude declined to write this summary."
                     try await repository.fail(notesID, error: sentence, body: kept, costUSD: try await cost(material.lecture.id, since: notes.createdAt))
                     return .failed(sentence)
                 case .maxTokens?, .modelContextWindowExceeded?:

@@ -180,7 +180,7 @@ struct KeptAnswerView: View {
             hovered(hovering)
         }
         .contextMenu {
-            Button("Remove from Notes", action: remove)
+            Button("Remove from Summary", action: remove)
             Button("Continue in Chat", action: continueInChat)
             Divider()
             Button("Copy") {

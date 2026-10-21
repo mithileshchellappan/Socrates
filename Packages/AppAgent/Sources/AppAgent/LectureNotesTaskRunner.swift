@@ -21,7 +21,7 @@ extension AgentTaskQueue {
         let key = ChatCitation.key(task.id)
         guard let notesWriter else {
             Log.lectureNotes.error("Notes task \(key, privacy: .public) failed: no notes writer on this device")
-            await finishRow(task.id, .failed, error: "Lecture notes do not run on this device.")
+            await finishRow(task.id, .failed, error: "Summaries are not written on this device.")
             return
         }
         let notes: LectureNotes?
@@ -34,7 +34,7 @@ extension AgentTaskQueue {
         }
         guard let notes else {
             Log.lectureNotes.notice("Notes task \(key, privacy: .public) failed: its version is gone")
-            await finishRow(task.id, .failed, error: "These notes are gone.")
+            await finishRow(task.id, .failed, error: "This summary is gone.")
             return
         }
         let outcome = await notesWriter.run(notesID: notes.id)
@@ -49,7 +49,8 @@ extension AgentTaskQueue {
             guard await stillOpen(task) else { return }
             // Quiet: an empty result hides the task in the thread; one the agent queued from the
             // chat (it has a parent conversation) says so.
-            let result = task.parentConversationID == nil ? "" : "Notes written: \(task.title.replacingOccurrences(of: "Notes: ", with: ""))."
+            let name = ["Summary: ", "Notes: "].reduce(task.title) { $0.replacingOccurrences(of: $1, with: "") }
+            let result = task.parentConversationID == nil ? "" : "Summary written: \(name)."
             await finishRow(task.id, .succeeded, result: result)
         case .waiting(let until):
             await wait(task, until: until)
