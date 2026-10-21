@@ -177,11 +177,17 @@ enum SynthesisStage {
         return selected.sorted()
     }
 
+    /// Whether the prompt shows `<gap/>` before line `index` after line `previous`: left-out lines,
+    /// or a line of another recording (a quote never runs across two recordings).
+    static func isGap(_ previous: Int, _ index: Int, in material: LectureMaterial) -> Bool {
+        index != previous + 1 || material.lines[index].recordingID != material.lines[previous].recordingID
+    }
+
     /// Contiguous runs of `indices` (a quote never crosses a gap).
-    static func windows(_ indices: [Int]) -> [ClosedRange<Int>] {
+    static func windows(_ indices: [Int], in material: LectureMaterial) -> [ClosedRange<Int>] {
         var windows: [ClosedRange<Int>] = []
         for index in indices {
-            if let last = windows.last, index == last.upperBound + 1 {
+            if let last = windows.last, !isGap(last.upperBound, index, in: material) {
                 windows[windows.count - 1] = last.lowerBound...index
             } else {
                 windows.append(index...index)
@@ -208,11 +214,11 @@ enum SynthesisStage {
         text += "<transcript>\n"
         var previous: Int?
         for index in selectedLines(material, notes: notes) {
-            if let previous, index != previous + 1 { text += "<gap/>\n" }
+            if let previous, isGap(previous, index, in: material) { text += "<gap/>\n" }
             let line = material.lines[index]
             let slide = material.page(ofLine: index).map(String.init) ?? "none"
             let flag = line.flagged ? " flagged=\"1\"" : ""
-            text += "<line id=\"\(line.id)\" t=\"\(PromptText.clock(line.start))\" slide=\"\(slide)\"\(flag)>\(PromptText.escape(PromptText.collapsed(line.text)))</line>\n"
+            text += "<line id=\"\(line.id)\" t=\"\(PromptText.clock(line.clock))\" slide=\"\(slide)\"\(flag)>\(PromptText.escape(PromptText.collapsed(line.text)))</line>\n"
             previous = index
         }
         text += "</transcript>\n</lecture>"
@@ -227,7 +233,7 @@ enum SynthesisStage {
     static func verify(_ answer: Answer, material m: LectureMaterial, rows: PassRows, apiCallID: APICall.ID?) -> UnitResult {
         var result = UnitResult()
         let notes = ReadNotes(m, rows: rows)
-        let windows = Self.windows(selectedLines(m, notes: notes))
+        let windows = Self.windows(selectedLines(m, notes: notes), in: m)
         let quoteLines = m.quoteLines
         let pages = Set(m.lecturePages)
 
@@ -282,9 +288,9 @@ enum SynthesisStage {
             let first = m.lines[found.firstLine]
             result.annotations.append(Annotation(
                 lectureID: m.lecture.id, layer: .professor, kind: kind, deckID: page == nil ? nil : m.deck?.id, pageNumber: page,
-                recordingID: m.recordingID, startTime: found.time, endTime: m.lines[found.lastLine].end,
+                recordingID: first.recordingID, startTime: found.time, endTime: m.lines[found.lastLine].end,
                 transcriptSegmentID: first.segment.id, body: found.quote,
-                citations: [ReadStage.transcriptRef(m, time: found.time, quote: found.quote)], apiCallID: apiCallID,
+                citations: [ReadStage.transcriptRef(m, recording: first.recordingID, time: found.time, quote: found.quote)], apiCallID: apiCallID,
                 anchorText: anchor))
         }
 
@@ -310,11 +316,13 @@ enum SynthesisStage {
                 result.drops.drop("said.number")
                 continue
             }
-            said.append((found.time, Annotation(
+            // The 20 s spacing below compares moments on the lecture's timeline.
+            let recording = m.lines[found.firstLine].recordingID
+            said.append((m.timeline.seconds(found.time, on: recording), Annotation(
                 lectureID: m.lecture.id, layer: .ai, kind: .notOnSlides, deckID: page == nil ? nil : m.deck?.id, pageNumber: page,
-                recordingID: m.recordingID, startTime: found.time, endTime: m.lines[found.lastLine].end,
+                recordingID: recording, startTime: found.time, endTime: m.lines[found.lastLine].end,
                 transcriptSegmentID: m.lines[found.firstLine].segment.id, body: text,
-                citations: [ReadStage.transcriptRef(m, time: found.time, quote: found.quote)], apiCallID: apiCallID,
+                citations: [ReadStage.transcriptRef(m, recording: recording, time: found.time, quote: found.quote)], apiCallID: apiCallID,
                 category: SaidInClassCategory(rawValue: item.category))))
         }
         var lastOfCategory: [SaidInClassCategory: Double] = [:]
@@ -356,8 +364,8 @@ enum SynthesisStage {
             }
             topics.append(Annotation(
                 lectureID: m.lecture.id, layer: .ai, kind: .topic, deckID: first == nil ? nil : m.deck?.id, pageNumber: first,
-                recordingID: m.recordingID, startTime: line.start, transcriptSegmentID: line.segment.id, body: title,
-                citations: [ReadStage.transcriptRef(m, time: line.start)], apiCallID: apiCallID, lastPage: last))
+                recordingID: line.recordingID, startTime: line.start, transcriptSegmentID: line.segment.id, body: title,
+                citations: [ReadStage.transcriptRef(m, recording: line.recordingID, time: line.start)], apiCallID: apiCallID, lastPage: last))
         }
 
         // Research picks ride on their topic: `detail` = the query, a slide citation = the slide.
@@ -399,7 +407,7 @@ enum SynthesisStage {
         } else {
             result.annotations.append(Annotation(
                 lectureID: m.lecture.id, layer: .ai, kind: .summary, recordingID: m.recordingID, body: summary,
-                citations: cited.prefix(6).map { ReadStage.transcriptRef(m, time: $0.start) }, apiCallID: apiCallID))
+                citations: cited.prefix(6).map { ReadStage.transcriptRef(m, recording: $0.recordingID, time: $0.start) }, apiCallID: apiCallID))
         }
         return result
     }

@@ -197,11 +197,12 @@ enum StudyPlanner {
         return blocks
     }
 
-    /// 15-minute blocks for a lecture without slides ("t0-15", "t15-30", …).
+    /// 15-minute blocks for a lecture without slides ("t0-15", "t15-30", …), on the lecture's
+    /// timeline (with several recordings, the second part's minutes follow the first's).
     static func timeBlocks(_ material: LectureMaterial) -> [ReadBlock] {
         var byBlock: [Int: [Int]] = [:]
         for line in material.lines {
-            byBlock[max(0, Int(line.start / Double(minutesPerBlock * 60))), default: []].append(line.index)
+            byBlock[max(0, Int(line.clock / Double(minutesPerBlock * 60))), default: []].append(line.index)
         }
         return byBlock.keys.sorted().map { block in
             let lines = byBlock[block] ?? []

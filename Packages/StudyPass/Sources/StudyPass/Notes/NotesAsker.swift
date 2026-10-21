@@ -144,7 +144,8 @@ public struct NotesAsker: LectureNotesAsking {
             the lecture material between <lecture> and </lecture>. A figure (a fenced math, diagram or chart block as \
             in the notes: Mermaid flowchart, sequenceDiagram or stateDiagram-v2; a chart as JSON) only when it explains \
             better than words. Cite where a claim comes from with a marker: [[KEY S12]] a slide, [[KEY 37:59]] a moment \
-            (the lecture's moment_chip with t replaced by the t of a transcript line); at most one per paragraph; never \
+            (the moment_chip of the line's <transcript>, else the lecture's, with t replaced by the t of a transcript \
+            line); at most one per paragraph; never \
             a marker you did not see. When the lecture does not cover what they ask, say so in one sentence and answer \
             only from what it gives. No web, no links. Never write as the professor or put words in their mouth. Answer \
             in the language they ask in (English for a quick choice alone, unless <preferences> says otherwise); no \
@@ -166,7 +167,12 @@ public struct NotesAsker: LectureNotesAsking {
     }
 
     static func text(_ request: NotesAskRequest, grounding g: Grounding) -> String {
-        var text = "<lecture key=\"\(g.lectureKey)\" moment_chip=\"[[\(g.lectureKey)\(g.recordingKey.map { "/" + $0 } ?? "") t]]\">\n"
+        // One recording: the lecture's moment chip; several: one per <transcript> part, each on
+        // its own recording's clock.
+        let several = Set(g.lines.map(\.recordingID)).count > 1
+        var text = several
+            ? "<lecture key=\"\(g.lectureKey)\">\n"
+            : "<lecture key=\"\(g.lectureKey)\" moment_chip=\"\(g.momentPattern(g.lines.first?.recordingID ?? g.firstRecording))\">\n"
         text += "<header>\(PromptText.escape(g.header))</header>\n"
         text += "<section_notes title=\"\(PromptText.escape(g.sectionTitle))\">\n\(PromptText.escape(g.sectionText))\n</section_notes>\n"
         if !g.slides.isEmpty {
@@ -184,7 +190,16 @@ public struct NotesAsker: LectureNotesAsking {
             text += "<professor>\n" + g.professor.map { "<said_by_professor moment=\"\($0.moment)\">\(PromptText.escape($0.quote))</said_by_professor>" }.joined(separator: "\n") + "\n</professor>\n"
         }
         if !g.lines.isEmpty {
-            text += "<transcript>\n" + g.lines.map { "<l t=\"\(PromptText.clock($0.start))\">\(PromptText.escape(PromptText.collapsed($0.text)))</l>" }.joined(separator: "\n") + "\n</transcript>\n"
+            var open: Recording.ID?
+            for line in g.lines {
+                if open != line.recordingID {
+                    if open != nil { text += "</transcript>\n" }
+                    text += several ? "<transcript moment_chip=\"\(g.momentPattern(line.recordingID))\">\n" : "<transcript>\n"
+                    open = line.recordingID
+                }
+                text += "<l t=\"\(PromptText.clock(line.start))\">\(PromptText.escape(PromptText.collapsed(line.text)))</l>\n"
+            }
+            text += "</transcript>\n"
         }
         if !g.glossary.isEmpty { text += "<glossary>\(PromptText.escape(g.glossary.joined(separator: "; ")))</glossary>\n" }
         if !g.notes.isEmpty {
@@ -220,7 +235,8 @@ public struct NotesAsker: LectureNotesAsking {
         }
 
         var lectureKey: String
-        var recordingKey: String?
+        /// The lecture's first recording (its moment chips name no recording).
+        var firstRecording: Recording.ID?
         var header: String
         var sectionTitle: String
         var sectionText: String
@@ -233,6 +249,17 @@ public struct NotesAsker: LectureNotesAsking {
         var preferences: [String]
         var recentQuestions: [String]
         var chips: NotesChips
+
+        /// The chip pattern of a moment on `recording` ("[[KEY t]]", "[[KEY/REC t]]").
+        func momentPattern(_ recording: Recording.ID?) -> String {
+            "[[\(lectureKey)\(Self.recordingKey(recording, first: firstRecording).map { "/" + $0 } ?? "") t]]"
+        }
+
+        /// A recording's key in a moment chip: nil for the lecture's first (or none).
+        static func recordingKey(_ recording: Recording.ID?, first: Recording.ID?) -> String? {
+            guard let recording, let first, recording != first else { return nil }
+            return ChatCitation.key(recording)
+        }
 
         /// Nil when the lecture or its notes are gone.
         static func load(_ request: NotesAskRequest, in db: Database) throws -> Grounding? {
@@ -275,36 +302,51 @@ public struct NotesAsker: LectureNotesAsking {
             }
 
             // The transcript in the section's time span (else said on its slides), ≤ 2,500 words.
+            // Times compare on the lecture's timeline (`LectureTimeline`, every recording): the
+            // section's start on its recording, up to its end there, else the next section's start.
             var lines: [NotesMaterial.Line] = []
-            var recordingKey: String?
+            let timeline = try study?.timeline ?? LectureTimeline.load(lectureID: lectureID, in: db)
+            let start = outline?.startTime.map { timeline.seconds($0, on: outline?.recordingID) }
+            var end = Double.greatestFiniteMagnitude
+            if let outline, let start {
+                if let last = outline.endTime {
+                    end = timeline.seconds(last, on: outline.recordingID)
+                } else {
+                    let starts = notes.sections.compactMap { section in section.startTime.map { timeline.seconds($0, on: section.recordingID) } }
+                    end = starts.filter { $0 > start }.min() ?? end
+                }
+            }
             if let study {
-                let first = try Recording.where { $0.lectureID.eq(reference) }.order(by: \.startedAt).fetchOne(db)
-                if let first, first.id != study.recordingID { recordingKey = ChatCitation.key(study.recordingID) }
-                let start = outline?.startTime
-                let end = outline?.endTime ?? .greatestFiniteMagnitude
                 var words = 0
                 for line in study.lines {
                     let page = study.page(ofLine: line.index)
-                    let inSpan = start.map { line.start >= $0 - 1 && line.start < end } ?? false
+                    let inSpan = start.map { line.clock >= $0 - 1 && line.clock < end } ?? false
                     let onSlides = page.map { pages.contains($0) } ?? false
                     guard inSpan || (start == nil && onSlides) else { continue }
                     words += TextRules.wordCount(line.text)
                     guard words <= NotesAsker.transcriptWordLimit else { break }
-                    lines.append(NotesMaterial.Line(start: line.start, end: line.end, text: line.text, page: page, flagged: line.flagged))
+                    lines.append(NotesMaterial.Line(
+                        start: line.start, end: line.end, text: line.text, page: page, flagged: line.flagged, recordingID: line.recordingID,
+                        clock: line.clock
+                    ))
                 }
             }
             let lectureKey = ChatCitation.key(lectureID)
-            let moment: (Double) -> String = { seconds in
-                "[[\(lectureKey)\(recordingKey.map { "/" + $0 } ?? "") \(ChatCitation.clock(max(0, Int(seconds.rounded(.down)))))]]"
+            let first = timeline.first
+            // A professor item's chip names its own recording (none for the lecture's first).
+            let moment: (Annotation) -> String = { row in
+                let key = Grounding.recordingKey(row.recordingID, first: first)
+                return "[[\(lectureKey)\(key.map { "/" + $0 } ?? "") \(ChatCitation.clock(max(0, Int((row.startTime ?? 0).rounded(.down)))))]]"
             }
-            let span = (outline?.startTime ?? -1)...(outline?.endTime ?? .greatestFiniteMagnitude)
+            let at: (Annotation) -> Double? = { row in row.startTime.map { timeline.seconds($0, on: row.recordingID) } }
+            let span = (start ?? -1)...end
             let professor = rows
                 .filter { row in
-                    guard row.kind == .examHint || row.kind == .highlight, let time = row.startTime else { return false }
+                    guard row.kind == .examHint || row.kind == .highlight, let time = at(row) else { return false }
                     return span.contains(time) || row.pageNumber.map(pages.contains) == true
                 }
-                .sorted { ($0.startTime ?? 0) < ($1.startTime ?? 0) }
-                .map { Professor(moment: moment($0.startTime ?? 0), quote: $0.body) }
+                .sorted { (at($0) ?? 0) < (at($1) ?? 0) }
+                .map { Professor(moment: moment($0), quote: $0.body) }
 
             let studentNotes = try Note.where { $0.lectureID.eq(reference) }.fetchAll(db)
                 .filter { note in note.pageNumber.map(pages.contains) == true }
@@ -327,7 +369,7 @@ public struct NotesAsker: LectureNotesAsking {
             var extraPages: [Lecture.ID: [Int]] = [:]
             extraPages[lectureID] = Array(deckPages.keys)
             return Grounding(
-                lectureKey: lectureKey, recordingKey: recordingKey, header: header.filter { !$0.isEmpty }.joined(separator: ". "),
+                lectureKey: lectureKey, firstRecording: first, header: header.filter { !$0.isEmpty }.joined(separator: ". "),
                 sectionTitle: outline?.title ?? part?.heading ?? "Overview", sectionText: part?.source ?? document.overview?.source ?? "",
                 paragraph: paragraph, slides: slides, lines: lines, professor: professor,
                 glossary: Array((course?.glossaryTerms ?? []).prefix(60)), notes: studentNotes, preferences: preferences,

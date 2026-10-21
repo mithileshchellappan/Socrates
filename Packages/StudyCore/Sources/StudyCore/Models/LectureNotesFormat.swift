@@ -428,6 +428,16 @@ public enum NotesQuoteRef {
         guard annotation.kind == .examHint || annotation.kind == .highlight, let start = annotation.startTime else { return false }
         return abs(Int(start.rounded(.down)) - seconds) <= 1
     }
+
+    /// The row a quote fence stands for (2026-10-21, a lecture's notes cover every recording):
+    /// at its second on the chip's recording (`ChatCitation.key` of the row's recording), else at
+    /// that second on any (a chip without a recording key: the lecture's first).
+    public static func row(_ citation: ChatCitation, in rows: [Annotation]) -> Annotation? {
+        guard case .moment(_, let recording, let seconds) = citation else { return nil }
+        let found = rows.filter { matches($0, seconds: seconds) }
+        guard found.count > 1, let recording else { return found.first }
+        return found.first { $0.recordingID.map(ChatCitation.key) == recording } ?? found.first
+    }
 }
 
 /// A `note` fence: `[[note 7f3a20c1]]`, the first 8 hex digits of a `note` id.

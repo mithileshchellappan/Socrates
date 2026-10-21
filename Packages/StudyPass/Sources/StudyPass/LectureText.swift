@@ -4,13 +4,15 @@ import StudyCore
 /// mc: a lecture's transcript lines and slides as the study pass reads them, for the study coach's
 /// question drafting (`Coach.QuestionDrafter`): the same line ids ("l12"), the slide on screen
 /// while each line was said, and the deck's page texts. Quotes are checked against `original`
-/// (the line's `original_text`).
+/// (the line's `original_text`). The lines of every recording of the lecture (`LectureMaterial`):
+/// each with its recording and its times on that recording's clock.
 public struct LectureText: Sendable {
     public struct Line: Sendable {
-        /// "l12": its position in time order.
+        /// "l12": its position on the lecture's timeline.
         public var id: String
         public var segmentID: TranscriptSegment.ID
         public var recordingID: Recording.ID
+        /// Seconds on `recordingID`'s clock.
         public var start: Double
         public var end: Double
         /// `original_text` (quotes are exact spans of it).

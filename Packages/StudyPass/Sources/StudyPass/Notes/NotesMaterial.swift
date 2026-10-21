@@ -22,11 +22,16 @@ struct NotesMaterial: Sendable {
     }
 
     struct Line: Sendable {
+        /// Seconds on its recording's clock (what its moment chip says).
         var start: Double
         var end: Double
         var text: String
         var page: Int?
         var flagged: Bool
+        /// The recording it was said on (its chips name it unless it is the lecture's first).
+        var recordingID: Recording.ID
+        /// Seconds on the lecture's timeline (`LectureTimeline`).
+        var clock: Double
     }
 
     /// One of the student's notes: read by the writer, never placed in the text (nl).
@@ -34,6 +39,7 @@ struct NotesMaterial: Sendable {
         var id: Note.ID
         var page: Int?
         var time: Double?
+        var recordingID: Recording.ID?
         var text: String
     }
 
@@ -55,10 +61,11 @@ struct NotesMaterial: Sendable {
     var lines: [Line]
     /// The lecture's key ("9a7d94d1").
     var lectureKey: String
-    /// The recording the transcript is of; its key when it is not the lecture's first.
-    var recordingID: Recording.ID?
-    var recordingKey: String?
-    /// Seconds of that recording (0 without one).
+    /// The lecture's recordings on one timeline (its first: the one chips name without a key).
+    var timeline: LectureTimeline
+    /// The recordings the transcript is of, numbered 1, 2, … in timeline order.
+    var recordingNumbers: [Recording.ID: Int]
+    /// Seconds the transcript's recordings cover (0 without one).
     var duration: Double
     var sections: [LectureNotesSection]
     var targetWords: Int
@@ -78,10 +85,33 @@ struct NotesMaterial: Sendable {
     var chips: NotesChips
 
     var isGerman: Bool { language.lowercased().hasPrefix("de") }
+    /// The transcript is of more than one recording (each part has its own moment chip).
+    var hasSeveralRecordings: Bool { recordingNumbers.count > 1 }
 
-    /// A moment chip of this lecture's transcript.
-    func moment(_ seconds: Double) -> String {
-        "[[\(lectureKey)\(recordingKey.map { "/" + $0 } ?? "") \(ChatCitation.clock(max(0, Int(seconds.rounded(.down)))))]]"
+    /// A recording's key in a moment chip: nil for the lecture's first (or none).
+    func recordingKey(_ recording: Recording.ID?) -> String? {
+        guard let recording, let first = timeline.first, recording != first else { return nil }
+        return ChatCitation.key(recording)
+    }
+
+    /// A moment chip of this lecture: `seconds` on `recording`'s clock.
+    func moment(_ seconds: Double, on recording: Recording.ID?) -> String {
+        "[[\(lectureKey)\(recordingKey(recording).map { "/" + $0 } ?? "") \(ChatCitation.clock(max(0, Int(seconds.rounded(.down)))))]]"
+    }
+
+    /// The moment chip of a row (an exam hint, a highlight, said in class) on its recording.
+    func moment(_ row: Annotation) -> String {
+        moment(row.startTime ?? 0, on: row.recordingID)
+    }
+
+    /// The chip pattern the model fills in for a transcript of `recording` ("[[KEY t]]").
+    func momentPattern(_ recording: Recording.ID?) -> String {
+        "[[\(lectureKey)\(recordingKey(recording).map { "/" + $0 } ?? "") t]]"
+    }
+
+    /// A moment on the lecture's timeline (orders moments of different recordings).
+    func clock(_ seconds: Double, on recording: Recording.ID?) -> Double {
+        timeline.seconds(seconds, on: recording)
     }
 
     func slide(_ page: Int) -> String {
@@ -136,7 +166,10 @@ struct NotesMaterial: Sendable {
             for line in study.lines {
                 let page = study.page(ofLine: line.index)
                 if let page { linesOnPage[page, default: 0] += 1 }
-                lines.append(Line(start: line.start, end: line.end, text: line.text, page: page, flagged: line.flagged))
+                lines.append(Line(
+                    start: line.start, end: line.end, text: line.text, page: page, flagged: line.flagged, recordingID: line.recordingID,
+                    clock: line.clock
+                ))
             }
         }
         let slides = pageRows.sorted { $0.pageNumber < $1.pageNumber }.map { page in
@@ -147,20 +180,27 @@ struct NotesMaterial: Sendable {
         }
         guard !slides.isEmpty || !lines.isEmpty else { return nil }
 
-        // The recording the transcript is of, and whether chips name it.
-        var recordingID: Recording.ID?
-        var recordingKey: String?
+        // The recordings the transcript is of (chips name each but the lecture's first) and how
+        // long they are: one recording's length, or what several cover together.
+        var timeline = LectureTimeline()
+        var numbers: [Recording.ID: Int] = [:]
         var duration: Double = 0
         if let study {
-            recordingID = study.recordingID
-            let first = try Recording.where { $0.lectureID.eq(reference) }.order(by: \.startedAt).fetchOne(db)
-            if let first, first.id != study.recordingID { recordingKey = ChatCitation.key(study.recordingID) }
-            let main = try Recording.find(study.recordingID).fetchOne(db)
-            duration = max(main?.duration ?? 0, lines.last?.end ?? 0)
+            timeline = study.timeline
+            for (index, id) in study.recordings.enumerated() { numbers[id] = index + 1 }
+            if study.hasSeveralRecordings {
+                duration = timeline.coveredSeconds
+            } else {
+                let main = try Recording.find(study.recordingID).fetchOne(db)
+                duration = max(main?.duration ?? 0, lines.last?.end ?? 0)
+            }
+        } else {
+            timeline = try LectureTimeline.load(lectureID: lectureID, in: db)
         }
 
-        // What the professor said and what was said in class.
-        let byTime: (Annotation, Annotation) -> Bool = { ($0.startTime ?? 0, $0.pageNumber ?? 0) < ($1.startTime ?? 0, $1.pageNumber ?? 0) }
+        // What the professor said and what was said in class, in timeline order.
+        let at: (Annotation) -> Double = { row in timeline.seconds(row.startTime ?? 0, on: row.recordingID) }
+        let byTime: (Annotation, Annotation) -> Bool = { (at($0), $0.pageNumber ?? 0) < (at($1), $1.pageNumber ?? 0) }
         let professor = rows.filter { ($0.kind == .examHint || $0.kind == .highlight) && $0.startTime != nil }.sorted(by: byTime)
         let said = rows.filter { $0.kind == .notOnSlides }.sorted(by: byTime)
 
@@ -170,7 +210,7 @@ struct NotesMaterial: Sendable {
             guard note.pageNumber != nil || note.audioTime != nil else { continue }
             let text = NoteBlock.plainText(of: (try? NoteBlock.decode(note.blocksJSON)) ?? []).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
-            notesOut.append(StudentNote(id: note.id, page: note.pageNumber, time: note.audioTime, text: text))
+            notesOut.append(StudentNote(id: note.id, page: note.pageNumber, time: note.audioTime, recordingID: note.recordingID, text: text))
         }
 
         // Preferences and the length rule.
@@ -190,13 +230,15 @@ struct NotesMaterial: Sendable {
             if sections.isEmpty {
                 let title = lecture.title.isEmpty ? "Lecture" : lecture.title
                 sections = [LectureNotesSection(
-                    key: LectureNotesFormat.sectionKey(topicTitle: title), title: title, startTime: lines.first?.start, endTime: nil
+                    key: LectureNotesFormat.sectionKey(topicTitle: title), title: title, startTime: lines.first?.start, endTime: nil,
+                    recordingID: lines.first?.recordingID
                 )]
             }
         }
         let target = targetWords(source: study == nil ? .slides : .recording, duration: duration, slides: slides, length: length)
         if !(keepSections && sections.allSatisfy { $0.targetWords != nil }) {
-            sections = budgets(sections, total: target, end: duration, slides: slides)
+            let end = study?.hasSeveralRecordings == true ? timeline.end : duration
+            sections = budgets(sections, total: target, end: end, slides: slides, timeline: timeline)
         }
 
         // The course's earlier notes, for connections.
@@ -208,7 +250,7 @@ struct NotesMaterial: Sendable {
         let language = [lecture.language, course?.language ?? "", study?.language ?? ""].first { !$0.isEmpty } ?? ""
         return NotesMaterial(
             notesID: notes.id, lecture: lecture, course: course, source: notes.source, request: notes.request, deck: deck, slides: slides,
-            lines: lines, lectureKey: ChatCitation.key(lectureID), recordingID: recordingID, recordingKey: recordingKey, duration: duration,
+            lines: lines, lectureKey: ChatCitation.key(lectureID), timeline: timeline, recordingNumbers: numbers, duration: duration,
             sections: sections, targetWords: target, length: length, professor: professor, said: said, notes: notesOut,
             preferences: memories.map(\.text), glossary: Array((course?.glossaryTerms ?? []).prefix(80)), earlier: earlier,
             imagePages: imagePages(slides, hasRecording: study != nil), language: language, chips: chips
@@ -300,13 +342,18 @@ struct NotesMaterial: Sendable {
     }
 
     /// Each section's share of `total`: by its share of the lecture's time (slides only, or
-    /// without times: of its slides), at least 150 words.
-    static func budgets(_ sections: [LectureNotesSection], total: Int, end: Double, slides: [Slide]) -> [LectureNotesSection] {
+    /// without times: of its slides), at least 150 words. Times compare on the lecture's
+    /// timeline (`end` is on it too), so sections of several recordings share one scale.
+    static func budgets(
+        _ sections: [LectureNotesSection], total: Int, end: Double, slides: [Slide], timeline: LectureTimeline = LectureTimeline()
+    ) -> [LectureNotesSection] {
         guard !sections.isEmpty else { return [] }
+        let starts = sections.map { section in section.startTime.map { timeline.seconds($0, on: section.recordingID) } }
         var weights: [Double] = sections.indices.map { index in
             let section = sections[index]
-            if let start = section.startTime {
-                let next = section.endTime ?? sections.dropFirst(index + 1).compactMap(\.startTime).first ?? end
+            if let start = starts[index] {
+                let next = section.endTime.map { timeline.seconds($0, on: section.recordingID) }
+                    ?? starts.dropFirst(index + 1).compactMap { $0 }.first ?? end
                 if next > start { return next - start }
             }
             if let first = section.firstPage { return Double(max(1, (section.lastPage ?? first) - first + 1)) * 60 }
