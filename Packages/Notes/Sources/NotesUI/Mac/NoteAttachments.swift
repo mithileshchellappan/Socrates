@@ -103,11 +103,11 @@ public final class NoteAttachmentHostingView: NSHostingView<AnyView> {
 /// The room a line-wide attachment leaves at its top and bottom.
 private let mediaMargin: CGFloat = 3
 
-/// A media size fitted into a line `lineWidth` wide (never wider than stored).
+/// A media size fitted into a line `lineWidth` wide (never wider than stored × the content zoom).
 @MainActor
-private func fitted(width: Double?, height: Double?, lineWidth: CGFloat) -> CGSize {
-    let w = CGFloat(width ?? 256)
-    let h = CGFloat(height ?? 144)
+private func fitted(width: Double?, height: Double?, zoom: CGFloat, lineWidth: CGFloat) -> CGSize {
+    let w = CGFloat(width ?? 256) * zoom
+    let h = CGFloat(height ?? 144) * zoom
     guard w > 0, h > 0 else { return CGSize(width: 1, height: 1) }
     let scale = min(1, max(1, lineWidth - 2) / w)
     return CGSize(width: (w * scale).rounded(), height: (h * scale).rounded())
@@ -120,6 +120,7 @@ private func fitted(width: Double?, height: Double?, lineWidth: CGFloat) -> CGSi
 final class ChipAttachment: NoteAttachmentContent {
     weak var context: NoteEditorContext?
     let inline: NoteInline
+    /// The chip's size at 100 % (it is drawn × the content zoom).
     private var size: CGSize?
 
     init(inline: NoteInline, context: NoteEditorContext?) {
@@ -128,14 +129,17 @@ final class ChipAttachment: NoteAttachmentContent {
     }
 
     func makeView() -> NSView? {
+        let zoom = context?.metrics.zoom ?? 1
         let view = host(NoteChipView(inline: inline, context: context))
-        size = view.fittingSize
+        let fitting = view.fittingSize
+        size = CGSize(width: fitting.width / zoom, height: fitting.height / zoom)
         return view
     }
 
     func bounds(lineWidth: CGFloat, view: NSView?) -> CGRect {
-        let size = size ?? view?.fittingSize ?? CGSize(width: 36, height: 15)
-        return CGRect(x: 0, y: -3.5, width: ceil(size.width) + 1, height: ceil(size.height))
+        let zoom = context?.metrics.zoom ?? 1
+        let size = size ?? CGSize(width: 36, height: 15)
+        return CGRect(x: 0, y: -3.5 * zoom, width: ceil(size.width * zoom) + 1, height: ceil(size.height * zoom))
     }
 }
 
@@ -157,6 +161,7 @@ struct NoteChipView: View {
             }
         }
         .fixedSize()
+        .zoomScaled(context?.metrics.zoom ?? 1)
     }
 }
 
@@ -247,7 +252,7 @@ final class MediaAttachment: NoteAttachmentContent {
     }
 
     func makeView() -> NSView? {
-        let width = CGFloat(media.width ?? 256)
+        let width = CGFloat(media.width ?? 256) * (context?.metrics.zoom ?? 1)
         switch kind {
         case .drawing:
             if drawing == nil, let services = context?.services {
@@ -262,7 +267,7 @@ final class MediaAttachment: NoteAttachmentContent {
     }
 
     func bounds(lineWidth: CGFloat, view: NSView?) -> CGRect {
-        let size = fitted(width: media.width, height: media.height, lineWidth: lineWidth)
+        let size = fitted(width: media.width, height: media.height, zoom: context?.metrics.zoom ?? 1, lineWidth: lineWidth)
         (view as? NoteAttachmentHostingView)?.hitWidth = size.width
         return CGRect(x: 0, y: -4, width: max(1, floor(lineWidth) - 1), height: size.height + 2 * mediaMargin)
     }
@@ -276,7 +281,7 @@ struct NoteImageView: View {
     @State private var image: CGImage?
 
     var body: some View {
-        NoteMediaFrame(media: media) { size in
+        NoteMediaFrame(media: media, zoom: context?.metrics.zoom ?? 1) { size in
             ZStack {
                 Rectangle().fill(.quaternary)
                 if let image {
@@ -303,9 +308,10 @@ struct NoteImageView: View {
     }
 }
 
-/// Lays a medium out at its fitted size, leading, with the line's margins.
+/// Lays a medium out at its fitted size (× the content zoom), leading, with the line's margins.
 struct NoteMediaFrame<Content: View>: View {
     let media: NoteAttachment
+    var zoom: CGFloat = 1
     @ViewBuilder let content: (CGSize) -> Content
     @State private var lineWidth: CGFloat = 0
 
@@ -318,8 +324,8 @@ struct NoteMediaFrame<Content: View>: View {
     }
 
     private var fittedSize: CGSize {
-        let w = CGFloat(media.width ?? 256)
-        let h = CGFloat(media.height ?? 144)
+        let w = CGFloat(media.width ?? 256) * zoom
+        let h = CGFloat(media.height ?? 144) * zoom
         guard w > 0, h > 0 else { return CGSize(width: 1, height: 1) }
         let scale = lineWidth > 0 ? min(1, max(1, lineWidth - 2) / w) : 1
         return CGSize(width: (w * scale).rounded(), height: (h * scale).rounded())
@@ -335,7 +341,8 @@ struct NoteSlideClipView: View {
     @State private var deck: SlideDeck?
 
     var body: some View {
-        NoteMediaFrame(media: media) { size in
+        let zoom = context?.metrics.zoom ?? 1
+        NoteMediaFrame(media: media, zoom: zoom) { size in
             ZStack(alignment: .topTrailing) {
                 if let deck, let page = source?.pageNumber {
                     SlideImageView(deck: deck, page: page, pixelWidth: 640, cornerRadius: 10)
@@ -347,7 +354,8 @@ struct NoteSlideClipView: View {
                 if let page = source?.pageNumber {
                     SlideChip(page: page, action: open)
                         .background(Color.contentBackground, in: Capsule())
-                        .padding(5)
+                        .zoomScaled(zoom)
+                        .padding(5 * zoom)
                 }
             }
             .frame(width: size.width, height: size.height)
@@ -393,7 +401,7 @@ struct NoteSketchView: View {
     }
 
     var body: some View {
-        NoteMediaFrame(media: attachment.media) { size in
+        NoteMediaFrame(media: attachment.media, zoom: context?.metrics.zoom ?? 1) { size in
             ZStack(alignment: .bottomTrailing) {
                 Color.canvasBackground(colorScheme)
                 if isEditing {
@@ -473,16 +481,17 @@ final class QuoteAttachment: NoteAttachmentContent {
 
     func bounds(lineWidth: CGFloat, view: NSView?) -> CGRect {
         let metrics = context?.metrics ?? NoteMetrics(style: .document)
+        let zoom = metrics.zoom
         let width = max(40, floor(lineWidth) - 1)
         let text = "“\(block.text)”" as NSString
         let style = NSMutableParagraphStyle()
-        style.lineSpacing = max(0, metrics.lineHeight - 17)
+        style.lineSpacing = max(0, metrics.lineHeight - 17 * zoom)
         let rect = text.boundingRect(
-            with: CGSize(width: width - 15, height: .greatestFiniteMagnitude),
+            with: CGSize(width: width - 15 * zoom, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: [.font: NSFont.systemFont(ofSize: metrics.bodySize), .paragraphStyle: style]
         )
-        let height = ceil(rect.height) + 4 + 18 + 2 + 2 * mediaMargin
+        let height = ceil(rect.height) + (4 + 18 + 2) * zoom + 2 * mediaMargin
         return CGRect(x: 0, y: -4, width: width, height: height)
     }
 }
@@ -493,28 +502,31 @@ struct NoteQuoteView: View {
 
     var body: some View {
         let metrics = context?.metrics ?? NoteMetrics(style: .document)
+        let zoom = metrics.zoom
         HStack(spacing: 0) {
             Rectangle()
                 .fill(Color.professor)
-                .frame(width: 3)
-            VStack(alignment: .leading, spacing: 4) {
+                .frame(width: 3 * zoom)
+            VStack(alignment: .leading, spacing: 4 * zoom) {
                 Text(verbatim: "“\(block.text)”")
                     .font(.system(size: metrics.bodySize))
-                    .lineSpacing(max(0, metrics.lineHeight - 17))
+                    .lineSpacing(max(0, metrics.lineHeight - 17 * zoom))
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
+                HStack(spacing: 6 * zoom) {
                     ProvenancePin(.professor)
+                        .zoomScaled(zoom)
                     if let professor = context?.professor {
                         Text(verbatim: professor)
                     }
                     if let source = block.source, let time = source.time {
                         TimeChip(time, showsPlayGlyph: true) { context?.activate(.time(source)) }
+                            .zoomScaled(zoom)
                     }
                 }
-                .font(.system(size: 12))
+                .font(.system(size: 12 * zoom))
                 .foregroundStyle(.secondary)
             }
-            .padding(.leading, 12)
+            .padding(.leading, 12 * zoom)
             .padding(.vertical, 1)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -537,19 +549,26 @@ final class AISparkleAttachment: NoteAttachmentContent {
     }
 
     func makeView() -> NSView? {
-        let size = context?.metrics.bodySize ?? 14
-        return host(
-            Image(systemName: "sparkle")
-                .font(.system(size: size - 1))
-                .foregroundStyle(Color.ai)
-                .frame(width: size, height: size, alignment: .leading)
-                .accessibilityLabel(Text("AI"))
-        )
+        host(NoteAISparkleView(context: context))
     }
 
     func bounds(lineWidth: CGFloat, view: NSView?) -> CGRect {
         let size = context?.metrics.bodySize ?? 14
-        return CGRect(x: 0, y: -2, width: size + 4, height: size)
+        return CGRect(x: 0, y: -2 * (context?.metrics.zoom ?? 1), width: size + 4, height: size)
+    }
+}
+
+/// The sparkle at the body size (it follows the content zoom).
+struct NoteAISparkleView: View {
+    let context: NoteEditorContext?
+
+    var body: some View {
+        let size = context?.metrics.bodySize ?? 14
+        Image(systemName: "sparkle")
+            .font(.system(size: size - 1))
+            .foregroundStyle(Color.ai)
+            .frame(width: size, height: size, alignment: .leading)
+            .accessibilityLabel(Text("AI"))
     }
 }
 
@@ -562,6 +581,7 @@ final class KeptAttachment: NoteAttachmentContent {
     weak var context: NoteEditorContext?
     let inline: NoteInline?
     let block: NoteBlock?
+    /// An inline's size at 100 % (it is drawn × the content zoom).
     private var size: CGSize?
 
     init(inline: NoteInline, context: NoteEditorContext?) {
@@ -580,13 +600,10 @@ final class KeptAttachment: NoteAttachmentContent {
         if let block {
             return host(NoteKeptBlockView(block: block, context: context))
         }
-        let view = host(
-            Text(verbatim: inline?.text ?? "")
-                .font(.system(size: context?.metrics.bodySize ?? 14))
-                .foregroundStyle(.secondary)
-                .fixedSize()
-        )
-        size = view.fittingSize
+        let zoom = context?.metrics.zoom ?? 1
+        let view = host(NoteKeptInlineView(text: inline?.text ?? "", context: context))
+        let fitting = view.fittingSize
+        size = CGSize(width: fitting.width / zoom, height: fitting.height / zoom)
         return view
     }
 
@@ -599,10 +616,24 @@ final class KeptAttachment: NoteAttachmentContent {
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
                 attributes: [.font: NSFont.systemFont(ofSize: context?.metrics.bodySize ?? 14)]
             )
-            return CGRect(x: 0, y: -4, width: width, height: max(17, ceil(rect.height)) + 2)
+            return CGRect(x: 0, y: -4, width: width, height: max(17 * (context?.metrics.zoom ?? 1), ceil(rect.height)) + 2)
         }
-        let size = size ?? view?.fittingSize ?? .zero
-        return CGRect(x: 0, y: -4, width: ceil(size.width), height: ceil(size.height))
+        let zoom = context?.metrics.zoom ?? 1
+        let size = size ?? .zero
+        return CGRect(x: 0, y: -4 * zoom, width: ceil(size.width * zoom), height: ceil(size.height * zoom))
+    }
+}
+
+/// A run the editor does not know, as its text in grey at the body size.
+struct NoteKeptInlineView: View {
+    let text: String
+    let context: NoteEditorContext?
+
+    var body: some View {
+        Text(verbatim: text)
+            .font(.system(size: context?.metrics.bodySize ?? 14))
+            .foregroundStyle(.secondary)
+            .fixedSize()
     }
 }
 

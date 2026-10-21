@@ -162,6 +162,8 @@ public struct NotesView: View {
             NoteImageCache.removeAll()
             NoteDeckCache.removeAll()
         }
+        // nl: View ▸ Zoom In / Zoom Out / Actual Size scale the open note (the list stays).
+        .contentZoomable()
     }
 
     // MARK: List

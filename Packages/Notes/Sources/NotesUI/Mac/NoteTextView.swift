@@ -50,24 +50,66 @@ final class NoteTextView: NSTextView {
         positionTrailingAccessory()
     }
 
-    /// The document's text column: 52 pt in from the left (Apple Notes), at most 680 wide, under
-    /// the stamp. A wide editor leaves the room on the right, never a gap before the text.
+    /// The document's text column: 52 pt in from the left (Apple Notes), at most 680 wide (× the
+    /// content zoom), under the stamp. A wide editor leaves the room on the right, never a gap
+    /// before the text.
     func updateInsets() {
         guard isDocument else { return }
+        let zoom = noteCoordinator?.metrics.zoom ?? 1
         let side = NoteMetrics.documentSide
-        let inset = NSSize(width: side, height: 27)
+        let inset = NSSize(width: side, height: (27 * zoom).rounded())
         if textContainerInset != inset { textContainerInset = inset }
-        let width = max(120, min(NoteMetrics.documentWidth, bounds.width - side * 2)).rounded()
+        let column = noteCoordinator?.metrics.textColumnWidth ?? NoteMetrics.documentWidth
+        let width = max(120, min(column, bounds.width - side * 2)).rounded()
         if let container = textContainer, container.size.width != width {
             container.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         }
         if stampLabel.superview == nil {
-            stampLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             stampLabel.textColor = .tertiaryLabelColor
             stampLabel.alignment = .center
             addSubview(stampLabel)
         }
+        let stampSize = 11 * zoom
+        if stampLabel.font?.pointSize != stampSize {
+            stampLabel.font = NSFont.monospacedDigitSystemFont(ofSize: stampSize, weight: .regular)
+        }
         positionStamp()
+    }
+
+    // MARK: Zoom
+
+    /// Where the document is scrolled to: the first visible line's first character and how far
+    /// that line's top is from the visible top (nil at the top, or not a document).
+    func visibleAnchor() -> (location: Int, offset: CGFloat)? {
+        guard isDocument, let clip = enclosingScrollView?.contentView, let layout = textLayoutManager,
+              let content = layout.textContentManager
+        else { return nil }
+        let top = clip.bounds.minY - textContainerOrigin.y
+        guard top > 0, let fragment = layout.textLayoutFragment(for: CGPoint(x: 0, y: top)) else { return nil }
+        let frame = fragment.layoutFragmentFrame
+        let start = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+        let line = fragment.textLineFragments.first { frame.minY + $0.typographicBounds.maxY > top } ?? fragment.textLineFragments.first
+        let lineTop = frame.minY + (line?.typographicBounds.minY ?? 0)
+        return (start + (line?.characterRange.location ?? 0), lineTop - top)
+    }
+
+    /// Scrolls so the line holding `anchor.location` is where it was (after a zoom).
+    func restore(_ anchor: (location: Int, offset: CGFloat)) {
+        guard let scrollView = enclosingScrollView, let layout = textLayoutManager, let content = layout.textContentManager,
+              let location = content.location(content.documentRange.location, offsetBy: anchor.location)
+        else { return }
+        // A note is short: lay it all out so the frame and the line's place are exact.
+        layout.ensureLayout(for: layout.documentRange)
+        sizeToFit()
+        guard let fragment = layout.textLayoutFragment(for: location) else { return }
+        let start = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+        let local = anchor.location - start
+        let line = fragment.textLineFragments.last { $0.characterRange.location <= local } ?? fragment.textLineFragments.first
+        let lineTop = fragment.layoutFragmentFrame.minY + (line?.typographicBounds.minY ?? 0)
+        let clip = scrollView.contentView
+        let y = max(0, min(textContainerOrigin.y + lineTop - anchor.offset, frame.height - clip.bounds.height))
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+        scrollView.reflectScrolledClipView(clip)
     }
 
     private func positionStamp() {
@@ -507,10 +549,12 @@ final class NoteTextView: NSTextView {
 /// paragraphs whole after edits, draws list markers and reports focus and height.
 @MainActor
 final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutManagerDelegate {
-    nonisolated let metrics: NoteMetrics
+    nonisolated let style: NoteEditorStyle
+    /// The sizes at the content zoom (nl): `setZoom`.
+    private(set) var metrics: NoteMetrics
     let context: NoteEditorContext
-    let typesetter: NoteTypesetter
-    let builder: NoteDocumentBuilder
+    private(set) var typesetter: NoteTypesetter
+    private(set) var builder: NoteDocumentBuilder
     var session: NoteSession?
     weak var textView: NoteTextView?
     var onFocus: ((Bool) -> Void)?
@@ -520,12 +564,53 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
     private var lastHeight: CGFloat = -1
     private var editedParagraphs: NSRange?
     private var paragraphCountChanged = false
+    /// The text was set again at another zoom: an undo or redo may bring back runs at the old one.
+    private var rezoomed = false
 
     init(metrics: NoteMetrics, context: NoteEditorContext) {
+        style = metrics.style
         self.metrics = metrics
         self.context = context
         typesetter = NoteTypesetter(metrics: metrics)
         builder = NoteDocumentBuilder(typesetter: NoteTypesetter(metrics: metrics), context: context)
+    }
+
+    // MARK: Zoom
+
+    /// The content zoom (nl §11). Before the note is loaded it only sets the sizes; after, the
+    /// text's attributes are set again at the new sizes in one editing transaction: no re-parse,
+    /// no save and no undo step (the blocks are unchanged). The selection keeps its ranges, the
+    /// document its first visible line, the inspector style reports its new height.
+    func setZoom(_ zoom: CGFloat) {
+        guard abs(zoom - metrics.zoom) > 0.001 else { return }
+        metrics = NoteMetrics(style: style, zoom: zoom)
+        typesetter = NoteTypesetter(metrics: metrics)
+        builder = NoteDocumentBuilder(typesetter: typesetter, context: context)
+        context.metrics = metrics
+        guard let textView, let storage = textView.textStorage else { return }
+        let selection = textView.selectedRanges
+        let anchor = textView.visibleAnchor()
+        if storage.length > 0 {
+            rezoomed = true
+            let undo = textView.undoManager
+            undo?.disableUndoRegistration()
+            storage.beginEditing()
+            storage.enumerateAttributes(in: NSRange(location: 0, length: storage.length)) { attributes, range, _ in
+                let format = attributes[.noteBlock] as? BlockFormat ?? .body
+                var next = typesetter.attributes(format, marks: NoteTypesetter.marks(attributes))
+                if let attachment = attributes[.attachment] { next[.attachment] = attachment }
+                if let link = attributes[.link] { next[.link] = link }
+                storage.setAttributes(next, range: range)
+            }
+            storage.endEditing()
+            undo?.enableUndoRegistration()
+        }
+        let typing = textView.typingAttributes
+        textView.typingAttributes = typingAttributes(typing[.noteBlock] as? BlockFormat ?? .body, keeping: typing)
+        textView.selectedRanges = selection
+        textView.updateInsets()
+        if let anchor { textView.restore(anchor) }
+        sizeChanged()
     }
 
     // MARK: Loading
@@ -686,6 +771,9 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
         let range = string.paragraphRange(for: edited)
         var location = range.location
         var began = false
+        // After a zoom, an undo or redo puts back runs set at the zoom they were typed at.
+        let undoing = textView.undoManager.map { $0.isUndoing || $0.isRedoing } ?? false
+        let reset = rezoomed && undoing
         while location < NSMaxRange(range) {
             let paragraph = string.paragraphRange(for: NSRange(location: location, length: 0))
             location = NSMaxRange(paragraph)
@@ -697,7 +785,7 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
                     stop.pointee = true
                 }
             }
-            guard !uniform else { continue }
+            guard !uniform || reset else { continue }
             if !began {
                 storage.beginEditing()
                 began = true
@@ -725,19 +813,8 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
     nonisolated func textLayoutManager(
         _ textLayoutManager: NSTextLayoutManager, textLayoutFragmentFor location: any NSTextLocation, in textElement: NSTextElement
     ) -> NSTextLayoutFragment {
-        guard let paragraph = textElement as? NSTextParagraph, paragraph.attributedString.length > 0,
-              let format = paragraph.attributedString.attribute(.noteBlock, at: 0, effectiveRange: nil) as? BlockFormat,
-              format.isList
-        else { return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange) }
-        let marker: NoteListFragment.Marker = switch format.kind {
-        case .checklist: .checkbox(checked: format.checked)
-        case .numbered: .number(Self.number(of: paragraph, level: format.level, in: textLayoutManager.textContentManager))
-        default: .bullet(level: format.level)
-        }
-        return NoteListFragment(
-            textElement: textElement, range: textElement.elementRange, marker: marker,
-            indent: metrics.listIndent * CGFloat(format.level + 1), font: NSFont.systemFont(ofSize: metrics.bodySize)
-        )
+        NoteListFragment.make(for: textElement, in: textLayoutManager, style: style)
+            ?? NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange)
     }
 
     /// The item's number: 1 + the numbered items right before it at its level (deeper items in
@@ -840,7 +917,8 @@ final class NoteEditorCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMan
 
     func insertSketch() {
         guard let textView, let blobs = context.services?.blobs else { return }
-        let width = textView.textContainer?.size.width ?? 480
+        // Stored at its size at 100 % (media are drawn × the content zoom).
+        let width = (textView.textContainer?.size.width ?? 480) / metrics.zoom
         let drawing = NoteMedia.newSketch(width: width)
         guard let media = try? NoteMedia.storeSketch(drawing, blobs: blobs) else { return }
         let attachment = MediaAttachment(sketch: media, drawing: drawing, context: context)
@@ -899,6 +977,8 @@ struct NoteTextEditor: NSViewRepresentable {
         coordinator.onHeight = onHeight
         coordinator.lastFocusRequest = focusRequest
         configure(coordinator.context)
+        // nl: set at the content zoom from the start.
+        coordinator.setZoom(context.environment.contentZoom)
 
         let textView = NoteTextView(usingTextLayoutManager: true)
         coordinator.textView = textView
@@ -974,6 +1054,7 @@ struct NoteTextEditor: NSViewRepresentable {
         coordinator.onHeight = onHeight
         configure(coordinator.context)
         guard let textView = coordinator.textView else { return }
+        coordinator.setZoom(context.environment.contentZoom)
         if let stamp, textView.stampLabel.stringValue != stamp {
             textView.stampLabel.stringValue = stamp
             textView.needsLayout = true
@@ -1015,13 +1096,25 @@ struct NoteTextEditor: NSViewRepresentable {
         }
         let source = SourceRef(kind: .transcript, lectureID: coordinator.context.lectureID, time: trailingTime)
         let editorContext = coordinator.context
-        let chip = TimeChip(trailingTime) { editorContext.activate(.time(source)) }
-        if let host = textView.trailingAccessory as? NSHostingView<TimeChip> {
+        let chip = TrailingTimeChip(time: trailingTime, zoom: coordinator.metrics.zoom) { editorContext.activate(.time(source)) }
+        if let host = textView.trailingAccessory as? NSHostingView<TrailingTimeChip> {
             host.rootView = chip
         } else {
             textView.trailingAccessory = NSHostingView(rootView: chip)
         }
         textView.needsLayout = true
+    }
+}
+
+/// The note's time chip after its last word, at the content zoom.
+struct TrailingTimeChip: View {
+    let time: Double
+    let zoom: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        TimeChip(time, action: action)
+            .zoomScaled(zoom)
     }
 }
 #endif
