@@ -441,42 +441,22 @@ public actor LectureProcessor {
         )
     }
 
-    /// The launch backfill (mr): `align` jobs for the recordings that have a lecture and a
-    /// transcript, whose lecture has no slides and that never had an `align` job (transcribed
-    /// before continuation detection existed). The job row is the marker: each recording is
-    /// tried once (again only after a new transcription). Returns how many were queued; the
-    /// caller wakes the queue. One transaction, off the main actor.
+    /// The launch backfill (mr): `align` jobs for the transcribed recordings whose lecture has no
+    /// slides and no open job (`LectureSlides.queueContinuationChecks`, every course): the ones
+    /// never checked (transcribed before continuation detection existed), and the ones checked
+    /// before whose course got slides since (a deck filed later; lectures of the last 21 days),
+    /// which the filing or link that brought them normally queued already (this catches a quit
+    /// in between, or slides filed on another device). The `align` job row is the marker.
+    /// Returns how many were queued; the caller wakes the queue. One transaction, off the main
+    /// actor.
     @discardableResult
     public func queueContinuationChecks() async throws -> Int {
         let store = store
         let now = Date()
-        let queued: Int = try await services.database.write { db in
-            let linked: [Lecture.ID] = try LectureDeckSpan.where { $0.startTime.is(nil) }.select { $0.lectureID }.fetchAll(db)
-            let withSlides = Set(linked)
-            let alignJobs: [Recording.ID?] = try Job.where { $0.stage.eq(JobStage.align) }.select { $0.recordingID }.fetchAll(db)
-            let aligned = Set(alignJobs.compactMap(\.self))
-            let openJobs: [Recording.ID?] = try Job
-                .where { $0.state.eq(JobState.queued) || $0.state.eq(JobState.running) }
-                .select { $0.recordingID }
-                .fetchAll(db)
-            let pending = Set(openJobs.compactMap(\.self))
-            let recordings = try Recording.where { $0.lectureID.isNot(nil) }.fetchAll(db)
-            var count = 0
-            for recording in recordings {
-                guard let lectureID = recording.lectureID, !withSlides.contains(lectureID),
-                      !aligned.contains(recording.id), !pending.contains(recording.id)
-                else { continue }
-                let recordingID = recording.id
-                let lines = try TranscriptSegment.where { $0.recordingID.eq(recordingID) }.fetchCount(db)
-                guard lines > 0 else { continue }
-                let job = store.stamp(Job(stage: .align, lectureID: lectureID, recordingID: recordingID, createdAt: now))
-                try Job.upsert { job }.execute(db)
-                count += 1
-            }
-            return count
+        let jobs = try await services.database.write { db in
+            try LectureSlides.queueContinuationChecks(courseID: nil, reason: "launch", in: db, store: store, now: now)
         }
-        if queued > 0 { Log.jobs.info("Queued \(queued) continuation check(s)") }
-        return queued
+        return jobs.count
     }
 
     // MARK: - Helpers

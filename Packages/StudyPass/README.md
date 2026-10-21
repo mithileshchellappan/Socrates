@@ -129,6 +129,6 @@ the deck most of the recording's slide spans are on, whole, as before.
 | `NotesPrompt` | the format of `LectureNotesFormat`, the keys in order, the typed fences, all material delimited as data; `promptVersion` (part of `input_hash`). |
 | `NotesWords.count(_:)`, `NotesChipCheck.checked(_:courseID:in:)` | public helpers for AppAgent (the catalog's word count, keep_notes_answer's chips). |
 
-Pipeline hook: after a synthesis unit is written, `LectureNotesRepository.queueAfterStudyPass(lectureID:)`; after `rerun(lectureID:)`, the same with `rerun: true` once its synthesis lands.
+Pipeline hook: after a synthesis unit is written, `LectureNotesRepository.queueAfterStudyPass(lectureID:)`; after `rerun(lectureID:)`, the same with `rerun: true` once its synthesis lands. Slides that arrive later (filed, or found by continuation detection) change the lecture's material, so its synthesis runs again; finished notes queued before those slides were linked are then written again once (same Write Again sentence).
 
 Wiring (integrator): `NotesWriter(services:, client: .socrates(services:), figureCheck: <StudyPage's checker>)` into `AppAgent(…, notesWriter:)`; `NotesAsker(services:, client:)` as `\.lectureNotesAsker` on the Mac's main window.

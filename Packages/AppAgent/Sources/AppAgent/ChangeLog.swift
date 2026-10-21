@@ -505,7 +505,12 @@ public struct ChangeLog: Sendable {
         change.apiCallID = origin.apiCallID
         let stamped = finalize(change, origin: origin, store: store)
         try AgentChangeRepository.insert(stamped, db: db)
-        return (.applied(stamped), result.alignJobs)
+        var jobs = result.alignJobs
+        // Slides that arrive later: the course's other recordings without slides are checked again.
+        if case .deckLink = request, let courseID = try Lecture.find(result.lectureID).fetchOne(db)?.courseID {
+            jobs += try LectureSlides.queueContinuationChecks(courseID: courseID, reason: "slides linked", in: db, store: store, now: now)
+        }
+        return (.applied(stamped), jobs)
     }
 
     /// Undo of a deck change in the caller's transaction (`LectureSlides.undo`); the caller marks
