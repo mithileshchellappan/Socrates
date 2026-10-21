@@ -25,6 +25,9 @@ public enum Log {
     public static let importer = logger(category: "import")
     public static let search = logger(category: "search")
     public static let jobs = logger(category: "jobs")
+    /// ln: queueing, writing and setting aside lecture notes (StudyPass's `NotesWriter` logs here
+    /// too): every version that is not written says why, at notice level or above.
+    public static let lectureNotes = logger(category: "lecture-notes")
 
     /// A state-machine write (a task or job row moving on: finish, pause) that must not fail
     /// silently: a failure is logged and the write tried once more after a moment. Nil when both

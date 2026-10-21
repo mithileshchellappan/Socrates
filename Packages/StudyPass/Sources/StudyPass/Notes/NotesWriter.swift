@@ -15,6 +15,10 @@ public enum NotesWriteOutcome: Sendable, Hashable {
     case waiting(until: Date?)
     /// It could not be written: one readable sentence (the row is `failed`, what came stays).
     case failed(String)
+    /// Nothing to write it from (the slides or the transcript went after it was queued): not an
+    /// error; the version waits for its material (`LectureNotesRepository.waitForMaterial`) and a
+    /// new one is queued when it arrives or the lecture is opened again.
+    case waitingForMaterial
 }
 
 /// Writes one version of a lecture's notes (docs/plan-lecture-notes.md §5 and its "Build plan"):
@@ -30,6 +34,10 @@ public enum NotesWriteOutcome: Sendable, Hashable {
 /// - A cancelled version (Previous Version, Undo of write_lecture_notes, the panel) stops the call
 ///   (`stream` returns false). A cancelled task (a quit) writes nothing more: the row stays
 ///   `generating` and is resumed when the task runs again.
+/// - Nothing to write from (`NotesMaterial.load` nil): the version waits for its material
+///   (`.waitingForMaterial`), no triangle.
+/// - Every run that does not write the version says why in the log (`lecture-notes`, notice or
+///   error: ids, counts and kinds of error, never lecture content).
 ///
 /// Contract for the app (integrator, Mac only): `NotesWriter(services:, client: .socrates,
 /// figureCheck: <StudyPage's checker>)` into `AppAgent(…, notesWriter:)`; the task queue runs it.
@@ -43,7 +51,7 @@ public struct NotesWriter: Sendable {
     static let writeInterval: Duration = .milliseconds(100)
     static let repairMaxTokens = 6_000
     static let failure = "The notes could not be written."
-    static let log = Log.logger(category: "lecture-notes")
+    static let log = Log.lectureNotes
 
     public init(
         services: StudyServices, client: ClaudeClient?, figureCheck: (any NotesFigureChecking)? = nil,
@@ -62,10 +70,14 @@ public struct NotesWriter: Sendable {
         do {
             return try await write(notesID)
         } catch is CancellationError {
+            Self.log.notice("Notes \(Self.key(notesID), privacy: .public) stopped (the task was cancelled)")
             return .waiting(until: nil)
         } catch {
-            if Task.isCancelled { return .waiting(until: nil) }
-            Self.log.error("Notes failed: \(ReadableError.kind(of: error), privacy: .public)")
+            if Task.isCancelled {
+                Self.log.notice("Notes \(Self.key(notesID), privacy: .public) stopped (the task was cancelled)")
+                return .waiting(until: nil)
+            }
+            Self.log.error("Notes \(Self.key(notesID), privacy: .public) failed: \(ReadableError.kind(of: error), privacy: .public)")
             try? await repository.fail(notesID, error: Self.failure)
             return .failed(Self.failure)
         }
@@ -73,25 +85,44 @@ public struct NotesWriter: Sendable {
 
     // MARK: - Writing
 
+    /// The first 8 hex of a version's id, for the log.
+    static func key(_ id: LectureNotes.ID) -> String { ChatCitation.key(id) }
+
     func write(_ notesID: LectureNotes.ID) async throws -> NotesWriteOutcome {
-        guard let notes = try await repository.notes(notesID), notes.state.isOpen else { return .done }
+        let key = Self.key(notesID)
+        guard let notes = try await repository.notes(notesID) else {
+            Self.log.notice("Notes \(key, privacy: .public) not written: the version is gone")
+            return .done
+        }
+        guard notes.state.isOpen else {
+            Self.log.notice("Notes \(key, privacy: .public) not written: v\(notes.version, privacy: .public) is \(notes.state.rawValue, privacy: .public)")
+            return .done
+        }
         guard let client else {
+            Self.log.error("Notes \(key, privacy: .public) failed: no Claude client on this device")
             let sentence = ReadableError.sentence(for: ClaudeError.unavailable(.unsupported))
             try await repository.fail(notesID, error: sentence)
             return .failed(sentence)
         }
         let availability = await client.availability()
         if let until = availability.pausedUntil {
+            Self.log.notice("Notes \(key, privacy: .public) wait: Claude Code is paused until \(until, privacy: .public)")
             try await repository.pause(notesID, until: until)
             return .waiting(until: until)
         }
-        guard availability.isReady else { return .waiting(until: nil) }
+        guard availability.isReady else {
+            Self.log.notice("Notes \(key, privacy: .public) wait: Claude Code is not ready")
+            return .waiting(until: nil)
+        }
 
         let resuming = notes.hasText
         guard let material = try await services.database.read({ db in try NotesMaterial.load(notes, keepSections: resuming, in: db) }) else {
-            let sentence = "There is nothing to write these notes from yet."
-            try await repository.fail(notesID, error: sentence)
-            return .failed(sentence)
+            let inputs = try await services.database.read { db in try LectureNotesRepository.inputs(lectureID: notes.lectureID, in: db) }
+            Self.log.notice(
+                "Notes \(key, privacy: .public) wait for their material: nothing to write v\(notes.version, privacy: .public) from the \(notes.source.rawValue, privacy: .public) (lecture \(ChatCitation.key(notes.lectureID), privacy: .public): \(inputs.summary, privacy: .public))"
+            )
+            try await repository.waitForMaterial(notesID)
+            return .waitingForMaterial
         }
         let system = NotesPrompt.system(german: material.isGerman)
         let hash = NotesPrompt.inputHash(
@@ -101,7 +132,13 @@ public struct NotesWriter: Sendable {
         guard try await repository.begin(
             notesID, length: material.length, targetWords: material.targetWords, sections: material.sections, inputHash: hash,
             promptVersion: NotesPrompt.promptVersion, model: LectureNotesCalls.writeModel, effort: LectureNotesCalls.writeEffort
-        ) != nil else { return .done }
+        ) != nil else {
+            Self.log.notice("Notes \(key, privacy: .public) not written: cancelled before it began")
+            return .done
+        }
+        Self.log.notice(
+            "Notes \(key, privacy: .public) writing v\(notes.version, privacy: .public) from the \(material.source.rawValue, privacy: .public): \(material.slides.count, privacy: .public) slides, \(material.lines.count, privacy: .public) lines, \(material.sections.count, privacy: .public) sections, \(material.imagePages.count, privacy: .public) images\(resuming ? " (resuming)" : "", privacy: .public)"
+        )
 
         let images = SlideImages.jpegs(pages: material.imagePages, deck: material.deck, blobs: services.blobs)
         var kept = resuming ? Self.kept(notes.body, sections: material.sections) : ""
@@ -124,11 +161,13 @@ public struct NotesWriter: Sendable {
                 switch message.stopReason {
                 case .refusal?:
                     // What a declined call wrote is not kept.
+                    Self.log.error("Notes \(key, privacy: .public) failed: Claude declined (refusal)")
                     let sentence = "Claude declined to write these notes."
                     try await repository.fail(notesID, error: sentence, body: kept, costUSD: try await cost(material.lecture.id, since: notes.createdAt))
                     return .failed(sentence)
                 case .maxTokens?, .modelContextWindowExceeded?:
                     guard !resumedAfterCut else {
+                        Self.log.error("Notes \(key, privacy: .public) failed: cut off twice")
                         let sentence = ReadableError.sentence(for: ClaudeError.truncated(message: message))
                         try await repository.fail(notesID, error: sentence, body: body, costUSD: try await cost(material.lecture.id, since: notes.createdAt))
                         return .failed(sentence)
@@ -142,19 +181,21 @@ public struct NotesWriter: Sendable {
                     break writing
                 }
             case .cancelled:
+                Self.log.notice("Notes \(key, privacy: .public) stopped: the version was cancelled while it was written")
                 return .done
             case .stopped:
+                Self.log.notice("Notes \(key, privacy: .public) stopped (the task was cancelled); resumed when it runs again")
                 return .waiting(until: nil)
             case .trouble(let error, let body):
                 var until: Date?
                 if case .usageLimited(let resetsAt) = error { until = resetsAt }
                 if until == nil { until = await client.availability().pausedUntil }
                 let date = until ?? now().addingTimeInterval(15 * 60)
-                Self.log.notice("Notes wait: \(ReadableError.kind(of: error), privacy: .public)")
+                Self.log.notice("Notes \(key, privacy: .public) wait until \(date, privacy: .public): \(ReadableError.kind(of: error), privacy: .public)")
                 try await repository.pause(notesID, until: date, body: body)
                 return .waiting(until: date)
             case .failed(let error, let body):
-                Self.log.error("Notes call failed: \(ReadableError.kind(of: error), privacy: .public)")
+                Self.log.error("Notes \(key, privacy: .public) call failed: \(ReadableError.kind(of: error), privacy: .public)")
                 let sentence = ReadableError.sentence(for: error, otherwise: Self.failure)
                 try await repository.fail(notesID, error: sentence, body: body, costUSD: try await cost(material.lecture.id, since: notes.createdAt))
                 return .failed(sentence)
@@ -174,10 +215,13 @@ public struct NotesWriter: Sendable {
         let spent = try await cost(material.lecture.id, since: notes.createdAt)
         guard try await repository.finish(
             notesID, body: result.body, sections: result.sections, questions: result.questions, apiCallID: callID, costUSD: spent, repairs: repairs
-        ) != nil else { return .done }
+        ) != nil else {
+            Self.log.notice("Notes \(key, privacy: .public) not saved: cancelled while they were checked")
+            return .done
+        }
         let seconds = (ContinuousClock.now - started).components.seconds
-        Self.log.info(
-            "Notes written in \(seconds)s: \(result.sections.count) sections, \(NotesWords.count(result.body)) words, \(result.questions.count) questions, \(repairs) repaired; dropped \(result.drops.summary, privacy: .public)"
+        Self.log.notice(
+            "Notes \(key, privacy: .public) written in \(seconds)s: \(result.sections.count) sections, \(NotesWords.count(result.body)) words, \(result.questions.count) questions, \(repairs) repaired; dropped \(result.drops.summary, privacy: .public)"
         )
         return .done
     }

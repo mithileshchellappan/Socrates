@@ -7,8 +7,18 @@ import SQLiteData
 // marks and versions through this. docs/plan-lecture-notes.md §5 and its "Build plan".
 
 extension LectureNotes {
-    /// A version that can be the current notes: neither discarded nor cancelled.
-    public var isCandidate: Bool { discardedAt == nil && state != .cancelled }
+    /// The writer found nothing to write from (`LectureNotesRepository.waitForMaterial`): not an
+    /// error, so no triangle. The version waits: it is never the current notes, and a new one is
+    /// queued when the material arrives (`requeueWaiting`) or the lecture is opened again.
+    public static let nothingToWriteFrom = "There is nothing to write these notes from yet."
+
+    /// A version set aside because there was nothing to write it from (a `failed` row with that
+    /// sentence and no text; rows written before 2026-10-21 look the same).
+    public var isWaitingForMaterial: Bool { state == .failed && error == Self.nothingToWriteFrom && !hasText }
+
+    /// A version that can be the current notes: neither discarded, cancelled nor waiting for its
+    /// material.
+    public var isCandidate: Bool { discardedAt == nil && state != .cancelled && !isWaitingForMaterial }
 
     /// The current notes among a lecture's versions: the newest candidate.
     public static func current(of versions: [LectureNotes]) -> LectureNotes? {
@@ -80,8 +90,9 @@ public struct LectureNotesRepository: Sendable {
     }
 
     /// First open of a lecture's notes page or Review's Whole lecture pane (`user`): queues the
-    /// first version when the lecture has none that can be current (all discarded or cancelled,
-    /// or none at all) and no open one. A failed version is not queued again (Write Again is).
+    /// first version when the lecture has none that can be current (all discarded, cancelled or
+    /// waiting for their material, or none at all) and no open one. A failed version is not
+    /// queued again (Write Again is).
     @discardableResult
     public func queueIfNeeded(lectureID: Lecture.ID, createdBy: Author = .user) async throws -> LectureNotes? {
         let stamp = store.currentDate
@@ -102,34 +113,103 @@ public struct LectureNotesRepository: Sendable {
         return try await store.database.write { db in
             let current = try Self.current(lectureID: lectureID, in: db)
             guard current == nil || current?.source == .slides || rerun else { return nil }
-            guard try Self.source(lectureID: lectureID, in: db) == .recording else { return nil }
+            let inputs = try Self.inputs(lectureID: lectureID, in: db)
+            guard inputs.source == .recording else {
+                Log.lectureNotes.notice(
+                    "Notes for lecture \(ChatCitation.key(lectureID), privacy: .public) not queued after the study pass: \(inputs.summary, privacy: .public)"
+                )
+                return nil
+            }
             return try Self.queue(lectureID: lectureID, request: nil, createdBy: .agent, in: db, now: stamp)
         }
     }
 
+    /// The material arrived for lectures whose notes wait for it (`isWaitingForMaterial`; a deck's
+    /// pages or a lecture's range were written, by filing, a link or sync): a new version is
+    /// queued for each that has no current or open version and can be written now, with the
+    /// waiting version's sentence and author. The task queue calls this when `deck_page` or
+    /// `lecture_deck_span` change, and once at launch. Returns the versions queued.
+    @discardableResult
+    public func requeueWaiting() async throws -> [LectureNotes] {
+        let stamp = store.currentDate
+        let sentence = LectureNotes.nothingToWriteFrom
+        let any = try await store.database.read { db in
+            try LectureNotes.where { $0.state.eq(LectureNotesState.failed) && $0.error.eq(String?.some(sentence)) }.fetchCount(db)
+        }
+        guard any > 0 else { return [] }
+        return try await store.database.write { db in
+            let waiting = try LectureNotes
+                .where { $0.state.eq(LectureNotesState.failed) && $0.error.eq(String?.some(sentence)) }
+                .fetchAll(db)
+                .filter(\.isWaitingForMaterial)
+            var queued: [LectureNotes] = []
+            for lectureID in Set(waiting.map(\.lectureID)) {
+                let versions = try Self.versions(lectureID: lectureID, in: db)
+                guard LectureNotes.current(of: versions) == nil, !versions.contains(where: { $0.state.isOpen }),
+                      let newest = versions.last(where: \.isWaitingForMaterial),
+                      try Self.inputs(lectureID: lectureID, in: db).source != nil
+                else { continue }
+                guard let notes = try Self.queue(lectureID: lectureID, request: newest.request, createdBy: newest.createdBy, in: db, now: stamp)
+                else { continue }
+                Log.lectureNotes.notice(
+                    "Notes for lecture \(ChatCitation.key(lectureID), privacy: .public) queued again: their material arrived (v\(notes.version, privacy: .public), \(notes.source.rawValue, privacy: .public))"
+                )
+                queued.append(notes)
+            }
+            return queued
+        }
+    }
+
     /// What a new version of the lecture would be written from now; nil: nothing yet (a recording
-    /// whose study pass has not written its synthesis, or neither slides nor recording). The
-    /// synthesis counts as written when its unit is done or the lecture has topic rows (a library
-    /// whose topics came without units).
+    /// whose study pass has not written its synthesis, a range of slides whose deck has no pages
+    /// there, or neither slides nor recording). `LectureNotesInputs.source` has the rules.
     public static func source(lectureID: Lecture.ID, in db: Database) throws -> LectureNotesSource? {
+        try inputs(lectureID: lectureID, in: db).source
+    }
+
+    /// What the notes writer could read about the lecture now, counted (the writer's
+    /// `NotesMaterial` reads the same rows).
+    public static func inputs(lectureID: Lecture.ID, in db: Database) throws -> LectureNotesInputs {
+        let reference = Lecture.ID?.some(lectureID)
         let synthesized = try StudyUnit
             .where { $0.lectureID.eq(lectureID) && $0.stage.eq(StudyStage.synthesize) && $0.state.eq(ExtractionState.done) }
             .fetchCount(db)
-        let reference = Lecture.ID?.some(lectureID)
         let topics = try Annotation
             .where { $0.lectureID.eq(reference) && $0.kind.eq(AnnotationKind.topic) && $0.hiddenAt.is(nil) }
             .fetchCount(db)
-        if synthesized > 0 || topics > 0 { return .recording }
-        let recordings = try Recording.where { $0.lectureID.eq(Lecture.ID?.some(lectureID)) }.fetchCount(db)
-        guard recordings == 0, try LectureSlides.current(lectureID: lectureID, in: db) != nil else { return nil }
-        return .slides
+        let lines = try TranscriptSegment.where { $0.lectureID.eq(reference) }.fetchCount(db)
+        let recordings = try Recording.where { $0.lectureID.eq(reference) }.fetchCount(db)
+        let range = try LectureSlides.current(lectureID: lectureID, in: db)
+        var pages = 0
+        if let range {
+            let deckID = range.deckID
+            let first = range.firstPage
+            let last = range.lastPage
+            pages = try DeckPage.where { $0.deckID.eq(deckID) && $0.pageNumber.gte(first) && $0.pageNumber.lte(last) }.fetchCount(db)
+        }
+        return LectureNotesInputs(
+            synthesized: synthesized > 0, topics: topics, transcriptLines: lines, recordings: recordings, range: range, rangePages: pages
+        )
     }
 
     static func queue(lectureID: Lecture.ID, request: String?, createdBy: Author, in db: Database, now: Date) throws -> LectureNotes? {
-        guard let lecture = try Lecture.find(lectureID).fetchOne(db) else { return nil }
+        let key = ChatCitation.key(lectureID)
+        guard let lecture = try Lecture.find(lectureID).fetchOne(db) else {
+            Log.lectureNotes.notice("Notes for lecture \(key, privacy: .public) not queued: the lecture is gone")
+            return nil
+        }
         let versions = try versions(lectureID: lectureID, in: db)
-        guard !versions.contains(where: { $0.state.isOpen }) else { return nil }
-        guard let source = try source(lectureID: lectureID, in: db) else { return nil }
+        if let open = versions.first(where: { $0.state.isOpen }) {
+            Log.lectureNotes.notice(
+                "Notes for lecture \(key, privacy: .public) not queued: v\(open.version, privacy: .public) is \(open.state.rawValue, privacy: .public)"
+            )
+            return nil
+        }
+        let inputs = try inputs(lectureID: lectureID, in: db)
+        guard let source = inputs.source else {
+            Log.lectureNotes.notice("Notes for lecture \(key, privacy: .public) not queued: nothing to write from (\(inputs.summary, privacy: .public))")
+            return nil
+        }
         let name = lecture.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let title = lecture.number.map { "Notes: Lecture \($0)" + (name.isEmpty ? "" : " · \(name)") } ?? "Notes: \(name.isEmpty ? "Lecture" : name)"
         let task = AgentTask(
@@ -147,6 +227,9 @@ public struct LectureNotesRepository: Sendable {
             createdAt: now, updatedAt: now
         )
         try LectureNotes.upsert { notes }.execute(db)
+        Log.lectureNotes.notice(
+            "Notes for lecture \(key, privacy: .public) queued: v\(notes.version, privacy: .public) \(ChatCitation.key(notes.id), privacy: .public) from the \(source.rawValue, privacy: .public) (\(inputs.summary, privacy: .public)), by \(createdBy.rawValue, privacy: .public)"
+        )
         return notes
     }
 
@@ -269,6 +352,13 @@ public struct LectureNotesRepository: Sendable {
         }
     }
 
+    /// The writer found nothing to write from (the slides or the transcript went between queueing
+    /// and writing): the version waits for its material (`isWaitingForMaterial`), quietly; never
+    /// the current notes. Only an open version.
+    public func waitForMaterial(_ id: LectureNotes.ID) async throws {
+        try await fail(id, error: LectureNotes.nothingToWriteFrom)
+    }
+
     /// It could not be written: `failed` with one readable sentence; `body` (when given) keeps what
     /// came.
     public func fail(_ id: LectureNotes.ID, error: String, body: String? = nil, costUSD: Double? = nil) async throws {
@@ -314,6 +404,9 @@ public struct LectureNotesRepository: Sendable {
 
     static func cancel(_ id: LectureNotes.ID, in db: Database, now: Date) throws -> Bool {
         guard var notes = try LectureNotes.find(id).fetchOne(db), notes.state.isOpen else { return false }
+        Log.lectureNotes.notice(
+            "Notes \(ChatCitation.key(id), privacy: .public) cancelled: v\(notes.version, privacy: .public) of lecture \(ChatCitation.key(notes.lectureID), privacy: .public) was \(notes.state.rawValue, privacy: .public)"
+        )
         notes.state = .cancelled
         notes.pausedUntil = nil
         notes.finishedAt = now
@@ -414,5 +507,52 @@ public struct LectureNotesRepository: Sendable {
                     .execute(db)
             }
         }
+    }
+}
+
+/// What a lecture's notes could be written from now (`LectureNotesRepository.inputs`): the counts
+/// that decide `source`, and their one-line summary for the log (counts and pages only, never
+/// lecture content).
+public struct LectureNotesInputs: Sendable, Hashable {
+    /// The study pass's synthesis unit is done.
+    public var synthesized: Bool
+    /// Topic rows (`annotation` ai · topic, not hidden).
+    public var topics: Int
+    /// The lecture's transcript lines (`transcript_segment`).
+    public var transcriptLines: Int
+    public var recordings: Int
+    /// The lecture's slides (`LectureSlides.current`).
+    public var range: LectureSlideRange?
+    /// The deck's pages inside that range.
+    public var rangePages: Int
+
+    public init(synthesized: Bool, topics: Int, transcriptLines: Int, recordings: Int, range: LectureSlideRange?, rangePages: Int) {
+        self.synthesized = synthesized
+        self.topics = topics
+        self.transcriptLines = transcriptLines
+        self.recordings = recordings
+        self.range = range
+        self.rangePages = rangePages
+    }
+
+    /// `recording` once the study pass wrote its synthesis (its unit done, or topic rows: a library
+    /// whose topics came without units) and the lecture has transcript lines; else `slides` for a
+    /// lecture without a recording whose range of slides has pages (topic rows without a
+    /// transcript, left by a recording moved to another lecture, do not count); else nil.
+    public var source: LectureNotesSource? {
+        if transcriptLines > 0, synthesized || topics > 0 { return .recording }
+        if recordings == 0, rangePages > 0 { return .slides }
+        return nil
+    }
+
+    /// "transcript 0 lines, 0 recordings, synthesis no, 5 topics, slides 1–50: 0 pages".
+    public var summary: String {
+        var text = "transcript \(transcriptLines) lines, \(recordings) recordings, synthesis \(synthesized ? "done" : "no"), \(topics) topics, "
+        if let range {
+            text += "slides \(range.firstPage)–\(range.lastPage) of deck \(ChatCitation.key(range.deckID)): \(rangePages) pages"
+        } else {
+            text += "no slides"
+        }
+        return text
     }
 }

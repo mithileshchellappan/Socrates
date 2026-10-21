@@ -394,7 +394,8 @@ private struct LectureOnlyNotesPane: View {
 /// fact twice). With Follow on, the notes scroll to the section whose slides hold the slide on
 /// screen; chips move the review; Continue in Chat's passage goes with the review's context.
 /// Until the notes are written (or while a version is paused or failed): the study pass's blocks,
-/// and on the Mac the first show queues the notes (`queueIfNeeded`).
+/// and on the Mac the first show queues the notes (`queueIfNeeded`). A version that failed puts
+/// its failure line over the blocks (triangle, reason, Write Again…: `LectureNotesFailureBar`).
 private struct WholeLecturePane: View {
     let model: ReviewModel
     let notes: [Note]
@@ -434,15 +435,22 @@ private struct WholeLecturePane: View {
     @ViewBuilder
     private var blocks: some View {
         #if os(macOS)
-        LectureNotesPane(model: model, notes: notes, items: items)
-            .task(id: model.lecture.id) {
-                guard queuesOnOpen else { return }
-                do {
-                    try await LectureNotesRepository(store: model.services.records).queueIfNeeded(lectureID: model.lecture.id)
-                } catch {
-                    ReviewLog.logger.error("Queueing the lecture's notes failed: \(String(describing: error), privacy: .public)")
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            if LectureNotes.current(of: versionsQuery.wrappedValue)?.state == .failed {
+                LectureNotesFailureBar(lectureID: model.lecture.id)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
             }
+            LectureNotesPane(model: model, notes: notes, items: items)
+        }
+        .task(id: model.lecture.id) {
+            guard queuesOnOpen else { return }
+            do {
+                try await LectureNotesRepository(store: model.services.records).queueIfNeeded(lectureID: model.lecture.id)
+            } catch {
+                ReviewLog.logger.error("Queueing the lecture's notes failed: \(String(describing: error), privacy: .public)")
+            }
+        }
         #else
         LectureNotesPane(model: model, notes: notes, items: items)
         #endif

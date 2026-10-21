@@ -50,7 +50,8 @@ public struct LectureNotesView: View {
     ///   - followPage: Review's slide on screen while Follow is on: the view scrolls to the section
     ///     whose slides hold it (nil: no following).
     ///   - onChip: a chip was clicked; return true when the host handled it.
-    ///   - writeAgain: a failed version's Write Again… (the page's popover); nil: queued at once.
+    ///   - writeAgain: a failed version's Write Again… (the page: its popover, or at once for a
+    ///     version without text); nil: queued at once (`LectureNotesWriteAgain`).
     ///   - onChatPassage: Continue in Chat's passage for the host to send with its own context (nil
     ///     when it should stop going); nil: the view publishes it (`.agentContext`).
     public init(
@@ -113,7 +114,7 @@ public struct LectureNotesView: View {
             marks: rows.marks.filter { $0.removedAt == nil }, studentNotes: rows.notes, quotes: rows.quotes, lectures: lectures,
             recordings: recordings, hasRecording: !rows.recordings.isEmpty, deck: rows.deck,
             pages: rows.range.map { $0.firstPage...$0.lastPage }, professor: professor, folded: controller.folded,
-            answersOpen: controller.answersOpen, unavailable: unavailable
+            answersOpen: controller.answersOpen, unavailable: unavailable, canWriteAgain: rows.canWrite
         )
     }
 
@@ -175,6 +176,8 @@ struct LectureNotesRows: Equatable, Sendable {
     var recordings: [Recording] = []
     var range: LectureSlideRange?
     var deck: Deck?
+    /// A new version could be written now (`LectureNotesRepository.source`).
+    var canWrite = false
 
     static let empty = LectureNotesRows()
 }
@@ -203,6 +206,7 @@ struct LectureNotesRequest: FetchKeyRequest {
         if let deckID = rows.range?.deckID {
             rows.deck = try Deck.find(deckID).fetchOne(db)
         }
+        rows.canWrite = try LectureNotesRepository.source(lectureID: id, in: db) != nil
         return rows
     }
 }

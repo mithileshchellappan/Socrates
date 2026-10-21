@@ -46,6 +46,9 @@ struct NotesDocumentInput: Equatable {
     var answersOpen: Set<String> = []
     /// Claude Code is not available: the readable sentence (nil: available or unknown).
     var unavailable: String?
+    /// A new version could be written now (`LectureNotesRepository.source`): the failure line's
+    /// Write Again… is off without it.
+    var canWriteAgain = true
 
     var outline: [LectureNotesSection] { notes?.sections ?? [] }
 

@@ -1,5 +1,6 @@
 import ClaudeKit
 import Foundation
+import GRDB
 import StudyCore
 import StudyPass
 
@@ -10,10 +11,16 @@ import StudyPass
 // claimed without it), quiet (never reported into the thread unless the agent queued it from the
 // chat: `write_lecture_notes` gives it a parent conversation). A usage limit pauses it until the
 // reset; a cancel (Previous Version, the panel, cancel_task) cancels its version; a quitting run
-// writes nothing (the version stays `generating` and is resumed at the next launch).
+// writes nothing (the version stays `generating` and is resumed at the next launch). A version with
+// nothing to write from waits for its material: its task ends (failed, with that sentence: only a
+// task the agent queued from the chat shows it), and `watchNotesMaterial` queues a new version when
+// a deck's pages or a lecture's range are written. Every task that does not write its version
+// says why in the log (`lecture-notes`; the writer logs its own reasons).
 extension AgentTaskQueue {
     func runLectureNotes(_ task: AgentTask) async {
+        let key = ChatCitation.key(task.id)
         guard let notesWriter else {
+            Log.lectureNotes.error("Notes task \(key, privacy: .public) failed: no notes writer on this device")
             await finishRow(task.id, .failed, error: "Lecture notes do not run on this device.")
             return
         }
@@ -26,6 +33,7 @@ extension AgentTaskQueue {
             return
         }
         guard let notes else {
+            Log.lectureNotes.notice("Notes task \(key, privacy: .public) failed: its version is gone")
             await finishRow(task.id, .failed, error: "These notes are gone.")
             return
         }
@@ -48,7 +56,44 @@ extension AgentTaskQueue {
         case .failed(let message):
             guard await stillOpen(task) else { return }
             await finishRow(task.id, .failed, error: message)
+        case .waitingForMaterial:
+            guard await stillOpen(task) else { return }
+            await finishRow(task.id, .failed, error: LectureNotes.nothingToWriteFrom)
         }
+    }
+
+    /// Notes that wait for their material are queued again when it arrives: a deck's pages or a
+    /// lecture's range written (filing, a link, sync), and once at launch
+    /// (`LectureNotesRepository.requeueWaiting`). Only with a notes writer (the Mac).
+    func watchNotesMaterial() {
+        guard notesWriter != nil, materialObservation == nil else { return }
+        let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        materialObservation = DatabaseRegionObservation(tracking: [
+            SQLRequest<Row>(sql: "SELECT * FROM deck_page"), SQLRequest<Row>(sql: "SELECT * FROM lecture_deck_span"),
+        ])
+        .start(
+            in: services.database,
+            onError: { error in Log.lectureNotes.error("Watching notes material failed: \(String(describing: error), privacy: .public)") },
+            onChange: { _ in continuation.yield() }
+        )
+        let repository = LectureNotesRepository(store: services.records)
+        materialFollower = Task(priority: .background) {
+            for await _ in stream {
+                do {
+                    try await repository.requeueWaiting()
+                } catch {
+                    Log.lectureNotes.error("Queueing waiting notes failed: \(ReadableError.kind(of: error), privacy: .public)")
+                }
+            }
+        }
+        continuation.yield()
+    }
+
+    func stopWatchingNotesMaterial() {
+        materialObservation?.cancel()
+        materialObservation = nil
+        materialFollower?.cancel()
+        materialFollower = nil
     }
 
     /// A `lecture_notes` task cancelled (the panel, `cancel_task`, a running one stopped): its open

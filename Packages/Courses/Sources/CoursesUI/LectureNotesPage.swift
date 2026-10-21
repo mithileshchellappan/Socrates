@@ -11,7 +11,10 @@ import StudyUI
 /// Review] filled, [Practice], ⋯ with Write Again…, Previous Version, Edit as Note, Copy as
 /// Markdown), the notes (`LectureNotesView`), Keep in mind (the lecture's tracked items) at the
 /// end. The first open of a lecture without notes queues them (`queueIfNeeded`), except where
-/// `\.lectureNotesQueuesOnOpen` is off (renders).
+/// `\.lectureNotesQueuesOnOpen` is off (renders). Write Again… (the ⋯ menu, the failure line) opens
+/// its popover hung off a plain view behind the ⋯ (a popover on the `Menu` itself does not show
+/// reliably), after the click; a version without text is queued again at once. It is off while a
+/// version is open or nothing could be written (no slides with pages, no transcript).
 public struct LectureNotesPage: View {
     private let lectureID: Lecture.ID
     @Fetch private var page: LectureNotesPageData
@@ -35,7 +38,7 @@ public struct LectureNotesPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
-                LectureNotesView(lectureID: lectureID, style: .page, writeAgain: { writeAgainShown = true })
+                LectureNotesView(lectureID: lectureID, style: .page, writeAgain: { showWriteAgain() })
                     .padding(.top, 18)
                 if !page.items.isEmpty {
                     KeepInMindBlock(items: page.items, trails: page.trails, course: page.course, text: SessionText(locale: locale, timeZone: timeZone))
@@ -114,8 +117,8 @@ public struct LectureNotesPage: View {
     /// ⋯: Write Again…, Previous Version, Edit as Note, Copy as Markdown.
     private var moreMenu: some View {
         Menu {
-            Button("Write Again…") { writeAgainShown = true }
-                .disabled(page.current?.state.isOpen == true)
+            Button("Write Again…") { showWriteAgain() }
+                .disabled(page.current?.state.isOpen == true || !page.canWrite)
             Button("Previous Version") { previousVersion() }
                 .disabled(!page.hasPreviousVersion)
             Divider()
@@ -136,11 +139,14 @@ public struct LectureNotesPage: View {
         .fixedSize()
         .help(Text("More"))
         .accessibilityLabel(Text("More"))
-        .popover(isPresented: $writeAgainShown, arrowEdge: .bottom) {
-            WriteAgainPopover(request: $request) { sentence in
-                writeAgainShown = false
-                writeAgain(sentence)
-            }
+        .background {
+            Color.clear
+                .popover(isPresented: $writeAgainShown, arrowEdge: .bottom) {
+                    LectureNotesWriteAgainPopover(request: $request) { sentence in
+                        writeAgainShown = false
+                        writeAgain(sentence)
+                    }
+                }
         }
     }
 
@@ -159,35 +165,21 @@ public struct LectureNotesPage: View {
         }
     }
 
+    /// Write Again… from the ⋯ menu or the failure line: the popover, once the click (or the menu)
+    /// is done; a version without text has nothing to refine, so it is queued again at once.
+    private func showWriteAgain() {
+        guard page.current?.hasText == true else {
+            writeAgain("")
+            return
+        }
+        Task { @MainActor in writeAgainShown = true }
+    }
+
     /// Write Again…: a new version with the student's sentence (Previous Version undoes it).
     private func writeAgain(_ sentence: String) {
         guard let services else { return }
-        let repository = LectureNotesRepository(store: services.records)
-        let lectureID = lectureID
-        let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
         request = ""
-        Task {
-            do {
-                guard let queued = try await repository.queue(lectureID: lectureID, request: trimmed.isEmpty ? nil : trimmed, createdBy: .user) else { return }
-                registerWriteAgainUndo(repository: repository, version: queued.id)
-            } catch {
-                CoursesUILog.ui.error("Queueing the lecture's notes failed: \(String(describing: error), privacy: .public)")
-            }
-        }
-    }
-
-    private func registerWriteAgainUndo(repository: LectureNotesRepository, version: LectureNotes.ID) {
-        guard let undoManager else { return }
-        let lectureID = lectureID
-        let target = WriteAgainUndoTarget()
-        undoManager.registerUndo(withTarget: target) { target in
-            Task { _ = try? await repository.previousVersion(lectureID: lectureID) }
-            undoManager.registerUndo(withTarget: target) { _ in
-                Task { try? await repository.restore(version) }
-            }
-            undoManager.setActionName(String(localized: "Write Again"))
-        }
-        undoManager.setActionName(String(localized: "Write Again"))
+        LectureNotesWriteAgain.queue(lectureID: lectureID, request: sentence, services: services, undoManager: undoManager)
     }
 
     /// Previous Version (Edit ▸ Undo "Undo Write Again"; Redo brings the newer one back).
@@ -232,33 +224,9 @@ public struct LectureNotesPage: View {
     }
 }
 
-/// The identity Write Again's and Previous Version's undo steps are registered with.
+/// The identity Previous Version's undo steps are registered with.
 @MainActor
 final class WriteAgainUndoTarget {}
-
-/// Write Again…: one optional line ("more on the merge rule, fewer formulas"), ↩ writes.
-private struct WriteAgainPopover: View {
-    @Binding var request: String
-    let write: (String) -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            TextField(String(localized: "What should change?"), text: $request)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 260)
-                .focused($focused)
-                .onSubmit { write(request) }
-            Button("Write Again") { write(request) }
-                .buttonStyle(.bordered)
-        }
-        .padding(12)
-        .onAppear { focused = true }
-        .onChange(of: request) { _, text in
-            if text.count > LectureNotes.requestLimit { request = String(text.prefix(LectureNotes.requestLimit)) }
-        }
-    }
-}
 
 /// Keep in mind (the brief's third zone, at the end): the lecture's tracked items on one line
 /// each: [ring = due, bar = class, filled = done | title with its faint source glyph | day, mono
@@ -331,6 +299,9 @@ struct LectureNotesPageData: Equatable, Sendable {
     var range: LectureSlideRange?
     var current: LectureNotes?
     var hasPreviousVersion = false
+    /// A new version could be written now (`LectureNotesRepository.source`): Write Again… is off
+    /// without it.
+    var canWrite = false
     var hasQuestions = false
     var items: [TrackedItem] = []
     var trails: [TrackedItem.ID: [SourceTrailEntry]] = [:]
@@ -353,6 +324,7 @@ struct LectureNotesPageRequest: FetchKeyRequest {
         let current = LectureNotes.current(of: versions)
         data.current = current
         data.hasPreviousVersion = current.map { current in versions.contains { $0.isCandidate && $0.version < current.version } } ?? false
+        data.canWrite = try LectureNotesRepository.source(lectureID: id, in: db) != nil
         data.hasQuestions = try StudyQuestion.where { $0.lectureID.eq(reference) && $0.retiredAt.is(nil) }.fetchCount(db) > 0
             || current?.sections.contains { !$0.questionIDs.isEmpty } == true
         // Keep in mind: what was said in this lecture and tracked (deadlines, room changes, tasks).

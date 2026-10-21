@@ -729,10 +729,11 @@ final class NotesDocumentBuilder {
 
     private func failureUnit(_ notes: LectureNotes, sectionKey: String) -> NotesUnit {
         let actions = actions
+        let canWrite = input.canWriteAgain
         let attachment = HostedBlockAttachment(
-            NotesFailureLine(reason: notes.error) { actions?.writeAgain() }, estimate: 26, margin: 2
+            NotesFailureLine(reason: notes.error, canWrite: canWrite) { actions?.writeAgain() }, estimate: 26, margin: 2
         )
-        return blockUnit(attachment, signature: "fail|\(notes.error ?? "")", sectionKey: sectionKey, role: .chrome, spacingBefore: 8)
+        return blockUnit(attachment, signature: "fail|\(canWrite)|\(notes.error ?? "")", sectionKey: sectionKey, role: .chrome, spacingBefore: 8)
     }
 
     private func lineUnit(_ sentence: String, sectionKey: String) -> NotesUnit {
@@ -811,23 +812,35 @@ struct AnswersDisclosure: View {
     }
 }
 
-/// Failed: what came stays; the secondary triangle with the reason on hover, then Write Again….
+/// Failed: what came stays; one secondary line, the triangle and the reason (in full on hover
+/// when it is cut), then Write Again… (off while nothing could be written: no slides with pages,
+/// no transcript).
 struct NotesFailureLine: View {
     let reason: String?
+    var canWrite = true
     let writeAgain: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle")
                 .foregroundStyle(.secondary)
-                .help(Text(verbatim: reason ?? ""))
-                .accessibilityLabel(Text(verbatim: reason ?? ""))
+                .accessibilityHidden(true)
+            if let reason, !reason.isEmpty {
+                Text(verbatim: reason)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(Text(verbatim: reason))
+            }
             Button("Write Again…", action: writeAgain)
                 .buttonStyle(.borderless)
-                .font(.system(size: 12))
+                .disabled(!canWrite)
+                .fixedSize()
+                .padding(.leading, 2)
         }
         .font(.system(size: 12))
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
     }
 }
 #endif

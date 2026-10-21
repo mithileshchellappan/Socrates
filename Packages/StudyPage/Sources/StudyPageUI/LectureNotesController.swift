@@ -121,15 +121,10 @@ final class LectureNotesController {
             onWriteAgain()
             return
         }
-        guard let repository else { return }
-        let lectureID = lectureID
-        Task {
-            do {
-                try await repository.queue(lectureID: lectureID, createdBy: .user)
-            } catch {
-                StudyPageLog.logger.error("Queueing the notes failed: \(String(describing: error), privacy: .public)")
-            }
-        }
+        guard let services else { return }
+        LectureNotesWriteAgain.queue(
+            lectureID: lectureID, request: "", services: services, undoManager: undoManager ?? coordinator?.textView?.undoManager
+        )
     }
 
     // MARK: Highlights

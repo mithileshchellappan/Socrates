@@ -33,7 +33,8 @@ final class QuitSignal: Sendable {
 ///   one at a time, only with Claude Code, quiet (`DocumentTaskRunner.swift`).
 /// - ln: a `lecture_notes` task runs in code: `NotesWriter.run(notesID:)` (one streamed Opus
 ///   call), one at a time, only with Claude Code, quiet unless the agent queued it from the chat
-///   (`LectureNotesTaskRunner.swift`). Without a writer (nil) it fails.
+///   (`LectureNotesTaskRunner.swift`). Without a writer (nil) it fails. The queue also follows
+///   decks' pages and lectures' ranges for notes that wait for their material.
 /// - Result ≤ 4,000 characters into `result` (the task's last answer); the panel shows it at once;
 ///   the parent's next user turn carries it as `<task_result>` (`AppAgent.send`).
 /// - A usage limit → `paused` until the reset (it queues again then); cancel → its process is
@@ -60,6 +61,10 @@ actor AgentTaskQueue {
     private var observation: AnyDatabaseCancellable?
     private var follower: Task<Void, Never>?
     private var pauseWake: Task<Void, Never>?
+    /// ln: `deck_page` and `lecture_deck_span` followed for notes that wait for their material
+    /// (`watchNotesMaterial`).
+    var materialObservation: AnyDatabaseCancellable?
+    var materialFollower: Task<Void, Never>?
     private var stopping = false
     /// When the queue started: tasks without a parent that finish from then on join the newest
     /// `app` conversation (`settleFinished`).
@@ -108,6 +113,7 @@ actor AgentTaskQueue {
             }
         }
         continuation.yield()
+        watchNotesMaterial()
     }
 
     /// Starts queued tasks while slots are free, stops running ones whose row was cancelled.
@@ -172,6 +178,7 @@ actor AgentTaskQueue {
         follower = nil
         pauseWake?.cancel()
         pauseWake = nil
+        stopWatchingNotesMaterial()
         for (_, entry) in running {
             if let conversation = entry.conversation {
                 await runtime.stop(conversation)
