@@ -587,7 +587,7 @@ private struct TopicRow: View {
 
     private func open() {
         guard let lectureID = topic.lectureID else { return }
-        openDestination(.lecture(lectureID, ReviewTarget(page: topic.pageNumber, time: topic.startTime)))
+        openDestination(.lecture(lectureID, ReviewTarget(page: topic.pageNumber, time: topic.startTime, recordingID: topic.recordingID)))
     }
 
     private func practice() {

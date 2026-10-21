@@ -398,7 +398,9 @@ private struct WeakTopicRow: View {
     /// The lecture at the slide and second the topic was explained.
     private func open() {
         guard let lectureID = topic.topic.lectureID else { return }
-        openDestination(.lecture(lectureID, ReviewTarget(page: topic.topic.pageNumber, time: topic.topic.startTime)))
+        openDestination(.lecture(
+            lectureID, ReviewTarget(page: topic.topic.pageNumber, time: topic.topic.startTime, recordingID: topic.topic.recordingID)
+        ))
     }
 
     private func practice() {

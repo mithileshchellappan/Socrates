@@ -243,9 +243,7 @@ public enum LectureNotesExport {
                 if !ref.caption.isEmpty { blocks.append(NoteBlocks.block(kind: .paragraph, runs: [NoteInline(text: ref.caption, marks: [.ai])])) }
                 return blocks
             case .quote:
-                guard let citation = NotesQuoteRef.parse(fence.body), case .moment(_, _, let seconds) = citation,
-                      let row = rows.quotes.first(where: { NotesQuoteRef.matches($0, seconds: seconds) })
-                else { return [] }
+                guard let citation = NotesQuoteRef.parse(fence.body), let row = NotesQuoteRef.row(citation, in: rows.quotes) else { return [] }
                 let text = row.body.trimmingCharacters(in: .whitespacesAndNewlines)
                 return [NoteBlock(
                     type: .quote, text: text,

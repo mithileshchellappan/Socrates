@@ -281,7 +281,10 @@ public struct QuestionDrafter: Sendable {
             if !onSlides.isEmpty { return onSlides }
         }
         guard let start = topic.startTime else { return [] }
-        return text.lines.filter { $0.start >= start - 5 && $0.start < start + 300 }
+        // On the topic's own recording (a lecture's lines come from every recording of it).
+        return text.lines.filter { line in
+            (topic.recordingID == nil || line.recordingID == topic.recordingID) && line.start >= start - 5 && line.start < start + 300
+        }
     }
 
     func request(_ group: Group, loaded: Loaded) -> MessageRequest {

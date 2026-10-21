@@ -122,7 +122,7 @@ struct SummaryBlock: View {
     }
 
     private func play(_ time: Double) {
-        Task { await model.session.play(from: time) }
+        model.play(from: time, on: summary.recordingID)
     }
 }
 
@@ -182,7 +182,7 @@ struct ExamHintsBlock: View {
                     ChipParagraph(
                         text: SourceTrailText.quote(hint.body, maxWords: 25),
                         time: model.player == nil ? nil : hint.startTime,
-                        play: { time in Task { await model.session.play(from: time) } }
+                        play: { time in model.play(from: time, on: hint.recordingID) }
                     )
                     .foregroundStyle(.primary)
                 }
@@ -233,7 +233,7 @@ struct SaidInClassBlock: View {
         ChipParagraph(
             text: item.body,
             time: model.player == nil ? nil : item.startTime,
-            play: { time in Task { await model.session.play(from: time) } }
+            play: { time in model.play(from: time, on: item.recordingID) }
         )
         .foregroundStyle(.secondary)
         .contextMenu { HideButton(model: model, id: item.id) }
