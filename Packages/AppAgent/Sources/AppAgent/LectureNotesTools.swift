@@ -75,7 +75,9 @@ struct LectureNotesTools: Sendable {
         var used = 0
         var next: String?
         for part in parts[start...] {
-            var text = part.source
+            // nl: Claude's text only; the agent reads the student's notes through its notes tools
+            // (older versions still hold `note` fences).
+            var text = LectureNotesFormat.withoutNoteFences(part.source)
             if used + text.count > readLimit {
                 guard rows.isEmpty else {
                     next = part.key
