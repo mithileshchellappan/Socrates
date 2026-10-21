@@ -16,8 +16,9 @@ import SwiftUI
 /// - Sections fold by a chevron in the margin (kept per lecture).
 /// - A settled selection floats the capsule [highlighter] [Ask]; its menu starts with Ask… and
 ///   Highlight / Remove Highlight. Ask (through `\.lectureNotesAsker`; nil: Highlight only) opens
-///   the popover; Keep adds the answer under its paragraph; Continue in Chat publishes the passage
-///   as the agent panel's context (`.agentContext`) and opens the panel.
+///   the popover; Keep adds the answer under its paragraph; Continue in Chat opens the panel with
+///   the passage as its context: published by the view (`.agentContext`), or handed to the host
+///   (`onChatPassage`, Review). It goes with the next message only.
 /// - Chips call `onChip` first (Review moves its own review); else Review opens at the slide or
 ///   plays from the moment.
 ///
@@ -29,6 +30,7 @@ public struct LectureNotesView: View {
     private let followPage: Int?
     private let onChip: ((NotesChipTarget) -> Bool)?
     private let writeAgain: (() -> Void)?
+    private let onChatPassage: ((NotesPassageContext?) -> Void)?
 
     @Fetch private var rows: LectureNotesRows
     @State private var controller: LectureNotesController
@@ -49,15 +51,19 @@ public struct LectureNotesView: View {
     ///     whose slides hold it (nil: no following).
     ///   - onChip: a chip was clicked; return true when the host handled it.
     ///   - writeAgain: a failed version's Write Again… (the page's popover); nil: queued at once.
+    ///   - onChatPassage: Continue in Chat's passage for the host to send with its own context (nil
+    ///     when it should stop going); nil: the view publishes it (`.agentContext`).
     public init(
         lectureID: Lecture.ID, style: LectureNotesStyle = .page, followPage: Int? = nil,
-        onChip: ((NotesChipTarget) -> Bool)? = nil, writeAgain: (() -> Void)? = nil
+        onChip: ((NotesChipTarget) -> Bool)? = nil, writeAgain: (() -> Void)? = nil,
+        onChatPassage: ((NotesPassageContext?) -> Void)? = nil
     ) {
         self.lectureID = lectureID
         self.style = style
         self.followPage = followPage
         self.onChip = onChip
         self.writeAgain = writeAgain
+        self.onChatPassage = onChatPassage
         _rows = Fetch(wrappedValue: .empty, LectureNotesRequest(lectureID: lectureID))
         _controller = State(initialValue: LectureNotesController(lectureID: lectureID, style: style))
     }
@@ -72,6 +78,7 @@ public struct LectureNotesView: View {
         controller.openAgentPanel = openAgentPanel
         controller.onChip = onChip
         controller.onWriteAgain = writeAgain
+        controller.onChatPassage = onChatPassage
         controller.undoManager = undoManager
         controller.notes = input.notes
         controller.marks = input.marks
@@ -82,6 +89,7 @@ public struct LectureNotesView: View {
             .focusedSceneValue(\.lectureNotesAsk, controller.askCommand)
             .focusedSceneValue(\.lectureNotesHighlight, controller.highlightCommand)
             .preference(key: AgentContextPreferenceKey.self, value: chatContext)
+            .onDisappear { if controller.chatPassage != nil { controller.chatPassage = nil } }
             .onChange(of: followPage, initial: true) { follow() }
             // The first follow waits for the text's real height.
             .onChange(of: height) { if !followSettled { follow(force: true) } }
@@ -109,15 +117,22 @@ public struct LectureNotesView: View {
         )
     }
 
+    /// The passage taken to the chat, published while no host takes it (the page). `refine` runs
+    /// once, when a message reads the context: the passage goes with that message only.
     private var chatContext: AgentContextSource? {
-        guard let passage = controller.chatPassage else { return nil }
+        guard onChatPassage == nil, let passage = controller.chatPassage else { return nil }
         let context = switch style {
         case .page:
             AgentContext(screen: .course, courseID: rows.lecture?.courseID, courseScreen: "lecture_notes", lectureID: lectureID, notesPassage: passage)
         case .inspector:
             AgentContext(screen: .lecture, courseID: rows.lecture?.courseID, lectureID: lectureID, page: followPage, notesPassage: passage)
         }
-        return AgentContextSource(context: context)
+        let controller = controller
+        let screen = context.screen
+        return AgentContextSource(context: context) {
+            controller.chatPassageSent()
+            return AgentContext(screen: screen)
+        }
     }
 
     /// Renders: the preview's selection, capsule, popover or scroll, once the text is there.

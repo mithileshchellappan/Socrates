@@ -10,7 +10,8 @@ import StudyCore
 /// - `quote` only at an exam hint's or highlight's moment (`NotesQuoteRef.matches`), each row once,
 ///   at most two highlights a section; `note` only for the lecture's notes, each once; every exam
 ///   hint and every student note appears exactly once (code places the missing ones in their
-///   section by time, else by slide, before Check yourself);
+///   section by time, else by slide, before Check yourself); every said-in-class row is cited by
+///   its moment (±20 s; slides only, its slide), else code places it there as a bullet with its chip;
 /// - `check` parses (at most 3; one per section, last); a `slide` of this lecture's range, one a
 ///   section, its `box` only on a slide whose image was sent; figures through the figure checker
 ///   (nil: structural checks), at most two a section and twelve a lecture; open fences dropped;
@@ -361,13 +362,25 @@ struct NotesValidator: Sendable {
             draft.sections[position].blocks.append(.fence(info: "note", body: NotesNoteRef.marker(note.id)))
             draft.drops.drop("placed.note")
         }
+        // Every said-in-class row: Review shows only the notes once they are written, so a row the
+        // text does not cite goes into its section as a bullet with its chip.
+        for (position, lines) in missingSaid(in: draft) {
+            draft.sections[position].blocks.append(.prose(lines.joined(separator: "\n")))
+            for _ in lines { draft.drops.drop("placed.said") }
+        }
 
         var parts: [String] = []
         if !draft.overview.isEmpty { parts.append(draft.overview.joined(separator: "\n\n")) }
         var outline: [LectureNotesSection] = []
         var questions: [StudyQuestion] = []
         for var section in draft.sections {
-            if !section.blocks.contains(where: { if case .prose = $0 { return true } else { return false } }) {
+            // The heading is the first prose block of a written section (`read`); a section left
+            // out has none (placed bullets are no heading).
+            let hasHeading = section.blocks.contains { block in
+                if case .prose(let text) = block { return text.hasPrefix("## ") }
+                return false
+            }
+            if !hasHeading {
                 section.blocks.insert(.prose("## \(section.outline.title)"), at: 0)
             }
             var pieces: [String] = []
@@ -401,6 +414,57 @@ struct NotesValidator: Sendable {
             parts.append(LectureNotesFormat.sectionMarker(entry.key) + "\n" + pieces.joined(separator: "\n\n"))
         }
         return Result(body: parts.joined(separator: "\n\n") + "\n", sections: outline, questions: questions, drops: draft.drops)
+    }
+
+    /// How near a moment chip in the text must be to a said-in-class row's time to cite it.
+    static let saidWindow: Double = 20
+
+    /// The said-in-class rows the text does not cite, as bullets by section ("- body [[chip]]"):
+    /// with a recording a row is cited by a moment chip of this lecture's transcript within 20 s
+    /// of its time; slides only, by a chip of its slide. Rows without a time (slides only: without
+    /// a slide) and rows whose chip would not be valid are left as they are.
+    func missingSaid(in draft: Draft) -> [(Int, [String])] {
+        guard !material.said.isEmpty else { return [] }
+        var moments: [Int] = []
+        var pages: Set<Int> = []
+        let prose = draft.overview + draft.sections.flatMap { section in
+            section.blocks.compactMap { block -> String? in
+                if case .prose(let text) = block { return text }
+                return nil
+            }
+        }
+        for text in prose {
+            for case .citation(let citation) in ChatCitation.pieces(of: text) {
+                switch citation {
+                case .moment(let key, let recording, let seconds) where key == material.lectureKey && recording == material.recordingKey:
+                    moments.append(seconds)
+                case .slide(let key, let page) where key == material.lectureKey:
+                    pages.insert(page)
+                default:
+                    break
+                }
+            }
+        }
+        var placed: [Int: [String]] = [:]
+        for row in material.said {
+            let citation: ChatCitation
+            if material.source == .recording {
+                guard let start = row.startTime else { continue }
+                if moments.contains(where: { abs(Double($0) - start) <= Self.saidWindow }) { continue }
+                citation = .moment(lecture: material.lectureKey, recording: material.recordingKey, seconds: max(0, Int(start.rounded(.down))))
+            } else {
+                guard let page = row.pageNumber else { continue }
+                if pages.contains(page) { continue }
+                citation = .slide(lecture: material.lectureKey, page: page)
+            }
+            guard material.chips.isValid(citation) else { continue }
+            let body = PromptText.collapsed(NotesProse.cleaned(row.body, chips: material.chips).text)
+            guard !body.isEmpty,
+                  let position = sectionIndex(time: material.source == .recording ? row.startTime : nil, page: row.pageNumber, in: draft)
+            else { continue }
+            placed[position, default: []].append("- \(body) \(citation.marker)")
+        }
+        return placed.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     }
 
     /// Where a missing exam hint or note goes: the section being explained at that time, else the

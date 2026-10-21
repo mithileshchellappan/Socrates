@@ -7,8 +7,9 @@ import Foundation
 // of the words (at least 85 % of them in order over a window). Nil: the mark is orphaned.
 
 public enum TextQuoteAnchor {
-    /// The passage's range in `text`, in UTF-16 offsets (NSString ranges).
-    public static func locate(exact: String, prefix: String, suffix: String, hint: Int? = nil, in text: String) -> NSRange? {
+    /// The passage's range in `text`, in UTF-16 offsets (NSString ranges). `fuzzy` false: only
+    /// the exact and folded steps (while a version streams).
+    public static func locate(exact: String, prefix: String, suffix: String, hint: Int? = nil, fuzzy useFuzzy: Bool = true, in text: String) -> NSRange? {
         let needle = exact.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty, !text.isEmpty else { return nil }
         let haystack = text as NSString
@@ -40,6 +41,7 @@ public enum TextQuoteAnchor {
         if let best = best(foldedCandidates, prefix: prefix, suffix: suffix, hint: hint, in: haystack) { return best }
 
         // 3. Fuzzy words.
+        guard useFuzzy else { return nil }
         return fuzzy(needle: foldedNeedle, in: folded, hint: hint)
     }
 
@@ -71,34 +73,67 @@ public enum TextQuoteAnchor {
         zip(a.reversed(), b.reversed()).prefix { $0 == $1 }.count
     }
 
-    /// At least 85 % of the needle's words in order within a window of the text's words.
+    /// At least 85 % of the needle's words in order within a window of the text's words. Words are
+    /// compared as numbers (a text word not in the needle never matches), each window's score with
+    /// two reused rows; the span is walked back only for the best window, and a full match stops
+    /// the scan.
     static func fuzzy(needle: String, in folded: Folded, hint: Int?) -> NSRange? {
         let words = needle.split(separator: " ").map(String.init)
         guard words.count >= 4 else { return nil }
         let textWords = folded.words
         guard textWords.count >= words.count / 2 else { return nil }
+        var ids: [String: Int] = [:]
+        let needleIDs = words.map { word -> Int in
+            if let id = ids[word] { return id }
+            let id = ids.count
+            ids[word] = id
+            return id
+        }
+        let textIDs = textWords.map { ids[$0.text] ?? -1 }
         let window = words.count + max(2, words.count / 5)
-        var best: (score: Double, first: Int, last: Int)?
+        var previous = [Int](repeating: 0, count: window + 1)
+        var current = previous
+        var best: (score: Double, start: Int)?
         var start = 0
-        while start < textWords.count {
-            let end = min(textWords.count, start + window)
-            let slice = textWords[start..<end].map(\.text)
-            let (matched, first, last) = lcs(words, slice)
+        while start < textIDs.count {
+            let end = min(textIDs.count, start + window)
+            let matched = lcsLength(needleIDs, textIDs[start..<end], &previous, &current)
             let score = Double(matched) / Double(words.count)
             if score >= 0.85, score > (best?.score ?? 0) {
-                best = (score, start + first, start + last)
+                best = (score, start)
+                if matched == words.count { break }
             }
             start += 1
         }
         guard let best else { return nil }
-        let lower = textWords[best.first].range.location
-        let upper = NSMaxRange(textWords[best.last].range)
+        let end = min(textIDs.count, best.start + window)
+        let (_, first, last) = lcs(needleIDs, Array(textIDs[best.start..<end]))
+        let lower = textWords[best.start + first].range.location
+        let upper = NSMaxRange(textWords[best.start + last].range)
         _ = hint
         return NSRange(location: lower, length: upper - lower)
     }
 
+    /// The longest common subsequence's length of `a` and `b`, in two rows (each at least
+    /// `b.count + 1` long).
+    static func lcsLength(_ a: [Int], _ b: ArraySlice<Int>, _ previous: inout [Int], _ current: inout [Int]) -> Int {
+        let count = b.count
+        guard !a.isEmpty, count > 0 else { return 0 }
+        let base = b.startIndex
+        for j in 0...count { previous[j] = 0 }
+        for i in 0..<a.count {
+            current[0] = 0
+            let word = a[i]
+            for j in 1...count {
+                current[j] = word == b[base + j - 1] ? previous[j - 1] + 1 : max(previous[j], current[j - 1])
+            }
+            swap(&previous, &current)
+        }
+        return previous[count]
+    }
+
     /// The longest common subsequence's length and where it starts and ends in `b`.
-    static func lcs(_ a: [String], _ b: [String]) -> (Int, Int, Int) {
+    static func lcs<Element: Equatable>(_ a: [Element], _ b: [Element]) -> (Int, Int, Int) {
         guard !a.isEmpty, !b.isEmpty else { return (0, 0, 0) }
         var table = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
         for i in 1...a.count {

@@ -159,6 +159,7 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
     private var units: [NotesUnit] = []
     private var build = NotesBuild()
     private var renderings: [LectureNotesStyle: NoteTextRendering] = [:]
+    private let anchors = NotesAnchorCache()
     private var lastHeight: CGFloat = -1
     private var chevronViews: [String: NSView] = [:]
     private var capsule: NSView?
@@ -210,7 +211,9 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
         self.input = input
         let width = textView.textContainer?.size.width ?? 600
         lastWidth = width
-        let builder = NotesDocumentBuilder(input: input, containerWidth: width, actions: self, noteRendering: rendering(for: input))
+        let builder = NotesDocumentBuilder(
+            input: input, containerWidth: width, actions: self, noteRendering: rendering(for: input), anchors: anchors
+        )
         let next = builder.build()
         // Keep the units that did not change (their text and attachments stay on screen).
         var first = 0
@@ -481,6 +484,8 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
             return
         }
         controller?.selection = selection
+        // A new passage: the one taken to the chat earlier stops going with the next message.
+        controller?.clearChatPassage()
         if capsule == nil {
             let host = NSHostingView(rootView: capsuleView())
             textView.addSubview(host)
@@ -603,7 +608,7 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
             },
             continueInChat: { [weak controller, weak session, weak self] in
                 guard let session else { return }
-                let exchange = session.exchanges.filter(\.isFinished).map { NotesAskExchange(question: $0.question, answer: $0.answer) }
+                let exchange = session.exchanges.filter(\.isAnswered).map { NotesAskExchange(question: $0.question, answer: $0.answer) }
                 controller?.continueInChat(passage: session.passage.exact, sectionKey: session.passage.sectionKey, exchange: exchange)
                 self?.popover?.close()
             }

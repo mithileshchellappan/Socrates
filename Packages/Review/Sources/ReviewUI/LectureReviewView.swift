@@ -277,7 +277,8 @@ private struct ReviewInspectorColumn<Inspector: View>: ViewModifier {
 
 /// ma: tells the agent panel what the review shows (the lecture, the recording, the slide on
 /// screen) and, read at ↩, the playhead. Its own view, so the slide changing never re-renders the
-/// screen.
+/// screen. ln: a notes passage taken to the chat from Whole lecture goes with the next message
+/// (`refine` runs once per message).
 private struct ReviewAgentContext: View {
     let model: ReviewModel
 
@@ -291,10 +292,13 @@ private struct ReviewAgentContext: View {
             .agentContext(
                 AgentContext(
                     screen: .lecture, courseID: model.course?.id, lectureID: model.lecture.id, recordingID: recordingID,
-                    page: model.session.shownPage
+                    page: model.session.shownPage, notesPassage: model.notesPassage
                 ),
                 refine: {
-                    AgentContext(
+                    if model.notesPassage != nil {
+                        Task { @MainActor in model.notesPassage = nil }
+                    }
+                    return AgentContext(
                         screen: .lecture, lectureID: model.lecture.id, recordingID: recordingID, page: model.session.shownPage,
                         time: model.player?.time
                     )

@@ -44,6 +44,10 @@ final class LectureNotesController {
     @ObservationIgnored var openAgentPanel = OpenAgentPanelAction { _ in }
     @ObservationIgnored var onChip: ((NotesChipTarget) -> Bool)?
     @ObservationIgnored var onWriteAgain: (() -> Void)?
+    /// Review's Whole lecture: the passage taken to the chat goes up to the review, which sends it
+    /// with its own context (a preference from the inspector column may not reach the panel, and
+    /// would replace the review's). Nil: the view publishes `chatPassage` itself (the page).
+    @ObservationIgnored var onChatPassage: ((NotesPassageContext?) -> Void)?
     @ObservationIgnored var undoManager: UndoManager?
     @ObservationIgnored weak var coordinator: NotesTextCoordinator?
     /// The current version and the marks on it (set from the view's rows).
@@ -60,7 +64,8 @@ final class LectureNotesController {
     var answersOpen: Set<String> = []
     var isFocused = false
     var selection: NotesSelection?
-    /// Continue in Chat: the passage (and the Ask exchange) the agent panel gets as context.
+    /// Continue in Chat: the passage (and the Ask exchange) the agent panel gets as context, until
+    /// a message carries it, a new selection settles or an Ask starts.
     var chatPassage: NotesPassageContext?
 
     init(lectureID: Lecture.ID, style: LectureNotesStyle) {
@@ -149,6 +154,7 @@ final class LectureNotesController {
 
     func ask(style: NotesAskStyle? = nil) {
         guard asker != nil, let selection, selection.hasWords else { return }
+        clearChatPassage()
         coordinator?.showAsk(selection, style: style)
     }
 
@@ -172,8 +178,28 @@ final class LectureNotesController {
     /// Continue in Chat: the passage and the exchange so far go to the agent panel as context.
     func continueInChat(passage exact: String, sectionKey: String, exchange: [NotesAskExchange]) {
         guard let notes else { return }
-        chatPassage = NotesPassageContext(lectureID: lectureID, notesID: notes.id, sectionKey: sectionKey, exact: exact, exchange: exchange)
+        let passage = NotesPassageContext(lectureID: lectureID, notesID: notes.id, sectionKey: sectionKey, exact: exact, exchange: exchange)
+        if let onChatPassage {
+            onChatPassage(passage)
+        } else {
+            chatPassage = passage
+        }
         openAgentPanel()
+    }
+
+    /// The passage stops going with the next message (a new selection settled, an Ask started).
+    func clearChatPassage() {
+        if chatPassage != nil { chatPassage = nil }
+        onChatPassage?(nil)
+    }
+
+    /// The panel read the context for a message (`AgentContextSource.refine` runs once, at ↩):
+    /// the passage went with it.
+    func chatPassageSent() {
+        Task { @MainActor [weak self] in
+            guard let self, self.chatPassage != nil else { return }
+            self.chatPassage = nil
+        }
     }
 
     func continueInChat(_ mark: LectureNotesMark) {

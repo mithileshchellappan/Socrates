@@ -392,8 +392,9 @@ private struct LectureOnlyNotesPane: View {
 /// Further reading, then the lecture's own note editor; the Summary, Exam hints, Only said in
 /// class and the read-only slide notes are not shown beside them (each is inside the notes: no
 /// fact twice). With Follow on, the notes scroll to the section whose slides hold the slide on
-/// screen; chips move the review. Without notes text yet: the study pass's blocks, and the first
-/// show queues the notes (`queueIfNeeded`).
+/// screen; chips move the review; Continue in Chat's passage goes with the review's context.
+/// Until the notes are written (or while a version is paused or failed): the study pass's blocks,
+/// and on the Mac the first show queues the notes (`queueIfNeeded`).
 private struct WholeLecturePane: View {
     let model: ReviewModel
     let notes: [Note]
@@ -409,8 +410,11 @@ private struct WholeLecturePane: View {
         versionsQuery = FetchAll(LectureNotes.where { $0.lectureID.eq(lectureID) }, database: model.services.database)
     }
 
+    /// The notes replace the blocks once they are written (done), or while they stream in; a
+    /// version that failed or is paused at a usage limit keeps the blocks (its text is partial).
     private var hasNotes: Bool {
-        LectureNotes.current(of: versionsQuery.wrappedValue)?.hasText ?? false
+        guard let current = LectureNotes.current(of: versionsQuery.wrappedValue), current.hasText else { return false }
+        return current.state == .done || current.state == .generating
     }
 
     var body: some View {
@@ -425,7 +429,11 @@ private struct WholeLecturePane: View {
         #endif
     }
 
+    /// Only the Mac queues notes: the iPhone shows no notes yet, and a version it queued would
+    /// sync to the Mac beside the Mac's own (two calls for one lecture).
+    @ViewBuilder
     private var blocks: some View {
+        #if os(macOS)
         LectureNotesPane(model: model, notes: notes, items: items)
             .task(id: model.lecture.id) {
                 guard queuesOnOpen else { return }
@@ -435,6 +443,9 @@ private struct WholeLecturePane: View {
                     ReviewLog.logger.error("Queueing the lecture's notes failed: \(String(describing: error), privacy: .public)")
                 }
             }
+        #else
+        LectureNotesPane(model: model, notes: notes, items: items)
+        #endif
     }
 
     #if os(macOS)
@@ -444,7 +455,10 @@ private struct WholeLecturePane: View {
             LectureNotesView(
                 lectureID: model.lecture.id, style: .inspector,
                 followPage: model.session.isFollowing ? model.session.shownPage : nil,
-                onChip: { ReviewNoteLinks.open($0, model: model) }
+                onChip: { ReviewNoteLinks.open($0, model: model) },
+                onChatPassage: { passage in
+                    if model.notesPassage != passage { model.notesPassage = passage }
+                }
             )
             if !items.furtherReading.isEmpty {
                 Hairline()

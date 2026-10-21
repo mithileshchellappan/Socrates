@@ -17,6 +17,9 @@ final class AskSession {
         var answer: String = ""
         var update: NotesAskUpdate?
         var isFinished: Bool { update?.isFinished ?? false }
+        /// Finished without a refusal, a cut-off or a failure: its chips were checked at the end,
+        /// so it may be kept or taken to the chat.
+        var isAnswered: Bool { isFinished && update?.error == nil && !answer.isEmpty }
     }
 
     let passage: NotesSelection
@@ -55,7 +58,7 @@ final class AskSession {
         guard !typed.isEmpty || style != nil, !isAsking else { return }
         field = ""
         let question = typed.isEmpty ? Self.title(for: style ?? .why, passage: passage.exact) : typed
-        let earlier = exchanges.filter(\.isFinished).map { NotesAskExchange(question: $0.question, answer: $0.answer) }
+        let earlier = exchanges.filter(\.isAnswered).map { NotesAskExchange(question: $0.question, answer: $0.answer) }
         exchanges.append(Exchange(question: question))
         let request = NotesAskRequest(
             lectureID: lectureID, notesID: notesID, sectionKey: passage.sectionKey, passage: passage.exact,
@@ -67,7 +70,8 @@ final class AskSession {
             for await update in stream {
                 guard let self, !Task.isCancelled, self.exchanges.indices.contains(index) else { return }
                 self.exchanges[index].update = update
-                if !update.text.isEmpty { self.exchanges[index].answer = update.text }
+                // The last update's text wins (chips checked; blank after a refusal).
+                if update.isFinished || !update.text.isEmpty { self.exchanges[index].answer = update.text }
             }
         }
     }
@@ -78,8 +82,9 @@ final class AskSession {
         task = nil
     }
 
+    /// The latest exchange when it was answered (Keep and Continue in Chat take it).
     var latestFinished: Exchange? {
-        exchanges.last.flatMap { $0.isFinished && !$0.answer.isEmpty ? $0 : nil }
+        exchanges.last.flatMap { $0.isAnswered ? $0 : nil }
     }
 }
 

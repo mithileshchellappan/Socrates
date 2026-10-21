@@ -38,6 +38,9 @@ final class ReviewModel {
     var isEditingText = false
     var inspectorTab: InspectorTab = .slide
     var showsInspector = true
+    /// ln: a passage of the lecture's notes taken to the agent panel from Whole lecture (Continue
+    /// in Chat), sent with the review's own context (`ReviewAgentContext`) by the next message.
+    var notesPassage: NotesPassageContext?
     /// A manual anchor is being written and re-aligned.
     private(set) var isRealigning = false
 

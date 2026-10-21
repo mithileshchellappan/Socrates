@@ -53,6 +53,8 @@ final class NotesDocumentBuilder {
     let containerWidth: CGFloat
     weak var actions: (any NotesDocumentActions)?
     let noteRendering: NoteTextRendering
+    /// Marks already found in an unchanged section text (kept by the view across builds).
+    let anchors: NotesAnchorCache
     /// Changes everything (style, appearance): part of every signature.
     let stamp: String
 
@@ -60,12 +62,16 @@ final class NotesDocumentBuilder {
     private var labelInk: NSColor { NotesNSInk.label(dark) }
     private var greyInk: NSColor { NotesNSInk.secondary(dark) }
 
-    init(input: NotesDocumentInput, containerWidth: CGFloat, actions: any NotesDocumentActions, noteRendering: NoteTextRendering) {
+    init(
+        input: NotesDocumentInput, containerWidth: CGFloat, actions: any NotesDocumentActions, noteRendering: NoteTextRendering,
+        anchors: NotesAnchorCache
+    ) {
         self.input = input
         metrics = NotesMetrics(style: input.style)
         self.containerWidth = containerWidth
         self.actions = actions
         self.noteRendering = noteRendering
+        self.anchors = anchors
         stamp = "\(input.style)|\(input.isDark)"
     }
 
@@ -148,9 +154,8 @@ final class NotesDocumentBuilder {
             var tail: [NotesUnit] = []
             var highlightLocal: [(LectureNotesMark.ID, NSRange)] = []
             for mark in sectionMarks.sorted(by: { $0.createdAt < $1.createdAt }) {
-                let range = body.isEmpty ? nil : TextQuoteAnchor.locate(
-                    exact: mark.exact, prefix: mark.prefix, suffix: mark.suffix, hint: mark.startOffset, in: text
-                )
+                // The fuzzy step waits until the version is settled (never at every streamed update).
+                let range = body.isEmpty ? nil : anchors.locate(mark, in: text, fuzzy: isSettled)
                 if let range {
                     build.found.insert(mark.id)
                     switch mark.kind {
@@ -217,28 +222,25 @@ final class NotesDocumentBuilder {
         return build
     }
 
-    /// Before the text: the outline's headings over skeleton lines (queued, or no Claude Code with
-    /// the student's notes in place and one line saying why).
+    /// Before the text: the outline's headings over skeleton lines while queued, writing or paused.
+    /// No Claude Code, or a version that failed before its first words: the headings with the
+    /// student's notes in place and one line saying why (failed: the triangle and Write Again…).
+    /// No version at all (nothing to write from yet): nothing, never a skeleton that waits forever.
     private func placeholderDocument() -> [NotesUnit] {
         var units: [NotesUnit] = []
         let outline = input.outline
         if let sentence = input.unavailable {
-            var remaining = input.studentNotes.filter { !$0.isBlank }
-            for section in outline {
-                units.append(headingUnit(section, title: section.title))
-                let inSection = remaining.filter { note in
-                    if let page = note.pageNumber { return section.covers(page: page) }
-                    if let time = note.audioTime, let start = section.startTime { return time >= start && time < (section.endTime ?? .infinity) }
-                    return false
-                }
-                remaining.removeAll { note in inSection.contains { $0.id == note.id } }
-                for note in inSection { units.append(studentNoteUnit(note, sectionKey: section.key)) }
-            }
-            for note in remaining { units.append(studentNoteUnit(note, sectionKey: outline.last?.key ?? LectureNotesFormat.overviewKey)) }
+            units = headingsWithStudentNotes(outline)
             units.append(lineUnit(sentence, sectionKey: outline.last?.key ?? LectureNotesFormat.overviewKey))
             return units
         }
-        if let notes = input.notes, notes.state == .paused {
+        guard let notes = input.notes else { return [] }
+        if notes.state == .failed || notes.state == .done || notes.state == .cancelled {
+            units = headingsWithStudentNotes(outline)
+            units.append(failureUnit(notes, sectionKey: outline.last?.key ?? LectureNotesFormat.overviewKey))
+            return units
+        }
+        if notes.state == .paused {
             units.append(progressUnit(notes, sectionKey: LectureNotesFormat.overviewKey))
         }
         units.append(skeletonUnit(LectureNotesFormat.overviewKey, widths: [0.96, 0.88, 0.58]))
@@ -249,6 +251,25 @@ final class NotesDocumentBuilder {
         if outline.isEmpty {
             units.append(skeletonUnit(LectureNotesFormat.overviewKey, widths: [0.94, 0.82, 0.5]))
         }
+        return units
+    }
+
+    /// The outline's headings with the student's notes under the section they belong to (by slide,
+    /// else by time); the rest after the last.
+    private func headingsWithStudentNotes(_ outline: [LectureNotesSection]) -> [NotesUnit] {
+        var units: [NotesUnit] = []
+        var remaining = input.studentNotes.filter { !$0.isBlank }
+        for section in outline {
+            units.append(headingUnit(section, title: section.title))
+            let inSection = remaining.filter { note in
+                if let page = note.pageNumber { return section.covers(page: page) }
+                if let time = note.audioTime, let start = section.startTime { return time >= start && time < (section.endTime ?? .infinity) }
+                return false
+            }
+            remaining.removeAll { note in inSection.contains { $0.id == note.id } }
+            for note in inSection { units.append(studentNoteUnit(note, sectionKey: section.key)) }
+        }
+        for note in remaining { units.append(studentNoteUnit(note, sectionKey: outline.last?.key ?? LectureNotesFormat.overviewKey)) }
         return units
     }
 
@@ -718,6 +739,32 @@ final class NotesDocumentBuilder {
         let font = NSFont.systemFont(ofSize: 12)
         let attributes = base(sectionKey, role: .chrome, font: font, color: greyInk, style: paragraphStyle(spacingBefore: 10, font: font, lineHeight: 17))
         return unit("line|\(sentence)", NSAttributedString(string: sentence, attributes: attributes), section: sectionKey, role: .chrome)
+    }
+}
+
+/// Where marks were found in a section's text, by mark and text: a build re-anchors only the
+/// sections whose text changed (a streaming version changes one at a time; folding, opening answers
+/// or adding a mark change none). Cleared when it grows past 512 entries.
+@MainActor
+final class NotesAnchorCache {
+    private struct Key: Hashable {
+        var mark: LectureNotesMark.ID
+        var text: Int
+        var length: Int
+        var fuzzy: Bool
+    }
+
+    private var located: [Key: NSRange?] = [:]
+
+    func locate(_ mark: LectureNotesMark, in text: String, fuzzy: Bool) -> NSRange? {
+        let key = Key(mark: mark.id, text: text.hashValue, length: text.utf16.count, fuzzy: fuzzy)
+        if let found = located[key] { return found }
+        if located.count >= 512 { located.removeAll(keepingCapacity: true) }
+        let range = TextQuoteAnchor.locate(
+            exact: mark.exact, prefix: mark.prefix, suffix: mark.suffix, hint: mark.startOffset, fuzzy: fuzzy, in: text
+        )
+        located[key] = .some(range)
+        return range
     }
 }
 
