@@ -13,8 +13,9 @@ import StudyCore
 /// lecture pack, the request.
 enum NotesPrompt {
     /// Part of every version's `input_hash`: bump it when the prompt changes. The hash is only
-    /// stored with a version; nothing queues notes again when it changes (nl: 3, no `note` fences).
-    static let promptVersion = 3
+    /// stored with a version; nothing queues notes again when it changes (nl: 3, no `note` fences;
+    /// 4: the transcript of every recording, a moment chip per recording).
+    static let promptVersion = 4
 
     static func system(german: Bool) -> String {
         """
@@ -48,7 +49,7 @@ enum NotesPrompt {
         it asks. Their notes are shown beside your text, so never copy them into it.
 
         Chips: after a claim, cite where it comes from with a marker: [[KEY S12]] a slide of this lecture (KEY = the \
-        lecture's key), [[KEY 37:59]] a moment (the lecture's moment_chip with t \
+        lecture's key), [[KEY 37:59]] a moment (the moment_chip of the line's <transcript>, else the lecture's, with t \
         replaced by the t of a transcript line); earlier lectures' slides only as their outlines give them. At most one chip per \
         paragraph. Never write a marker you did not see. A chip stands in place of words ("as [[KEY S12]] shows", \
         never "slide 12 [[KEY S12]]").
@@ -92,14 +93,22 @@ enum NotesPrompt {
     /// The user turn's text: the lecture pack, then what to write (all sections, or after `kept`
     /// only `remaining`).
     static func text(_ m: NotesMaterial, kept: String?, remaining: [LectureNotesSection]) -> String {
-        let chip = "[[\(m.lectureKey)\(m.recordingKey.map { "/" + $0 } ?? "") t]]"
-        var pack = "<lecture key=\"\(m.lectureKey)\" moment_chip=\"\(chip)\">\n"
+        // One recording: the lecture's moment chip; several: one per <transcript recording="n">,
+        // and the sections, notes and lines say which recording their times are on.
+        let several = m.hasSeveralRecordings
+        let number: (Recording.ID?) -> String = { id in
+            guard several, let number = (id ?? m.timeline.first).flatMap({ m.recordingNumbers[$0] }) else { return "" }
+            return " recording=\"\(number)\""
+        }
+        var pack = several
+            ? "<lecture key=\"\(m.lectureKey)\">\n"
+            : "<lecture key=\"\(m.lectureKey)\" moment_chip=\"\(m.momentPattern(m.lines.first?.recordingID))\">\n"
         pack += "<header>\(PromptText.escape(header(m)))</header>\n"
         pack += "<sections total_words=\"\(m.targetWords)\">\n"
         for section in m.sections {
             var attributes = "key=\"\(section.key)\" title=\"\(PromptText.escape(section.title))\""
             if let first = section.firstPage { attributes += " slides=\"\(first)–\(section.lastPage ?? first)\"" }
-            if let start = section.startTime { attributes += " from=\"\(PromptText.clock(start))\"" }
+            if let start = section.startTime { attributes += "\(number(section.recordingID)) from=\"\(PromptText.clock(start))\"" }
             if let end = section.endTime { attributes += " to=\"\(PromptText.clock(end))\"" }
             attributes += " words=\"\(section.targetWords ?? NotesMaterial.minimumSectionWords)\""
             pack += "<section \(attributes) marker=\"\(PromptText.escape(LectureNotesFormat.sectionMarker(section.key)))\"/>\n"
@@ -122,7 +131,7 @@ enum NotesPrompt {
             for row in m.professor {
                 let element = row.kind == .examHint ? "exam_hint" : "highlight"
                 let slide = row.pageNumber.map { " slide=\"\($0)\"" } ?? ""
-                pack += "<\(element) moment=\"\(m.moment(row.startTime ?? 0))\"\(slide)>\(PromptText.escape(row.body))</\(element)>\n"
+                pack += "<\(element) moment=\"\(m.moment(row))\"\(slide)>\(PromptText.escape(row.body))</\(element)>\n"
             }
             pack += "</professor>\n"
         }
@@ -130,7 +139,7 @@ enum NotesPrompt {
             pack += "<said>\n"
             for row in m.said {
                 let slide = row.pageNumber.map { " slide=\"\($0)\"" } ?? ""
-                let time = row.startTime.map { " moment=\"\(m.moment($0))\"" } ?? ""
+                let time = row.startTime.map { " moment=\"\(m.moment($0, on: row.recordingID))\"" } ?? ""
                 pack += "<said_item category=\"\(row.category?.rawValue ?? "explanation")\"\(time)\(slide)>\(PromptText.escape(row.body))</said_item>\n"
             }
             pack += "</said>\n"
@@ -144,14 +153,23 @@ enum NotesPrompt {
                 guard words <= NotesMaterial.noteWordLimit else { break }
                 var attributes = ""
                 if let page = note.page { attributes += " slide=\"\(page)\"" }
-                if let time = note.time { attributes += " t=\"\(PromptText.clock(time))\"" }
+                if let time = note.time { attributes += "\(number(note.recordingID)) t=\"\(PromptText.clock(time))\"" }
                 pack += "<note\(attributes)>\(PromptText.escape(text))</note>\n"
             }
             pack += "</student_notes>\n"
         }
         if !m.lines.isEmpty {
-            pack += "<transcript>\n"
+            var open: Recording.ID?
             for line in m.lines {
+                if !several, open == nil {
+                    pack += "<transcript>\n"
+                    open = line.recordingID
+                } else if several, open != line.recordingID {
+                    // A part of one recording: its own clock and chip.
+                    if open != nil { pack += "</transcript>\n" }
+                    pack += "<transcript\(number(line.recordingID)) moment_chip=\"\(m.momentPattern(line.recordingID))\">\n"
+                    open = line.recordingID
+                }
                 let slide = line.page.map { " slide=\"\($0)\"" } ?? ""
                 let flag = line.flagged ? " flagged=\"1\"" : ""
                 pack += "<l t=\"\(PromptText.clock(line.start))\"\(slide)\(flag)>\(PromptText.escape(PromptText.collapsed(line.text)))</l>\n"

@@ -344,8 +344,9 @@ final class NotesDocumentBuilder {
     private func headingChip(_ section: LectureNotesSection) -> (attachment: NotesAttachment, signature: String)? {
         let lecture = input.lectureID
         if input.hasRecording, let start = section.startTime {
-            let target = NotesChipTarget.moment(lecture: lecture, recording: nil, seconds: start)
-            return (chipAttachment(target), "t\(Int(start))")
+            // On the section's own recording (nil: the lecture's first).
+            let target = NotesChipTarget.moment(lecture: lecture, recording: section.recordingID, seconds: start)
+            return (chipAttachment(target), "t\(section.recordingID.map(ChatCitation.key) ?? "")\(Int(start))")
         }
         if let page = section.firstPage {
             return (chipAttachment(.slide(lecture: lecture, page: page)), "s\(page)")
@@ -626,9 +627,7 @@ final class NotesDocumentBuilder {
             )
             return [blockUnit(attachment, signature: signature, sectionKey: sectionKey, spacingBefore: scaled(6), spacing: scaled(18), breakout: true)]
         case .quote:
-            guard let citation = NotesQuoteRef.parse(fence.body), case .moment(_, _, let seconds) = citation,
-                  let row = input.quotes.first(where: { NotesQuoteRef.matches($0, seconds: seconds) })
-            else { return [] }
+            guard let citation = NotesQuoteRef.parse(fence.body), let row = NotesQuoteRef.row(citation, in: input.quotes) else { return [] }
             let actions = actions
             let lecture = input.lectureID
             let attachment = HostedBlockAttachment(

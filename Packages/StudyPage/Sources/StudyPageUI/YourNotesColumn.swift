@@ -254,7 +254,7 @@ public struct YourNotesColumn: View {
             items += timed.map { note in
                 Item(
                     id: "t\(note.id)", time: note.audioTime, notes: [note],
-                    section: note.audioTime.flatMap { LectureNotesSection.holding(time: $0, in: sections)?.key }
+                    section: note.audioTime.flatMap { LectureNotesSection.holding(time: $0, recording: note.recordingID, in: sections)?.key }
                 )
             }
         }

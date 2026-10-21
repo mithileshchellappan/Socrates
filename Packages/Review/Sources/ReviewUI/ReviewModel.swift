@@ -48,6 +48,21 @@ final class ReviewModel {
 
     /// Another of the lecture's recordings was picked; the screen loads it.
     var requestedRecordingID: Recording.ID?
+    /// A moment on another of the lecture's recordings (a study row's time chip: a lecture's
+    /// study pass reads every recording, 2026-10-21); the screen loads that recording there.
+    var requestedMoment: ReviewTarget?
+
+    /// Plays from `time` on `recording`'s clock: at once on the recording on screen (or for a row
+    /// on no recording in particular); on another of the lecture's recordings, that one loads
+    /// and plays from there.
+    func play(from time: Double, on recording: Recording.ID?) {
+        if let recording, recording != self.recording?.id, recordings.contains(where: { $0.id == recording }) {
+            requestedMoment = ReviewTarget(time: time, plays: true, recordingID: recording, request: UUID())
+            return
+        }
+        let session = session
+        Task { await session.play(from: time) }
+    }
 
     /// A pin the student just added: its card opens for typing.
     var newPinID: Annotation.ID?

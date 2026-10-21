@@ -82,10 +82,13 @@ public struct LectureNotesSection: Hashable, Sendable, Codable {
     /// range holds the slide on screen.
     public var firstPage: Int?
     public var lastPage: Int?
-    /// Seconds on the lecture's first recording where it is explained (the heading's `TimeChip`),
-    /// and where the next section starts.
+    /// Seconds on `recordingID`'s clock where it is explained (the heading's `TimeChip`), and
+    /// where the next section starts when it is on the same recording.
     public var startTime: Double?
     public var endTime: Double?
+    /// The recording those times are on (2026-10-21: a lecture's notes cover every recording of
+    /// it); nil: the lecture's first (versions written before).
+    public var recordingID: Recording.ID?
     /// The section holds a verified exam hint (the amber star after the heading).
     public var hasExamHint: Bool
     /// Its share of the target length (words).
@@ -110,7 +113,8 @@ public struct LectureNotesSection: Hashable, Sendable, Codable {
         targetWords: Int? = nil,
         questionIDs: [StudyQuestion.ID] = [],
         noteIDs: [Note.ID] = [],
-        quoteIDs: [Annotation.ID] = []
+        quoteIDs: [Annotation.ID] = [],
+        recordingID: Recording.ID? = nil
     ) {
         self.key = key
         self.title = title
@@ -124,6 +128,7 @@ public struct LectureNotesSection: Hashable, Sendable, Codable {
         self.questionIDs = questionIDs
         self.noteIDs = noteIDs
         self.quoteIDs = quoteIDs
+        self.recordingID = recordingID
     }
 
     /// Whether the slide `page` lies in the section's slides.
@@ -139,9 +144,12 @@ public struct LectureNotesSection: Hashable, Sendable, Codable {
     }
 
     /// The section a moment belongs to (a note without a slide, at its `audio_time`): the one whose
-    /// `startTime ..< endTime` holds it (no end: up to the next section's start, or on).
-    public static func holding(time: Double, in sections: [LectureNotesSection]) -> LectureNotesSection? {
-        let timed = sections.filter { $0.startTime != nil }.sorted { ($0.startTime ?? 0) < ($1.startTime ?? 0) }
+    /// `startTime ..< endTime` holds it (no end: up to the next section's start, or on). With
+    /// `recording` (the moment's), only the sections on that recording (or on none named).
+    public static func holding(time: Double, recording: Recording.ID? = nil, in sections: [LectureNotesSection]) -> LectureNotesSection? {
+        let timed = sections
+            .filter { $0.startTime != nil && (recording == nil || $0.recordingID == nil || $0.recordingID == recording) }
+            .sorted { ($0.startTime ?? 0) < ($1.startTime ?? 0) }
         for (index, section) in timed.enumerated() {
             guard let start = section.startTime, time >= start else { continue }
             let end = section.endTime ?? (index + 1 < timed.count ? timed[index + 1].startTime : nil) ?? .infinity

@@ -108,14 +108,15 @@ public struct LectureNotesRepository: Sendable {
     /// the slides alone (replaced once, automatically), or were written before the lecture got its
     /// slides (`predatesSlides`: slides that arrived later, filed or found by continuation
     /// detection; the pass ran again with them; written again once, with the same Write Again
-    /// sentence), or `rerun` (the student re-ran the study pass: they asked for the lecture's AI
-    /// again).
+    /// sentence) or before one of its recordings (`predatesRecording`: another recording of the
+    /// class whose transcript came later; the pass ran again with it; the same, once), or `rerun`
+    /// (the student re-ran the study pass: they asked for the lecture's AI again).
     @discardableResult
     public func queueAfterStudyPass(lectureID: Lecture.ID, rerun: Bool = false) async throws -> LectureNotes? {
         let stamp = store.currentDate
         return try await store.database.write { db in
             let current = try Self.current(lectureID: lectureID, in: db)
-            let stale = try current.map { try Self.predatesSlides($0, in: db) } ?? false
+            let stale = try current.map { try Self.predatesSlides($0, in: db) || Self.predatesRecording($0, in: db) } ?? false
             guard current == nil || current?.source == .slides || stale || rerun else { return nil }
             let inputs = try Self.inputs(lectureID: lectureID, in: db)
             guard inputs.source == .recording else {
@@ -170,6 +171,26 @@ public struct LectureNotesRepository: Sendable {
     static func predatesSlides(_ notes: LectureNotes, in db: Database) throws -> Bool {
         guard notes.state == .done, let slides = try LectureSlides.current(lectureID: notes.lectureID, in: db) else { return false }
         return slides.updatedAt > notes.createdAt
+    }
+
+    /// Finished notes of a lecture with several recordings, queued before one of them had its
+    /// transcript in the lecture (the oldest `updated_at` of its lines: transcribed, or moved in
+    /// by filing, after the version was queued): written without it. A new version is queued
+    /// after it, so this holds once per arrival. Also a version written before a lecture's notes
+    /// covered every recording (2026-10-21: its timed sections name no recording; a new version's
+    /// do), once.
+    static func predatesRecording(_ notes: LectureNotes, in db: Database) throws -> Bool {
+        guard notes.state == .done else { return false }
+        let lectureID = Lecture.ID?.some(notes.lectureID)
+        let arrivals = try TranscriptSegment
+            .where { $0.lectureID.eq(lectureID) }
+            .group(by: \.recordingID)
+            .select { ($0.recordingID, $0.updatedAt.min()) }
+            .fetchAll(db)
+        guard arrivals.count > 1 else { return false }
+        if arrivals.contains(where: { _, arrived in arrived.map { $0 > notes.createdAt } ?? false }) { return true }
+        let timed = notes.sections.filter { $0.startTime != nil }
+        return !timed.isEmpty && timed.allSatisfy { $0.recordingID == nil }
     }
 
     /// What a new version of the lecture would be written from now; nil: nothing yet (a recording
@@ -246,16 +267,19 @@ public struct LectureNotesRepository: Sendable {
     }
 
     /// The outline from the lecture's topic rows (`annotation` ai · topic, not hidden) in lecture
-    /// order: key, title, slides, start (and the next topic's start as end), whether an exam hint
-    /// lies in it. The writer refines it when the version is done.
+    /// order (on the timeline of its recordings, `LectureTimeline`): key, title, slides, start on
+    /// its recording (and the next topic's start as end when it is on the same recording), whether
+    /// an exam hint lies in it. The writer refines it when the version is done.
     public static func outline(lectureID: Lecture.ID, in db: Database) throws -> [LectureNotesSection] {
         let reference = Lecture.ID?.some(lectureID)
         let rows = try Annotation
             .where { $0.lectureID.eq(reference) && $0.hiddenAt.is(nil) && $0.kind.in([AnnotationKind.topic, AnnotationKind.examHint]) }
             .fetchAll(db)
+        let timeline = try LectureTimeline.load(lectureID: lectureID, in: db)
+        let at: (Annotation) -> Double? = { row in row.startTime.map { timeline.seconds($0, on: row.recordingID) } }
         let topics = rows.filter { $0.kind == .topic }.sorted { lhs, rhs in
-            let left = (lhs.startTime ?? .greatestFiniteMagnitude, lhs.pageNumber ?? .max)
-            let right = (rhs.startTime ?? .greatestFiniteMagnitude, rhs.pageNumber ?? .max)
+            let left = (at(lhs) ?? .greatestFiniteMagnitude, lhs.pageNumber ?? .max)
+            let right = (at(rhs) ?? .greatestFiniteMagnitude, rhs.pageNumber ?? .max)
             return left.0 != right.0 ? left.0 < right.0 : left.1 < right.1
         }
         let hints = rows.filter { $0.kind == .examHint }
@@ -264,13 +288,16 @@ public struct LectureNotesRepository: Sendable {
         for (index, topic) in topics.enumerated() {
             let key = LectureNotesFormat.sectionKey(topicTitle: topic.body)
             guard !topic.body.isEmpty, seen.insert(key).inserted else { continue }
-            let end = topics.dropFirst(index + 1).compactMap(\.startTime).first
+            let next = topics.dropFirst(index + 1).first { $0.startTime != nil }
+            let end = next.flatMap { timeline.same($0.recordingID, topic.recordingID) ? $0.startTime : nil }
             var section = LectureNotesSection(
                 key: key, title: topic.body, topicID: topic.id, firstPage: topic.pageNumber,
-                lastPage: topic.lastPage ?? topic.pageNumber, startTime: topic.startTime, endTime: end
+                lastPage: topic.lastPage ?? topic.pageNumber, startTime: topic.startTime, endTime: end,
+                recordingID: topic.startTime == nil ? nil : topic.recordingID
             )
+            let upper = next.flatMap(at) ?? .greatestFiniteMagnitude
             section.hasExamHint = hints.contains { hint in
-                if let time = hint.startTime, let start = topic.startTime { return time >= start && time < (end ?? .greatestFiniteMagnitude) }
+                if let time = at(hint), let start = at(topic) { return time >= start && time < upper }
                 if let page = hint.pageNumber { return section.covers(page: page) }
                 return false
             }

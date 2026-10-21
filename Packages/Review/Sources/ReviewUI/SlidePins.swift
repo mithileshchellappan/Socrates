@@ -205,7 +205,7 @@ struct ProfessorPinCard: View {
                 quote: item.body,
                 who: model.professorSurname,
                 time: model.player == nil ? nil : item.startTime,
-                play: { time in Task { await model.session.play(from: time) } }
+                play: { time in model.play(from: time, on: item.recordingID) }
             )
         }
     }

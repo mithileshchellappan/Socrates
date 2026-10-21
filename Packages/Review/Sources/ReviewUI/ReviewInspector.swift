@@ -306,9 +306,11 @@ enum ReviewNoteLinks {
     static func open(_ target: NotesChipTarget, model: ReviewModel) -> Bool {
         switch target {
         case .slide(let lecture, let page):
-            open(.slide(SourceRef(kind: .slide, lectureID: lecture, pageNumber: page)), model: model)
+            return open(.slide(SourceRef(kind: .slide, lectureID: lecture, pageNumber: page)), model: model)
         case .moment(let lecture, let recording, let seconds):
-            open(.time(SourceRef(kind: .transcript, lectureID: lecture, recordingID: recording, time: seconds)), model: model)
+            // A chip without a recording key is on the lecture's first recording.
+            let recording = recording ?? (lecture == model.lecture.id ? model.recordings.first?.id : nil)
+            return open(.time(SourceRef(kind: .transcript, lectureID: lecture, recordingID: recording, time: seconds)), model: model)
         }
     }
     #endif
@@ -322,10 +324,11 @@ enum ReviewNoteLinks {
             Task { await model.session.selectThumbnail(page: page) }
             return true
         case .time(let source):
+            // On the recording on screen, or on another of the lecture's (that one loads there).
             guard (source.lectureID ?? model.lecture.id) == model.lecture.id, let time = source.time, model.player != nil,
-                  source.recordingID == nil || source.recordingID == model.recording?.id
+                  source.recordingID.map({ id in model.recordings.contains { $0.id == id } }) ?? true
             else { return false }
-            Task { await model.session.play(from: time) }
+            model.play(from: time, on: source.recordingID)
             return true
         }
     }

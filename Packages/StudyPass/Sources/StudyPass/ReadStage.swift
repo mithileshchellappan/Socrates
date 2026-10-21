@@ -146,7 +146,7 @@ enum ReadStage {
                     text += lines(section.lines, in: material)
                     text += "</slide>\n"
                 } else {
-                    text += "<off_slide t=\"\(PromptText.clock(section.start))\">\n"
+                    text += "<off_slide t=\"\(PromptText.clock(material.clock(of: section)))\">\n"
                     text += lines(section.lines, in: material)
                     text += "</off_slide>\n"
                 }
@@ -163,13 +163,14 @@ enum ReadStage {
             hashedText: material.hashedHeader + "\n" + text, imagePages: images, extraInputs: deckInput)
     }
 
-    /// `<line id="l17" t="37:27" flagged="1">…</line>` per line (the original text).
+    /// `<line id="l17" t="37:27" flagged="1">…</line>` per line (the original text; `t` on the
+    /// lecture's timeline, which is the recording's clock with one recording).
     static func lines(_ indices: [Int], in material: LectureMaterial) -> String {
         var text = ""
         for index in indices {
             let line = material.lines[index]
             let flag = line.flagged ? " flagged=\"1\"" : ""
-            text += "<line id=\"\(line.id)\" t=\"\(PromptText.clock(line.start))\"\(flag)>\(PromptText.escape(PromptText.collapsed(line.original)))</line>\n"
+            text += "<line id=\"\(line.id)\" t=\"\(PromptText.clock(line.clock))\"\(flag)>\(PromptText.escape(PromptText.collapsed(line.original)))</line>\n"
         }
         return text
     }
@@ -284,8 +285,8 @@ enum ReadStage {
             summarized.insert(summary.slide)
             result.annotations.append(Annotation(
                 lectureID: m.lecture.id, layer: .ai, kind: .summary, deckID: m.deck?.id, pageNumber: summary.slide,
-                recordingID: m.recordingID, startTime: line.start, transcriptSegmentID: line.segment.id, body: text,
-                citations: [transcriptRef(m, time: line.start)], apiCallID: apiCallID))
+                recordingID: line.recordingID, startTime: line.start, transcriptSegmentID: line.segment.id, body: text,
+                citations: [transcriptRef(m, recording: line.recordingID, time: line.start)], apiCallID: apiCallID))
         }
 
         // Figure lines (internal, for synthesis): only for slides whose image was sent.
@@ -320,7 +321,7 @@ enum ReadStage {
                 : nil
             result.annotations.append(Annotation(
                 lectureID: m.lecture.id, layer: .ai, kind: .studyCandidate, deckID: m.deck?.id, pageNumber: m.page(ofLine: line.index),
-                recordingID: m.recordingID, startTime: line.start, transcriptSegmentID: line.segment.id, body: candidate.kind,
+                recordingID: line.recordingID, startTime: line.start, transcriptSegmentID: line.segment.id, body: candidate.kind,
                 apiCallID: apiCallID, category: category))
         }
         return result
@@ -359,7 +360,8 @@ enum ReadStage {
         zip(first, second).prefix { $0 == $1 }.count
     }
 
-    static func transcriptRef(_ m: LectureMaterial, time: Double, quote: String? = nil) -> SourceRef {
-        SourceRef(kind: .transcript, lectureID: m.lecture.id, recordingID: m.recordingID, time: time, quote: quote)
+    /// A moment of the lecture: on `recording`'s clock (the line's own recording).
+    static func transcriptRef(_ m: LectureMaterial, recording: Recording.ID, time: Double, quote: String? = nil) -> SourceRef {
+        SourceRef(kind: .transcript, lectureID: m.lecture.id, recordingID: recording, time: time, quote: quote)
     }
 }

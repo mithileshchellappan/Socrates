@@ -205,8 +205,13 @@ struct NotesValidator: Sendable {
     }
 
     private func quote(_ fence: NotesFence, section: inout Section, draft: inout Draft) {
-        guard let citation = NotesQuoteRef.parse(fence.body), case .moment(let key, _, let seconds) = citation, key == material.lectureKey,
-              let row = material.professor.first(where: { NotesQuoteRef.matches($0, seconds: seconds) && !draft.quoted.contains($0.id) })
+        // The row at that second on the chip's recording, else (a chip that lost its recording)
+        // at that second on any.
+        guard let citation = NotesQuoteRef.parse(fence.body), case .moment(let key, let recording, let seconds) = citation,
+              key == material.lectureKey,
+              let row = material.professor.first(where: {
+                  NotesQuoteRef.matches($0, seconds: seconds) && material.recordingKey($0.recordingID) == recording && !draft.quoted.contains($0.id)
+              }) ?? material.professor.first(where: { NotesQuoteRef.matches($0, seconds: seconds) && !draft.quoted.contains($0.id) })
         else {
             draft.drops.drop("quote.unbacked")
             return
@@ -220,7 +225,7 @@ struct NotesValidator: Sendable {
         }
         draft.quoted.insert(row.id)
         section.quotes.append(row.id)
-        section.blocks.append(.fence(info: "quote", body: material.moment(row.startTime ?? 0)))
+        section.blocks.append(.fence(info: "quote", body: material.moment(row)))
     }
 
     private func check(_ fence: NotesFence, section: inout Section, draft: inout Draft) {
@@ -338,10 +343,11 @@ struct NotesValidator: Sendable {
         var draft = draft
         // Every exam hint once.
         for row in material.professor where row.kind == .examHint && !draft.quoted.contains(row.id) {
-            guard let position = sectionIndex(time: row.startTime, page: row.pageNumber, in: draft) else { continue }
+            let time = row.startTime.map { material.clock($0, on: row.recordingID) }
+            guard let position = sectionIndex(time: time, page: row.pageNumber, in: draft) else { continue }
             draft.quoted.insert(row.id)
             draft.sections[position].quotes.append(row.id)
-            draft.sections[position].blocks.append(.fence(info: "quote", body: material.moment(row.startTime ?? 0)))
+            draft.sections[position].blocks.append(.fence(info: "quote", body: material.moment(row)))
             draft.drops.drop("placed.exam_hint")
         }
         // Every said-in-class row: Review shows only the notes once they are written, so a row the
@@ -403,12 +409,12 @@ struct NotesValidator: Sendable {
     static let saidWindow: Double = 20
 
     /// The said-in-class rows the text does not cite, as bullets by section ("- body [[chip]]"):
-    /// with a recording a row is cited by a moment chip of this lecture's transcript within 20 s
-    /// of its time; slides only, by a chip of its slide. Rows without a time (slides only: without
-    /// a slide) and rows whose chip would not be valid are left as they are.
+    /// with a recording a row is cited by a moment chip of this lecture on the row's recording
+    /// within 20 s of its time; slides only, by a chip of its slide. Rows without a time (slides
+    /// only: without a slide) and rows whose chip would not be valid are left as they are.
     func missingSaid(in draft: Draft) -> [(Int, [String])] {
         guard !material.said.isEmpty else { return [] }
-        var moments: [Int] = []
+        var moments: [(recording: String?, seconds: Int)] = []
         var pages: Set<Int> = []
         let prose = draft.overview + draft.sections.flatMap { section in
             section.blocks.compactMap { block -> String? in
@@ -419,8 +425,8 @@ struct NotesValidator: Sendable {
         for text in prose {
             for case .citation(let citation) in ChatCitation.pieces(of: text) {
                 switch citation {
-                case .moment(let key, let recording, let seconds) where key == material.lectureKey && recording == material.recordingKey:
-                    moments.append(seconds)
+                case .moment(let key, let recording, let seconds) where key == material.lectureKey:
+                    moments.append((recording, seconds))
                 case .slide(let key, let page) where key == material.lectureKey:
                     pages.insert(page)
                 default:
@@ -433,8 +439,9 @@ struct NotesValidator: Sendable {
             let citation: ChatCitation
             if material.source == .recording {
                 guard let start = row.startTime else { continue }
-                if moments.contains(where: { abs(Double($0) - start) <= Self.saidWindow }) { continue }
-                citation = .moment(lecture: material.lectureKey, recording: material.recordingKey, seconds: max(0, Int(start.rounded(.down))))
+                let recording = material.recordingKey(row.recordingID)
+                if moments.contains(where: { $0.recording == recording && abs(Double($0.seconds) - start) <= Self.saidWindow }) { continue }
+                citation = .moment(lecture: material.lectureKey, recording: recording, seconds: max(0, Int(start.rounded(.down))))
             } else {
                 guard let page = row.pageNumber else { continue }
                 if pages.contains(page) { continue }
@@ -442,22 +449,23 @@ struct NotesValidator: Sendable {
             }
             guard material.chips.isValid(citation) else { continue }
             let body = PromptText.collapsed(NotesProse.cleaned(row.body, chips: material.chips).text)
-            guard !body.isEmpty,
-                  let position = sectionIndex(time: material.source == .recording ? row.startTime : nil, page: row.pageNumber, in: draft)
-            else { continue }
+            let time = material.source == .recording ? row.startTime.map { material.clock($0, on: row.recordingID) } : nil
+            guard !body.isEmpty, let position = sectionIndex(time: time, page: row.pageNumber, in: draft) else { continue }
             placed[position, default: []].append("- \(body) \(citation.marker)")
         }
         return placed.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     }
 
-    /// Where a missing exam hint or said-in-class row goes: the section being explained at that time, else the
-    /// one whose slides hold the page, else the nearest section before that page.
+    /// Where a missing exam hint or said-in-class row goes: the section being explained at that time
+    /// (`time` and the sections' starts on the lecture's timeline), else the one whose slides hold
+    /// the page, else the nearest section before that page.
     func sectionIndex(time: Double?, page: Int?, in draft: Draft) -> Int? {
         let sections = draft.sections.map(\.outline)
         guard !sections.isEmpty else { return nil }
         if let time {
             let timed = sections.enumerated().filter { $0.element.startTime != nil }
-            if let found = timed.last(where: { ($0.element.startTime ?? 0) <= time + 1 }) { return found.offset }
+            let start: (LectureNotesSection) -> Double = { material.clock($0.startTime ?? 0, on: $0.recordingID) }
+            if let found = timed.last(where: { start($0.element) <= time + 1 }) { return found.offset }
             if let first = timed.first { return first.offset }
         }
         if let page {

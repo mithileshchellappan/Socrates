@@ -33,6 +33,9 @@ public struct LectureReviewView: View {
     @State private var appliedTarget: ReviewTarget?
     /// The recording picked in the toolbar (a lecture with more than one).
     @State private var chosenRecording: Recording.ID?
+    /// A moment on another recording asked for from inside the screen (`requestedMoment`): the
+    /// next load opens there.
+    @State private var movedTo: ReviewTarget?
 
     public init(
         lectureID: Lecture.ID,
@@ -69,6 +72,7 @@ public struct LectureReviewView: View {
             }
             loaded?.inspectorTab = inspectorTab
             appliedTarget = applying
+            movedTo = nil
             model = loaded
             // Opened again while this load ran: move there now.
             if target != applying { apply(target) }
@@ -79,6 +83,11 @@ public struct LectureReviewView: View {
         .onChange(of: model?.requestedRecordingID) { _, recordingID in
             if let recordingID { chosenRecording = recordingID }
         }
+        .onChange(of: model?.requestedMoment) { _, moment in
+            guard let moment, let recordingID = moment.recordingID else { return }
+            movedTo = moment
+            chosenRecording = recordingID
+        }
         // nl: View ▸ Zoom In / Zoom Out / Actual Size scale the transcript and the inspector's
         // text (both chromes); the toolbar, tabs, rail, stage and player stay.
         .contentZoomable()
@@ -88,7 +97,9 @@ public struct LectureReviewView: View {
     private func apply(_ target: ReviewTarget) {
         guard let model, appliedTarget != target else { return }
         appliedTarget = target
-        if let recordingID = target.recordingID, recordingID != model.recording?.id {
+        // A moment without a recording is on the lecture's first (`ReviewTarget.recordingID`).
+        let wanted = target.recordingID ?? (target.time == nil ? nil : recordings.first?.id)
+        if let recordingID = wanted, recordingID != model.recording?.id {
             // On another recording of the lecture: that one loads at the target.
             appliedTarget = nil
             chosenRecording = recordingID
@@ -119,6 +130,7 @@ public struct LectureReviewView: View {
     /// the open lecture, another recording picked) where review is now, or the picked recording
     /// from where review left off.
     private var openingTarget: ReviewTarget {
+        if let movedTo, movedTo.recordingID == recordingID { return movedTo }
         guard let model, appliedTarget == target else {
             var opening = target
             opening.recordingID = recordingID
