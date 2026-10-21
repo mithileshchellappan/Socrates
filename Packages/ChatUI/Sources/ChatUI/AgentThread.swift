@@ -480,10 +480,18 @@ struct AgentThreadView: View {
             } action: { _, hides in
                 if style == .compact { hidesEnd = hides }
             }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.containerSize.height.rounded()
-            } action: { _, height in
-                viewportHeight = height
+            .onScrollGeometryChange(for: ThreadViewport.self) { geometry in
+                ThreadViewport(
+                    height: geometry.containerSize.height.rounded(),
+                    below: (geometry.contentSize.height - geometry.visibleRect.maxY).rounded()
+                )
+            } action: { old, new in
+                if viewportHeight != new.height { viewportHeight = new.height }
+                // The room above the composer shrank (it grew a line, a file tile, a notice): a
+                // thread that was at its end stays there, its last lines just above the composer.
+                if new.height < old.height, old.below < 24, new.below >= 1 {
+                    proxy.scrollTo(Self.endID, anchor: .bottom)
+                }
             }
             .onScrollPhaseChange { _, phase in
                 if phase == .interacting || phase == .tracking { settled = true }
@@ -508,6 +516,13 @@ struct AgentThreadView: View {
 
     /// The thread's end (`scrollTo`).
     private static let endID = "end"
+
+    /// The scroll view's visible height and how much of its content is below it.
+    private struct ThreadViewport: Equatable {
+        var height: CGFloat
+        var below: CGFloat
+    }
+
     /// The compact thread's faded top edge.
     private static let topFade: CGFloat = 40
     /// The room kept above a placed question: in compact clear of the whole faded edge, so its

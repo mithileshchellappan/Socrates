@@ -8,8 +8,11 @@ import SwiftUI
 /// The panel's composer (DESIGN 8.6, mockup §1, §4): the files waiting as tiles, then [paperclip |
 /// the field | Send or Stop] on the content surface, radius 12, a 0.5 pt ring. The prompt names
 /// what the next message is about. Send (`arrow.up.circle`, accent outline) appears with text or a
-/// file; Stop while the agent works. ↩ sends (a beep while a message cannot go), ⌥↩ and ⇧↩ add a
-/// line, ⌘V pastes a file or screenshot, Esc clears (⌘Z brings it back) and then closes the panel.
+/// file; Stop while the agent works; their 28 pt place is kept while neither shows, so the field
+/// never changes width under the caret. The field grows with its text up to `maxLines`, then
+/// scrolls inside. ↩ sends (a beep while a message cannot go), ⌥↩ and ⇧↩ add a line and carry a
+/// list on (`ComposerLines`), ⌘V pastes a file or screenshot, Esc clears (⌘Z brings it back) and
+/// then closes the panel.
 struct AgentComposer: View {
     let model: AgentPanelModel
     let prompt: Text
@@ -26,6 +29,12 @@ struct AgentComposer: View {
     @State private var selection: TextSelection?
     /// The last caret request (`model.focusRequests`) handled.
     @State private var handledRequest = 0
+
+    /// The field's greatest height in lines (8 × 16 pt): a long message scrolls inside it and the
+    /// thread keeps the rest of the panel.
+    static let maxLines = 8
+    /// The paperclip's, Send's and Stop's square, as tall as one line of the field.
+    private static let button: CGFloat = 28
 
     private var hasText: Bool { !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var canSend: Bool { (hasText || model.hasFiles) && model.canSendNow }
@@ -58,10 +67,11 @@ struct AgentComposer: View {
                         .labelStyle(.iconOnly)
                         .font(.system(size: 14))
                         .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
+                        .frame(width: Self.button, height: Self.button)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .fixedSize()
                 .disabled(!model.canAttach)
                 .help(Text("Attach"))
                 // An edit clears the notice line (why the last message or file did not go).
@@ -71,12 +81,16 @@ struct AgentComposer: View {
                 }), selection: $selection, prompt: prompt.foregroundStyle(.tertiary), axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
-                    .lineLimit(1...6)
+                    .lineLimit(1...Self.maxLines)
                     .focused($isFocused)
                     .onSubmit(submit)
                     .onKeyPress(.return, phases: .down) { press in
-                        // ⇧↩ adds a line, as ⌥↩ does (after the key, never inside its event).
-                        guard press.modifiers.contains(.shift), !FieldEditor.isComposing else { return .ignored }
+                        // ⇧↩ and ⌥↩ add a line, a list's next item on a list's line (after the
+                        // key, never inside its event; never while a character is composed).
+                        let modifiers = press.modifiers
+                        guard modifiers.contains(.shift) || modifiers.contains(.option),
+                              !modifiers.contains(.command), !modifiers.contains(.control), !FieldEditor.isComposing
+                        else { return .ignored }
                         Task { @MainActor in insertLine() }
                         return .handled
                     }
@@ -91,36 +105,43 @@ struct AgentComposer: View {
                     }
                     .padding(.vertical, 4)
                     .padding(.horizontal, 2)
-                    .frame(minHeight: 28)
-                if model.isRunning, let conversationID {
-                    Button {
-                        let actions = actions
-                        Task { await actions.stop(conversationID) }
-                    } label: {
-                        Label("Stop", systemImage: "stop.circle")
-                            .labelStyle(.iconOnly)
-                            .font(.system(size: 19, weight: .light))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
+                    .frame(maxWidth: .infinity, minHeight: Self.button, alignment: .leading)
+                // Send or Stop in a place that is always there (empty while neither shows): the
+                // field keeps its width as Send comes and goes, and the button is never pushed
+                // past the composer's edge.
+                ZStack {
+                    if model.isRunning, let conversationID {
+                        Button {
+                            let actions = actions
+                            Task { await actions.stop(conversationID) }
+                        } label: {
+                            Label("Stop", systemImage: "stop.circle")
+                                .labelStyle(.iconOnly)
+                                .font(.system(size: 19, weight: .light))
+                                .foregroundStyle(.secondary)
+                                .frame(width: Self.button, height: Self.button)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(Text("Stop"))
+                    } else if canSend {
+                        Button(action: send) {
+                            Label("Send", systemImage: "arrow.up.circle")
+                                .labelStyle(.iconOnly)
+                                .font(.system(size: 19, weight: .light))
+                                .foregroundStyle(.tint)
+                                .frame(width: Self.button, height: Self.button)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(Text("Send"))
                     }
-                    .buttonStyle(.plain)
-                    .help(Text("Stop"))
-                } else if canSend {
-                    Button(action: send) {
-                        Label("Send", systemImage: "arrow.up.circle")
-                            .labelStyle(.iconOnly)
-                            .font(.system(size: 19, weight: .light))
-                            .foregroundStyle(.tint)
-                            .frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(Text("Send"))
                 }
+                .frame(width: Self.button, height: Self.button)
+                .fixedSize()
             }
             .padding(4)
-            .frame(minHeight: 36)
+            .frame(minHeight: Self.button + 8)
         }
         .background {
             // A click on the composer around the field puts the caret in it; a click in the field
@@ -172,17 +193,19 @@ struct AgentComposer: View {
         send()
     }
 
-    /// ⇧↩: a line break at the caret (replacing a selection).
+    /// ⇧↩ and ⌥↩: a line break at the caret (replacing a selection); on a list's line the next
+    /// item's number or bullet, on an empty item the list's end (`ComposerLines`).
     private func insertLine() {
+        // A composition that began after the key: the input method's range stays as it is.
+        guard !FieldEditor.isComposing else { return }
         let text = model.draft
         var range = text.endIndex..<text.endIndex
         // A selection from before the text last changed may point past its end: the end then.
         if case .selection(let selected)? = selection?.indices, selected.upperBound <= text.endIndex { range = selected }
-        let offset = text.distance(from: text.startIndex, to: range.lowerBound)
-        var changed = text
-        changed.replaceSubrange(range, with: "\n")
-        model.draft = changed
-        let caret = changed.index(changed.startIndex, offsetBy: offset + 1)
+        let edit = ComposerLines.newLine(in: text, replacing: range)
+        model.draft = edit.text
+        if model.notice != nil { model.notice = nil }
+        let caret = edit.text.index(edit.text.startIndex, offsetBy: min(edit.caret, edit.text.count))
         selection = TextSelection(insertionPoint: caret)
     }
 
