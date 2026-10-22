@@ -76,3 +76,22 @@ its settings are open, docs/decisions.md); 3. Not done: 4. The list as written:
 2. **Sidebar:** a "Course Settings" child row (gearshape) under each expanded course, selected on this screen (`SidebarItem.courseSettings`), parity route `course/<name>/settings` → that item; accent-tinted row icons; footer "+ New Course" left, semester right, below a separator.
 3. **Toolbar:** back/forward chevrons (selection history, ⌘[ / ⌘]); no search field on course screens (mockup 08 has none).
 4. **Mail rules of existing libraries:** courses created before `CourseLibrary.create` wrote default rules have none; `CourseDraft.mailRules(for:semester:)` gives them if wanted.
+
+## Panes: the lecture notes page (Mac)
+
+`LectureNotesPage` offers Your notes as a side pane, `.pane(.yourNotes, identity: lectureID)`,
+drawn by the app's pane host beside the page (docs/DESIGN.md 6.4, 8.9). Gone: its `.inspector`,
+Show Inspector, the per-window visibility (`YourNotesVisibility` and
+`\.yourNotesVisibilityOverride` are no longer read; renders open the pane through the kind's
+layout), the automatic open and close at 1160 / 1120 pt, the 1 pt strip above the scroll view
+and the scroll offset kept across the expanded agent panel.
+
+- **`LectureNotesPageState`** (`@Observable`, the page's `@State`) is what the pane reads: the
+  current version's `sections`, the `readingSection` the notes report, `typingInColumn`, and
+  Continue in Chat's `chatPassage`. The pane's content reads nothing else of the page.
+- **Keys.** ↩ (Open in Review) stands down while a note in Your notes or the search field has the
+  keyboard (`typingInColumn`, `\.isSearchFieldFocused`); the notes' ⌘K and ⇧⌘E are published only
+  while the notes themselves have it.
+- **Live resize.** While `\.isLiveResizing` is on, `NotesPageLayout` keeps the page width it had
+  (the latest measure waits in the state, unobserved) and takes the new one once, when the drag
+  ends.
