@@ -6,7 +6,7 @@ manual "slide starts here" anchors (#9). Milestone 1, workstream C.
 | Product | Contents | Imports |
 |---|---|---|
 | `Review` | `LecturePlayer`, `LectureComposition`, `SlideTimeline`, `ReviewSession` (follow + navigation), `SlideNoteEditor` (on Notes' `NoteSession` since M6; moved to `Notes` in nl), `AnchorEditor`, `ReviewProgressTracker` / `ReviewStateKeeper`; M4: `StudyItems`, `StudyEdits`, `SlideTextLocator`, `ScrubberMoments`; M6: `SlideInkEditor`, `StudyEdits.addFlag` / `deleteFlag` | StudyCore, Capture, Notes (M6), AVFoundation, PDFKit (internal). No SwiftUI |
-| `ReviewUI` | `LectureReviewView`, `ReviewCommands`, `ReviewActions` (focused value); M5: `ReviewInspectorTab`, `\.reviewInspectorTab`; M6: the ink layer, the toolbar's ink group and its keys (no new public API besides `ReviewActions`' ink fields) | Review, StudyUI, Capture + CaptureUI, ChatUI (M5: the Tutor tab), SwiftUI; AppKit/UIKit only for the large slide's backing-store view |
+| `ReviewUI` | `LectureReviewView`, `ReviewCommands`, `ReviewActions` (focused value); M5: `ReviewInspectorTab`, `\.reviewInspectorTab` (panes: `slide`, `lecture`, `summary`, see "Panes" below); M6: the ink layer, the toolbar's ink group and its keys (no new public API besides `ReviewActions`' ink fields) | Review, StudyUI, Capture + CaptureUI, ChatUI (M5: the Tutor tab), SwiftUI; AppKit/UIKit only for the large slide's backing-store view |
 
 No automated test suite at present; verified by building and rendering.
 
