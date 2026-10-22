@@ -181,6 +181,8 @@ final class AppModel {
     @ObservationIgnored private var activationObserver: Task<Void, Never>?
     @ObservationIgnored private var calendarStoreObserver: Task<Void, Never>?
     @ObservationIgnored private var memoryObserver: Task<Void, Never>?
+    /// The daily library backup (Mac): at launch and after each wake.
+    @ObservationIgnored private var backupObserver: Task<Void, Never>?
     /// ma: the full calendar sync after the student's calendars changed (coalesced, at most one a
     /// minute), and when the last one ran.
     @ObservationIgnored private var calendarEditSync: Task<Void, Never>?
@@ -452,9 +454,25 @@ final class AppModel {
     func startBackgroundWork() async {
         guard runsBackgroundWork, !didStartBackgroundWork, let services else { return }
         didStartBackgroundWork = true
+        #if os(macOS)
+        // Once, before sync starts and before anything replans: rows the Mac's first upload
+        // deleted come back from the copy made before it (`LibraryRestore`).
+        if runsLibraryPasses, cloudSync != nil { await Self.restoreLostRowsOnce(services) }
+        #endif
         // M7: iCloud sync first (only in a build configured for it), so the other device's rows
         // come down before anything is created here.
         if let cloudSync { Task { await cloudSync.start() } }
+        #if os(macOS)
+        // One copy of the library a day, in the background (also after a wake: the Mac app stays
+        // open for days).
+        let backup = LibraryBackup(services: services)
+        backupObserver = Task(priority: .background) {
+            await backup.runDaily()
+            for await _ in NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification) {
+                await backup.runDaily()
+            }
+        }
+        #endif
         observeClaudeAvailability()
         #if os(macOS)
         // md: returns at once (reading resumes after 20 s at utility, file removal after 60 s).
@@ -581,6 +599,31 @@ final class AppModel {
             if outcome.busy == 0 { defaults.set(true, forKey: mergedDuplicateLecturesKey) }
         } catch {
             Log.app.error("Merging lectures filed twice failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// Set once the rows the Mac's first iCloud upload deleted were restored, or once a launch
+    /// found no copy from before the first sync (a library that syncs for the first time later
+    /// never restores from that newer copy, which would bring back rows deleted since).
+    static let restoredRowsLostToFirstSyncKey = "Socrates.restoredRowsLostToFirstSync"
+
+    /// `LibraryRestore` on the first launch with it, then the courses it changed are replanned
+    /// (Course Settings' call: numbers, and sessions held by slot and day; a plan already right
+    /// writes nothing). A failure (logged by the restore) leaves the key unset: the next launch
+    /// tries again, and rows already back are found present.
+    private static func restoreLostRowsOnce(_ services: StudyServices) async {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: restoredRowsLostToFirstSyncKey) else { return }
+        let restore = LibraryRestore(services: services)
+        guard restore.hasSource else {
+            defaults.set(true, forKey: restoredRowsLostToFirstSyncKey)
+            return
+        }
+        guard let outcome = try? await restore.run() else { return }
+        defaults.set(true, forKey: restoredRowsLostToFirstSyncKey)
+        let schedule = CourseSchedule(services: services)
+        for course in outcome.courses {
+            _ = try? await schedule.replan(courseID: course)
         }
     }
 

@@ -22,6 +22,7 @@ import os
 /// - Every later start queues again the rows iCloud has not received (`SyncedTables.queueUnsent`)
 ///   and rows written while no engine noted them (`SyncedTables.queueUntracked`), so a first
 ///   upload that a quit, a crash or a lost network interrupted resumes where it stopped.
+/// - Rows sync deletes on this device are logged by table and count (`SyncDeletionLog`).
 @MainActor
 @Observable
 public final class CloudSync {
@@ -52,6 +53,10 @@ public final class CloudSync {
     /// Built once (`prepare()`), kept for the app's life; stopped and started again as the account
     /// comes and goes. Its triggers note changes also while it is stopped (sent at the next start).
     @ObservationIgnored private var engine: SyncEngine?
+    /// Logs the rows sync deletes on this device (`SyncDeletionLog`); on the library's writer
+    /// from the first engine on, added once.
+    private let deletionLog = SyncDeletionLog(tables: Set(SyncedTables.types.map { $0.tableName }))
+    @ObservationIgnored private var logsDeletions = false
 
     /// Nil unless the library was opened for a CloudKit container (`services.syncContainer`).
     /// Builds the engine at once (not started; no CloudKit call).
@@ -155,6 +160,10 @@ public final class CloudSync {
             await self?.accountChanged(change)
         }
         engine = try SyncedTables.engine(for: services.database, container: container, delegate: guardDelegate)
+        if !logsDeletions {
+            services.database.add(transactionObserver: deletionLog, extent: .databaseLifetime)
+            logsDeletions = true
+        }
     }
 
     /// An iCloud sign-out or a switch to another account: syncing stops and every row stays
