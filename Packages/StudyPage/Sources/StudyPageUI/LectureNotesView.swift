@@ -24,6 +24,8 @@ import SwiftUI
 ///
 /// The view is as tall as its text (the host scrolls); it hangs its fold chevrons 18 pt into the
 /// margin on both sides. It does not queue notes: the page and the pane do (`queueIfNeeded`).
+/// While a divider or the window's edge is dragged (`\.isLiveResizing`) its code, tables,
+/// diagrams, charts and slides keep their width and the prose reflows.
 ///
 /// nl (docs/plan-notes-layout.md §3–5, §11): on the page (`layout`) the text view is the page's
 /// `wide`, the prose indented to the measure, code, tables, diagrams, charts and slides breaking
@@ -38,6 +40,7 @@ public struct LectureNotesView: View {
     private let writeAgain: (() -> Void)?
     private let onChatPassage: ((NotesPassageContext?) -> Void)?
     private let onReadingSection: ((String?) -> Void)?
+    private let commands: LectureNotesCommandRelay?
 
     @Fetch private var rows: LectureNotesRows
     @State private var controller: LectureNotesController
@@ -53,6 +56,7 @@ public struct LectureNotesView: View {
     @Environment(\.contentZoom) private var zoom
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.undoManager) private var undoManager
+    @Environment(\.isLiveResizing) private var isLiveResizing
 
     /// - Parameters:
     ///   - layout: the page's widths (`.page`; the view is framed at `wide` by the page); nil:
@@ -66,10 +70,14 @@ public struct LectureNotesView: View {
     ///     when it should stop going); nil: the view publishes it (`.agentContext`).
     ///   - onReadingSection: the section under the reading line (a third down the screen) when it
     ///     changes; nil at the overview (the page's Your notes column marks its slides).
+    ///   - commands: the Lecture menu's Ask… and Highlight go to this relay, which the screen
+    ///     publishes (the view sits in a side pane, another hosting view than the screen whose
+    ///     focused values the menu reads); nil: the view publishes them itself.
     public init(
         lectureID: Lecture.ID, style: LectureNotesStyle = .page, layout: NotesPageLayout? = nil, followPage: Int? = nil,
         onChip: ((NotesChipTarget) -> Bool)? = nil, writeAgain: (() -> Void)? = nil,
-        onChatPassage: ((NotesPassageContext?) -> Void)? = nil, onReadingSection: ((String?) -> Void)? = nil
+        onChatPassage: ((NotesPassageContext?) -> Void)? = nil, onReadingSection: ((String?) -> Void)? = nil,
+        commands: LectureNotesCommandRelay? = nil
     ) {
         self.lectureID = lectureID
         self.style = style
@@ -79,6 +87,7 @@ public struct LectureNotesView: View {
         self.writeAgain = writeAgain
         self.onChatPassage = onChatPassage
         self.onReadingSection = onReadingSection
+        self.commands = commands
         _rows = Fetch(wrappedValue: .empty, LectureNotesRequest(lectureID: lectureID))
         _controller = State(initialValue: LectureNotesController(lectureID: lectureID, style: style))
     }
@@ -98,18 +107,24 @@ public struct LectureNotesView: View {
         controller.notes = input.notes
         controller.marks = input.marks
         controller.chips = input.chips
-        return NotesTextHost(input: input, controller: controller, onReadingSection: onReadingSection) { height = $0 }
-            .frame(height: max(20, height))
-            .padding(.horizontal, -NotesTextView.chevronMargin)
-            .focusedSceneValue(\.lectureNotesAsk, controller.askCommand)
-            .focusedSceneValue(\.lectureNotesHighlight, controller.highlightCommand)
-            .preference(key: AgentContextPreferenceKey.self, value: chatContext)
-            .onDisappear { if controller.chatPassage != nil { controller.chatPassage = nil } }
-            .onChange(of: followPage, initial: true) { follow() }
-            // The first follow waits for the text's real height.
-            .onChange(of: height) { if !followSettled { follow(force: true) } }
-            .task(id: preview) { await showPreview() }
-            .accessibilityElement(children: .contain)
+        return NotesTextHost(
+            input: input, controller: controller, isLiveResizing: isLiveResizing, onReadingSection: onReadingSection, onHeight: { height = $0 }
+        )
+        .frame(height: max(20, height))
+        .padding(.horizontal, -NotesTextView.chevronMargin)
+        .focusedSceneValue(\.lectureNotesAsk, commands == nil ? controller.askCommand : nil)
+        .focusedSceneValue(\.lectureNotesHighlight, commands == nil ? controller.highlightCommand : nil)
+        .preference(key: AgentContextPreferenceKey.self, value: chatContext)
+        .onAppear { commands?.attach(controller) }
+        .onDisappear {
+            commands?.detach(controller)
+            if controller.chatPassage != nil { controller.chatPassage = nil }
+        }
+        .onChange(of: followPage, initial: true) { follow() }
+        // The first follow waits for the text's real height.
+        .onChange(of: height) { if !followSettled { follow(force: true) } }
+        .task(id: preview) { await showPreview() }
+        .accessibilityElement(children: .contain)
     }
 
     private func makeInput() -> NotesDocumentInput {

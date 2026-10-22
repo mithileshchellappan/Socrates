@@ -4,6 +4,9 @@ import Observation
 import Review
 import StudyCore
 import StudyUI
+#if os(macOS)
+import StudyPageUI
+#endif
 
 /// Everything one open lecture review needs that is not a database observation: the deck
 /// renderer, the player and navigation state, review-state writes and the anchor editor.
@@ -36,8 +39,16 @@ final class ReviewModel {
     /// A note editor (or another text field of the screen) has focus: slide and playback keys
     /// are off. (ma: the agent panel's composer is `\.isAgentComposerFocused`.)
     var isEditingText = false
+    /// The notes tab picked (the window keeps it: `LectureReviewView`'s scene storage).
     var inspectorTab: InspectorTab = .slide
+    #if os(iOS)
     var showsInspector = true
+    #endif
+    #if os(macOS)
+    /// Summary's Ask… and Highlight: its notes are drawn in the Notes pane, another hosting view,
+    /// so the screen publishes them (`ReviewActionsPublisher`).
+    let notesCommands = LectureNotesCommandRelay()
+    #endif
     /// ln: a passage of the lecture's notes taken to the agent panel from Whole lecture (Continue
     /// in Chat), sent with the review's own context (`ReviewAgentContext`) by the next message.
     var notesPassage: NotesPassageContext?
@@ -45,6 +56,16 @@ final class ReviewModel {
     private(set) var isRealigning = false
 
     var player: LecturePlayer? { session.player }
+
+    /// The notes tab on screen: the one picked, or Whole lecture where there is no slide to show.
+    var shownTab: InspectorTab {
+        deck == nil && inspectorTab == .slide ? .lecture : inspectorTab
+    }
+
+    /// The tabs the notes offer: without a deck, Whole lecture and Summary.
+    var notesTabs: [InspectorTab] {
+        deck == nil ? [.lecture, .summary] : InspectorTab.allCases
+    }
 
     /// Another of the lecture's recordings was picked; the screen loads it.
     var requestedRecordingID: Recording.ID?
@@ -79,10 +100,10 @@ final class ReviewModel {
     /// Flag writes and their undo and redo, one after another.
     @ObservationIgnored private var flagWrite: Task<Void, Never>?
 
-    /// The transcript as last read, kept across a rebuild of the screen's views: the expanded
-    /// agent panel leaves the notes inspector out (`ReviewInspectorColumn`), and its coming and
-    /// going makes the review a new view. A rebuilt transcript shows these lines at once (no blank
-    /// zone, no read of every segment again) and opens where the list was.
+    /// The transcript as last read, kept across a rebuild of the screen's views (on iOS the
+    /// inspector comes and goes with the expanded agent panel, `ReviewInspectorColumn`). A rebuilt
+    /// transcript shows these lines at once (no blank zone, no read of every segment again) and
+    /// opens where the list was.
     @ObservationIgnored var keptTranscript: (key: LoadedTranscript.Key, lines: LoadedTranscript)?
     /// The first row on screen in the transcript (a slide divider's or a line's id), as last
     /// scrolled; nil until the list has shown.

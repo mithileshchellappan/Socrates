@@ -38,7 +38,7 @@ struct TranscriptZone: View {
             database: model.services.database
         )
         annotationsQuery = .studyItems(of: model)
-        // Rebuilt (the agent panel expanded or shrank): the lines already read.
+        // Rebuilt (on the iPad the inspector came or went with the agent panel): the lines already read.
         _loaded = State(initialValue: model.keptTranscript?.lines)
     }
 
@@ -241,7 +241,7 @@ private struct TranscriptFollower: View {
                 // has laid out; a scroll asked for while it appears is dropped.
                 try? await Task.sleep(for: .milliseconds(60))
                 if let reopenAt {
-                    // Rebuilt (the agent panel expanded or shrank): where the student left it.
+                    // Rebuilt (as above): where the student left it.
                     proxy.scrollTo(reopenAt, anchor: .top)
                 } else if !session.isFollowing, let visit = openingVisit(session) {
                     // Opened on a slide the playhead is not in (yet): its divider is the first row.

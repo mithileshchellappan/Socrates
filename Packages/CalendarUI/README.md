@@ -50,3 +50,18 @@ Handled in the M3 integration: 1–5 (the window search field is gone on Calenda
 6. Opening Calendar at a given week from elsewhere: `CalendarScreen(week:)` keeps its own state afterwards; give it `.id(week)` when a route should move it.
 
 No schema request: CalendarUI only reads; every write goes through `DeadlineActions`.
+
+## Panes: Deadlines as a side pane (Mac)
+
+On the Mac, `CalendarScreen` offers Deadlines as a side pane, `.pane(.deadlines, identity:
+"deadlines") { DeadlinesPane(state:) }`, under the pane host's 36 pt header ("Deadlines";
+docs/DESIGN.md 6.4). Gone on the Mac: `DeadlinesInspectorColumn`, Show Inspector, `showsInspector`,
+`\.agentPanelExpanded`, the grid rebuilt with the expanded agent panel (the body opens at 08:00
+once), and `DeadlinesInspector`'s toolbar header. iOS keeps its `.inspector`, its toolbar header and
+the expanded panel's rules as they were.
+
+- **`CalendarPaneState`** (`@Observable`, the screen's `@State`) is what the pane reads: the
+  week's rows, the minute, the selection and the rows' handlers, updated together when the rows or
+  the minute change. The selection lives there alone; the grid, the Calendar menu and the agent's
+  context read it too.
+- [+] and New Deadline still call `openAgentPanel()`.

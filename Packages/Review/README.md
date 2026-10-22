@@ -382,3 +382,37 @@ the rail ends at 41, › disabled on 41), light and dark, against mockup 03.
 only the lecture's range of its deck, with the deck's page numbers ("50 / 88"); the subtitle adds
 " · slides 38–88 of 88" when the range is not the whole deck." DESIGN 9 "Range": the Review
 subtitle is a use of "slides 38–88 of 88".
+
+## Panes: Review's Notes pane (the side panes milestone)
+
+On the Mac the notes are the screen's side pane, `.pane(.notes, identity: ObjectIdentifier(model),
+accessory: { NotesTabPicker(model:) }) { ReviewNotesPane(model:) }`, under the pane host's 36 pt
+header with the tab picker in place of a title (docs/DESIGN.md 6.4, 8.1). Gone on the Mac:
+`ReviewInspectorColumn`, the `.inspector`, Show Inspector, `\.agentPanelExpanded`, the
+`InspectorHeader` toolbar item and its column width reader. The iPad keeps its inspector with the
+three-tab header.
+
+- **Tabs** (`ReviewInspectorTab`, raw values `slide`, `lecture`, `summary`): "This slide",
+  "Whole lecture", "Summary" in the pane's header, the iPad's inspector header and the snapshot
+  chrome; without a deck "Whole lecture | Summary" (`ReviewModel.shownTab`).
+  - This slide: unchanged.
+  - Whole lecture: only the student's notes. Mac: `YourNotesColumn` following the slide on screen
+    (`.page(model.session.shownPage)`), its chips and thumbnails moving the review. iOS:
+    `LectureYourNotes`.
+  - Summary: Claude's notes (`LectureNotesView`) and Further reading, without the own-note
+    editor; before they are written, the study pass's blocks without Your notes. Queueing, the
+    failure bar, Ask, Keep, Highlight, Continue in Chat, Write Again and Previous Version as
+    before.
+- **Kept per window.** `@SceneStorage("review.notesTab")` in `LectureReviewView` goes into each
+  loaded `ReviewModel` and back on change; a render's `\.reviewInspectorTab` (now optional) wins.
+- **Ask / Highlight.** The pane is another hosting view than the screen, so Summary's notes hand
+  their commands to `ReviewModel.notesCommands` (StudyPageUI's `LectureNotesCommandRelay`) and
+  `ReviewActionsPublisher` publishes `\.lectureNotesAsk` / `\.lectureNotesHighlight` from the
+  screen's tree.
+- **Covered.** While a pane is maximized over the review (`\.mainIsCovered`), `ReviewActions`
+  counts as typing (every plain key stands down) and `ReviewSlideKeys` leaves ← / → alone.
+- **Keys.** Hide / Show Thumbnails is ⌃⌥⌘1 and Hide / Show Transcript ⌃⌥⌘2 (⌥⌘1… are the pane
+  toggles, ⌃⌘1–3 Calendar's).
+- **Slide freeze.** `SlideCanvasView` sets `layerContentsRedrawPolicy = .never` while
+  `\.isLiveResizing` is on or its window live-resizes: Core Animation scales the last 2048 px
+  backing store, and the slide is drawn sharp once when the drag ends.

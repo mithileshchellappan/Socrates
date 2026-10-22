@@ -6,19 +6,84 @@ import StudyPageUI
 import StudyUI
 import SwiftUI
 
-/// The inspector: "This slide | Whole lecture" and the hide button in one 52 pt header row level
-/// with the window toolbar, a hairline, then the pane. This slide holds the slide's summary, your
-/// notes for the slide on screen (editable, autosaved) and its further reading, then, under a
-/// hairline, the lecture-wide exam hints and things only said in class (3 rows each, then "Show N
-/// more"); Whole lecture holds the lecture's summary, every exam hint, everything only said in
-/// class by category, every further reading and every note of the lecture by slide (M4).
+/// The review's notes for the tab on screen (`ReviewModel.shownTab`): the Mac's Notes pane, the
+/// iPad's inspector and the snapshot chrome draw it.
 ///
-/// In the window the header is a toolbar item: macOS 26 lays the toolbar out as one row whose
-/// trailing items pack against the window's edge, with no section of its own over the inspector.
-/// The item is as wide as the inspector (less the toolbar's trailing inset), so it sits exactly
-/// over the column and keeps the slide stepper beside it, over the content. It is there only while
-/// the inspector is shown; then the toolbar's Show Inspector takes its place. ma: while the agent
-/// panel is expanded it takes the inspector's place (`isShown` false).
+/// - This slide: the slide's summary, your notes for the slide on screen (editable, autosaved) and
+///   its further reading, then, under a hairline, the lecture-wide exam hints and things only said
+///   in class (3 rows each, then "Show N more").
+/// - Whole lecture: only the student's own notes. On the Mac `YourNotesColumn` (the lecture's own
+///   note, then the notes and ink by slide), following the slide on screen; a chip or thumbnail
+///   moves the review. On iOS the lecture's own note and the slides' notes (`LectureYourNotes`).
+/// - Summary: Claude's notes of the lecture (`WholeLecturePane`), or the study pass's blocks until
+///   they are written.
+struct ReviewNotesContent: View {
+    let model: ReviewModel
+
+    /// The notes list's visible height: an empty slide's pane fills it, so a click anywhere under
+    /// "Your notes" starts the note.
+    @State private var listHeight: CGFloat = 0
+    private let notesQuery: FetchAll<Note>
+    private var notes: [Note] { notesQuery.wrappedValue }
+    private let annotationsQuery: FetchAll<Annotation>
+
+    init(model: ReviewModel) {
+        self.model = model
+        let lectureID = model.lecture.id
+        notesQuery = FetchAll(
+            Note.where { $0.lectureID.eq(lectureID) }.order { ($0.pageNumber, $0.createdAt) },
+            database: model.services.database
+        )
+        annotationsQuery = .studyItems(of: model)
+    }
+
+    var body: some View {
+        let items = StudyItems(annotationsQuery.wrappedValue)
+        switch model.shownTab {
+        case .slide:
+            ScrollView {
+                SlideNotesPane(model: model, notes: notes, items: items, minHeight: listHeight)
+            }
+            .scrollIndicators(.automatic)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
+        case .lecture:
+            WholeLectureNotes(model: model, notes: notes)
+        case .summary:
+            ScrollView {
+                WholeLecturePane(model: model, items: items)
+            }
+            .scrollIndicators(.automatic)
+        }
+    }
+}
+
+#if os(macOS)
+/// Review's Notes pane (the Mac's side pane, `.pane(.notes, …)`): the notes for the tab on screen
+/// under the pane host's header, whose accessory is the tab picker (`NotesTabPicker`). It reads the
+/// review only through its model (it is drawn in another hosting view than the screen) and zooms
+/// with View ▸ Zoom In / Out on its own.
+struct ReviewNotesPane: View {
+    let model: ReviewModel
+
+    var body: some View {
+        ReviewNotesContent(model: model)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background {
+                // Your notes draws the same background itself.
+                if model.shownTab != .lecture { InspectorBackground() }
+            }
+            .contentZoomable()
+    }
+}
+#endif
+
+/// The iPad's inspector (header "This slide | Whole lecture | Summary" and Hide, a toolbar item
+/// level with the window toolbar), and the notes beside the review in off-screen snapshots (the
+/// header inline). macOS 26 lays the toolbar out as one row whose trailing items pack against the
+/// window's edge, so the header item is as wide as the inspector (less the toolbar's trailing
+/// inset) and sits over the column. It is there only while the inspector is shown; then the
+/// toolbar's Show Inspector takes its place. ma: while the agent panel is expanded it takes the
+/// inspector's place (`isShown` false).
 struct ReviewInspector: View {
     static let width: CGFloat = 336
     static let headerHeight: CGFloat = 52
@@ -30,24 +95,9 @@ struct ReviewInspector: View {
     var isShown = true
 
     @Environment(\.reviewChrome) private var chrome
+    #if os(iOS)
     @State private var columnWidth = ReviewInspector.width
-    /// The notes list's visible height: an empty slide's pane fills it, so a click anywhere under
-    /// "Your notes" starts the note.
-    @State private var listHeight: CGFloat = 0
-    private let notesQuery: FetchAll<Note>
-    private var notes: [Note] { notesQuery.wrappedValue }
-    private let annotationsQuery: FetchAll<Annotation>
-
-    init(model: ReviewModel, isShown: Bool = true) {
-        self.model = model
-        self.isShown = isShown
-        let lectureID = model.lecture.id
-        notesQuery = FetchAll(
-            Note.where { $0.lectureID.eq(lectureID) }.order { ($0.pageNumber, $0.createdAt) },
-            database: model.services.database
-        )
-        annotationsQuery = .studyItems(of: model)
-    }
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -57,24 +107,11 @@ struct ReviewInspector: View {
                     .frame(height: Self.headerHeight)
             }
             Divider()
-            ScrollView {
-                let items = StudyItems(annotationsQuery.wrappedValue)
-                if model.deck == nil {
-                    LectureOnlyNotesPane(model: model, notes: notes, items: items)
-                } else {
-                    switch model.inspectorTab {
-                    case .slide:
-                        SlideNotesPane(model: model, notes: notes, items: items, minHeight: listHeight)
-                    case .lecture:
-                        WholeLecturePane(model: model, notes: notes, items: items)
-                    }
-                }
-            }
-            .scrollIndicators(.automatic)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
+            ReviewNotesContent(model: model)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { InspectorBackground() }
+        #if os(iOS)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
         .toolbar {
             // Only while the inspector is shown: SwiftUI keeps a hidden inspector's content (and
@@ -87,12 +124,13 @@ struct ReviewInspector: View {
                 .sharedBackgroundVisibility(.hidden)
             }
         }
+        #endif
     }
 }
 
-/// The inspector column's background: the system's as is in light mode; in dark mode lifted a
-/// little above the content (which it otherwise matches) so it reads as a panel of its own.
-/// Snapshots have no inspector column, so they draw the secondary background.
+/// The notes' background: the system's as is in light mode; in dark mode lifted a little above
+/// the content (which it otherwise matches) so it reads as a panel of its own. Snapshots have no
+/// side column, so they draw the secondary background.
 private struct InspectorBackground: View {
     @Environment(\.reviewChrome) private var chrome
     @Environment(\.colorScheme) private var colorScheme
@@ -109,17 +147,16 @@ private struct InspectorBackground: View {
     }
 }
 
-/// The header row: the tab picker (its own track, mockup 03's one segctl), then the hide button at
-/// the trailing edge.
+/// The header row of the iPad's inspector and the snapshot chrome: the tab picker, then (iPad) the
+/// hide button at the trailing edge.
 private struct InspectorHeader: View {
     let model: ReviewModel
 
     var body: some View {
         HStack(spacing: 8) {
-            if model.deck != nil {
-                InspectorTabPicker(model: model)
-            }
+            NotesTabPicker(model: model)
             Spacer(minLength: 0)
+            #if os(iOS)
             Button {
                 model.showsInspector = false
             } label: {
@@ -128,26 +165,24 @@ private struct InspectorHeader: View {
             }
             .buttonStyle(.borderless)
             .help(Text("Hide Inspector"))
+            #endif
         }
         .padding(.leading, 12)
         .padding(.trailing, 18)
     }
 }
 
-/// "This slide | Whole lecture": a small segmented control (on a toolbar glass track its selection
-/// is neutral, not accent-filled); only with a deck.
-private struct InspectorTabPicker: View {
+/// "This slide | Whole lecture | Summary" ("Whole lecture | Summary" without a deck): a small
+/// segmented control (on a toolbar glass track its selection is neutral, not accent-filled). The
+/// Mac's Notes pane shows it in its header, in place of a title.
+struct NotesTabPicker: View {
     let model: ReviewModel
 
     var body: some View {
-        let selection = Binding<ReviewModel.InspectorTab> {
-            model.inspectorTab
-        } set: { tab in
-            model.inspectorTab = tab
-        }
-        Picker("Notes", selection: selection) {
-            Text("This slide").tag(ReviewModel.InspectorTab.slide)
-            Text("Whole lecture").tag(ReviewModel.InspectorTab.lecture)
+        Picker("Notes", selection: Binding(get: { model.shownTab }, set: { model.inspectorTab = $0 })) {
+            ForEach(model.notesTabs, id: \.self) { tab in
+                Text(tab.title).tag(tab)
+            }
         }
         .pickerStyle(.segmented)
         .controlSize(.small)
@@ -300,8 +335,7 @@ private struct NoteSessionRow: View {
             )
         }
         .onDisappear {
-            // Gone with the caret (the other tab, the inspector hidden, the agent's column): the
-            // review's keys come back.
+            // Gone with the caret (the other tab, the notes closed): the review's keys come back.
             if hasFocus {
                 hasFocus = false
                 model.isEditingText = false
@@ -350,14 +384,45 @@ enum ReviewNoteLinks {
     }
 }
 
+/// Whole lecture: only the student's own notes.
+private struct WholeLectureNotes: View {
+    let model: ReviewModel
+    let notes: [Note]
+
+    var body: some View {
+        #if os(macOS)
+        // The notes page's Your notes, following the slide on screen; a chip or a thumbnail moves
+        // the review (it never opens it again). It scrolls itself.
+        let model = model
+        YourNotesColumn(
+            lectureID: model.lecture.id,
+            follow: { .page(model.session.shownPage) },
+            onOpenSlide: { page in
+                Task { await model.session.selectThumbnail(page: page) }
+            },
+            onEditingChange: { editing in model.isEditingText = editing }
+        )
+        #else
+        ScrollView {
+            LectureYourNotes(model: model, notes: notes)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollIndicators(.automatic)
+        #endif
+    }
+}
+
+#if os(iOS)
 /// The lecture's own notes (no slide), without the copies of its lecture notes that Edit as Note
 /// made (nl: Claude's words stay in Notes, never twice).
 private func lectureOwnNotes(_ notes: [Note]) -> [Note] {
     notes.filter { $0.pageNumber == nil && !$0.isLectureNotesCopy }
 }
 
-/// "Your notes" on Whole lecture (and without a deck): the lecture's own notes (editable), then the
-/// notes of its slides, read-only, each after its `SlideChip`.
+/// Whole lecture on iOS: the lecture's own notes (editable), then the notes of its slides,
+/// read-only, each after its `SlideChip`.
 private struct LectureYourNotes: View {
     let model: ReviewModel
     let notes: [Note]
@@ -389,56 +454,26 @@ private struct LectureYourNotes: View {
         }
     }
 }
+#endif
 
-/// Without a deck: notes on the lecture itself (editable), then any slide notes it kept.
-private struct LectureOnlyNotesPane: View {
-    let model: ReviewModel
-    let notes: [Note]
-    let items: StudyItems
-    @Environment(\.contentZoom) private var zoom
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14 * zoom) {
-            if let summary = items.lectureSummary {
-                SummaryBlock(model: model, summary: summary)
-            }
-            LectureYourNotes(model: model, notes: notes)
-            if items.hasLectureWideItems {
-                Hairline()
-                if !items.examHints.isEmpty {
-                    ExamHintsBlock(model: model, hints: items.examHints)
-                }
-                if !items.saidInClass.isEmpty {
-                    SaidInClassBlock(model: model, items: items.saidInClass, groups: items.saidInClassByCategory)
-                }
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Whole lecture (ln, decision 2): with the lecture's notes written (their text has started), the
-/// same notes as the Lectures page in the inspector's narrow column (`LectureNotesView`), then
-/// Further reading, then the lecture's own note editor; the Summary, Exam hints, Only said in
-/// class and the read-only slide notes are not shown beside them (each is inside the notes: no
-/// fact twice). With Follow on, the notes scroll to the section whose slides hold the slide on
-/// screen; chips move the review; Continue in Chat's passage goes with the review's context.
+/// Summary (ln, decision 2): with the lecture's notes written (their text has started), the same
+/// notes as the Lectures page in the pane's narrow column (`LectureNotesView`), then Further
+/// reading; the Summary, Exam hints and Only said in class are not shown beside them (each is
+/// inside the notes: no fact twice). With Follow on, the notes scroll to the section whose slides
+/// hold the slide on screen; chips move the review; Continue in Chat's passage goes with the
+/// review's context; Ask… and Highlight go to the screen through `ReviewModel.notesCommands`.
 /// Until the notes are written (or while a version is paused or failed): the study pass's blocks,
 /// and on the Mac the first show queues the notes (`queueIfNeeded`). A version that failed puts
 /// its failure line over the blocks (triangle, reason, Write Again…: `LectureNotesFailureBar`).
+/// The student's own notes are Whole lecture's.
 private struct WholeLecturePane: View {
     let model: ReviewModel
-    let notes: [Note]
     let items: StudyItems
     private let versionsQuery: FetchAll<LectureNotes>
     @Environment(\.lectureNotesQueuesOnOpen) private var queuesOnOpen
-    @Environment(\.contentZoom) private var zoom
 
-    init(model: ReviewModel, notes: [Note], items: StudyItems) {
+    init(model: ReviewModel, items: StudyItems) {
         self.model = model
-        self.notes = notes
         self.items = items
         let lectureID = model.lecture.id
         versionsQuery = FetchAll(LectureNotes.where { $0.lectureID.eq(lectureID) }, database: model.services.database)
@@ -454,7 +489,7 @@ private struct WholeLecturePane: View {
     var body: some View {
         #if os(macOS)
         if hasNotes {
-            notesPane
+            SummaryNotes(model: model, items: items)
         } else {
             blocks
         }
@@ -474,7 +509,7 @@ private struct WholeLecturePane: View {
                     .padding(.horizontal, 14)
                     .padding(.top, 12)
             }
-            LectureNotesPane(model: model, notes: notes, items: items)
+            LectureNotesPane(model: model, items: items)
         }
         .task(id: model.lecture.id) {
             guard queuesOnOpen else { return }
@@ -485,14 +520,21 @@ private struct WholeLecturePane: View {
             }
         }
         #else
-        LectureNotesPane(model: model, notes: notes, items: items)
+        LectureNotesPane(model: model, items: items)
         #endif
     }
+}
 
-    #if os(macOS)
-    private var notesPane: some View {
+#if os(macOS)
+/// Summary once the notes are written: Claude's notes, then Further reading.
+private struct SummaryNotes: View {
+    let model: ReviewModel
+    let items: StudyItems
+    @Environment(\.contentZoom) private var zoom
+
+    var body: some View {
         let model = model
-        return VStack(alignment: .leading, spacing: 14 * zoom) {
+        VStack(alignment: .leading, spacing: 14 * zoom) {
             // The notes text zooms itself (StudyPageUI).
             LectureNotesView(
                 lectureID: model.lecture.id, style: .inspector,
@@ -500,29 +542,25 @@ private struct WholeLecturePane: View {
                 onChip: { ReviewNoteLinks.open($0, model: model) },
                 onChatPassage: { passage in
                     if model.notesPassage != passage { model.notesPassage = passage }
-                }
+                },
+                commands: model.notesCommands
             )
             if !items.furtherReading.isEmpty {
                 Hairline()
                 FurtherReadingBlock(model: model, readings: items.furtherReading, showsSlides: true)
-            }
-            VStack(alignment: .leading, spacing: 7 * zoom) {
-                SectionLabel("Your notes")
-                SlideNoteEditorView(model: model, page: nil, notes: lectureOwnNotes(notes))
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-    #endif
 }
+#endif
 
-/// The whole lecture before its notes are written: summary, exam hints, things said in class,
-/// further reading, then your notes.
+/// Summary before the notes are written: the study pass's summary, exam hints, things said in
+/// class and further reading.
 private struct LectureNotesPane: View {
     let model: ReviewModel
-    let notes: [Note]
     /// The study pass's rows (M4): the lecture's summary, every exam hint, everything only said in
     /// class by category, every further reading.
     let items: StudyItems
@@ -542,7 +580,6 @@ private struct LectureNotesPane: View {
             if !items.furtherReading.isEmpty {
                 FurtherReadingBlock(model: model, readings: items.furtherReading, showsSlides: true)
             }
-            LectureYourNotes(model: model, notes: notes)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)

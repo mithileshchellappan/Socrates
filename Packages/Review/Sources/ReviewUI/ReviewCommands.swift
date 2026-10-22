@@ -3,6 +3,9 @@ import Review
 import StudyCore
 import StudyUI
 import SwiftUI
+#if os(macOS)
+import StudyPageUI
+#endif
 
 /// What the review screen in the key window can do right now, published as a focused scene value
 /// for `ReviewCommands`. Everything is off while a text field has focus (a note, or the window's
@@ -110,10 +113,12 @@ extension FocusedValues {
 /// The Review menu: Play/Pause (Space), Back/Forward 15 Seconds (⌥← / ⌥→), Previous/Next Slide
 /// (← / →), Follow Playback (⇧⌘F), Slide Starts Here (⌘\), Mark as Reviewed (⇧⌘R); M6 on the Mac:
 /// Flag (F), Pen (P), Highlighter (H), Eraser (E, while drawing), Stop Drawing (Esc). Reads the
-/// focused review screen's actions; everything is disabled while a text field has focus. In the
-/// View menu after the sidebar: Hide/Show Thumbnails (⌥⌘1) and Hide/Show Transcript (⌥⌘2). On the
-/// Mac the screen's own key monitor (`ReviewSlideKeys`) takes ← / → before the menu whenever no
-/// editable text in the window has the keyboard, so a stale focus flag never leaves them dead.
+/// focused review screen's actions; everything is disabled while a text field has focus or a pane
+/// is maximized over the review. In the View menu after the sidebar: Hide/Show Thumbnails (⌃⌥⌘1)
+/// and Hide/Show Transcript (⌃⌥⌘2); ⌥⌘1… show and hide the window's panes, and ⌃⌘1–3 are
+/// Calendar's. On the Mac the screen's own key monitor (`ReviewSlideKeys`) takes ← / → before the
+/// menu whenever no editable text in the window has the keyboard, so a stale focus flag never
+/// leaves them dead.
 ///
 ///     WindowGroup { … }.commands { ReviewCommands() }
 public struct ReviewCommands: Commands {
@@ -183,12 +188,12 @@ public struct ReviewCommands: Commands {
             Button(review?.areThumbnailsCollapsed == true ? LocalizedStringKey("Show Thumbnails") : "Hide Thumbnails") {
                 review?.toggleThumbnails()
             }
-            .keyboardShortcut(focused ? KeyboardShortcut("1", modifiers: [.command, .option]) : nil)
+            .keyboardShortcut(focused ? KeyboardShortcut("1", modifiers: [.command, .option, .control]) : nil)
             .disabled(review?.canToggleThumbnails != true)
             Button(review?.isTranscriptCollapsed == true ? LocalizedStringKey("Show Transcript") : "Hide Transcript") {
                 review?.toggleTranscript()
             }
-            .keyboardShortcut(focused ? KeyboardShortcut("2", modifiers: [.command, .option]) : nil)
+            .keyboardShortcut(focused ? KeyboardShortcut("2", modifiers: [.command, .option, .control]) : nil)
             .disabled(review?.canToggleTranscript != true)
         }
     }
@@ -205,8 +210,10 @@ public struct ReviewCommands: Commands {
     #endif
 }
 
-/// Publishes the screen's `ReviewActions`. Its own view, so the state it reads (playing, slide,
-/// reviewed) never re-renders the screen.
+/// Publishes the screen's `ReviewActions`, and on the Mac the Summary tab's Ask… and Highlight
+/// (its notes are drawn in the Notes pane, another hosting view: `ReviewModel.notesCommands`). Its
+/// own view, so the state it reads (playing, slide, reviewed, the notes' selection) never
+/// re-renders the screen.
 struct ReviewActionsPublisher: View {
     let model: ReviewModel
 
@@ -219,6 +226,8 @@ struct ReviewActionsPublisher: View {
     /// ma: the agent panel's composer has focus (the plain keys stand down while the student
     /// types to the agent).
     @Environment(\.isAgentComposerFocused) private var isAgentComposerFocused
+    /// A pane is maximized over the review: nothing pages, plays or marks what is not in sight.
+    @Environment(\.mainIsCovered) private var mainIsCovered
     /// The window's: Flag's undo step goes there (as the ink canvas's do).
     @Environment(\.undoManager) private var undoManager
     /// The screen's layout (`ReviewContent` reads the same value and animates the change).
@@ -235,6 +244,10 @@ struct ReviewActionsPublisher: View {
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
             .focusedSceneValue(\.lectureReview, actions)
+            #if os(macOS)
+            .focusedSceneValue(\.lectureNotesAsk, model.notesCommands.ask)
+            .focusedSceneValue(\.lectureNotesHighlight, model.notesCommands.highlight)
+            #endif
     }
 
     private var actions: ReviewActions {
@@ -253,7 +266,7 @@ struct ReviewActionsPublisher: View {
             isFollowing: session.isFollowing,
             canSetSlideStart: model.canSetAnchor && session.shownPage != nil,
             isReviewed: isReviewed,
-            isEditingText: model.isEditingText || isAgentComposerFocused || isSearchFieldFocused,
+            isEditingText: model.isEditingText || isAgentComposerFocused || isSearchFieldFocused || mainIsCovered,
             playPause: { session.togglePlayPause() },
             back: { session.skip(by: -LecturePlayer.skipInterval) },
             forward: { session.skip(by: LecturePlayer.skipInterval) },

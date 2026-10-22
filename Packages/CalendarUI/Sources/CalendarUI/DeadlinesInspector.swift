@@ -14,27 +14,30 @@ struct InspectorHandlers {
     var trail: (TrackedItem.ID) -> TrailInfo
 }
 
-/// The inspector "Deadlines" (mockup 06): waiting proposals as cards, then what is due from
-/// today on, soonest first; it ends with its last row (ma: new deadlines go through the agent
-/// panel, which Calendar's [+] opens).
+/// "Deadlines" (mockup 06): waiting proposals as cards, then what is due from today on, soonest
+/// first; it ends with its last row (ma: new deadlines go through the agent panel, which
+/// Calendar's [+] opens). On the Mac it is the screen's side pane, under the pane's own header;
+/// on iOS the inspector, its header a toolbar item over the column.
 struct DeadlinesInspector: View {
     static let width: CGFloat = 336
     static let headerHeight: CGFloat = 52
-    /// The window toolbar's inset from the trailing edge.
-    static let toolbarTrailingInset: CGFloat = 11
 
     let data: CalendarData
     let now: Date
     let selection: CalendarSelection?
     let handlers: InspectorHandlers
+    #if os(iOS)
     /// The inspector is shown. SwiftUI keeps a hidden inspector's content alive, and with it the
     /// header's toolbar item, which would stay in the toolbar beside Show Inspector.
     var isShown = true
+    #endif
 
     @Environment(\.calendarChrome) private var chrome
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
+    #if os(iOS)
     @State private var columnWidth = DeadlinesInspector.width
+    #endif
     @State private var hoveredID: TrackedItem.ID?
 
     var body: some View {
@@ -43,7 +46,14 @@ struct DeadlinesInspector: View {
                 header
                     .frame(height: Self.headerHeight)
             }
+            // The Mac's pane header draws its own hairline.
+            #if os(iOS)
             Hairline()
+            #else
+            if chrome == .snapshot {
+                Hairline()
+            }
+            #endif
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     if !data.proposals.isEmpty {
@@ -68,6 +78,7 @@ struct DeadlinesInspector: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { InspectorBackground() }
+        #if os(iOS)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
         .toolbar {
             if chrome == .window, isShown {
@@ -78,9 +89,15 @@ struct DeadlinesInspector: View {
                 .sharedBackgroundVisibility(.hidden)
             }
         }
+        #endif
     }
 
-    /// "Deadlines", 13 semibold, level with the toolbar.
+    #if os(iOS)
+    /// The window toolbar's inset from the trailing edge.
+    private static let toolbarTrailingInset: CGFloat = 11
+    #endif
+
+    /// "Deadlines", 13 semibold (the iOS inspector's toolbar item; inline in snapshots).
     private var header: some View {
         Text("Deadlines")
             .font(.system(size: 13, weight: .semibold))
@@ -239,8 +256,8 @@ struct ExamAdmissionChip: View {
     }
 }
 
-/// The inspector column's background: the system's in the window (lifted a little in dark
-/// mode, as Review); the secondary background in snapshots, which have no inspector column.
+/// Deadlines' background: the system's in the window (lifted a little in dark mode, as Review's
+/// notes); the secondary background in snapshots, which have no side column.
 private struct InspectorBackground: View {
     @Environment(\.calendarChrome) private var chrome
     @Environment(\.colorScheme) private var colorScheme

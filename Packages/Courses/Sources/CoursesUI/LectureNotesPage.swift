@@ -18,51 +18,30 @@ import StudyUI
 ///
 /// nl: the page grows with the window (`NotesPageLayout`): the text at most 780 pt, code, tables,
 /// diagrams, charts and slides breaking out to at most 1120, the header and Keep in mind at the
-/// text's measure; 52 pt margins (22 under 640 pt of page). Your notes (`YourNotesColumn`) is the
-/// window's inspector column beside it: open by default from 1160 pt of detail width, closed
-/// under 1120, unchanged between; the student's toggle (the toolbar's Show Inspector while closed,
-/// the column header's Hide, ⌃⌘I / View ▸ Show Inspector) is kept per window; the expanded agent
-/// panel takes its place. While a note in the column is being typed in, ↩ (Open in Review) and the
-/// notes' ⌘K / ⇧⌘E stand down. View ▸ Zoom In / Out scale the content (title, meta, notes, Keep in
-/// mind, the column's notes), never the buttons.
-///
-/// The expanded agent panel's coming and going builds the page under the inspector again (DESIGN
-/// 6.4: the column is left out, not hidden), so what must survive it lives here, above that
-/// branch: the scroll offset (put back once the text is long enough again, as Calendar does) and
-/// Continue in Chat's passage (the page publishes it: the notes view hands it up).
+/// text's measure; 52 pt margins (22 under 640 pt of page). While a divider or the window's edge
+/// is dragged (`\.isLiveResizing`) the layout keeps the width it had and takes the new one once,
+/// when the drag ends. Your notes (`YourNotesColumn`) is the page's side pane (`.yourNotes`); the
+/// window keeps its layout per screen kind. While a note there is being typed in, or the search
+/// field has the keyboard, ↩ (Open in Review) stands down; the notes' ⌘K / ⇧⌘E attach only while
+/// the notes themselves have the keyboard. View ▸ Zoom In / Out scale the content (title, meta,
+/// notes, Keep in mind, the pane's notes), never the buttons.
 public struct LectureNotesPage: View {
-    /// Your notes opens by itself from this detail width, and closes under `closesBelow`.
-    static let opensFrom: CGFloat = 1160
-    static let closesBelow: CGFloat = 1120
-    /// The screen's declared minimum width (DESIGN 3.3): the page and the open column together.
-    static let screenMinimum: CGFloat = 480
-
     private let lectureID: Lecture.ID
     @Fetch private var page: LectureNotesPageData
     @State private var writeAgainShown = false
     @State private var request = ""
     @State private var editing = false
-    /// C: the page's width (the detail column less Your notes while it is open).
+    /// The page's width as last laid out (held while a drag resizes the window or a pane).
     @State private var pageWidth: CGFloat = 0
-    @State private var columnWidth: CGFloat = 336
-    /// `auto`'s state: open or closed by the detail width.
-    @State private var opensByWidth = LectureNotesPage.lastOpensByWidth
-    @State private var readingSection: String?
-    /// A note in Your notes has focus.
-    @State private var typingInColumn = false
-    @State private var kept = LectureNotesPageState()
-    @State private var scroll = ScrollPosition(edge: .top)
-    /// The page has been scrolled back to `kept.offset` in its layout with the agent panel
-    /// expanded (true) or not (false); nil: not yet.
-    @State private var openedFor: Bool?
-    @SceneStorage(YourNotesVisibility.sceneStorageKey) private var storedVisibility = YourNotesVisibility.auto.rawValue
+    /// What the page shares with its Your notes pane, which is drawn in another hosting view.
+    @State private var state = LectureNotesPageState()
     @Environment(\.studyServices) private var services
     @Environment(\.openDestination) private var openDestination
     @Environment(\.studyCoach) private var studyCoach
     @Environment(\.undoManager) private var undoManager
     @Environment(\.lectureNotesQueuesOnOpen) private var queuesOnOpen
-    @Environment(\.yourNotesVisibilityOverride) private var visibilityOverride
-    @Environment(\.agentPanelExpanded) private var agentPanelExpanded
+    @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
+    @Environment(\.isLiveResizing) private var isLiveResizing
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
 
@@ -72,6 +51,8 @@ public struct LectureNotesPage: View {
     }
 
     public var body: some View {
+        let state = state
+        let lectureID = lectureID
         ZoomReader { zoom in
             content(zoom: zoom)
         }
@@ -86,188 +67,84 @@ public struct LectureNotesPage: View {
             }
         }
         .contentZoomable()
+        .onChange(of: page.current?.sections, initial: true) { _, sections in
+            state.sections = sections ?? []
+        }
+        .pane(.yourNotes, identity: lectureID) {
+            YourNotesColumn(
+                lectureID: lectureID,
+                sections: { state.sections },
+                follow: { .section(state.readingSection) },
+                onEditingChange: { typing in state.typingInColumn = typing }
+            )
+            .contentZoomable()
+        }
     }
 
     private func content(zoom: CGFloat) -> some View {
         // Before the first measure: the text's measure with its margins.
         let layout = NotesPageLayout(pageWidth: pageWidth > 0 ? pageWidth : 884, zoom: zoom)
-        // Not a scroll view at the top edge: one there runs under the toolbar, and the window then
-        // draws Your notes as floating glass over the page (as a sidebar) instead of the inspector
-        // column Review and Calendar have.
-        return VStack(spacing: 0) {
-            Color.contentBackground.frame(height: 1)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    header(zoom: zoom)
-                        .padding(.horizontal, layout.inset)
-                    LectureNotesView(
-                        lectureID: lectureID, style: .page, layout: layout, writeAgain: { showWriteAgain() },
-                        onChatPassage: { [kept] passage in
-                            if kept.chatPassage != passage { kept.chatPassage = passage }
-                        },
-                        onReadingSection: { section in
-                            if readingSection != section { readingSection = section }
-                        }
-                    )
-                    .padding(.top, 18 * zoom)
-                    if !page.items.isEmpty {
-                        KeepInMindBlock(
-                            items: page.items, trails: page.trails, course: page.course, text: SessionText(locale: locale, timeZone: timeZone), zoom: zoom
-                        )
-                        .padding(.horizontal, layout.inset)
-                        .padding(.top, 34 * zoom)
+        let state = state
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                header(zoom: zoom)
+                    .padding(.horizontal, layout.inset)
+                LectureNotesView(
+                    lectureID: lectureID, style: .page, layout: layout, writeAgain: { showWriteAgain() },
+                    onChatPassage: { passage in
+                        if state.chatPassage != passage { state.chatPassage = passage }
+                    },
+                    onReadingSection: { section in
+                        if state.readingSection != section { state.readingSection = section }
                     }
+                )
+                .padding(.top, 18 * zoom)
+                if !page.items.isEmpty {
+                    KeepInMindBlock(
+                        items: page.items, trails: page.trails, course: page.course, text: SessionText(locale: locale, timeZone: timeZone), zoom: zoom
+                    )
+                    .padding(.horizontal, layout.inset)
+                    .padding(.top, 34 * zoom)
                 }
-                // Never a fixed width: the measured one must not become the window's minimum (the
-                // page could not narrow when Your notes opens).
-                .frame(minWidth: 0, maxWidth: layout.wide, alignment: .leading)
-                .padding(.horizontal, layout.margin)
-                .padding(.top, 26)
-                .padding(.bottom, 40)
-                .frame(minWidth: 0, maxWidth: .infinity)
             }
-            .scrollPosition($scroll)
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height - $0.containerSize.height } action: { [expanded = agentPanelExpanded] _, reach in
-                restoreOffset(reach: reach, expanded: expanded)
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { [expanded = agentPanelExpanded, kept] _, y in
-                // Kept without re-rendering the page (not observed); only once this scroll view
-                // has been put back (a new one starts at the top).
-                guard openedFor == expanded else { return }
-                kept.offset = y
-            }
-            .onScrollPhaseChange { [expanded = agentPanelExpanded] _, phase in
-                // The student scrolls before the text is long enough again: where they go wins.
-                if openedFor != expanded, phase == .tracking || phase == .interacting { openedFor = expanded }
-            }
+            // Never a fixed width: the measured one must not become the window's minimum (the
+            // page could not narrow when a pane opens).
+            .frame(minWidth: 0, maxWidth: layout.wide, alignment: .leading)
+            .padding(.horizontal, layout.margin)
+            .padding(.top, 26)
+            .padding(.bottom, 40)
+            .frame(minWidth: 0, maxWidth: .infinity)
         }
         .frame(minWidth: 0, maxWidth: .infinity)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { [isLiveResizing] width in
             guard width > 0 else { return }
-            pageWidth = width
-            followWidth()
+            state.measuredWidth = width
+            if !isLiveResizing { pageWidth = width }
+        }
+        .onChange(of: isLiveResizing) { _, resizing in
+            // The drag ended: the page takes its width once.
+            if !resizing, state.measuredWidth > 0 { pageWidth = state.measuredWidth }
         }
         .background(Color.contentBackground)
-        // The title and toolbar before the inspector, as Review and Calendar have them.
         .screenTitle(String(localized: "Lectures"), subtitle: page.course?.name ?? "")
-        .toolbar {
-            // Exactly one inspector toggle: this one while the column is closed (DESIGN 6.4).
-            if !isColumnShown, !agentPanelExpanded {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Show Inspector", systemImage: "sidebar.trailing") { setColumn(shown: true) }
-                        .help(Text("Show Inspector"))
-                }
-            }
-        }
-        .modifier(YourNotesInspector(isPanelExpanded: agentPanelExpanded, isPresented: columnBinding) {
-            YourNotesColumn(
-                lectureID: lectureID, sections: page.current?.sections ?? [], readingSection: readingSection, isShown: isColumnShown && !agentPanelExpanded,
-                hide: { setColumn(shown: false) },
-                onEditingChange: { typing in typingInColumn = typing }
-            )
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-                // A hidden column can report nothing; its minimum is 260.
-                guard width >= 200 else { return }
-                columnWidth = width
-                followWidth()
-            }
-            // Outermost: under the geometry reader the column took its content's width as both its
-            // minimum and maximum (270 pt).
-            .inspectorColumnWidth(min: 260, ideal: 336, max: 440)
-        })
-        // Outside the branch above, so a rebuilt notes view does not lose it.
         .transformPreference(AgentContextPreferenceKey.self) { [source = passageContext] value in
             if let source { value = source }
         }
     }
 
-    // MARK: Kept across the agent panel
-
-    /// The page laid out again (the agent panel took or gave back the column's place): back to
-    /// where it was, as far as the text reaches yet (it grows from its placeholder height), until
-    /// it reaches that far.
-    private func restoreOffset(reach: CGFloat, expanded: Bool) {
-        guard openedFor != expanded else { return }
-        let y = kept.offset
-        guard y > 0 else {
-            openedFor = expanded
-            return
-        }
-        guard reach > 0 else { return }
-        scroll.scrollTo(y: min(y, reach))
-        if reach >= y { openedFor = expanded }
-    }
-
     /// Continue in Chat's passage as the panel's context; `refine` runs once, when a message reads
     /// it: the passage goes with that message only.
     private var passageContext: AgentContextSource? {
-        guard let passage = kept.chatPassage else { return nil }
+        guard let passage = state.chatPassage else { return nil }
         let context = AgentContext(
             screen: .course, courseID: page.lecture?.courseID, courseScreen: "lecture_notes", lectureID: lectureID, notesPassage: passage
         )
-        let kept = kept
+        let state = state
         return AgentContextSource(context: context) {
-            Task { @MainActor in if kept.chatPassage != nil { kept.chatPassage = nil } }
+            Task { @MainActor in if state.chatPassage != nil { state.chatPassage = nil } }
             return AgentContext(screen: .course)
         }
     }
-
-    // MARK: Your notes
-
-    private var visibility: YourNotesVisibility {
-        visibilityOverride ?? YourNotesVisibility(rawValue: storedVisibility) ?? .auto
-    }
-
-    private var isColumnShown: Bool {
-        switch visibility {
-        case .auto: opensByWidth
-        case .shown: true
-        case .hidden: false
-        }
-    }
-
-    /// The inspector's binding: ⌃⌘I, the header's Hide, dragging the column shut. Off while the
-    /// expanded agent panel has the column's place.
-    private var columnBinding: Binding<Bool> {
-        let shown = isColumnShown
-        let expanded = agentPanelExpanded
-        return Binding(
-            get: { shown && !expanded },
-            set: { value in
-                guard !expanded, value != shown else { return }
-                setColumn(shown: value)
-            }
-        )
-    }
-
-    /// The student's toggle: kept for the window, every lecture page.
-    private func setColumn(shown: Bool) {
-        storedVisibility = (shown ? YourNotesVisibility.shown : .hidden).rawValue
-    }
-
-    /// `auto`: open from 1160 pt of detail width (D: the page and the open column), closed under
-    /// 1120, unchanged between (a resize near the line never flips it). Not while the agent panel
-    /// has the column's place: it comes back as it was.
-    private func followWidth() {
-        // A page narrower than a laid-out window ever gives it (the screen is at least 480 pt,
-        // the open column included) is a pass before the window has its size: it must not close
-        // the column (presented again a moment later, the column came back at its 260 pt minimum).
-        let narrowest = max(40, Self.screenMinimum - (isColumnShown ? columnWidth : 0))
-        guard !agentPanelExpanded, pageWidth >= narrowest else { return }
-        let detail = pageWidth + (isColumnShown ? columnWidth : 0)
-        let opens = detail >= Self.opensFrom ? true : detail < Self.closesBelow ? false : opensByWidth
-        Self.lastOpensByWidth = opens
-        guard opens != opensByWidth else { return }
-        // The window's width decides, not the student: no slide in or out.
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { opensByWidth = opens }
-    }
-
-    /// `auto`'s last decision in this run: the next lecture page opens with its column as the
-    /// last one had it (the window is usually as wide), so the column is there from the page's
-    /// first frame rather than sliding in after the first measure. Open at first (wide windows).
-    @MainActor private static var lastOpensByWidth = true
 
     // MARK: Header
 
@@ -297,8 +174,8 @@ public struct LectureNotesPage: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                // Typing in Your notes: ↩ is the note's.
-                .keyboardShortcut(typingInColumn ? nil : KeyboardShortcut.defaultAction)
+                // Typing in Your notes or the search field: ↩ is theirs.
+                .keyboardShortcut(state.typingInColumn || isSearchFieldFocused ? nil : KeyboardShortcut.defaultAction)
                 if studyCoach != nil, page.hasQuestions {
                     Button {
                         practice()
@@ -444,15 +321,23 @@ public struct LectureNotesPage: View {
 @MainActor
 final class WriteAgainUndoTarget {}
 
-/// What the lecture notes page keeps across the notes view being built again.
+/// What the lecture notes page shares with its Your notes pane: the pane is drawn in another
+/// hosting view and reads the page only through this object.
 @MainActor
 @Observable
 final class LectureNotesPageState {
+    /// The current version's sections (the page's read of `lecture_notes`; the pane reads none).
+    var sections: [LectureNotesSection] = []
+    /// The section under the notes' reading line (nil: the overview): Your notes marks its groups.
+    var readingSection: String?
+    /// A note in Your notes has the keyboard: the page's ↩ stands down.
+    var typingInColumn = false
     /// Continue in Chat's passage, until a message carries it, a new selection settles or an Ask
     /// starts.
     var chatPassage: NotesPassageContext?
-    /// Where the page is scrolled to: not observed (it changes with every scrolled point).
-    @ObservationIgnored var offset: CGFloat = 0
+    /// The page's width as last measured, while a drag holds the layout's (not observed: it changes
+    /// on every frame of the drag).
+    @ObservationIgnored var measuredWidth: CGFloat = 0
 }
 
 /// Keep in mind (the brief's third zone, at the end): the lecture's tracked items on one line
@@ -526,22 +411,6 @@ private struct ZoomReader<Content: View>: View {
 
     var body: some View {
         content(zoom)
-    }
-}
-
-/// Your notes, left out entirely while the agent panel is expanded into the window's trailing
-/// column (DESIGN 6.4: never two inspectors; a hidden inspector still kept its column's room).
-private struct YourNotesInspector<Column: View>: ViewModifier {
-    let isPanelExpanded: Bool
-    let isPresented: Binding<Bool>
-    @ViewBuilder let column: () -> Column
-
-    func body(content: Content) -> some View {
-        if isPanelExpanded {
-            content
-        } else {
-            content.inspector(isPresented: isPresented, content: column)
-        }
     }
 }
 

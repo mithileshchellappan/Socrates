@@ -12,9 +12,12 @@ import SwiftUI
 /// never changes width under the caret. The field grows with its text up to `maxLines`, then
 /// scrolls inside. ↩ sends (a beep while a message cannot go), ⌥↩ and ⇧↩ add a line and carry a
 /// list on (`ComposerLines`), ⌘V pastes a file or screenshot, Esc clears (⌘Z brings it back) and
-/// then closes the panel.
+/// then closes the small chat; in the Mac's Agent pane it then gives the screen the keyboard (the
+/// pane stays). It takes the model's caret requests while its chat is the one on screen.
 struct AgentComposer: View {
     let model: AgentPanelModel
+    /// Which chat it is in: the one on screen takes the caret requests.
+    let style: AgentPanelView.Style
     let prompt: Text
     let conversationID: AgentConversation.ID?
     let send: () -> Void
@@ -27,8 +30,6 @@ struct AgentComposer: View {
     /// The caret: put at the end of the kept draft when the panel puts it in the field (a focused
     /// field otherwise selects all of its text, and the next key would replace the draft).
     @State private var selection: TextSelection?
-    /// The last caret request (`model.focusRequests`) handled.
-    @State private var handledRequest = 0
 
     /// The field's greatest height in lines (8 × 16 pt): a long message scrolls inside it and the
     /// thread keeps the rest of the panel.
@@ -152,10 +153,8 @@ struct AgentComposer: View {
         }
         .overlay { shape.strokeBorder(.separator, lineWidth: 0.5).allowsHitTesting(false) }
         .onChange(of: isFocused) { _, focused in model.composerFocused = focused }
-        .onChange(of: model.focusRequests) { focusSoon() }
-        .onAppear {
-            if model.focusRequests > 0 { focusSoon() }
-        }
+        .onChange(of: model.composerRequest) { takeRequest() }
+        .onAppear { takeRequest() }
         .onDisappear { model.composerFocused = false }
         .fileImporter(isPresented: $showsImporter, allowedContentTypes: AttachmentTypes.accepted, allowsMultipleSelection: true) { result in
             guard let services, case .success(let urls) = result else { return }
@@ -166,12 +165,21 @@ struct AgentComposer: View {
         #endif
     }
 
-    /// The caret goes in once the panel is on screen (it may have just appeared or grown), at the
-    /// end of the kept draft; once per request (a later click elsewhere keeps its caret).
+    /// A caret request, taken by the composer of the chat on screen only (on the Mac the small
+    /// chat's stays alive while the Agent pane has the conversation), once (a later click
+    /// elsewhere keeps its caret).
+    private func takeRequest() {
+        guard model.shownStyle == style, let request = model.composerRequest else { return }
+        model.composerRequest = nil
+        switch request.action {
+        case .focus: focusSoon()
+        case .release: isFocused = false
+        }
+    }
+
+    /// The caret goes in once the chat is on screen (it may have just appeared or grown), at the
+    /// end of the kept draft.
     private func focusSoon() {
-        let request = model.focusRequests
-        guard request > handledRequest else { return }
-        handledRequest = request
         Task { @MainActor in
             await Task.yield()
             if !isFocused { isFocused = true }
@@ -209,7 +217,8 @@ struct AgentComposer: View {
         selection = TextSelection(insertionPoint: caret)
     }
 
-    /// Esc: clears the text and files (Edit ▸ Undo brings them back), then closes the panel.
+    /// Esc: clears the text and files (Edit ▸ Undo brings them back), then closes the small chat;
+    /// in the Mac's Agent pane it gives the screen the keyboard instead (Esc never closes a pane).
     private func escape() {
         if !model.draft.isEmpty || model.hasFiles {
             let text = model.draft
@@ -223,6 +232,12 @@ struct AgentComposer: View {
                 }
             }
         } else {
+            #if os(macOS)
+            if style == .expanded {
+                isFocused = false
+                return
+            }
+            #endif
             model.close()
         }
     }

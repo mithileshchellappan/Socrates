@@ -21,17 +21,29 @@ enum ReviewChrome: Hashable, Sendable {
     case snapshot
 }
 
-/// The review inspector's tabs: "This slide | Whole lecture" (ma: M5's Tutor tab went to the
-/// agent panel).
-public enum ReviewInspectorTab: Hashable, Sendable {
+/// The review's notes tabs, in this order wherever they show (the Mac's Notes pane, the iPad's
+/// inspector, renders): "This slide | Whole lecture | Summary". Whole lecture is the student's own
+/// notes; Summary is Claude's notes of the lecture (ma: M5's Tutor tab went to the agent panel).
+/// Without a deck there is no This slide. The raw values are what a window keeps.
+public enum ReviewInspectorTab: String, Hashable, Sendable, CaseIterable {
     case slide
     case lecture
+    case summary
+
+    /// The tab's name in the picker.
+    var title: LocalizedStringKey {
+        switch self {
+        case .slide: "This slide"
+        case .lecture: "Whole lecture"
+        case .summary: "Summary"
+        }
+    }
 }
 
 extension EnvironmentValues {
     @Entry var reviewChrome: ReviewChrome = .window
-    /// The inspector tab a newly opened review starts on (renders).
-    @Entry public var reviewInspectorTab: ReviewInspectorTab = .slide
+    /// The notes tab a newly opened review starts on (renders); nil: the tab the window keeps.
+    @Entry public var reviewInspectorTab: ReviewInspectorTab?
 }
 
 extension View {
