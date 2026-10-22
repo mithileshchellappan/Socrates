@@ -25,8 +25,8 @@ enum SidebarItem: Hashable {
     /// readiness and this week, the weakest topics.
     case study
     case search
-    /// The course's row. Choosing it shows the course's screen, `courseSettings` (mockup 08: the
-    /// course's own "Course Settings" row is the one selected).
+    /// The course's row in the sidebar's tree. Choosing it shows the course's Lectures,
+    /// `courseLectures`, with the course's own row selected (`SidebarView`).
     case course(Course.ID)
     case courseLectures(Course.ID)
     case courseSlides(Course.ID)
@@ -108,10 +108,10 @@ enum SidebarItem: Hashable {
         return false
     }
 
-    /// What choosing this item shows: a course's row stands for its settings, the Mail row for
+    /// What choosing this item shows: a course's row stands for its Lectures, the Mail row for
     /// the Inbox, the Notes row for All Notes.
     var screen: SidebarItem {
-        if case .course(let id) = self { return .courseSettings(id) }
+        if case .course(let id) = self { return .courseLectures(id) }
         if self == .mail { return .mailScope(.inbox) }
         if self == .notesRow { return .notes(.all) }
         return self

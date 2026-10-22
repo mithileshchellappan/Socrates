@@ -110,6 +110,8 @@ enum ParityMode {
         var documentPage: Int?
         /// mt: the PDF page the reader opens at.
         var materialPage: Int?
+        /// The sidebar's courses and Lectures rows open in the window (none by default).
+        var sidebarExpansion = SidebarExpansion()
     }
 
     static let windowSize = CGSize(width: 1440, height: 900)
@@ -649,7 +651,8 @@ struct ParityRootView: View {
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
                     documentSelection: launch.documentSelection, documentPage: launch.documentPage,
-                    materialPage: launch.materialPage, panel: launch.panel, examSheet: launch.examSheet
+                    materialPage: launch.materialPage, panel: launch.panel, examSheet: launch.examSheet,
+                    sidebarExpansion: launch.sidebarExpansion
                 )
                 // ln: opening a lecture's notes or Review's Whole lecture never queues notes here.
                 .environment(\.lectureNotesQueuesOnOpen, false)

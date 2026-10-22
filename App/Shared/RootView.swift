@@ -71,6 +71,8 @@ struct RootView: View {
     @State private var sidebarWidth = SidebarView.idealWidth
     /// The agent panel is the window's right sidebar.
     @State private var agentExpanded = false
+    /// Renders: the sidebar's courses and Lectures rows open in a new window (none in the app).
+    private let sidebarExpansion: SidebarExpansion
 
     init(
         selection: SidebarItem? = .today,
@@ -82,7 +84,8 @@ struct RootView: View {
         documentPage: Int? = nil,
         materialPage: Int? = nil,
         panel: AgentPanelLaunch = AgentPanelLaunch(),
-        examSheet: Course.ID? = nil
+        examSheet: Course.ID? = nil,
+        sidebarExpansion: SidebarExpansion = SidebarExpansion()
     ) {
         _selection = State(initialValue: selection?.screen)
         _query = State(initialValue: query)
@@ -100,6 +103,7 @@ struct RootView: View {
         }
         self.panel = panel
         self.examSheet = examSheet
+        self.sidebarExpansion = sidebarExpansion
     }
 
     var body: some View {
@@ -251,10 +255,12 @@ struct RootView: View {
     /// The sidebar and the screen, with the window's search field.
     private func splitView(center: FilingCenter) -> some View {
         NavigationSplitView(columnVisibility: $columns) {
-            // A course's row shows its settings, selected as the course's "Course Settings"
-            // row (mockup 08).
+            // A course's row shows its Lectures (the sidebar keeps that row selected).
             // A practice exam's results show as their course's Progress row (mockup 19).
-            SidebarView(selection: Binding(get: { selection?.sidebarRow }, set: { selection = $0?.screen }), center: center)
+            SidebarView(
+                selection: Binding(get: { selection?.sidebarRow }, set: { selection = $0?.screen }),
+                center: center, expansion: sidebarExpansion
+            )
                 #if os(macOS)
                 // Rounded up to 4 pt: dragging the sidebar's edge re-renders this view every few
                 // points, not on every frame. A hidden sidebar keeps its last width.

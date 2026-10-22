@@ -81,6 +81,13 @@ import SwiftUI
 // `38-further-reading` (DC L2's Review on the slide with the book row) and `38-search` (Search
 // "hypercall" with the Materials group). The reader never queues a summary.
 //
+// `sidebar-lectures`, `sidebar-lecture`, `sidebar-slides`, `sidebar-closed` and
+// `sidebar-closed-slides`: the sidebar's course tree (DESIGN 6.2) on DC's Lectures, DC L2, DC's
+// Slides, Today and DC's Slides with DC closed (`ParityMode.Launch.sidebarExpansion`). Off screen
+// there is no scene, so `SceneStorage` takes no writes: the tree shows as launched (DC L2's shot
+// is given what opening a lecture leaves open), and chevrons and the secondary screen glyphs,
+// drawn with vibrancy, do not show.
+//
 // `06-calendar` opens on the week of `--week` (default: mockup 06's, Mon 19 Oct 2026); `--now`
 // also fixes Today's clock (the sample mail's is 2026-10-16T15:02).
 //
@@ -390,6 +397,21 @@ struct ParityRender {
                 ))),
                 RenderShot(name: "08-course", window: .main(ParityMode.Launch(selection: .courseSettings(dc.id)))),
                 RenderShot(name: "08-course-lectures", window: .main(ParityMode.Launch(selection: .courseLectures(dc.id)))),
+                // The sidebar's course tree (DESIGN 6.2): DC open on its Lectures with the lectures
+                // listed; DC L2 with DC and its Lectures open, as opening it leaves them; DC's
+                // Slides with DC open (its Lectures closed); every course closed; DC's Slides while
+                // DC is closed (DC's row stands for it).
+                RenderShot(name: "sidebar-lectures", window: .main(ParityMode.Launch(
+                    selection: .courseLectures(dc.id), sidebarExpansion: SidebarExpansion(courses: [dc.id], lectures: [dc.id])
+                ))),
+                RenderShot(name: "sidebar-lecture", window: .main(ParityMode.Launch(
+                    selection: .lecture(dcLecture2.id), sidebarExpansion: SidebarExpansion(courses: [dc.id], lectures: [dc.id])
+                ))),
+                RenderShot(name: "sidebar-slides", window: .main(ParityMode.Launch(
+                    selection: .courseSlides(dc.id), sidebarExpansion: SidebarExpansion(courses: [dc.id])
+                ))),
+                RenderShot(name: "sidebar-closed", window: .main(ParityMode.Launch(selection: .today))),
+                RenderShot(name: "sidebar-closed-slides", window: .main(ParityMode.Launch(selection: .courseSlides(dc.id)))),
                 // M6 (on a copy seeded by `tools/parity/seed --m6-sample`): mockup 04, the Notes row's
                 // All Notes with the DC L2 note selected. Review's ink on slide 16 shows in `03-review`.
                 RenderShot(name: "04-notes", window: .main(ParityMode.Launch(selection: .notes(.all), noteSelection: dcL2Note))),
@@ -710,7 +732,7 @@ struct ParityRender {
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
                     documentSelection: launch.documentSelection, documentPage: launch.documentPage,
-                    materialPage: launch.materialPage, panel: launch.panel
+                    materialPage: launch.materialPage, panel: launch.panel, sidebarExpansion: launch.sidebarExpansion
                 )
                 .environment(\.calendarDetailPreview, shot.calendarDetail)
                 .environment(\.reviewInspectorTab, reviewTab)
