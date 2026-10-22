@@ -1,12 +1,16 @@
 import Capture
+import RecorderContract
 import SwiftUI
 
 /// The last seconds of input as bars that end at the red playhead, with an accent line for
 /// each slide stamp in view (mockup 09). It samples the input level four times a second while
-/// recording with the screen on (nothing runs while the phone is locked); the history lives in
-/// the view and starts again when the screen opens.
+/// recording with the screen on (nothing runs while the phone is locked or paused); the history
+/// lives in the view and starts again when the screen opens. Stamps sit at their recorded time
+/// (pauses left out), as the bars do. Paused, the playhead turns secondary.
 struct RecorderWaveform: View {
     let session: LiveLectureSession?
+    /// The recording's phase (its snapshot); nil before recording.
+    let phase: RecorderSnapshot.Phase?
     let isPreview: Bool
     /// The scene is active (not locked, not in the background).
     let isActive: Bool
@@ -24,12 +28,13 @@ struct RecorderWaveform: View {
         let elapsed = session?.elapsed(at: Date()) ?? 0
         let stampTimes = (session?.stamps ?? [])
             .filter { $0.kind.showsSlide && $0.kind != .start }
-            .compactMap { session?.time(of: $0) }
+            .compactMap { session?.recordedTime(of: $0) }
         // Read here, not only inside the Canvas: a new bar must redraw it (the preview's bars,
         // and the live ones while the session's own state stays the same).
         let bars = levels
+        let playheadColor: Color = phase == .paused ? .secondary : .red
         Canvas { context, size in
-            draw(in: &context, size: size, levels: bars, elapsed: elapsed, stampTimes: stampTimes)
+            draw(in: &context, size: size, levels: bars, elapsed: elapsed, stampTimes: stampTimes, playheadColor: playheadColor)
         }
         .accessibilityHidden(true)
         .task(id: Sampling(isOn: isSampling)) {
@@ -47,7 +52,7 @@ struct RecorderWaveform: View {
     private struct Sampling: Hashable { var isOn: Bool }
 
     private var isSampling: Bool {
-        !isPreview && isActive && session?.isRecording == true
+        !isPreview && isActive && phase == .recording
     }
 
     private func append(_ level: Float) {
@@ -55,7 +60,9 @@ struct RecorderWaveform: View {
         if levels.count > Self.capacity { levels.removeFirst(levels.count - Self.capacity) }
     }
 
-    private func draw(in context: inout GraphicsContext, size: CGSize, levels: [Float], elapsed: TimeInterval, stampTimes: [TimeInterval]) {
+    private func draw(
+        in context: inout GraphicsContext, size: CGSize, levels: [Float], elapsed: TimeInterval, stampTimes: [TimeInterval], playheadColor: Color
+    ) {
         // The playhead sits where 52 bars end on a 358 pt wide phone (312 pt), proportionally.
         let playhead = (size.width * 312 / 358).rounded()
         let baseline = size.height - 24
@@ -81,8 +88,8 @@ struct RecorderWaveform: View {
         }
 
         let top = size.height - 53
-        context.fill(Path(roundedRect: CGRect(x: playhead - 1, y: top, width: 2, height: 56), cornerRadius: 1), with: .color(.red))
-        context.fill(Path(ellipseIn: CGRect(x: playhead - 4, y: top - 4, width: 8, height: 8)), with: .color(.red))
+        context.fill(Path(roundedRect: CGRect(x: playhead - 1, y: top, width: 2, height: 56), cornerRadius: 1), with: .color(playheadColor))
+        context.fill(Path(ellipseIn: CGRect(x: playhead - 4, y: top - 4, width: 8, height: 8)), with: .color(playheadColor))
     }
 
     /// Mockup 09's bars, for previews.

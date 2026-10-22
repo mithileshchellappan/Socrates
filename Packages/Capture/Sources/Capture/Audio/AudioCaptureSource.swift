@@ -5,6 +5,8 @@ public enum CaptureError: Error, Equatable, Sendable {
     case noInputDevice
     case alreadyRecording
     case notRecording
+    /// `resume()` without a pause.
+    case notPaused
     case engineFailed(String)
 }
 
@@ -25,6 +27,32 @@ public struct CaptureStart: Sendable {
         self.startedAt = startedAt
         self.format = format
         self.device = device
+    }
+}
+
+/// Returned by `pause()` once the input is off and everything recorded is on disk.
+public struct CapturePause: Sendable {
+    /// The first frame after the audio written: where the pause sits on the recording clock.
+    public var endSample: Int64
+    /// All segments, the last one closed.
+    public var segments: [AudioSegmentInfo]
+
+    public init(endSample: Int64, segments: [AudioSegmentInfo]) {
+        self.endSample = endSample
+        self.segments = segments
+    }
+}
+
+/// Returned by `resume()` once the input runs again.
+public struct CaptureResume: Sendable {
+    /// Where the next audio sits on the recording clock: the pause's end plus the time paused.
+    public var sampleTime: Int64
+    /// `mach_absolute_time()` when the clock was placed there.
+    public var hostTime: UInt64
+
+    public init(sampleTime: Int64, hostTime: UInt64) {
+        self.sampleTime = sampleTime
+        self.hostTime = hostTime
     }
 }
 
@@ -61,4 +89,25 @@ public protocol AudioCaptureSource: AnyObject, Sendable {
 
     /// Audio as it arrives (for meters and captions); finishes when recording stops.
     func audio(bufferingNewest limit: Int?) -> AsyncStream<AudioChunk>
+
+    /// Pauses (iPhone): the input stops, everything recorded so far is written and the open
+    /// segment closed. The input stays claimed until `releaseInput()`, so the caller can finish
+    /// its own writes first. Throws `notRecording` unless recording.
+    func pause() async throws -> CapturePause
+
+    /// Gives the input up while paused (iOS: the audio session goes inactive, the microphone
+    /// indicator goes out and the app may be suspended).
+    func releaseInput() async
+
+    /// Records again after `pause()` into the same recording: the clock is placed after the
+    /// real time paused and the next audio opens a new segment there. On failure it stays
+    /// paused.
+    func resume() async throws -> CaptureResume
+}
+
+extension AudioCaptureSource {
+    /// Sources that cannot pause (the Mac never does) refuse.
+    public func pause() async throws -> CapturePause { throw CaptureError.notRecording }
+    public func releaseInput() async {}
+    public func resume() async throws -> CaptureResume { throw CaptureError.notPaused }
 }

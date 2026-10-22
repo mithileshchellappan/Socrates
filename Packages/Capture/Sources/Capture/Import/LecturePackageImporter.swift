@@ -204,6 +204,8 @@ public struct LecturePackageImporter: Sendable {
 
         var slideEvents: [SlideEvent] = []
         var annotations: [Annotation] = []
+        // Pause and resume (iPhone) make no rows: the gap is already on the clock (the resumed
+        // segment starts after it), and the package keeps them (`contents.pauses`).
         for event in contents.events {
             if event.kind.showsSlide, let page = event.page {
                 slideEvents.append(SlideEvent(

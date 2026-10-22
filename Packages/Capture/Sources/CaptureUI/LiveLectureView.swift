@@ -285,7 +285,7 @@ public struct LiveLectureView: View {
             .buttonStyle(.borderedProminent)
             .tint(.red)
             .disabled(!session.canStartRecording)
-        case .recording, .stopping:
+        case .recording, .paused, .stopping:
             Button {
                 confirmsStop = true
             } label: {

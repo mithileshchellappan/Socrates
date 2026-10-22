@@ -22,6 +22,12 @@ public struct LectureEventKind: RawRepresentable, Hashable, Sendable, Codable,
     public static let jump: Self = "jump"
     /// The student flagged this moment (F), optionally with text.
     public static let flag: Self = "flag"
+    /// Recording paused (iPhone): no audio until the next `resume`. `sampleTime` is the end of
+    /// the audio written; `page` the slide on screen.
+    public static let pause: Self = "pause"
+    /// Recording went on after a pause. `sampleTime` is where the next audio sits on the clock:
+    /// the pause's end plus the time paused, so the clock keeps real time across the gap.
+    public static let resume: Self = "resume"
 
     /// True for events after which `page` is the slide on screen (a slide stamp).
     public var showsSlide: Bool {

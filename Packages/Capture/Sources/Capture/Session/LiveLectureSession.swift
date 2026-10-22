@@ -8,6 +8,10 @@ import Observation
 /// arrives: host time first, then mapped onto the recording clock. Everything is written to a
 /// lecture package on disk as it happens; nothing here touches the database.
 ///
+/// The iPhone can pause (`pause()`, `resume()`): no audio is captured meanwhile, nothing is
+/// stamped, and the recording goes on into the same package after the gap (`pause` and `resume`
+/// events; the clock keeps real time, so the gap is silence on the Mac). The Mac never pauses.
+///
 /// One session records one lecture. The app owns it for as long as it records (it must outlive
 /// the view).
 @MainActor
@@ -18,6 +22,8 @@ public final class LiveLectureSession {
         case ready
         case starting
         case recording
+        /// iPhone: no audio is captured and nothing is stamped until `resume()`.
+        case paused
         case stopping
         case finished
         case failed(Failure)
@@ -216,9 +222,9 @@ public final class LiveLectureSession {
 
     public var isRecording: Bool { phase == .recording }
 
-    /// Starting, recording or stopping: the session must stay alive.
+    /// Starting, recording, paused or stopping: the session must stay alive.
     public var isCapturing: Bool {
-        phase == .starting || phase == .recording || phase == .stopping
+        phase == .starting || phase == .recording || phase == .paused || phase == .stopping
     }
 
     /// Ready, or a start that failed before anything was recorded (e.g. microphone denied). A
@@ -235,7 +241,7 @@ public final class LiveLectureSession {
     /// the library then, so later edits would never reach it.
     public var acceptsNotes: Bool {
         switch phase {
-        case .ready, .starting, .recording: true
+        case .ready, .starting, .recording, .paused: true
         case .failed: package == nil
         case .stopping, .finished: false
         }
@@ -267,10 +273,22 @@ public final class LiveLectureSession {
         event.time(sampleRate: sampleRate)
     }
 
-    /// Seconds recorded at `date` (frozen once recording stopped).
+    /// Seconds of audio recorded before an event: its clock time without the pauses before it
+    /// (where it sits against `elapsed`).
+    public func recordedTime(of event: LectureEvent) -> TimeInterval? {
+        guard let sampleTime = event.sampleTime, sampleRate > 0 else { return nil }
+        return Double(sampleTime - pauses.gapFrames(before: sampleTime)) / sampleRate
+    }
+
+    /// The pauses so far (iPhone); the last one is open while paused.
+    public var pauses: RecordingPauses { RecordingPauses(events: events) }
+
+    /// Seconds recorded at `date`: wall time since the start without the pauses, frozen once
+    /// recording stopped.
     public func elapsed(at date: Date) -> TimeInterval {
         guard let startedAt else { return 0 }
-        return max(0, (endedAt ?? date).timeIntervalSince(startedAt))
+        let end = endedAt ?? date
+        return max(0, end.timeIntervalSince(startedAt) - pauses.pausedSeconds(until: end))
     }
 
     public func note(forPage page: Int) -> String {
@@ -345,11 +363,56 @@ public final class LiveLectureSession {
         CaptureLog.capture.info("Recording \(id.uuidString, privacy: .public)")
     }
 
-    /// Stamps the stop, closes the last segment and finalizes the package.
-    public func stop() async {
-        guard phase == .recording else { return }
+    /// Pauses (iPhone): the input stops, the audio so far is written and its segment closed, and
+    /// the `pause` event and the manifest are on disk when this returns. The input stays claimed
+    /// until `releaseInput()`, so the caller can finish its own updates before iOS may suspend
+    /// the app. Throws when not recording or when the capture cannot pause; then nothing changed.
+    public func pause() async throws {
+        guard phase == .recording else { throw CaptureError.notRecording }
         let hostTime = host.now()
-        record(.stop, page: tracksSlides ? currentPage : nil, hostTime: hostTime)
+        let wallClock = now()
+        let mark = try await capture.pause()
+        // A failure stopped the recording while the input went off.
+        guard phase == .recording else { return }
+        phase = .paused
+        level = 0
+        record(.pause, page: tracksSlides ? currentPage : nil, hostTime: hostTime, sampleTime: mark.endSample, wallClock: wallClock)
+        guard let writer else { return }
+        let segments = mark.segments
+        eventsRevision += 1
+        do {
+            try await writer.writeEvents(events, revision: eventsRevision)
+            if !segments.isEmpty {
+                try await writer.updateManifest { $0.segments = segments }
+            }
+        } catch {
+            CaptureLog.capture.error("Writing the pause failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Gives the input up while paused (iOS: the microphone indicator goes out).
+    public func releaseInput() async {
+        guard phase == .paused else { return }
+        await capture.releaseInput()
+    }
+
+    /// Records again after `pause()`, into the same package: the next audio sits after the real
+    /// time paused. Throws (and stays paused) when the input cannot start, e.g. during a call.
+    public func resume() async throws {
+        guard phase == .paused else { throw CaptureError.notPaused }
+        let resumed = try await capture.resume()
+        guard phase == .paused else { return }
+        record(.resume, page: tracksSlides ? currentPage : nil, hostTime: resumed.hostTime, sampleTime: resumed.sampleTime)
+        phase = .recording
+    }
+
+    /// Stamps the stop, closes the last segment and finalizes the package. Stopped while paused,
+    /// the recording ends where its audio did.
+    public func stop() async {
+        guard phase == .recording || phase == .paused else { return }
+        let hostTime = host.now()
+        let pausedAt = phase == .paused ? pauses.open?.startSample : nil
+        record(.stop, page: tracksSlides ? currentPage : nil, hostTime: hostTime, sampleTime: pausedAt)
         phase = .stopping
         endedAt = now()
         for task in liveTasks { task.cancel() }
@@ -462,6 +525,8 @@ public final class LiveLectureSession {
     // MARK: - Private
 
     private func navigate(to page: Int, kind: LectureEventKind, hostTime: UInt64) {
+        // Paused, a slide change could not be stamped: it waits for Resume.
+        guard phase != .paused else { return }
         // With a deck: its pages. Counting without one (iPhone): from 1 up, no upper bound.
         let inRange = hasDeck ? (1...pageCount).contains(page) : configuration.countsSlidesWithoutDeck && page >= 1
         guard inRange, page != currentPage else { return }
@@ -480,7 +545,8 @@ public final class LiveLectureSession {
         fromPage: Int? = nil,
         text: String? = nil,
         hostTime: UInt64,
-        sampleTime: Int64? = nil
+        sampleTime: Int64? = nil,
+        wallClock: Date? = nil
     ) -> LectureEvent {
         let event = LectureEvent(
             kind: kind,
@@ -489,7 +555,7 @@ public final class LiveLectureSession {
             text: text,
             sampleTime: sampleTime ?? clock?.sampleTime(atHostTime: hostTime),
             hostTime: hostTime,
-            wallClock: now()
+            wallClock: wallClock ?? now()
         )
         events.append(event)
         persistEvents()
@@ -674,7 +740,8 @@ extension LiveLectureSession {
 
     /// Debug builds only: shows the session as if it had been recording for `elapsed` seconds,
     /// on `page`, with these slide stamps, captions, input level and quick note. Nothing is
-    /// recorded or written (there is no package); the timer keeps running from `now`.
+    /// recorded or written (there is no package); the timer keeps running from `now`, unless
+    /// `pausedFor`: then it was paused that many seconds ago and the timer stands at `elapsed`.
     public func showPreview(
         page: Int,
         elapsed: TimeInterval,
@@ -683,10 +750,11 @@ extension LiveLectureSession {
         level: Float,
         inputName: String?,
         note: String? = nil,
+        pausedFor: TimeInterval? = nil,
         now: Date = Date()
     ) {
         guard phase == .ready, writer == nil else { return }
-        let started = now.addingTimeInterval(-max(0, elapsed))
+        let started = now.addingTimeInterval(-max(0, elapsed) - max(0, pausedFor ?? 0))
         if hasDeck {
             currentPage = min(max(1, page), pageCount)
         } else if configuration.countsSlidesWithoutDeck {
@@ -712,7 +780,19 @@ extension LiveLectureSession {
         if let note, !note.allSatisfy(\.isWhitespace) {
             notes[currentPage] = QuickNote(page: currentPage, text: note, createdAt: now)
         }
-        phase = .recording
+        if let pausedFor {
+            events.append(LectureEvent(
+                kind: .pause,
+                page: tracksSlides ? currentPage : nil,
+                sampleTime: Int64(elapsed * sampleRate),
+                hostTime: 0,
+                wallClock: now.addingTimeInterval(-max(0, pausedFor))
+            ))
+            self.level = 0
+            phase = .paused
+        } else {
+            phase = .recording
+        }
     }
 }
 

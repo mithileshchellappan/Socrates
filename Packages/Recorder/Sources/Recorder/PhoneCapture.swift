@@ -13,9 +13,9 @@ public struct PhoneCapture: Identifiable, Sendable, Hashable {
     public var title: String
     public var courseID: Course.ID?
     public var startedAt: Date?
-    /// Seconds recorded.
+    /// Seconds recorded (pauses left out, as the recorder's timer shows it).
     public var duration: TimeInterval
-    /// Slide changes and flags (the start is not counted).
+    /// Slide changes and flags (not the start, stop, pauses or resumes).
     public var stampCount: Int
     /// Stopped cleanly (false after a crash; the package is still complete enough to share).
     public var isComplete: Bool
@@ -55,8 +55,8 @@ public struct PhoneCapture: Identifiable, Sendable, Hashable {
                 title: title(of: manifest, startedAt: start),
                 courseID: manifest.courseID,
                 startedAt: start,
-                duration: contents.duration,
-                stampCount: contents.events.filter { $0.kind != .start && $0.kind != .stop }.count,
+                duration: contents.recordedDuration,
+                stampCount: contents.events.count { ($0.kind.showsSlide && $0.kind != .start) || $0.kind == .flag },
                 isComplete: contents.isComplete
             ))
         }

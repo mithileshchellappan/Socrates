@@ -8,13 +8,24 @@ import Foundation
 /// - When the engine's configuration changes (input device switched, format changed) or an
 ///   interruption ends, the engine is rebuilt and a new segment starts: the previous segment
 ///   stays intact and the clock keeps following real time.
+/// - A pause (iPhone) stops the engine, writes everything captured and closes the segment, and
+///   remembers where it stopped on a clock that keeps counting while the phone sleeps
+///   (`ContinuousClock`; the host clock stops then). Resume places the recording clock after
+///   the real time paused and starts a new engine run, so the next audio opens a new segment
+///   after the gap, as after an interruption.
 /// - While recording, a `ProcessInfo` activity keeps the Mac from idle-sleeping.
 /// - Nothing it starts keeps it alive: when its owner lets go without stopping, `deinit` stops
 ///   the engine and ends the activity (the package is then recovered like after a crash).
 ///
 /// One instance records one lecture.
 public actor MicrophoneCapture: AudioCaptureSource {
-    private enum State { case idle, starting, recording, stopped }
+    private enum State { case idle, starting, recording, paused, stopped }
+
+    /// Where a pause stopped: the first frame after the audio written, and when.
+    private struct PauseMark {
+        var endSample: Int64
+        var at: ContinuousClock.Instant
+    }
 
     public nonisolated let broadcaster = AudioBroadcaster()
     private nonisolated let status = AsyncStream.makeStream(of: CaptureStatus.self)
@@ -31,6 +42,13 @@ public actor MicrophoneCapture: AudioCaptureSource {
     private var writerTask: Task<Void, Never>?
     private var observerTasks: [Task<Void, Never>] = []
     private var activity: (any NSObjectProtocol)?
+    private var pauseMark: PauseMark?
+    /// Barriers sent by `pause()` and the last one the writer reached.
+    private var barriersSent = 0
+    private var barrierReached = 0
+    /// Engine runs up to this one ended in a pause: audio of theirs still arriving is dropped
+    /// (their segment is closed).
+    private var sealedRun = 0
 
     public init(host: HostClock = .system, tapBufferSize: AVAudioFrameCount = 4096) {
         self.host = host
@@ -113,10 +131,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
         device?.nativeSampleRate = inputFormat.sampleRate
         device?.nativeChannelCount = Int(inputFormat.channelCount)
         state = .recording
-        activity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleSystemSleepDisabled],
-            reason: "Recording a lecture"
-        )
+        beginActivity()
         observerTasks = makeObservers()
 
         // Sample 0 is the first frame that reaches the writer; wait briefly for it.
@@ -139,16 +154,16 @@ public actor MicrophoneCapture: AudioCaptureSource {
     }
 
     public func stop() async throws -> [AudioSegmentInfo] {
-        guard state == .recording || state == .starting else { throw CaptureError.notRecording }
+        guard state == .recording || state == .starting || state == .paused else { throw CaptureError.notRecording }
         state = .stopped
+        pauseMark = nil
         for task in observerTasks { task.cancel() }
         observerTasks = []
         tearDownEngine()
         broadcaster.finish()
         await writerTask?.value
         writerTask = nil
-        if let activity { ProcessInfo.processInfo.endActivity(activity) }
-        activity = nil
+        endActivity()
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif
@@ -171,10 +186,95 @@ public actor MicrophoneCapture: AudioCaptureSource {
         return segments
     }
 
+    // MARK: - Pause
+
+    public func pause() async throws -> CapturePause {
+        guard state == .recording, let writer else { throw CaptureError.notRecording }
+        state = .paused
+        tearDownEngine()
+        endActivity()
+
+        // Everything the tap sent before the barrier is in the writer's queue ahead of it; once
+        // the writer reaches it, all of it is on disk. Bounded, so a stuck writer never holds up
+        // the commands behind this one.
+        barriersSent += 1
+        let barrier = barriersSent
+        broadcaster.send(.barrier(barrier, run: run, sampleRate: writer.format.sampleRate))
+        let deadline = ContinuousClock.now + .seconds(1)
+        while barrierReached < barrier, ContinuousClock.now < deadline, state == .paused {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        guard state == .paused else { throw CaptureError.notRecording }
+        if barrierReached < barrier {
+            CaptureLog.capture.error("Pause: the writer did not catch up within 1 s; later audio of this run is dropped")
+        }
+        sealedRun = run
+
+        var segments = writer.segments
+        do {
+            segments = try writer.finish(drainingConversion: !writerFailed)
+        } catch {
+            CaptureLog.capture.fault("Closing the segment at a pause failed: \(error.localizedDescription, privacy: .public)")
+        }
+        status.continuation.yield(.segmentsChanged(segments))
+        let endSample = writer.endSample
+        pauseMark = PauseMark(endSample: endSample, at: .now)
+        CaptureLog.capture.info("Paused at sample \(endSample)")
+        return CapturePause(endSample: endSample, segments: segments)
+    }
+
+    public func releaseInput() async {
+        guard state == .paused else { return }
+        #if os(iOS)
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            CaptureLog.capture.error("Releasing the audio session failed: \(error.localizedDescription, privacy: .public)")
+        }
+        #endif
+    }
+
+    public func resume() async throws -> CaptureResume {
+        guard state == .paused, let writer, let clock = writer.clock, let mark = pauseMark else {
+            throw CaptureError.notPaused
+        }
+        #if os(iOS)
+        // Fails during a phone call, or when iOS does not let a suspended app record: stay paused.
+        try Self.activateAudioSession()
+        #endif
+        // The real time paused, also while the phone slept: the clock keeps wall time, so the
+        // Mac files, plays and transcribes the gap as silence and later stamps stay in place.
+        let paused = ContinuousClock.now - mark.at
+        let pausedSeconds = Double(paused.components.seconds) + Double(paused.components.attoseconds) / 1e18
+        let sampleTime = mark.endSample + Int64((pausedSeconds * writer.format.sampleRate).rounded())
+        let hostTime = host.now()
+        clock.setAnchor(.init(sampleTime: sampleTime, hostTime: hostTime))
+        do {
+            try startEngine()
+        } catch {
+            #if os(iOS)
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            #endif
+            throw error
+        }
+        state = .recording
+        pauseMark = nil
+        beginActivity()
+        let device = AudioInput.currentDevice()
+        writer.deviceName = device?.name
+        status.continuation.yield(.inputChanged(device?.name))
+        CaptureLog.capture.info("Resumed at sample \(sampleTime) after \(pausedSeconds, format: .fixed(precision: 1)) s")
+        return CaptureResume(sampleTime: sampleTime, hostTime: hostTime)
+    }
+
     // MARK: - Writing
 
     private func write(_ chunk: AudioChunk) {
-        guard let writer, !writerFailed else { return }
+        if let barrier = chunk.barrier {
+            barrierReached = max(barrierReached, barrier)
+            return
+        }
+        guard let writer, !writerFailed, chunk.run > sealedRun else { return }
         if firstHostTime == nil {
             firstHostTime = chunk.hostTime ?? host.now()
         }
@@ -218,6 +318,18 @@ public actor MicrophoneCapture: AudioCaptureSource {
             "Engine run \(self.run) started: \(format.sampleRate) Hz, \(format.channelCount) ch"
         )
         return format
+    }
+
+    private func beginActivity() {
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled],
+            reason: "Recording a lecture"
+        )
+    }
+
+    private func endActivity() {
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
     }
 
     private func tearDownEngine() {

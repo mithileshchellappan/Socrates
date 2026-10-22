@@ -18,6 +18,17 @@ public struct AudioChunk: Sendable {
     public var run: Int
     public var peak: Float
     public var rms: Float
+    /// Set on a marker without audio (`barrier(_:run:sampleRate:)`): the capture sends one after
+    /// its input stopped, and once its writer reaches it every chunk before it is on disk.
+    /// Other subscribers see an empty chunk (level 0).
+    var barrier: Int?
+
+    /// A marker without audio from engine run `run` (so nothing reads it as a new run).
+    static func barrier(_ id: Int, run: Int, sampleRate: Double) -> AudioChunk {
+        var chunk = AudioChunk(samples: [], sampleRate: sampleRate, hostTime: nil, run: run)
+        chunk.barrier = id
+        return chunk
+    }
 
     public init(samples: [Float], sampleRate: Double, hostTime: UInt64?, run: Int) {
         self.samples = samples

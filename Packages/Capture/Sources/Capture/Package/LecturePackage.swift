@@ -6,7 +6,7 @@ import Foundation
 ///
 ///     <uuid>.lecture/
 ///       manifest.json     LectureManifest (format, deck, start time, segments)
-///       events.json       LectureEventLog (start, slide, back, jump, flag, stop)
+///       events.json       LectureEventLog (start, slide, back, jump, flag, pause, resume, stop)
 ///       notes.json        QuickNoteLog (per-slide notes typed in class)
 ///       audio/seg-0001.caf, seg-0002.caf, …   rolling segments
 public struct LecturePackage: Sendable, Hashable {
@@ -103,9 +103,18 @@ public struct LecturePackageContents: Sendable, Hashable {
         segments.compactMap(\.endSample).max() ?? 0
     }
 
-    /// Seconds from sample 0 to the end of the last segment.
+    /// Seconds from sample 0 to the end of the last segment (pauses included: the clock keeps
+    /// real time, so playback and filing see the real span).
     public var duration: TimeInterval {
         manifest.sampleRate > 0 ? Double(endSample) / manifest.sampleRate : 0
+    }
+
+    /// The pauses the events record (iPhone); empty for a recording never paused.
+    public var pauses: RecordingPauses { RecordingPauses(events: events) }
+
+    /// Seconds of audio recorded: `duration` without the pauses (the phone's timer and outbox).
+    public var recordedDuration: TimeInterval {
+        max(0, duration - pauses.gapSeconds(sampleRate: manifest.sampleRate))
     }
 
     /// The segment's file: always inside the package's audio folder, whatever `segment.file` says.

@@ -10,8 +10,9 @@ public enum AudioWriterError: Error, Equatable, Sendable {
 /// (`seg-0001.caf`, `seg-0002.caf`, …), placing every file on the recording clock.
 ///
 /// - A full segment is closed and the next one starts at exactly the following frame.
-/// - A chunk from a new engine run (input reconfigured) closes the open segment; the next one
-///   starts where real time had got to according to `clock`, never before the previous end.
+/// - A chunk from a new engine run (input reconfigured, or recording resumed after a pause)
+///   closes the open segment; the next one starts where real time had got to according to
+///   `clock`, never before the previous end.
 /// - Input at another sample rate is converted to `format.sampleRate`.
 /// - After each chunk the clock is anchored to "this chunk's first frame was captured at its
 ///   host time", so stamps map onto the audio actually written.
@@ -82,7 +83,8 @@ public final class SegmentedAudioWriter {
     }
 
     /// Closes the open segment, draining any conversion tail unless `drainingConversion` is
-    /// false (after a write error, write nothing more). Returns all segments.
+    /// false (after a write error, write nothing more). Returns all segments. At Stop, and at a
+    /// pause: audio from a later engine run then opens the next segment where the clock says.
     @discardableResult
     public func finish(drainingConversion: Bool = true) throws -> [AudioSegmentInfo] {
         try flushAndClose(drainConverter: drainingConversion)

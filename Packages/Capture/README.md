@@ -27,9 +27,9 @@ Recordings/<uuid>.lecture/
                   importedAt; M7 (optional, additive): courseName, courseShortName,
                   sessionNumber, sessionName (the iPhone's words for a library whose ids differ)
   events.json     {version, events: [LectureEvent]}: start, stop, slide (→/Space), back (←),
-                  jump (filmstrip), flag (F, optional text). Each has page (1-based, after the
-                  event), fromPage, sampleTime (frames on the recording clock), hostTime
-                  (mach_absolute_time), wallClock.
+                  jump (filmstrip), flag (F, optional text), pause and resume (iPhone). Each
+                  has page (1-based, after the event), fromPage, sampleTime (frames on the
+                  recording clock), hostTime (mach_absolute_time), wallClock.
   notes.json      {version, notes: [QuickNote]}: one plain-text note per page.
   audio/seg-0001.caf, seg-0002.caf, …   48 kHz mono 16-bit LPCM, 5 minutes each.
 ```
@@ -78,6 +78,35 @@ lectureID:assignment:)` changes the course and class the manifest names, also wh
   recording has one sample rate.
 - A stamp is taken the moment the key press arrives (`mach_absolute_time()`), then mapped onto
   the clock through the latest "frame N was captured at host time H" anchor the writer set.
+
+### Pause and resume (iPhone)
+
+`LiveLectureSession.pause()` / `releaseInput()` / `resume()` over `AudioCaptureSource.pause()` /
+`releaseInput()` / `resume()` (`MicrophoneCapture`; other sources refuse). The Mac never pauses.
+
+- **Pause**: the engine stops; a barrier chunk through the writer's queue makes sure everything
+  captured is written; the open segment closes; then the `pause` event (`sampleTime` = the first
+  frame after the audio written, `page` = the slide on screen, `wallClock` = when Pause was
+  pressed) and the manifest are written, awaited. `releaseInput()` then ends the audio session
+  (the microphone indicator goes out). Nothing is stamped while paused: slide moves and flags do
+  nothing, interruptions and route changes are ignored.
+- **Resume**: the audio session and a new engine run start; the recording clock is placed at
+  the pause's end plus the time paused, measured with `ContinuousClock` (the host clock stops
+  while the phone sleeps, which would place everything after the pause too early). The next
+  audio opens a new segment there (`startReason: discontinuity`, as after an interruption) and
+  the `resume` event carries that position. A failed resume (a call in progress) throws and
+  stays paused.
+- **On the clock** a closed pause is a gap without audio, like an interruption: players and
+  transcribers treat it as silence, filing sees the recording's real span, and the stamps after
+  it keep their real times. `LecturePackageContents.duration` includes it;
+  `recordedDuration` (and the phone's timer, its outbox and `LiveLectureSession.elapsed`) leave
+  it out. `RecordingPauses` reads the pauses from the events (`contents.pauses`,
+  `session.pauses`).
+- **Stopped while paused**: the `stop` event sits at the pause's end; no trailing gap. Killed
+  while paused: the segments are closed, the last event is `pause` and `endedAt` is nil, so the
+  package imports like any unfinished one.
+- No format change: the manifest keeps version 1 and its segment reasons (an older Mac decodes a
+  new package and ignores the two event kinds). The importer makes no rows for them.
 
 ## Using it from the app
 

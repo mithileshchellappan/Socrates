@@ -1,15 +1,19 @@
 import Foundation
+import RecorderContract
 #if os(iOS)
 import ActivityKit
 #endif
 
 // The recording's Live Activity (M7, docs/plan-m7.md §3–4, PRD "iPhone recording"): the Lock
 // Screen and the Dynamic Island show the course, the session, the slide on screen and the elapsed
-// time, with exactly two buttons, Next Slide and Stop Recording. The app (`PhoneRecorder`) starts,
-// updates and ends it; the widget extension draws it; the buttons' intents (`Widgets/Shared/`,
-// compiled into both) run in the app's process and reach the recorder through `RecorderControl`.
+// time, with Pause/Resume, Next Slide and Stop Recording. The app (`PhoneRecorder`) starts,
+// updates and ends it from its snapshot; the widget extension draws it; the buttons' intents
+// (`Widgets/Shared/`, compiled into both) run in the app's process and send `RecorderCommand`s
+// through `RecorderControl`.
 
-/// What the Live Activity shows; platform-neutral, so its views also draw off screen.
+/// What the Live Activity shows: a fixed-size projection of a `RecorderSnapshot` (ActivityKit
+/// caps the content at 4 KB, so the pause list stays in the snapshot). Platform-neutral, so its
+/// views also draw off screen.
 public struct RecordingActivityState: Codable, Hashable, Sendable {
     /// "Data Centers".
     public var courseName: String
@@ -21,10 +25,16 @@ public struct RecordingActivityState: Codable, Hashable, Sendable {
     public var slide: Int
     /// The deck's pages when the phone has the deck ("Slide 17 of 88"); nil: "Slide 17".
     public var slideCount: Int?
-    /// Wall clock of the recording's start; the elapsed time counts from here by itself.
-    public var startedAt: Date
-    /// Set once recording stopped: the time freezes there.
-    public var stoppedAt: Date?
+    public var isPaused: Bool
+    /// The elapsed time counts up from here by itself (the start moved on by the closed pauses).
+    public var timerStart: Date
+    /// The time stands still here (paused or stopped); nil while it counts.
+    public var timerPauseTime: Date?
+    /// What the buttons may send (`RecorderSnapshot.accepts`).
+    public var accepts: Set<RecorderCommand.Kind>
+    /// The snapshot this was drawn from: the buttons' commands carry it, so one rendering acts
+    /// once (`RecorderCommand.rendered`).
+    public var sequence: Int
 
     public init(
         courseName: String,
@@ -32,16 +42,37 @@ public struct RecordingActivityState: Codable, Hashable, Sendable {
         sessionName: String,
         slide: Int,
         slideCount: Int? = nil,
-        startedAt: Date,
-        stoppedAt: Date? = nil
+        isPaused: Bool = false,
+        timerStart: Date,
+        timerPauseTime: Date? = nil,
+        accepts: Set<RecorderCommand.Kind>,
+        sequence: Int
     ) {
         self.courseName = courseName
         self.courseColorHex = courseColorHex
         self.sessionName = sessionName
         self.slide = slide
         self.slideCount = slideCount
-        self.startedAt = startedAt
-        self.stoppedAt = stoppedAt
+        self.isPaused = isPaused
+        self.timerStart = timerStart
+        self.timerPauseTime = timerPauseTime
+        self.accepts = accepts
+        self.sequence = sequence
+    }
+
+    public init(snapshot: RecorderSnapshot) {
+        self.init(
+            courseName: snapshot.course.name,
+            courseColorHex: snapshot.course.colorHex,
+            sessionName: snapshot.sessionName,
+            slide: snapshot.slide,
+            slideCount: snapshot.slideCount,
+            isPaused: snapshot.isPaused,
+            timerStart: snapshot.timing.timerStart,
+            timerPauseTime: snapshot.timing.timerPauseTime,
+            accepts: snapshot.accepts,
+            sequence: snapshot.sequence
+        )
     }
 }
 
@@ -52,7 +83,8 @@ extension RecordingActivityState {
         return String(localized: "Slide \(slide)")
     }
 
-    /// "Slide 17 of 88 · DC Lecture 2".
+    /// "Slide 17 of 88 · DC Lecture 2" (while paused the views lead with "Paused" instead of the
+    /// session).
     public var detailLine: String {
         sessionName.isEmpty ? slideText : "\(slideText) · \(sessionName)"
     }
@@ -61,9 +93,18 @@ extension RecordingActivityState {
     public var shortSlide: String { "S\(slide)" }
 
     /// The elapsed time's range for `Text(timerInterval:pauseTime:countsDown:)`: it counts up
-    /// from the start (by itself, no updates) and stops at `stoppedAt`.
+    /// from `timerStart` by itself (no updates) and stands still at `timerPauseTime`.
     public var timerRange: ClosedRange<Date> {
-        startedAt...max(startedAt, stoppedAt ?? startedAt.addingTimeInterval(12 * 3600))
+        let upper = timerStart.addingTimeInterval(12 * 3600)
+        return timerStart...max(upper, timerPauseTime ?? upper)
+    }
+
+    /// The same content, whatever snapshot it was drawn from: an update that changes only the
+    /// sequence is not worth waking the Lock Screen for.
+    public func showsSame(as other: RecordingActivityState?) -> Bool {
+        guard var other else { return false }
+        other.sequence = sequence
+        return other == self
     }
 }
 
@@ -82,28 +123,16 @@ public struct RecordingActivityAttributes: ActivityAttributes {
 }
 #endif
 
-/// What a Live Activity button asks the recorder to do. The system may run one tap's intent more
-/// than once, so every command must be safe to repeat: a relative one (Next Slide, and any later
-/// Previous or Flag) carries what the activity showed when its button was drawn, and the recorder
-/// acts only while it still shows that.
-public enum RecorderCommand: Hashable, Sendable {
-    /// Stamps the slide after `from`, the slide the activity showed (→ on the Mac). Ignored once
-    /// the recorder is past it: a second run of the same tap never moves two slides.
-    case nextSlide(from: Int)
-    /// Stops recording at once (a Lock Screen button cannot ask first; the package is final).
-    /// Repeating it does nothing.
-    case stop
-}
-
 /// The bridge from the Live Activity's intents to the app's recorder. The app's `PhoneRecorder`
 /// sets `handler` at launch (`activate()`), before any scene, so a button that launches the app
 /// in the background finds it; the intents call `perform` in the app's process.
 @MainActor
 public enum RecorderControl {
-    /// Runs a command for the recording `recordingID`; nil until the recorder is active.
-    public static var handler: (@MainActor (RecorderCommand, UUID) async -> Void)?
+    /// Runs a command through the recorder (`PhoneRecorder.perform`); nil until it is active.
+    public static var handler: (@MainActor (RecorderCommand) async -> RecorderOutcome)?
 
-    public static func perform(_ command: RecorderCommand, recordingID: UUID) async {
-        await handler?(command, recordingID)
+    @discardableResult
+    public static func perform(_ command: RecorderCommand) async -> RecorderOutcome? {
+        await handler?(command)
     }
 }
