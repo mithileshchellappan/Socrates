@@ -29,6 +29,8 @@ public struct PaneHost<Main: View>: View {
     private let room: PaneRoom
     private let main: Main
 
+    @State private var stage = PaneStage()
+
     public init(model: PaneHostModel, kind: PaneScreenKind, specs: [PaneSpec], room: PaneRoom, @ViewBuilder main: () -> Main) {
         self.model = model
         self.kind = kind
@@ -42,21 +44,27 @@ public struct PaneHost<Main: View>: View {
         let kind = kind
         let specs = specs
         let room = room
-        // Contracts stub: the screen alone. Workstream A lays out [screen | pane strip] here
-        // (docs/plan-panes.md, "Workstream A").
-        main
-            .environment(\.isLiveResizing, model.isLiveResizing)
-            .environment(\.mainIsCovered, model.maximized != nil)
-            .environment(\.paneControl, model.control)
-            .onPreferenceChange(PaneOfferKey.self) { offers in
-                Task { @MainActor in model.receive(offers) }
+        PaneHostLayout(stripWidth: model.stripWidth, placedNeed: model.placedNeed, screenMinimum: room.screenMinimum) {
+            main
+                .environment(\.isLiveResizing, model.isLiveResizing)
+                .environment(\.mainIsCovered, model.maximized != nil)
+                .environment(\.paneControl, model.control)
+                .onPreferenceChange(PaneOfferKey.self) { offers in
+                    MainActor.assumeIsolated { model.receive(offers) }
+                }
+            PaneStrip(state: PaneStripState(model), model: model, stage: stage)
+        }
+        .overlay {
+            if model.maximized != nil || stage.slotPane != nil {
+                PaneMaximizeSlot(stage: stage)
             }
-            .onChange(of: Configuration(kind: kind, specs: specs), initial: true) {
-                model.configure(kind: kind, specs: specs, room: room)
-            }
-            .onChange(of: room) { _, room in
-                model.update(room: room)
-            }
+        }
+        .onChange(of: Configuration(kind: kind, specs: specs), initial: true) {
+            model.configure(kind: kind, specs: specs, room: room)
+        }
+        .onChange(of: room) { _, room in
+            model.update(room: room)
+        }
     }
 
     private struct Configuration: Equatable {
