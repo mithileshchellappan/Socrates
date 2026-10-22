@@ -11,20 +11,38 @@ import SwiftUI
 
 /// The main window's sidebar (mockups 01, 03, 05, 07, 08, 10): Today, Calendar, Mail (unread count;
 /// on Mail, its lists under it: Inbox, the courses, University, Newsletters, Drafts, Sent), Notes
-/// (M6; on Notes, All Notes and each course with notes under it, mockup 04), Search; then the courses as flat rows, on the mockups' 29 pt pitch. Courses start closed (01,
-/// 07). An open course lists its lectures ("L2 · Virtualization & IaaS", Tue 13 Oct) and its next
-/// session in secondary text ("L3", "Mon 19 Oct, 12:15") (03). Courses open and close only by their
-/// chevron (or the Courses section's fold), the same on every screen, so the sidebar never jumps
-/// as screens change; opening a lecture opens its own course as its chevron would (the selected
-/// row shows, and the course stays open). On a course's screen that course shows its own screens
-/// instead: Lectures (count), Slides, Notes, Course Settings, with no chevron of its own (08).
-/// Small disclosure chevrons show once any course is open. Recent searches on the Search screen
-/// (07). The semester, the agent panel's launcher and Settings at the bottom (New Course on a
-/// course's screen, 08). A file drag never moves the sidebar (no course opens or closes, no row
-/// changes height, nothing spring-loads): the row under the cursor lights and files dropped on a
-/// course, lecture or session row are filed exactly there (a course's screens and its Notes and
-/// Mail lists stand for the course); over the screen, the predicted lecture
-/// or session row lights if it shows (10, `filingDropTarget`). The whole sidebar is one drop area
+/// (M6; on Notes, All Notes and each course with notes under it, mockup 04), Documents, Study,
+/// Search; then the courses as one tree, the same on every screen, on the mockups' 29 pt pitch:
+///
+///     ▾ ● Data Centers
+///         ▾ Lectures                3
+///               L1 · Introduction           (its day in secondary text under the title)
+///               L2 · Virtualization & IaaS
+///               L3                          (the next class: "Mon 26 Oct, 10:15", secondary)
+///           Slides
+///           Materials (Mac), Notes, Progress, Course Settings
+///     ▸ ● Computational Linguistics
+///
+/// Every course has a chevron and opens to its screens; Lectures has its own chevron (while it has
+/// rows) and its count, and lists the course's lectures and its next class. A course and its
+/// Lectures row open and close only by their chevrons (or ← and → on the selected row, as in an
+/// outline; on a lecture's screen ← and → page the slides, Review's key monitor takes them first,
+/// so there only the chevrons fold) and stay as the student left them on every screen, kept per
+/// window (`SidebarExpansion`), so the sidebar never jumps as screens change. The one exception:
+/// opening a lecture (from anywhere) opens the Courses section, its course and its Lectures row,
+/// so the lecture's row shows. Choosing a screen row opens that screen; the course's own row opens
+/// its Lectures (and is the selected row while they show, as it is while the course is closed on
+/// them). The list selects only a row that opens the screen on display: while the selected row is
+/// folded away no row is selected and the nearest row that shows marks it (its Lectures row's
+/// glyph, else its course's chevron, in the accent). A click on that row is then a selection
+/// change the list reports, so it opens the row's screen: a list never reports a click on a row it
+/// already counts as selected, so a marking row must not be the list's selection. Recent searches
+/// on the Search screen (07). The semester, the agent panel's launcher and Settings at the bottom
+/// (New Course on a course's screen, 08). A file drag never moves the sidebar (no course or Lectures row opens or
+/// closes, no row changes height, nothing spring-loads): the row under the cursor lights and files
+/// dropped on a course, lecture or session row are filed exactly there (a course's screen rows and
+/// its Notes and Mail lists stand for the course); over the screen, the predicted lecture or
+/// session row lights if it shows (10, `filingDropTarget`). The whole sidebar is one drop area
 /// (`filingDropZone`), so the window's HUD stays away while the cursor is over it.
 struct SidebarView: View {
     @Binding var selection: SidebarItem?
@@ -52,23 +70,25 @@ struct SidebarView: View {
     @FetchAll(MailMessage.where { $0.courseID.isNot(nil) }.select(\.courseID).distinct()) private var mailCourseIDs: [Course.ID?]
     /// Without a mail account Mail has no lists under it (the screen offers Set Up Mail…).
     @FetchOne(MailAccount.count()) private var mailAccounts = 0
-    /// The courses opened with their chevron (or by opening one of their lectures), as
-    /// comma-separated IDs (kept per window).
-    @SceneStorage("sidebar.openCourses") private var openCourses = ""
+    /// The open courses and Lectures rows (kept per window; the key is the one the open courses
+    /// had before the tree, so a window keeps them; set up in `init`).
+    @SceneStorage private var expansion: SidebarExpansion
     /// The Courses section, folded with its header's chevron (kept per window).
     @SceneStorage("sidebar.coursesExpanded") private var coursesExpanded = true
     /// Mail's lists under the Mail row, folded with the row's chevron (kept per window).
     @SceneStorage("sidebar.mailListsExpanded") private var mailListsExpanded = true
-    /// The open lecture's course was closed with its chevron while that lecture shows (until
-    /// another lecture opens).
-    @State private var lectureCourseClosed = false
+    /// The course whose own row was chosen: that row, not its Lectures row, is the Lectures
+    /// screen's selected row (both open it), until another screen opens.
+    @State private var courseRowPicked: Course.ID?
 
     /// The mockups' 228 pt glass panel (a 236 pt column with its inset).
     static let idealWidth: CGFloat = 228
 
-    init(selection: Binding<SidebarItem?>, center: FilingCenter) {
+    /// `expansion`: what a new window shows open (nothing; renders open some).
+    init(selection: Binding<SidebarItem?>, center: FilingCenter, expansion: SidebarExpansion = SidebarExpansion()) {
         _selection = selection
         self.center = center
+        _expansion = SceneStorage(wrappedValue: expansion, "sidebar.openCourses")
         // Sessions from yesterday on: enough to find each course's next one. Rounded to the day,
         // so the request stays the same while the window re-creates the sidebar (each keystroke
         // in the search field) and its observation is not restarted.
@@ -78,18 +98,10 @@ struct SidebarView: View {
 
     var body: some View {
         let latestJobs = Self.latestJobs(jobs)
-        let now = Date()
-        // The course whose screen shows lists its screens (08).
-        let screenCourseID = selection?.courseScreenID
-        let childrenOf = Dictionary(uniqueKeysWithValues: courses.map { course in
-            let courseLectures = lectures.filter { $0.courseID == course.id }.sorted(by: Self.inOrder)
-            return (course.id, (lectures: courseLectures, next: nextSession(course.id, now: now)))
-        })
-        let open = openCourseIDs(
-            withChildren: Set(childrenOf.compactMap { !$1.lectures.isEmpty || $1.next != nil ? $0 : nil }),
-            screenCourseID: screenCourseID
-        )
-        List(selection: $selection) {
+        let tree = Self.tree(courses: courses, lectures: lectures, sessions: sessions, now: Date())
+        let shown = shownRow(selection, courseOf: tree.courseOf)
+        let listed = listRow(selection)
+        List(selection: listSelection) {
             ForEach(SidebarItem.destinations, id: \.self) { item in
                 let foldsMail = item == .mail && selection?.isMail == true && mailAccounts > 0
                 NavigationLink(value: item) {
@@ -100,8 +112,11 @@ struct SidebarView: View {
                         }
                         if foldsMail {
                             Spacer(minLength: 4)
-                            foldChevron(isOpen: mailListsExpanded, open: "Show Mailboxes", close: "Hide Mailboxes") {
-                                mailListsExpanded.toggle()
+                            chevron(
+                                isOpen: mailListsExpanded, trailing: true,
+                                label: mailListsExpanded ? Text("Hide Mailboxes") : Text("Show Mailboxes")
+                            ) {
+                                withAnimation(.snappy(duration: 0.2)) { mailListsExpanded.toggle() }
                             }
                         }
                     }
@@ -122,13 +137,13 @@ struct SidebarView: View {
                             // A course's list stands for its course: files dropped on it go there.
                             NavigationLink(value: SidebarItem.mailScope(scope)) {
                                 MailScopeLabel(scope: scope)
-                                    .padding(.leading, courseScreenIndent)
+                                    .padding(.leading, listChildIndent)
                             }
                             .filingDropTarget(.course(courseID), center: center, showsPrediction: false)
                         } else {
                             NavigationLink(value: SidebarItem.mailScope(scope)) {
                                 MailScopeLabel(scope: scope)
-                                    .padding(.leading, courseScreenIndent)
+                                    .padding(.leading, listChildIndent)
                             }
                         }
                     }
@@ -140,14 +155,14 @@ struct SidebarView: View {
                             Image(systemName: SidebarItem.notes(.all).systemImage)
                                 .foregroundStyle(.tint)
                         }
-                        .padding(.leading, courseScreenIndent)
+                        .padding(.leading, listChildIndent)
                     }
                     ForEach(notesCourses) { course in
                         NavigationLink(value: SidebarItem.notes(.course(course.id))) {
                             SidebarRowLabel(course.name) {
                                 CourseDot(hex: course.colorHex, size: 9)
                             }
-                            .padding(.leading, courseScreenIndent)
+                            .padding(.leading, listChildIndent)
                         }
                         .filingDropTarget(.course(course.id), center: center, showsPrediction: false)
                     }
@@ -157,45 +172,23 @@ struct SidebarView: View {
             // The header's chevron folds the courses (a drag of files leaves them as they are).
             Section(isExpanded: $coursesExpanded) {
                 ForEach(courses) { course in
-                    let children = childrenOf[course.id] ?? ([], nil)
-                    let isOpen = open.contains(course.id)
-                    let hasChildren = !children.lectures.isEmpty || children.next != nil
-                    // The course whose screens show has no chevron of its own (08).
-                    let isScreenCourse = course.id == screenCourseID
-                    courseRow(
-                        course,
-                        disclosure: open.isEmpty ? .none : (hasChildren && !isScreenCourse ? .shown(isOpen: isOpen) : .hidden),
-                        canOpen: hasChildren && !isScreenCourse
-                    )
-                    if isScreenCourse {
-                        // Mockup 08: the course's own screens, its settings among them.
+                    // Marks the selection while it is folded away inside the closed course.
+                    courseRow(course, marksSelection: shown == .course(course.id) && listed != shown)
+                    if expansion.showsScreens(of: course.id) {
+                        let rows = tree.rows[course.id] ?? LectureRows()
+                        // Mockup 08's screens, one level in, its settings among them.
                         ForEach(SidebarItem.courseScreens(course.id), id: \.self) { item in
-                            NavigationLink(value: item) {
-                                CourseScreenSidebarRow(item: item, isSelected: selection == item)
-                            }
-                            .badge(item == .courseLectures(course.id) ? children.lectures.count : 0)
-                            // Each of its screens stands for the course: files dropped on one
-                            // go into it (a timetable into its settings).
-                            .filingDropTarget(.course(course.id), center: center, showsPrediction: false)
-                        }
-                    } else if isOpen {
-                        ForEach(children.lectures) { lecture in
-                            NavigationLink(value: SidebarItem.lecture(lecture.id)) {
-                                LectureSidebarRow(lecture: lecture, job: latestJobs[lecture.id])
-                            }
-                            .filingDropTarget(.lecture(lecture.id), center: center)
-                            .contextMenu {
-                                if latestJobs[lecture.id]?.state == .failed {
-                                    Button("Retry Processing") { model.retryProcessing(lectureID: lecture.id) }
-                                    Divider()
+                            screenRow(item, course: course.id, rows: rows, shown: shown)
+                            if item == .courseLectures(course.id), expansion.showsLectures(of: course.id, hasRows: !rows.isEmpty) {
+                                // Mockup 03's rows, one level under Lectures.
+                                ForEach(rows.lectures) { lecture in
+                                    lectureRow(lecture, job: latestJobs[lecture.id])
                                 }
-                                // The confirmation names what goes; Edit ▸ Undo brings it back.
-                                Button("Delete…", role: .destructive) { center.requestDelete(.lecture(lecture.id)) }
+                                if let next = rows.next {
+                                    SessionSidebarRow(session: next)
+                                        .filingDropTarget(.session(next.id), center: center)
+                                }
                             }
-                        }
-                        if let next = children.next {
-                            SessionSidebarRow(session: next)
-                                .filingDropTarget(.session(next.id), center: center)
                         }
                     }
                 }
@@ -214,6 +207,10 @@ struct SidebarView: View {
                 // The last searches, newest first (mockup 07); nothing until something was searched.
                 RecentSearchesSection()
             }
+        }
+        // ← and → fold the tree as in an outline (↑ and ↓ are the list's own).
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+            fold(opening: press.key == .rightArrow, from: shown, rows: tree.rows)
         }
         #if os(macOS)
         // The mockups' rows, whatever System Settings' sidebar size: the small row (24 pt, 11 pt
@@ -239,11 +236,18 @@ struct SidebarView: View {
         #else
         .toolbar { SettingsToolbarItem() }
         #endif
-        .onChange(of: openedLecture, initial: true) { _, opened in
-            // Opening a lecture opens its course, as its chevron would: the selected row shows,
-            // and the course stays open on the next screens. No other course moves.
-            lectureCourseClosed = false
-            if let opened { setOpen(opened.courseID, true) }
+        .onChange(of: openedLecture(courseOf: tree.courseOf), initial: true) { _, opened in
+            // Opening a lecture (from anywhere) opens the Courses section, its course and its
+            // Lectures row, so its row shows; they stay open on the next screens. Nothing else
+            // moves (a file drag never changes the selection).
+            guard let opened else { return }
+            var revealed = expansion
+            revealed.reveal(lecturesOf: opened.courseID)
+            if revealed != expansion { expansion = revealed }
+            if !coursesExpanded { coursesExpanded = true }
+        }
+        .onChange(of: selection) { _, item in
+            if let picked = courseRowPicked, item != .courseLectures(picked) { courseRowPicked = nil }
         }
     }
 
@@ -265,21 +269,33 @@ struct SidebarView: View {
 
     // MARK: - Rows
 
-    enum Disclosure: Equatable {
-        /// No course is open: plain rows (01, 07).
-        case none
-        /// Some course is open; this one has nothing to show (the chevron's room is kept).
-        case hidden
-        case shown(isOpen: Bool)
+    /// What a course's Lectures row lists: its lectures in order, then its next class.
+    struct LectureRows {
+        var lectures: [Lecture] = []
+        var next: LectureSession?
+
+        var isEmpty: Bool { lectures.isEmpty && next == nil }
     }
 
-    private func courseRow(_ course: Course, disclosure: Disclosure, canOpen: Bool) -> some View {
-        NavigationLink(value: SidebarItem.course(course.id)) {
+    /// The course tree's data, worked out once a pass: each course's Lectures rows, and each
+    /// lecture's course (for the rows that mark a folded-away lecture, ← → and the reveal).
+    struct Tree {
+        var rows: [Course.ID: LectureRows] = [:]
+        var courseOf: [Lecture.ID: Course.ID] = [:]
+    }
+
+    /// `marksSelection`: the course is closed on the selected row (its chevron in the accent).
+    private func courseRow(_ course: Course, marksSelection: Bool) -> some View {
+        let isOpen = expansion.showsScreens(of: course.id)
+        return NavigationLink(value: SidebarItem.course(course.id)) {
             HStack(spacing: 8) {
-                if disclosure != .none {
-                    chevron(course, disclosure: disclosure)
-                        .padding(.trailing, -4)
+                chevron(
+                    isOpen: isOpen, marksSelection: marksSelection,
+                    label: isOpen ? Text("Collapse \(course.name)") : Text("Expand \(course.name)")
+                ) {
+                    setScreens(of: course.id, shown: !isOpen)
                 }
+                .padding(.trailing, -4)
                 CourseDot(hex: course.colorHex, size: 9)
                 Text(course.name)
                     .font(.body)
@@ -289,52 +305,79 @@ struct SidebarView: View {
         }
         .filingDropTarget(.course(course.id), center: center)
         .contextMenu {
-            if canOpen {
-                let isOpen = disclosure == .shown(isOpen: true)
-                Button(isOpen ? LocalizedStringKey("Hide Lectures") : "Show Lectures") { setOpen(course.id, !isOpen) }
-                Divider()
-            }
             // The confirmation names what goes; Edit ▸ Undo brings it back.
             Button("Delete Course…", role: .destructive) { center.requestDelete(.course(course.id)) }
         }
     }
 
-    /// A small trailing chevron that folds a row's children (Mail's lists).
-    private func foldChevron(
-        isOpen: Bool,
-        open: LocalizedStringKey,
-        close: LocalizedStringKey,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            withAnimation(.snappy(duration: 0.2)) { action() }
-        } label: {
-            Image(systemName: isOpen ? "chevron.down" : "chevron.right")
-                .font(.system(size: 8, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .frame(width: 16, height: 16)
-                .contentShape(Rectangle())
+    /// One of a course's screens (mockup 08), one level in: Lectures with its own chevron (while it
+    /// has rows) and its count; the others keep the chevron's room, so the glyphs line up. Each
+    /// stands for the course: files dropped on one go into it (a timetable into its settings). The
+    /// glyph is the accent on the row that shows the selection (`shown`): its own, or Lectures
+    /// while it is closed on the selected lecture.
+    private func screenRow(_ item: SidebarItem, course: Course.ID, rows: LectureRows, shown: SidebarItem?) -> some View {
+        let isLectures = item == .courseLectures(course)
+        let isOpen = expansion.showsLectures(of: course, hasRows: !rows.isEmpty)
+        return NavigationLink(value: item) {
+            HStack(spacing: 4) {
+                chevron(
+                    isOpen: isLectures && !rows.isEmpty ? isOpen : nil,
+                    label: isOpen ? Text("Hide Lectures") : Text("Show Lectures")
+                ) {
+                    setLectures(of: course, shown: !isOpen)
+                }
+                CourseScreenSidebarRow(item: item, isSelected: shown == item)
+            }
+            .padding(.leading, screenIndent)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(isOpen ? close : open))
+        .badge(isLectures ? rows.lectures.count : 0)
+        .filingDropTarget(.course(course), center: center, showsPrediction: false)
     }
 
+    private func lectureRow(_ lecture: Lecture, job: Job?) -> some View {
+        NavigationLink(value: SidebarItem.lecture(lecture.id)) {
+            LectureSidebarRow(lecture: lecture, job: job)
+        }
+        .filingDropTarget(.lecture(lecture.id), center: center)
+        .contextMenu {
+            if job?.state == .failed {
+                Button("Retry Processing") { model.retryProcessing(lectureID: lecture.id) }
+                Divider()
+            }
+            // The confirmation names what goes; Edit ▸ Undo brings it back.
+            Button("Delete…", role: .destructive) { center.requestDelete(.lecture(lecture.id)) }
+        }
+    }
+
+    /// An 8 pt tertiary chevron that opens and closes a row's children: a course's screens and its
+    /// lectures before the row (10 pt), Mail's lists at the Mail row's end (`trailing`, 16 pt). A
+    /// row without children (`isOpen` nil) keeps the chevron's room empty, so the glyphs line up.
+    /// `marksSelection`: the row is closed on the selected row (the accent).
     @ViewBuilder
-    private func chevron(_ course: Course, disclosure: Disclosure) -> some View {
-        if case .shown(let isOpen) = disclosure {
-            Button {
-                withAnimation(.snappy(duration: 0.2)) { setOpen(course.id, !isOpen) }
-            } label: {
+    private func chevron(
+        isOpen: Bool?, trailing: Bool = false, marksSelection: Bool = false, label: Text, toggle: @escaping () -> Void
+    ) -> some View {
+        let width: CGFloat = trailing ? 16 : 10
+        if let isOpen {
+            Button(action: toggle) {
                 Image(systemName: isOpen ? "chevron.down" : "chevron.right")
                     .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 10, height: 16)
+                    .foregroundStyle(marksSelection ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                    .frame(width: width, height: 16)
+                    #if os(iOS)
+                    // A touch target near 44 pt (the iPad's split view) that reaches out past the
+                    // glyph, before a row's dot or glyph (those still choose the row); the row's
+                    // look and pitch stay the same.
+                    .contentShape(Rectangle().inset(by: -14).offset(x: trailing ? 0 : -12))
+                    #else
                     .contentShape(Rectangle())
+                    #endif
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text(isOpen ? LocalizedStringKey("Hide Lectures") : "Show Lectures"))
+            .accessibilityLabel(label)
         } else {
-            Color.clear.frame(width: 10, height: 16)
+            Color.clear
+                .frame(width: width, height: 16)
         }
     }
 
@@ -403,12 +446,79 @@ struct SidebarView: View {
         }
     }
 
-    // MARK: - State
+    // MARK: - Selection
 
-    /// The courses opened with their chevron (or by opening one of their lectures).
-    private var chevronOpenIDs: Set<Course.ID> {
-        Set(openCourses.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+    /// The list's selection: the selected screen's own row (`listRow`), so a click on any other row,
+    /// one that marks a folded-away selection too, is a change the list reports. Choosing a row
+    /// opens its screen (a course's own row, its Lectures).
+    private var listSelection: Binding<SidebarItem?> {
+        Binding {
+            listRow(selection)
+        } set: { row in
+            choose(row)
+        }
     }
+
+    private func choose(_ row: SidebarItem?) {
+        if case .course(let id)? = row { courseRowPicked = id } else { courseRowPicked = nil }
+        selection = row
+    }
+
+    /// The row the list selects for `item`: its own, even while it is folded away (then none is
+    /// selected). A course's Lectures are its own row's while that row was chosen for them, or
+    /// while the course is closed on them: choosing that row opens the same screen.
+    private func listRow(_ item: SidebarItem?) -> SidebarItem? {
+        if case .courseLectures(let id)? = item, courseRowPicked == id || !expansion.showsScreens(of: id) {
+            return .course(id)
+        }
+        return item
+    }
+
+    /// The row that shows `item`: the list's row while it shows, else the nearest row that shows
+    /// (a lecture's Lectures row, else its course), which marks it (`courseRow`, `screenRow`).
+    private func shownRow(_ item: SidebarItem?, courseOf: [Lecture.ID: Course.ID]) -> SidebarItem? {
+        let row = listRow(item)
+        if case .lecture(let id)? = row, let courseID = courseOf[id] {
+            if !expansion.showsScreens(of: courseID) { return .course(courseID) }
+            return expansion.showsLectures(of: courseID, hasRows: true) ? row : .courseLectures(courseID)
+        }
+        guard let courseID = row?.courseScreenID, !expansion.showsScreens(of: courseID) else { return row }
+        return .course(courseID)
+    }
+
+    /// ← and → on the row that shows the selection (`row`), as in an outline: → opens a closed
+    /// course or Lectures row; ← closes an open one, else goes to the row's parent (a screen to its
+    /// course). Not on a lecture's screen: there ← and → page the slides (Review's key monitor
+    /// takes them first whenever the lecture has slides), so the tree folds there only by its
+    /// chevrons, with or without slides. Every other row and key is the list's.
+    private func fold(opening: Bool, from row: SidebarItem?, rows: [Course.ID: LectureRows]) -> KeyPress.Result {
+        if case .lecture? = selection { return .ignored }
+        switch row {
+        case .course(let id)?:
+            guard opening != expansion.showsScreens(of: id) else { return .ignored }
+            setScreens(of: id, shown: opening)
+        case .courseLectures(let id)?:
+            let hasRows = rows[id]?.isEmpty == false
+            let isOpen = expansion.showsLectures(of: id, hasRows: hasRows)
+            if opening {
+                guard !isOpen, hasRows else { return .ignored }
+                setLectures(of: id, shown: true)
+            } else if isOpen {
+                setLectures(of: id, shown: false)
+            } else {
+                choose(.course(id))
+            }
+        case let screen?:
+            // Slides, Materials, Notes, Progress, Course Settings.
+            guard !opening, let courseID = screen.courseScreenID else { return .ignored }
+            choose(.course(courseID))
+        case nil:
+            return .ignored
+        }
+        return .handled
+    }
+
+    // MARK: - Expansion
 
     /// The lecture whose screen shows, with its course (once its row is read).
     private struct OpenedLecture: Equatable {
@@ -416,42 +526,44 @@ struct SidebarView: View {
         var courseID: Course.ID
     }
 
-    private var openedLecture: OpenedLecture? {
-        guard case .lecture(let id)? = selection, let lecture = lectures.first(where: { $0.id == id }) else { return nil }
-        return OpenedLecture(lectureID: id, courseID: lecture.courseID)
+    private func openedLecture(courseOf: [Lecture.ID: Course.ID]) -> OpenedLecture? {
+        guard case .lecture(let id)? = selection, let courseID = courseOf[id] else { return nil }
+        return OpenedLecture(lectureID: id, courseID: courseID)
     }
 
-    /// The courses that show their lectures: those opened with their chevron, the same on every
-    /// screen, and the open lecture's (unless its chevron closed it), except the course whose
-    /// screens show (08). A file drag or drop opens none. Only courses with rows to show.
-    private func openCourseIDs(withChildren: Set<Course.ID>, screenCourseID: Course.ID?) -> Set<Course.ID> {
-        var open = chevronOpenIDs
-        // Kept open by `openCourses` too; this way it shows the moment the lecture opens.
-        if let openedLecture, !lectureCourseClosed { open.insert(openedLecture.courseID) }
-        if let screenCourseID { open.remove(screenCourseID) }
-        return open.intersection(withChildren)
+    /// A course's chevron (or ← →): its screens show or hide, the same on every screen.
+    private func setScreens(of course: Course.ID, shown: Bool) {
+        withAnimation(.snappy(duration: 0.2)) { expansion.setScreens(of: course, shown: shown) }
     }
 
-    /// The chevron (or Show/Hide Lectures, or opening a lecture): the course stays as set on every
-    /// screen (kept per window).
-    private func setOpen(_ id: Course.ID, _ isOpen: Bool) {
-        var ids = chevronOpenIDs
-        if isOpen {
-            ids.insert(id)
-        } else {
-            ids.remove(id)
-        }
-        if id == openedLecture?.courseID { lectureCourseClosed = !isOpen }
-        let text = ids.map(\.uuidString).sorted().joined(separator: ",")
-        if text != openCourses { openCourses = text }
+    /// Its Lectures row's chevron (or ← →): its lectures and next class show or hide.
+    private func setLectures(of course: Course.ID, shown: Bool) {
+        withAnimation(.snappy(duration: 0.2)) { expansion.setLectures(of: course, shown: shown) }
     }
 
-    /// The course's next lecture that has no lecture row yet (one in progress counts); for a
-    /// course without lecture sessions (a seminar), its next session of any kind.
-    private func nextSession(_ courseID: Course.ID, now: Date) -> LectureSession? {
+    /// Each course's lectures and next class, and each lecture's course, in one pass over the rows.
+    static func tree(courses: [Course], lectures: [Lecture], sessions: [LectureSession], now: Date) -> Tree {
         let filed = Set(lectures.compactMap(\.lectureSessionID))
-        let course = sessions.filter { $0.courseID == courseID }
-        let numbered = course.contains { $0.kind == .lecture } ? course.filter { $0.kind == .lecture } : course
+        let lecturesByCourse = Dictionary(grouping: lectures, by: \.courseID)
+        let sessionsByCourse = Dictionary(grouping: sessions, by: \.courseID)
+        var tree = Tree()
+        for course in courses {
+            tree.rows[course.id] = LectureRows(
+                lectures: (lecturesByCourse[course.id] ?? []).sorted(by: inOrder),
+                next: nextSession(among: sessionsByCourse[course.id] ?? [], filed: filed, now: now)
+            )
+        }
+        for lecture in lectures {
+            tree.courseOf[lecture.id] = lecture.courseID
+        }
+        return tree
+    }
+
+    /// A course's next lecture that has no lecture row yet (one in progress counts); for a course
+    /// without lecture sessions (a seminar), its next session of any kind. `sessions`: the
+    /// course's, in order.
+    private static func nextSession(among sessions: [LectureSession], filed: Set<LectureSession.ID>, now: Date) -> LectureSession? {
+        let numbered = sessions.contains { $0.kind == .lecture } ? sessions.filter { $0.kind == .lecture } : sessions
         return numbered.first { $0.endsAt > now && !filed.contains($0.id) }
     }
 
@@ -473,8 +585,15 @@ struct SidebarView: View {
     }
 }
 
-/// Lecture and session rows sit under their course, their titles in line with Today, Calendar …
-private let childIndent: CGFloat = 23
+/// A course's screen rows sit one level under it: their chevron's room under the course's dot,
+/// the glyph under its name.
+private let screenIndent: CGFloat = 14
+
+/// Lecture and session rows sit one level under Lectures: their titles 14 pt past its title.
+private let lectureIndent: CGFloat = 66
+
+/// Mail's lists and Notes' courses under their row (mockups 04, 05): the glyph under its title.
+private let listChildIndent: CGFloat = 17.5
 
 /// "L2 · Virtualization & IaaS" over "Tue 13 Oct"; while it is processed, a small determinate
 /// ring; a failed run, a warning glyph.
@@ -498,7 +617,7 @@ struct LectureSidebarRow: View {
             Spacer(minLength: 4)
             ProcessingMark(job: job)
         }
-        .padding(.leading, childIndent)
+        .padding(.leading, lectureIndent)
         // Two-line rows breathe (the same while files are dragged: the sidebar never moves).
         .padding(.vertical, 3)
     }
@@ -535,7 +654,7 @@ struct SessionSidebarRow: View {
         }
         .foregroundStyle(isFilingTarget ? .primary : .secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, childIndent)
+        .padding(.leading, lectureIndent)
         // Two-line rows breathe (the same while files are dragged: the sidebar never moves).
         .padding(.vertical, 3)
     }
@@ -548,9 +667,8 @@ struct SessionSidebarRow: View {
     }
 }
 
-/// One of a course's screens under it while one of them shows (mockup 08): Lectures, Slides,
-/// Notes, Course Settings. The glyph is secondary, accent on the selected row; the text sits 66 pt
-/// into the window, under the course name's indent.
+/// One of a course's screens under it (mockup 08): Lectures, Slides, Materials, Notes, Progress,
+/// Course Settings. The glyph is secondary, accent on the selected row.
 struct CourseScreenSidebarRow: View {
     let item: SidebarItem
     let isSelected: Bool
@@ -562,12 +680,8 @@ struct CourseScreenSidebarRow: View {
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
         }
-        .padding(.leading, courseScreenIndent)
     }
 }
-
-/// A course screen row's glyph sits under the course's name (mockup 08: centre 50 pt, text 66 pt).
-private let courseScreenIndent: CGFloat = 17.5
 
 /// Processing state in a sidebar row: a determinate ring while queued or running, a warning glyph
 /// (with the error as help) when it failed, nothing when done.
@@ -606,4 +720,3 @@ extension Job {
         }
     }
 }
-
