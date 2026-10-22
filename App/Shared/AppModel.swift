@@ -530,7 +530,7 @@ final class AppModel {
             // Once, before the processor runs: one class meeting filed as two lectures (before
             // 2026-10-21 a recording in the recitation right after a lecture made a second "L2")
             // is merged, with Undo in the activity log.
-            await Self.mergeDuplicateLecturesOnce(filing)
+            await filing.mergeDuplicateLecturesOnce()
             // Captures that never reached a filing go through smart import like a Stop: session
             // match, a filing row, a toast with Change….
             let recording = live?.session.package.map { Set([$0.url]) } ?? []
@@ -590,25 +590,6 @@ final class AppModel {
         #if os(macOS)
         await coach?.start()
         #endif
-    }
-
-    /// Set once the launch merged the lectures filed twice (an Undo of it is never redone). v2
-    /// (2026-10-21, second pass): rows the app generated (Claude's notes, the study pass,
-    /// continuation detection's deck links) no longer keep a pair apart, so every library gets
-    /// one more pass; the first pass's key ("Socrates.mergedDuplicateLectures") is left as it is.
-    static let mergedDuplicateLecturesKey = "Socrates.mergedDuplicateLectures.v2"
-
-    /// `FilingService.mergeDuplicateLectures` on the first launch with it; again only when a
-    /// recording of a pair was busy (none is before the processor starts).
-    private static func mergeDuplicateLecturesOnce(_ filing: FilingService) async {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: mergedDuplicateLecturesKey) else { return }
-        do {
-            let outcome = try await filing.mergeDuplicateLectures()
-            if outcome.busy == 0 { defaults.set(true, forKey: mergedDuplicateLecturesKey) }
-        } catch {
-            Log.app.error("Merging lectures filed twice failed: \(String(describing: type(of: error)), privacy: .public)")
-        }
     }
 
     /// M7: the launch passes that rewrite the library's rows (recovering the agent's interrupted

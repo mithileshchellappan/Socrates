@@ -177,7 +177,7 @@ lecture that went, moves back what is still with the survivor, puts the survivor
 back (its recordings align again) and marks the row, in one transaction (`changedSince` when a
 survivor is gone).
 
-The app runs it at launch, before the processor starts (`AppModel.mergeDuplicateLecturesOnce`,
+The app runs it at launch, before the processor starts (`FilingService.mergeDuplicateLecturesOnce`,
 UserDefaults `Socrates.mergedDuplicateLectures.v2`: the second pass runs once more on every
 library; an Undo is never redone). The agent merges two lectures the student names
 (`merge_lectures`, a registered action, student-only, AppAgent `LectureMergeTool.swift` →

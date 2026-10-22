@@ -753,7 +753,8 @@ struct RootView: View {
         case .search(let text):
             query = text
             selection = .search
-        case .course(let id): selection = .courseSettings(id)
+        // A course opens as its sidebar row does (its Lectures, DESIGN 6.2).
+        case .course(let id): selection = SidebarItem.course(id).screen
         case .mail(let scope, let message):
             mailSelection = message
             keepsMailSelection = selection != .mailScope(scope)
@@ -836,8 +837,8 @@ struct RootView: View {
     }
 
     /// `socrates://` (and, on events written before the rename, `studyportal://`) links from the
-    /// Socrates calendar: a session opens its lecture (else its
-    /// course), a deadline the mail it was read from (else its course). M7, the Mac: an opened
+    /// Socrates calendar: a session opens its lecture (else its course's Lectures), a deadline the
+    /// mail it was read from (else its course's Lectures). M7, the Mac: an opened
     /// capture (a `.lecturebundle` AirDropped from the iPhone, or a `.lecture` package) is filed by
     /// smart import like a drop (a bundle is unpacked, never changed; one already in the library is
     /// "known").

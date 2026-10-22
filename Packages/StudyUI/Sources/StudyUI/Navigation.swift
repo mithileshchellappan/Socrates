@@ -13,7 +13,7 @@ public enum StudyDestination: Hashable, Sendable {
     case calendar
     /// The search screen with this query.
     case search(String)
-    /// A course's page (course setup in M1).
+    /// A course: its Lectures, as its sidebar row.
     case course(Course.ID)
     /// A lecture's review screen, optionally at a slide and/or second.
     case lecture(Lecture.ID, ReviewTarget)

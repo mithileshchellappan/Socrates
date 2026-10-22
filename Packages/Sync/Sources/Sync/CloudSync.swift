@@ -193,13 +193,17 @@ public final class CloudSync {
         SyncLog.sync.notice("Sync stopped: the iCloud account changed")
     }
 
-    /// `VACUUM INTO` a new file (an existing copy is kept: one copy, from before the first sync).
+    /// `VACUUM INTO` a new file, written as `<url>.partial` and then renamed, so the copy is whole
+    /// or absent (a copy a quit interrupted is made again); an existing copy is kept: one copy,
+    /// from before the first sync.
     private static func backUp(_ database: any DatabaseWriter, to url: URL) async throws {
-        let path = url.path(percentEncoded: false)
-        guard !FileManager.default.fileExists(atPath: path) else { return }
+        guard !FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else { return }
+        let partial = url.deletingLastPathComponent().appending(path: url.lastPathComponent + ".partial")
+        LibraryCopy.removeDatabaseFiles(at: partial)
         try await database.writeWithoutTransaction { db in
-            try db.execute(sql: "VACUUM INTO ?", arguments: [path])
+            try db.execute(sql: "VACUUM INTO ?", arguments: [partial.path(percentEncoded: false)])
         }
+        try FileManager.default.moveItem(at: partial, to: url)
         SyncLog.sync.notice("Copied the library before its first sync")
     }
 

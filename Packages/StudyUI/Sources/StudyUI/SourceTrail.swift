@@ -287,7 +287,7 @@ public struct SourceTrailRows: View {
                 Spacer(minLength: 4)
                 if let time = entry.source.time {
                     TimeChip(time) {
-                        guard let lectureID = entry.source.lectureID else { return }
+                        guard let lectureID = entry.lectureID else { return }
                         openDestination(.lecture(lectureID, ReviewTarget(time: time, plays: true, recordingID: entry.source.recordingID)))
                     }
                 }
@@ -311,7 +311,7 @@ public struct SourceTrailRows: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 4)
-            if let page = entry.page, let lectureID = entry.source.lectureID {
+            if let page = entry.page, let lectureID = entry.lectureID {
                 SlideChip(page: page) { openDestination(.lecture(lectureID, ReviewTarget(page: page))) }
             }
         }

@@ -64,7 +64,7 @@ struct AgentChangeRowsRequest: FetchKeyRequest {
         }
         // A slide (a course rule's): its page and the lecture showing it now.
         try entry.readSlide(in: db)
-        if let lectureID = entry.source.lectureID, let lecture = try Lecture.find(lectureID).fetchOne(db) {
+        if let lectureID = entry.lectureID, let lecture = try Lecture.find(lectureID).fetchOne(db) {
             entry.lectureNumber = lecture.number
             entry.lectureTitle = lecture.title
             entry.lectureHeldAt = lecture.heldAt

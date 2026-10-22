@@ -120,6 +120,26 @@ public enum LectureMergeRefusal: Error, Equatable, Sendable {
 extension FilingService {
     // MARK: - Merging lectures filed twice
 
+    /// Set once the launch merged the lectures filed twice (an Undo of it is never redone). v2
+    /// (2026-10-21, second pass): rows the app generated (Claude's notes, the study pass,
+    /// continuation detection's deck links) no longer keep a pair apart, so every library gets
+    /// one more pass; the first pass's key ("Socrates.mergedDuplicateLectures") is left as it is.
+    static let mergedDuplicateLecturesKey = "Socrates.mergedDuplicateLectures.v2"
+
+    /// The launch pass (before the processor starts): `mergeDuplicateLectures` on the first launch
+    /// with it; again only when a recording of a pair was busy (none is before the processor
+    /// starts). Never throws: a failure is logged and the next launch tries again.
+    public func mergeDuplicateLecturesOnce() async {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.mergedDuplicateLecturesKey) else { return }
+        do {
+            let outcome = try await mergeDuplicateLectures()
+            if outcome.busy == 0 { defaults.set(true, forKey: Self.mergedDuplicateLecturesKey) }
+        } catch {
+            Log.importer.error("Merging lectures filed twice failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
     /// Merges every pair of lectures that are one class meeting (of `courseID`, or of every
     /// course), in one transaction with its `agent_change` row (`lecture_merge`, `quote` and the
     /// source columns given; without a quote the two lectures' names). Logs one public line per

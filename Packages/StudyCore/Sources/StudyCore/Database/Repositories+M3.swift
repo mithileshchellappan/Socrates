@@ -111,9 +111,12 @@ extension APICallRepository {
 /// recording the lecture (number, title, day, the course's lecturers, the slide shown at that
 /// moment), for a mail its sender and time. Raw facts; StudyUI's `SourceTrailText` words them.
 public struct SourceTrailEntry: Hashable, Sendable, Identifiable {
+    /// The source as stored (never changed with read-time facts).
     public var source: TrackedItemSource
-    /// Transcript sources: the lecture the recording belongs to (slide sources: the lecture
-    /// showing the page, set as `source.lectureID` by `readSlide`).
+    /// Slide sources: the lecture showing the page as the deck is linked now (`readSlide`).
+    public var shownInLectureID: Lecture.ID?
+    /// The lecture the facts below describe: transcript sources, the lecture the recording
+    /// belongs to; slide sources, the lecture showing the page (`lectureID`).
     public var lectureNumber: Int?
     public var lectureTitle: String?
     public var lectureHeldAt: Date?
@@ -156,6 +159,8 @@ public struct SourceTrailEntry: Hashable, Sendable, Identifiable {
 
     public var id: TrackedItemSource.ID { source.id }
     public var kind: SourceRef.Kind { source.kind }
+    /// The lecture to open: the stored one, or for a slide source the one showing its page now.
+    public var lectureID: Lecture.ID? { source.kind == .slide ? shownInLectureID : source.lectureID }
     /// The source is still in effect (not undone).
     public var isActive: Bool { source.undoneAt == nil }
 }
@@ -166,7 +171,7 @@ extension SourceTrailEntry {
     public mutating func readSlide(in db: Database) throws {
         guard source.kind == .slide, let slide = SlideReference(source.rfcMessageID) else { return }
         page = slide.page
-        source.lectureID = try LectureSlides.lecture(showing: slide.page, of: slide.deckID, in: db)
+        shownInLectureID = try LectureSlides.lecture(showing: slide.page, of: slide.deckID, in: db)
     }
 }
 
@@ -189,7 +194,7 @@ extension TrackedItemRepository {
         for source in sources {
             var entry = SourceTrailEntry(source: source)
             try entry.readSlide(in: db)
-            if let lectureID = entry.source.lectureID {
+            if let lectureID = entry.lectureID {
                 if lectures[lectureID] == nil { lectures[lectureID] = try Lecture.find(lectureID).fetchOne(db) }
                 if let lecture = lectures[lectureID] {
                     entry.lectureNumber = lecture.number
