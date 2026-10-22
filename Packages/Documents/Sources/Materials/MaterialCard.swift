@@ -51,30 +51,38 @@ public struct MaterialCard: Sendable {
         StudyDocument.summaryHash(textSHA256: "card:" + textSHA256, promptVersion: promptVersion)
     }
 
-    public func run(documentID: StudyDocument.ID) async -> Report {
+    /// - Parameter rowsOnly: a personal document (the student's, on Documents) that a course
+    ///   material uses too: only its file materials without a card get one; the document keeps
+    ///   its own summary (nothing of it is written, a failure included).
+    public func run(documentID: StudyDocument.ID, rowsOnly: Bool = false) async -> Report {
         do {
-            return try await write(documentID)
+            return try await write(documentID, rowsOnly: rowsOnly)
         } catch is CancellationError {
             return Report(outcome: .waiting(until: nil))
         } catch {
             if Task.isCancelled { return Report(outcome: .waiting(until: nil)) }
             Log.materials.error("A material card failed: \(String(describing: error), privacy: .private)")
-            try? await documents.setSummaryFailed(documentID, error: Self.failure)
+            if !rowsOnly { try? await documents.setSummaryFailed(documentID, error: Self.failure) }
             return Report(outcome: .failed(Self.failure))
         }
     }
 
-    func write(_ id: StudyDocument.ID) async throws -> Report {
+    /// A file material the card has not written yet (rows-only runs).
+    static func wantsCard(_ material: CourseMaterial) -> Bool {
+        material.kind.isFile && material.state != .wanted && material.apiCallID == nil && material.summarySource != .ai
+    }
+
+    func write(_ id: StudyDocument.ID, rowsOnly: Bool = false) async throws -> Report {
         guard let document = try await documents.document(id) else { return Report(outcome: .done(title: "")) }
         guard document.textState == .done, let textSHA256 = document.textSHA256 else {
             return Report(outcome: .failed("The material has no text to read."))
         }
         let hash = Self.summaryHash(textSHA256: textSHA256)
-        if document.summaryHash == hash { return Report(outcome: .done(title: document.title)) }
-        let materials = try await repository.materials(documentID: id)
+        if !rowsOnly, document.summaryHash == hash { return Report(outcome: .done(title: document.title)) }
+        let materials = try await repository.materials(documentID: id).filter { !rowsOnly || Self.wantsCard($0) }
         guard let lead = materials.first(where: { $0.kind.isFile }) ?? materials.first else {
             // No material uses it (deleted meanwhile): close the row without a call.
-            try await close(document, hash: hash, title: document.title, summary: "", courseIDs: [], apiCallID: nil)
+            if !rowsOnly { try await close(document, hash: hash, title: document.title, summary: "", courseIDs: [], apiCallID: nil) }
             return Report(outcome: .done(title: document.title))
         }
         // A link whose page described itself needs no card.
@@ -108,7 +116,7 @@ public struct MaterialCard: Sendable {
         } catch {
             Log.materials.error("A material card was unreadable: \(String(describing: error), privacy: .private)")
             if Task.isCancelled { return Report(outcome: .waiting(until: nil)) }
-            try await documents.setSummaryFailed(id, error: Self.failure)
+            if !rowsOnly { try await documents.setSummaryFailed(id, error: Self.failure) }
             return Report(outcome: .failed(Self.failure))
         }
         guard !Task.isCancelled else { return Report(outcome: .waiting(until: nil)) }
@@ -149,8 +157,10 @@ public struct MaterialCard: Sendable {
             }
             try await choosePrimary(written)
         }
-        try await close(document, hash: hash, title: card.title.isEmpty ? lead.title : card.title, summary: card.summary,
-                        courseIDs: materials.map(\.courseID), apiCallID: apiCallID)
+        if !rowsOnly {
+            try await close(document, hash: hash, title: card.title.isEmpty ? lead.title : card.title, summary: card.summary,
+                            courseIDs: materials.map(\.courseID), apiCallID: apiCallID)
+        }
         Log.materials.info("Wrote a material card: \(card.kind?.rawValue ?? "-", privacy: .public), \(card.sections.count) sections")
         return Report(outcome: .done(title: card.title.isEmpty ? lead.title : card.title), sectionsLanded: landed)
     }

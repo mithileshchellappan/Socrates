@@ -380,10 +380,14 @@ public struct DocumentAddition: Hashable, Sendable {
 public struct DocumentDeletion: Hashable, Sendable {
     public let document: StudyDocument
     public let pages: [StudyDocumentPage]
+    /// mt: a course material still uses the document: it left Documents (role `material`) and
+    /// kept its rows and file; Undo makes it personal again.
+    public let isDemoted: Bool
 
-    public init(document: StudyDocument, pages: [StudyDocumentPage]) {
+    public init(document: StudyDocument, pages: [StudyDocumentPage], isDemoted: Bool = false) {
         self.document = document
         self.pages = pages
+        self.isDemoted = isDemoted
     }
 }
 

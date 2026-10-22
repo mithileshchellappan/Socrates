@@ -313,7 +313,10 @@ final class AppModel {
             // slots), their figures checked by StudyPage's renderers.
             let notesWriter = startsProcessing
                 ? NotesWriter(services: services, client: claude, figureCheck: StudyPageFigureChecker(), passages: passages) : nil
-            notesAsker = startsProcessing ? NotesAsker(services: services, client: claude, passages: passages) : nil
+            // mt: Ask's book passages never wait long for the semantic list (keywords alone while
+            // the index is busy embedding or loading).
+            let askPassages = MaterialRetriever(engine: engine, semanticWait: .milliseconds(300))
+            notesAsker = startsProcessing ? NotesAsker(services: services, client: claude, passages: askPassages) : nil
             let appAgent = startsProcessing ? AppAgent(
                 services: services, client: claude, runtime: agent, memory: memory,
                 schedule: CourseSchedule(services: services), studyPass: studyPass, coach: coach, specs: specs,
@@ -984,6 +987,13 @@ final class AppModel {
     var lectureNotesUnavailable: String? {
         guard let availability = claudeAvailability, !availability.isReady else { return nil }
         return ReadableError.sentence(for: ClaudeError.unavailable(availability))
+    }
+
+    /// mt: whether the material reader queues chapter summaries (`\.materialReaderQueuesSummaries`):
+    /// Claude Code ready and not paused by a usage limit, and background work running.
+    var materialSummariesReady: Bool {
+        guard runsBackgroundWork, let availability = claudeAvailability, availability.isReady else { return false }
+        return (availability.status?.pausedUntil ?? .distantPast) <= Date()
     }
     #endif
 

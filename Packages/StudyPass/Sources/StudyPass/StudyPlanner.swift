@@ -19,6 +19,9 @@ struct PassRows: Sendable {
     var annotations: [Annotation]
     /// mt: the lecture's coverage that counts (`MaterialCoverage.effective`): book first.
     var coverage: [MaterialCoverage] = []
+    /// mt: the covering materials that are a book or the course's primary material (the ones
+    /// `CoverStage.verify` writes further reading for).
+    var bookMaterials: Set<CourseMaterial.ID> = []
 
     static func load(_ lectureID: Lecture.ID, in db: Database) throws -> PassRows {
         let stages = StudyPlanner.stages
@@ -27,12 +30,18 @@ struct PassRows: Sendable {
             .where { $0.lectureID.eq(lectureID) && $0.studyUnitID.isNot(nil) }
             .fetchAll(db)
         let coverage = MaterialCoverage.effective(try MaterialCoverage.where { $0.lectureID.eq(lectureID) }.fetchAll(db))
-        return PassRows(units: units, annotations: annotations, coverage: coverage)
+        var books: Set<CourseMaterial.ID> = []
+        if !coverage.isEmpty {
+            let ids = Array(Set(coverage.map(\.materialID)))
+            books = Set(try CourseMaterial.where { $0.id.in(ids) }.fetchAll(db).filter { $0.kind == .book || $0.isPrimary }.map(\.id))
+        }
+        return PassRows(units: units, annotations: annotations, coverage: coverage, bookMaterials: books)
     }
 
-    /// Folded titles of the topics a course book covers at its core (research skips them).
+    /// Folded titles of the topics a course book (or the primary material) covers at its core:
+    /// research skips them, as the book's further reading replaces it.
     var bookTopics: Set<String> {
-        Set(coverage.filter { $0.strength == .core && !$0.topic.isEmpty }.map { TextFolding.fold($0.topic) })
+        Set(coverage.filter { $0.strength == .core && !$0.topic.isEmpty && bookMaterials.contains($0.materialID) }.map { TextFolding.fold($0.topic) })
     }
 
     func units(_ stage: StudyStage) -> [StudyUnit] {

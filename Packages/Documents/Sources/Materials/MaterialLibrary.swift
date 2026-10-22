@@ -167,8 +167,55 @@ public actor MaterialLibrary: MaterialLibraryActions {
             createdBy: author, addedAt: now(), updatedAt: now()
         ))
         // A file the bank had already: its text may be read (or have failed) long ago.
-        if !addition.isNew { Task { await self.settleKnown(document.id) } }
+        if !addition.isNew {
+            let adopted = try await adoptCard(material, document: document, kindChosen: kind != nil)
+            Task { await self.settleKnown(document.id) }
+            return adopted
+        }
         return material
+    }
+
+    /// A new material of a file the bank had already: the card another course's material of it
+    /// has (byline, year, edition, summary, the card's kind unless one was chosen, the card's
+    /// sections) is copied, with no call; a personal document with no other material gets its
+    /// card queued (the task queue's `document` runner writes it for its materials only).
+    private func adoptCard(_ material: CourseMaterial, document: StudyDocument, kindChosen: Bool) async throws -> CourseMaterial {
+        let others = try await repository.materials(documentID: document.id).filter { $0.id != material.id && $0.state != .wanted }
+        guard let source = others.first(where: { $0.apiCallID != nil || $0.summarySource == .ai }) else {
+            if others.isEmpty, document.role == .personal, material.kind.isFile {
+                try await documents.queueSummary(
+                    document.id, model: DocumentBank.summaryModel, effort: DocumentBank.summaryEffort, by: material.createdBy,
+                    evenWhenWritten: true
+                )
+            }
+            return material
+        }
+        let copied = try await repository.update(material.id) { row in
+            if !source.byline.isEmpty { row.byline = source.byline }
+            row.year = source.year ?? row.year
+            row.facts.edition = source.facts.edition ?? row.facts.edition
+            if !source.summary.isEmpty {
+                row.summary = source.summary
+                row.summarySource = source.summarySource
+            }
+            row.apiCallID = source.apiCallID
+            if !kindChosen, source.kindSource == .card, source.kind.isFile {
+                row.kind = source.kind
+                row.kindSource = .card
+            }
+        } ?? material
+        let cardSections = try await repository.sections(of: source.id).filter { $0.source == .card }
+        if !cardSections.isEmpty, try await repository.sections(of: material.id).isEmpty {
+            let stamp = now()
+            _ = try await repository.replaceSections(of: material.id, with: cardSections.map { section in
+                MaterialSection(
+                    materialID: material.id, key: section.key, number: section.number, title: section.title, level: section.level,
+                    kind: section.kind, firstPage: section.firstPage, lastPage: section.lastPage, printedFirst: section.printedFirst,
+                    source: .card, updatedAt: stamp
+                )
+            })
+        }
+        return copied
     }
 
     /// A URL (pasted, dropped, a `.webloc`): public https is fetched; anything else is kept as a
@@ -224,7 +271,11 @@ public actor MaterialLibrary: MaterialLibraryActions {
             row.facts.doi = facts.doi
             row.facts.arxivID = facts.arxivID
         }
-        if !addition.isNew { Task { await self.settleKnown(document.id) } }
+        if !addition.isNew, let filled {
+            let adopted = try await adoptCard(filled, document: document, kindChosen: true)
+            Task { await self.settleKnown(document.id) }
+            return adopted
+        }
         return filled ?? material
     }
 
@@ -412,6 +463,8 @@ public actor MaterialLibrary: MaterialLibraryActions {
                         row.facts.arxivID = facts.arxivID ?? row.facts.arxivID
                     }
                 }
+                // Sections the card wrote (or another course's card gave) count as found.
+                if sections.isEmpty, ready?.kind.isFile == true { sections = try await repository.sections(of: material.id) }
                 if let ready, !sections.isEmpty { await onSectionsReady(ready) }
             }
             Log.materials.info("Read a material: \(pages.count) pages")

@@ -196,8 +196,8 @@ public actor AppAgent {
         // mail-, (md) documents- or web-group task's result, or (md) a file sent as its text (Word,
         // RTF, Pages, a long PDF's first pages). A web task it spawns then gets no input summary.
         var untrusted = (history.compactMap(\.context).flatMap(\.attachments) + whole).contains(where: AttachmentBlocks.sentAsText)
-        // mt: a passage of a course material the student took to the panel is material text.
-        if context.materialPassage != nil || history.contains(where: { $0.context?.context?.materialPassage != nil }) { untrusted = true }
+        // mt: a course material's text the student took to the panel (now or in an earlier turn).
+        if Self.carriesMaterialText(context) || Self.carriesMaterialText(history) { untrusted = true }
         if let conversation {
             let repository = AgentTaskRepository(store: services.records)
             for task in try await repository.unreported(parent: conversation) {
@@ -285,10 +285,11 @@ public actor AppAgent {
 
     /// Answers the conversation's last message again after its run failed (the panel's Try again).
     /// The run knows the untrusted text its history carries, as `send`'s does: files sent as their
-    /// text, and results of tasks that read mail, documents or the web.
+    /// text, (mt) course material text, and results of tasks that read mail, documents or the web.
     public func retry(_ id: AgentConversation.ID) async throws {
         let history = try await ConversationRepository(store: services.records).turns(id)
         var untrusted = history.compactMap(\.context).flatMap(\.attachments).contains(where: AttachmentBlocks.sentAsText)
+            || Self.carriesMaterialText(history)
         if !untrusted, try await AgentTaskRepository(store: services.records).tasks(parent: id).contains(where: Self.carriesUntrustedResult) {
             untrusted = true
         }
@@ -545,6 +546,18 @@ public actor AppAgent {
     static func carriesUntrustedResult(_ task: AgentTask) -> Bool {
         let untrusted: [AgentToolGroup] = [.mail, .documents, .materials, .web]
         return task.finishedAt != nil && task.tools.contains(where: untrusted.contains) && !(task.result ?? "").isEmpty
+    }
+
+    /// mt: whether a context carries a course material's text: the reader's passage, or a
+    /// material hit among Search's selected hits (both go into the `<context>` block).
+    static func carriesMaterialText(_ context: AgentContext?) -> Bool {
+        guard let context else { return false }
+        return context.materialPassage != nil || context.selection.contains { $0.kind == .material }
+    }
+
+    /// mt: whether any turn of a conversation carried a course material's text.
+    static func carriesMaterialText(_ history: [AgentTurn]) -> Bool {
+        history.contains { carriesMaterialText($0.context?.context) }
     }
 
     /// `<task_result task="…" title="…" state="succeeded">result</task_result>` (data).

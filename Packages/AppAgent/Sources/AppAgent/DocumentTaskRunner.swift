@@ -18,13 +18,20 @@ extension AgentTaskQueue {
         }
         // mt: a course material's file or snapshot gets its card instead of a summary.
         let role = try? await DocumentRepository(store: services.records).document(documentID)?.role
-        let outcome: DocumentSummarizer.Outcome
+        var outcome: DocumentSummarizer.Outcome
         if role == .material {
             let report = await MaterialCard(services: services, client: client, now: now).run(documentID: documentID)
             outcome = report.outcome
             if !report.sectionsLanded.isEmpty { await materials?.sectionsLanded(report.sectionsLanded) }
         } else {
             outcome = await DocumentSummarizer(services: services, client: client, now: now).run(documentID: documentID)
+            // mt: a personal document a course material uses too: then the card of its materials
+            // that have none (the document keeps its summary; a failed card only logs).
+            if case .done = outcome, !Task.isCancelled {
+                let report = await MaterialCard(services: services, client: client, now: now).run(documentID: documentID, rowsOnly: true)
+                if case .waiting = report.outcome { outcome = report.outcome }
+                if !report.sectionsLanded.isEmpty { await materials?.sectionsLanded(report.sectionsLanded) }
+            }
         }
         // Its row was cancelled (the queue cancelled this work) or the app quits: nothing more,
         // except that a cancelled summary fails (Read Again offers it; a launch does not queue it).

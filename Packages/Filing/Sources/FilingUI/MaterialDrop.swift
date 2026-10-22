@@ -70,7 +70,8 @@ public final class MaterialDropHandler {
             var toast = Toast(url: url, fileName: url.lastPathComponent, reading: reading, course: target)
             if let target {
                 do {
-                    let added = try await library.add(files: [url], to: target.id, as: reading.kind.materialKind)
+                    // No kind: the library keeps the classifier's guess as a guess, so the card can correct it.
+                    let added = try await library.add(files: [url], to: target.id, as: nil)
                     toast.material = added.first
                     if let material = added.first { toast.cover = await library.coverURL(of: material) }
                 } catch {
@@ -105,7 +106,7 @@ public final class MaterialDropHandler {
                 let moved = try await library.move(material.id, to: course.id)
                 update(id) { $0.material = moved ?? $0.material }
             } else {
-                let added = try await library.add(files: [toast.url], to: course.id, as: toast.reading.kind.materialKind)
+                let added = try await library.add(files: [toast.url], to: course.id, as: nil)
                 var cover: URL?
                 if let first = added.first { cover = await library.coverURL(of: first) }
                 update(id) {

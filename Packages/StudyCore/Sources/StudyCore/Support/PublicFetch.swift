@@ -23,10 +23,21 @@ public struct PublicFetch: Sendable {
     }
 
     public let session: URLSession
+    /// `download`'s session: the same settings, `timeout` between bytes, `downloadTimeout` in all.
+    public let downloadSession: URLSession
     public let timeout: TimeInterval
+    public let downloadTimeout: TimeInterval
 
     /// `userAgent`: "Socrates/1 (source check)", `MaterialCalls.userAgent`.
-    public init(userAgent: String, timeout: TimeInterval = 8) {
+    public init(userAgent: String, timeout: TimeInterval = 8, downloadTimeout: TimeInterval = 120) {
+        session = URLSession(configuration: Self.configuration(userAgent: userAgent, idle: timeout, total: timeout))
+        downloadSession = URLSession(configuration: Self.configuration(userAgent: userAgent, idle: timeout, total: max(timeout, downloadTimeout)))
+        self.timeout = timeout
+        self.downloadTimeout = max(timeout, downloadTimeout)
+    }
+
+    /// Ephemeral: no cookies, no cache, no credentials; `idle` between bytes, `total` in all.
+    static func configuration(userAgent: String, idle: TimeInterval, total: TimeInterval) -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
@@ -34,11 +45,10 @@ public struct PublicFetch: Sendable {
         configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
+        configuration.timeoutIntervalForRequest = idle
+        configuration.timeoutIntervalForResource = total
         configuration.httpAdditionalHeaders = ["User-Agent": userAgent]
-        session = URLSession(configuration: configuration)
-        self.timeout = timeout
+        return configuration
     }
 
     /// GET `url` with at most `maximumBytes` read within the time limit. Nil when the host is not
@@ -93,12 +103,13 @@ public struct PublicFetch: Sendable {
     }
 
     /// GET `url` into the file `destination` (a PDF behind a link, ≤ `maximumBytes`; the time
-    /// limit is `timeout` for the first byte and `downloadTimeout` in all). Returns the response
-    /// with empty `data` (the bytes are in the file); nil as `get`, or when the file would be
-    /// larger (the partial file is removed).
+    /// limit is `timeout` for the first byte and between bytes, and `downloadTimeout` in all, at
+    /// most the session's). Returns the response with empty `data` (the bytes are in the file);
+    /// nil as `get`, or when the file would be larger (the partial file is removed).
     public func download(
-        _ url: URL, to destination: URL, maximumBytes: Int, downloadTimeout: TimeInterval = 120
+        _ url: URL, to destination: URL, maximumBytes: Int, downloadTimeout limit: TimeInterval? = nil
     ) async -> Response? {
+        let downloadTimeout = min(limit ?? self.downloadTimeout, self.downloadTimeout)
         guard await PublicHost.allows(url) else {
             Log.web.notice("A download refused a non-public host")
             return nil
@@ -107,7 +118,7 @@ public struct PublicFetch: Sendable {
         request.httpMethod = "GET"
         request.httpShouldHandleCookies = false
         let prepared = request
-        let session = session
+        let session = downloadSession
         do {
             return try await withThrowingTaskGroup(of: Response?.self) { group in
                 group.addTask {

@@ -46,22 +46,49 @@ enum NotesBookPassages {
         return chosen
     }
 
+    /// How long Ask waits for its book passages before it answers without them (the student
+    /// waits on it: never block on the index).
+    static let askBudget: Duration = .milliseconds(500)
+
     /// Ask: ≤ 2 passages of ≤ 1,200 characters from the section's covered pages, searched with the
-    /// selection's words.
+    /// selection's words: the covered sections at once, in their order (primary book, core
+    /// first); what is not found within `askBudget` is left out.
     static func pick(
         selection: String, sectionTitle: String, lectureID: Lecture.ID, courseID: Course.ID, passages: any MaterialPassages,
-        database: any DatabaseReader
+        database: any DatabaseReader, budget: Duration = askBudget
     ) async -> [NotesBookPassage] {
         guard let covered = try? await database.read({ db in try Covered.load(lectureID: lectureID, in: db) }), !covered.isEmpty else {
             return []
         }
         let targets = covered.sections(for: sectionTitle, fallback: true)
+        guard !targets.isEmpty else { return [] }
+        let found = await withTaskGroup(of: (index: Int, passage: NotesBookPassage?)?.self) { group in
+            for (index, target) in targets.enumerated() {
+                group.addTask {
+                    let best = await Self.best(selection, targets: [target], courseID: courseID, passages: passages, limit: MaterialCalls.askPassageCharacters)
+                    return (index, best?.passage)
+                }
+            }
+            // The deadline: nil.
+            group.addTask {
+                try? await Task.sleep(for: budget)
+                return nil
+            }
+            var found: [Int: NotesBookPassage] = [:]
+            var remaining = targets.count
+            while remaining > 0, let next = await group.next() {
+                guard let next else { break }
+                remaining -= 1
+                if let passage = next.passage { found[next.index] = passage }
+            }
+            group.cancelAll()
+            return found
+        }
         var chosen: [NotesBookPassage] = []
-        for target in targets {
+        for index in targets.indices {
             guard chosen.count < MaterialCalls.askPassages else { break }
-            if let best = await best(selection, targets: [target], courseID: courseID, passages: passages, limit: MaterialCalls.askPassageCharacters),
-               !chosen.contains(where: { $0.cite == best.passage.cite }) {
-                chosen.append(best.passage)
+            if let passage = found[index], !chosen.contains(where: { $0.cite == passage.cite }) {
+                chosen.append(passage)
             }
         }
         return chosen

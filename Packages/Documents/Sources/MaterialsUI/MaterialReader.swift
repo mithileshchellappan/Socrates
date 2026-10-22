@@ -160,10 +160,11 @@ private struct MaterialReaderContent: View {
     // MARK: Summaries
 
     /// The first time a chapter is current and has no summary, its summary is queued (one
-    /// background Haiku task; the column shows a skeleton line until it is written).
+    /// background Haiku task; the column shows a skeleton line until it is written). Only a
+    /// chapter (never the front or back matter), and only while Claude Code can write it now.
     private func queueSummary(at page: Int) {
-        guard queuesSummaries, let services, let chapter = data.chapter(holding: page), chapter.summary.isEmpty,
-              !summarized.contains(chapter.id)
+        guard queuesSummaries, let services, let chapter = data.chapter(holding: page), chapter.kind == .chapter,
+              chapter.summary.isEmpty, !summarized.contains(chapter.id)
         else { return }
         summarized.insert(chapter.id)
         let repository = MaterialRepository(store: services.records)
@@ -240,8 +241,9 @@ private final class ReaderPassage {
 #endif
 
 extension EnvironmentValues {
-    /// The reader queues a chapter's summary the first time it is current (off in renders).
-    @Entry public var materialReaderQueuesSummaries = true
+    /// The reader queues a chapter's summary the first time it is current: the app sets it while
+    /// Claude Code is ready and not paused (off in renders and without Claude Code).
+    @Entry public var materialReaderQueuesSummaries = false
 }
 
 // MARK: - Rows
@@ -312,8 +314,10 @@ struct MaterialReaderRequest: FetchKeyRequest {
         }
         if let documentID = material.documentID {
             let reference = StudyDocument.ID?.some(documentID)
+            // Queued or running only: a paused summary shows nothing (never a lasting skeleton).
+            let states: [AgentTaskState] = [.queued, .running]
             let goals = try AgentTask
-                .where { $0.kind.eq(AgentTaskKind.materialChapter) && $0.documentID.eq(reference) && $0.state.in(AgentTaskState.open) }
+                .where { $0.kind.eq(AgentTaskKind.materialChapter) && $0.documentID.eq(reference) && $0.state.in(states) }
                 .select(\.goal)
                 .fetchAll(db)
             data.summarizing = Set(goals.compactMap(MaterialSection.sectionID(fromTaskGoal:)))

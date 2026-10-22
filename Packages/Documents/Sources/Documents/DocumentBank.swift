@@ -248,6 +248,14 @@ public actor DocumentBank {
             // A file deleted earlier and added again is no longer to be removed.
             PendingRemovals.remove(blob.sha256, at: pendingFile)
             enqueueRead(addition.document.id)
+        } else if role == .personal, addition.document.role == .material {
+            // mt: a course material's file the student keeps on Documents becomes theirs (its
+            // materials still find it through `course_material`); kept as a material, a personal
+            // document stays personal (the library queues its materials' card).
+            try await documents.setRole(addition.document.id, .personal)
+            var promoted = addition.document
+            promoted.role = .personal
+            return DocumentAddition(document: promoted, isNew: false)
         }
         return addition
     }
@@ -322,9 +330,15 @@ public actor DocumentBank {
         }
     }
 
-    /// mt: tells the materials' library a role-material document was read or failed.
+    /// mt: tells the materials' library a document was read or failed: a role-material document,
+    /// or a personal one a course material uses too (the library finds its materials).
     private func materialRead(_ document: StudyDocument, error: String?) async {
-        guard document.role == .material, let observer = materialObserver else { return }
+        guard let observer = materialObserver else { return }
+        if document.role != .material {
+            let id = document.id
+            let used = (try? await services.database.read { db in try MaterialRepository.materials(documentID: id, in: db).isEmpty == false }) ?? false
+            guard used else { return }
+        }
         await observer(document.id, error)
     }
 
@@ -336,7 +350,15 @@ public actor DocumentBank {
     /// stopped run closes no summary state that Undo would bring back) and reading it stops. Its
     /// file joins the pending-removal list (removed at a later launch when unused, never in this
     /// session: Undo). Nil when it is gone already.
+    /// mt: a personal document a course material still uses only leaves Documents (role
+    /// `material`, its rows, reading, card and file kept), so the material's file is never removed.
     public func delete(_ id: StudyDocument.ID) async throws -> DocumentDeletion? {
+        let usedByMaterial = try await services.database.read { db in try MaterialRepository.materials(documentID: id, in: db).isEmpty == false }
+        if usedByMaterial {
+            guard let document = try await documents.document(id) else { return nil }
+            if document.role != .material { try await documents.setRole(id, .material) }
+            return DocumentDeletion(document: document, pages: [], isDemoted: true)
+        }
         let open = try await documents.openTasks(of: id)
         guard let deletion = try await documents.delete(id) else { return nil }
         let tasks = AgentTaskRepository(store: services.records)
@@ -359,6 +381,10 @@ public actor DocumentBank {
     /// delete stopped: a text still `pending` is read again (off the main actor) and a summary
     /// still pending is queued again.
     public func restore(_ deletion: DocumentDeletion) async throws {
+        if deletion.isDemoted {
+            try await documents.setRole(deletion.document.id, deletion.document.role)
+            return
+        }
         try await documents.restore(deletion)
         PendingRemovals.remove(deletion.document.blobSHA256, at: pendingFile)
         if deletion.document.textState == .pending { enqueueRead(deletion.document.id) }

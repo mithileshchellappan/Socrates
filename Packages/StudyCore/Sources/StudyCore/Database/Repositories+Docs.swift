@@ -100,12 +100,17 @@ public struct DocumentRepository: Sendable {
     /// read and whose summary is pending, in one transaction; nothing (nil) when it is gone, has no
     /// text yet, its summary is not pending, or an open `document` task for it exists. So an add,
     /// `DocumentBank.start()`, Undo and Read Again can all call it without queueing it twice.
+    /// mt: `written` also queues it for a document whose summary is written (a personal document
+    /// that became a course material: the runner writes its materials' card).
     @discardableResult
-    public func queueSummary(_ id: StudyDocument.ID, model: String, effort: String, by author: Author) async throws -> AgentTask? {
+    public func queueSummary(
+        _ id: StudyDocument.ID, model: String, effort: String, by author: Author, evenWhenWritten written: Bool = false
+    ) async throws -> AgentTask? {
         let stamp = store.currentDate
         let reference = StudyDocument.ID?.some(id)
         return try await store.database.write { db in
-            guard let document = try StudyDocument.find(id).fetchOne(db), document.textState == .done, document.summaryState == .pending
+            guard let document = try StudyDocument.find(id).fetchOne(db), document.textState == .done,
+                  document.summaryState == .pending || (written && document.summaryState == .done)
             else { return nil }
             let open = try AgentTask.where { $0.documentID.eq(reference) && $0.state.in(AgentTaskState.open) }.fetchCount(db)
             guard open == 0 else { return nil }
@@ -234,6 +239,13 @@ public struct DocumentRepository: Sendable {
             try StudyDocument.find(id).delete().execute(db)
             return DocumentDeletion(document: document, pages: pages)
         }
+    }
+
+    /// mt: a document's role changes (a course material's file the student keeps on Documents
+    /// too, or a kept document deleted there that a course material still uses). Search moves its
+    /// chunks to the role's kind.
+    public func setRole(_ id: StudyDocument.ID, _ role: DocumentRole) async throws {
+        try await update(id) { document in document.role = role }
     }
 
     /// Undo of `delete`: the row and its pages again, as they were (Search re-cuts the chunks).

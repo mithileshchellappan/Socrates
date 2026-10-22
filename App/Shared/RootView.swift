@@ -161,6 +161,8 @@ struct RootView: View {
                 .environment(\.lectureNotesUnavailable, model.lectureNotesUnavailable)
                 // mt: the course materials' writes (drops, ⌘V, Import…, Delete with Undo).
                 .environment(\.materialLibrary, model.materialLibrary)
+                // mt: the reader queues chapter summaries only while Claude Code can write them.
+                .environment(\.materialReaderQueuesSummaries, model.materialSummariesReady)
                 #endif
                 // The agent panel: absent until Claude Code is available, and while a practice exam
                 // is being written (mc: the panel, its launcher and ⌘J go until it is handed in).
