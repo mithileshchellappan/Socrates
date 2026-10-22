@@ -7,6 +7,7 @@ import Coach
 import CoachUI
 import FilingUI
 import MaterialsUI
+import Panes
 import ReviewUI
 import SearchUI
 import StudyCore
@@ -19,8 +20,8 @@ import SwiftUI
 //   ParityRender [--library DIR] [--out DIR] [--only 01-today,03-review]
 //                [--appearance light|dark|both] [--settle SECONDS] [--now 2026-10-16T15:02]
 //                [--week 2026-10-19] [--m35-sample] [--mc] [--sweep] [--claude]
-//                [--review-layout 0.5,1,0] [--size 1800x1130] [--panel-width 560]
-//                [--review-tab slide|lecture] [--zoom 1.3]
+//                [--review-layout 0.5,1,0] [--size 1800x1130]
+//                [--review-tab slide|lecture|summary] [--zoom 1.3]
 //   (swift run -j 4 --package-path tools/ParityRender ParityRender …)
 //
 // `--zoom 1.3` (nl): the content zoom (View ▸ Zoom In) as stored (`Socrates.contentZoom`, in the
@@ -28,14 +29,25 @@ import SwiftUI
 //
 // `--size` draws the windows at that size in points (default the mockups' 1440×900); the PNG's
 // name gets the size (`08-course-1800x1130-light.png`). A window whose columns' minimums do not
-// fit grows (the PNG is then wider than asked: a layout bug). `--panel-width` is the expanded
-// agent panel's stored width (`agent.panel.width`, in the registration domain). With
-// `--m35-sample` on a `--ma-sample` copy, `ma-course-expanded`, `ma-mail-expanded` and
-// `ma-review-expanded` are DC's Course Settings, the Inbox and DC L2's review with the panel as the
-// window's right sidebar (the window layout: no column under its minimum or cut off).
+// fit grows (the PNG is then wider than asked: a layout bug). With `--m35-sample` on a
+// `--ma-sample` copy, `ma-course-expanded`, `ma-mail-expanded` and `ma-review-expanded` are DC's
+// Course Settings, the Inbox and DC L2's review with the Agent pane open (the window layout: no
+// column under its minimum or cut off).
 //
-// `--review-tab lecture` (ln): every review opens on the inspector's Whole lecture tab (the
-// lecture's notes on a copy of .data/parity/ln/library).
+// panes (DESIGN 6.4): every shot opens with the side panes as `RenderShot.panes` seeds them (each
+// kind's layout and the window-wide Agent pane, in the registration domain); a shot whose agent
+// starts expanded (`AgentPanelLaunch.Mode.expanded`) opens the Agent pane. On a library with DC
+// Lecture 2's notes and the student's own (`tools/parity/seed --panes-sample` makes one from
+// scratch, all invented) and Claude Code available (`--claude`): `40-panes` (1600 × 1000, Review on
+// slide 6: Notes on Whole lecture, the Agent pane beside it), `41-maximized` (the Agent pane
+// maximized over both), `41-stacked` (Notes stacked over Agent in one column), `panes-summary`
+// (Notes on Summary: Claude's notes), `panes-mail-1180` (Mail in a 1180 × 740 window with the Agent
+// pane: the sidebar hides, nothing grows), `panes-small-chat` (the small chat on Review) and, with a
+// DC Lecture 3 that has notes but none of the student's, `35-notes-empty`.
+//
+// `--review-tab lecture` (Whole lecture: the student's own notes) or `summary` (Claude's notes,
+// what Whole lecture showed before panes): every review opens on that tab of its Notes pane
+// (a shot's own `reviewTab` wins).
 //
 // ln (a copy of .data/parity/ln/library, `tools/parity/seed --ln-sample`; mockups 30–33): DC
 // Lecture 2's notes pushed on DC's Lectures, `30-lecture-notes` (the top of the page),
@@ -45,8 +57,8 @@ import SwiftUI
 // set to paused in the clone). Opening the notes never queues any in a render.
 //
 // nl (mockups 34–35): on a copy of .data/parity/nl/library (`tools/parity/seed --nl-sample full`)
-// `34-notes-wide` (1600 × 1000, Your notes open by width, slide 21's group marked),
-// `35-notes-closed` and `35-notes-open` (1180 × 740), with `--zoom 1.3` also `nl-notes-zoom`
+// `34-notes-wide` (1600 × 1000, the Your notes pane open, slide 21's group marked),
+// `35-notes-closed` (its pane closed) and `35-notes-open` (1180 × 740), with `--zoom 1.3` also `nl-notes-zoom`
 // (34's window at 130 %); on a copy of .data/parity/nl-empty/library `35-notes-empty`. These
 // shots keep their mockup's window size whatever `--size`.
 //
@@ -146,9 +158,7 @@ struct RenderOptions {
     var reviewLayout: String?
     /// The windows' size in points (`--size 1800x1130`); nil: the mockups' size.
     var windowSize: CGSize?
-    /// The expanded agent panel's stored width (`--panel-width`).
-    var panelWidth: Double?
-    /// The tab a review opens on (`--review-tab lecture`: Whole lecture).
+    /// The Notes pane's tab a review opens on (`--review-tab lecture`: Whole lecture).
     var reviewTab: ReviewInspectorTab = .slide
     /// The stored content zoom (`--zoom 1.3`).
     var zoom: Double?
@@ -188,14 +198,10 @@ struct RenderOptions {
                 guard parts.count == 2, parts[0] > 0, parts[1] > 0 else { throw RenderFailure("--size takes 1800x1130") }
                 windowSize = CGSize(width: parts[0], height: parts[1])
             case "--review-tab":
-                switch try value() {
-                case "lecture": reviewTab = .lecture
-                case "slide": reviewTab = .slide
-                default: throw RenderFailure("--review-tab takes slide or lecture")
+                guard let tab = ReviewInspectorTab(rawValue: try value()) else {
+                    throw RenderFailure("--review-tab takes slide, lecture or summary")
                 }
-            case "--panel-width":
-                guard let width = Double(try value()) else { throw RenderFailure("--panel-width takes 560") }
-                panelWidth = width
+                reviewTab = tab
             case "--zoom":
                 guard let scale = Double(try value()), scale > 0 else { throw RenderFailure("--zoom takes 1.3") }
                 zoom = scale
@@ -232,8 +238,11 @@ struct RenderShot {
     var examSheet: Course.ID?
     /// ln: a selection, the capsule, the Ask popover or a scroll drawn on the notes.
     var notesPreview: LectureNotesPreview?
-    /// nl: the Your notes column shown or hidden whatever the width (nil: by the width).
-    var yourNotes: YourNotesVisibility?
+    /// panes: the layouts and window-wide panes the shot opens with (nil: every kind's first
+    /// layout, the Agent pane closed).
+    var panes: PaneSeed?
+    /// The Notes pane's tab of a review (nil: `--review-tab`).
+    var reviewTab: ReviewInspectorTab?
     /// nl: the window's size for this shot (the mockup's), whatever `--size`; the PNG's name
     /// carries no size.
     var size: CGSize?
@@ -295,8 +304,6 @@ struct ParityRender {
         UserDefaults.standard.register(defaults: [RecentSearches.storageKey: recent.storage])
         // Review's layout as a student left it (the transcript or the thumbnails collapsed).
         if let layout = options.reviewLayout { UserDefaults.standard.register(defaults: ["review.layout": layout]) }
-        // The agent's right sidebar as wide as a student left it.
-        if let width = options.panelWidth { UserDefaults.standard.register(defaults: ["agent.panel.width": width]) }
         // nl: the content zoom as View ▸ Zoom In left it.
         if let zoom = options.zoom { UserDefaults.standard.register(defaults: [ContentZoom.defaultsKey: zoom]) }
 
@@ -415,6 +422,7 @@ struct ParityRender {
             shots += try await mdShots(services: services)
             shots += try await lnShots(dc: dc, services: services)
             shots += try await nlShots(dc: dc, services: services, zoomed: options.zoom != nil)
+            shots += try await panesShots(dc: dc, services: services, conversation: try await appConversation("Hypervisor types"))
             shots += try await mtShots(dc: dc, services: services)
             if options.mc { shots = try mcShots(dc: dc, services: services) }
             if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
@@ -557,15 +565,71 @@ struct ParityRender {
         let wide = CGSize(width: 1600, height: 1000)
         let narrow = CGSize(width: 1180, height: 740)
         guard own > 0 else {
-            return [RenderShot(name: "35-notes-empty", window: window, yourNotes: .shown, size: narrow)]
+            return [RenderShot(name: "35-notes-empty", window: window, size: narrow)]
         }
         let reading = LectureNotesPreview(reveal: "loads a small driver into the guest")
+        // The Your notes pane closed by its toggle (its place and width kept).
+        let closed = PaneSeed(layouts: [.lectureNotes: PaneLayout(
+            columns: [PaneLayout.Column(panes: [.yourNotes], width: 336)], open: []
+        )])
         var shots = [
             RenderShot(name: "34-notes-wide", window: window, notesPreview: reading, size: wide),
-            RenderShot(name: "35-notes-closed", window: window, size: narrow),
-            RenderShot(name: "35-notes-open", window: window, yourNotes: .shown, size: narrow)
+            RenderShot(name: "35-notes-closed", window: window, panes: closed, size: narrow),
+            RenderShot(name: "35-notes-open", window: window, size: narrow)
         ]
         if zoomed { shots.append(RenderShot(name: "nl-notes-zoom", window: window, notesPreview: reading, size: wide)) }
+        return shots
+    }
+
+    /// panes (mockups 40–41, DESIGN 6.4) on a library with DC Lecture 2's notes, Claude's and the
+    /// student's (`tools/parity/seed --panes-sample`): Review on slide 6 with the Notes pane and the
+    /// Agent pane on `conversation` beside it, maximized and stacked; Notes on Summary; the small
+    /// chat; Mail in a 1180 × 740 window with the Agent pane; and DC Lecture 3's notes page when
+    /// none of its notes are the student's. The agent shows with `--claude`.
+    static func panesShots(dc: Course, services: StudyServices, conversation: AgentConversation.ID?) async throws -> [RenderShot] {
+        let notes = LectureNotesRepository(store: services.records)
+        guard let (_, lecture2) = try? ParityMode.lecture("DC", 2, services: services),
+              try await !notes.versions(lectureID: lecture2.id).isEmpty
+        else { return [] }
+        let wide = CGSize(width: 1600, height: 1000)
+        let narrow = CGSize(width: 1180, height: 740)
+        let agent = AgentPanelLaunch(mode: .expanded, conversationID: conversation, newChat: conversation == nil)
+        func review(_ panel: AgentPanelLaunch) -> RenderShot.Window {
+            .main(ParityMode.Launch(
+                selection: .lecture(lecture2.id), reviewTarget: (lecture2.id, ReviewTarget(page: 6, request: UUID())), panel: panel
+            ))
+        }
+        let beside = PaneSeed(layouts: [.review: PaneLayout(
+            columns: [PaneLayout.Column(panes: [.notes], width: 336), PaneLayout.Column(panes: [.agent], width: 344)], open: [.notes]
+        )])
+        var maximized = beside
+        maximized.layouts[.review]?.maximized = .agent
+        let stacked = PaneSeed(layouts: [.review: PaneLayout(
+            columns: [PaneLayout.Column(panes: [.notes, .agent], width: 344, heights: [0.5, 0.5])], open: [.notes]
+        )])
+        var shots = [
+            RenderShot(name: "40-panes", window: review(agent), panes: beside, reviewTab: .lecture, size: wide),
+            RenderShot(name: "41-maximized", window: review(agent), panes: maximized, reviewTab: .lecture, size: wide),
+            RenderShot(name: "41-stacked", window: review(agent), panes: stacked, reviewTab: .lecture, size: wide),
+            RenderShot(name: "panes-summary", window: review(AgentPanelLaunch()), reviewTab: .summary),
+            RenderShot(
+                name: "panes-small-chat", window: review(AgentPanelLaunch(mode: .compact, conversationID: conversation)),
+                reviewTab: .lecture
+            ),
+            RenderShot(name: "panes-mail-1180", window: .main(ParityMode.Launch(selection: .mailScope(.inbox), panel: agent)), size: narrow)
+        ]
+        if let (_, lecture3) = try? ParityMode.lecture("DC", 3, services: services),
+           try await !notes.versions(lectureID: lecture3.id).isEmpty {
+            let id = lecture3.id
+            let own = try await services.database.read { db in
+                try Note.where { $0.lectureID.eq(Lecture.ID?.some(id)) }.fetchCount(db)
+            }
+            if own == 0 {
+                shots.append(RenderShot(
+                    name: "35-notes-empty", window: .main(ParityMode.Launch(selection: .lectureNotes(id, course: dc.id))), size: narrow
+                ))
+            }
+        }
         return shots
     }
 
@@ -705,6 +769,11 @@ struct ParityRender {
         let content: AnyView
         switch shot.window {
         case .main(let launch):
+            // The window's panes as the shot seeds them; an agent that starts expanded is the
+            // Agent pane.
+            var panes = shot.panes ?? PaneSeed()
+            if launch.panel.mode == .expanded { panes.windowOpen.insert(.agent) }
+            try panes.register()
             content = AnyView(
                 RootView(
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
@@ -713,11 +782,10 @@ struct ParityRender {
                     materialPage: launch.materialPage, panel: launch.panel
                 )
                 .environment(\.calendarDetailPreview, shot.calendarDetail)
-                .environment(\.reviewInspectorTab, reviewTab)
+                .environment(\.reviewInspectorTab, shot.reviewTab ?? reviewTab)
                 // ln: opening a lecture's notes or Review's Whole lecture never queues notes here.
                 .environment(\.lectureNotesQueuesOnOpen, false)
                 .environment(\.lectureNotesPreview, shot.notesPreview)
-                .environment(\.yourNotesVisibilityOverride, shot.yourNotes)
                 // mt: the reader never queues a chapter summary here.
                 .environment(\.materialReaderQueuesSummaries, false)
                 .environment(model)

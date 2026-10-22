@@ -39,7 +39,9 @@ let package = Package(
         // md: the document bank and the Documents screen.
         .package(path: "../../Packages/Documents"),
         // ln: the lecture notes (the notes page, the Lecture menu's Ask… and Highlight).
-        .package(path: "../../Packages/StudyPage")
+        .package(path: "../../Packages/StudyPage"),
+        // panes: the main window's side panes and the small chat's floating panel.
+        .package(path: "../../Packages/Panes")
     ],
     targets: [
         .executableTarget(
@@ -83,7 +85,8 @@ let package = Package(
                 .product(name: "Materials", package: "Documents"),
                 .product(name: "MaterialsUI", package: "Documents"),
                 .product(name: "StudyPageFormat", package: "StudyPage"),
-                .product(name: "StudyPageUI", package: "StudyPage")
+                .product(name: "StudyPageUI", package: "StudyPage"),
+                .product(name: "Panes", package: "Panes")
             ],
             exclude: [
                 "App/Info.plist",

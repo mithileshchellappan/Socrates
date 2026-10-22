@@ -100,8 +100,8 @@ enum ParityMode {
         var mailSelection: MailMessage.ID?
         /// The note selected on Notes (M6).
         var noteSelection: Note.ID?
-        /// The agent panel (ma): closed, compact or expanded, on a conversation and its exchanges
-        /// (needs Claude Code available).
+        /// The agent chat (ma): closed, the small chat (compact) or the Agent pane (expanded: a render
+        /// seeds the pane open), on a conversation and its exchanges (needs Claude Code available).
         var panel = AgentPanelLaunch()
         /// mc: Progress with its practice exam sheet presented (mockup 17).
         var examSheet: Course.ID?

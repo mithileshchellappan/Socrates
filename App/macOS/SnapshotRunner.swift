@@ -236,6 +236,12 @@ enum SnapshotRunner {
             let name = String(describing: type(of: view))
             let titlebar = inTitlebar || name == "NSTitlebarContainerView"
             if let pdf = view as? PDFView { pdfViews.append(pdf) }
+            // panes: a maximized pane's slot covers the screen and the other panes; what it covers
+            // is drawn only by the chrome (in z-order), never again on top.
+            if name == "PaneSlotView" {
+                let slot = view.convert(view.bounds, to: frame)
+                hosts.removeAll { slot.contains($0.convert($0.visibleRect, to: frame)) }
+            }
             if name.hasPrefix("NSHostingView<") || name.hasPrefix("CellHostingView<") || name == "PlatformGroupContainer" {
                 hosts.append(view)
             } else if name == "NSTitlebarContainerView" {
