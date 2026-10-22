@@ -7,7 +7,7 @@ shared to the Mac as capture bundles (`.lecturebundle`) that the Mac's smart imp
 
 | Product | Contents | Imports |
 |---|---|---|
-| `RecorderActivity` | `RecordingActivityState` (+ `slideText`, `detailLine`, `shortSlide`, `timerRange`), `RecordingActivityAttributes` (iOS), `RecorderCommand`, `RecorderControl` | Foundation, ActivityKit (iOS). Linked by the app and the widget extension |
+| `RecorderActivity` | `RecordingActivityState` (+ `slideText`, `detailLine`, `shortSlide`, `timerRange`), `RecordingActivityAttributes` (iOS), `RecorderCommand` (`nextSlide(from:)`, `stop`), `RecorderControl` | Foundation, ActivityKit (iOS). Linked by the app and the widget extension |
 | `Recorder` | `PhoneRecorder`, `PhoneCapture`, `RecorderText` | RecorderActivity, StudyCore, Capture, Courses (ActivityKit on iOS) |
 | `RecorderUI` | `RecorderScreen` (+ internal `OutboxView`, `RecorderWaveform`) | Recorder, StudyUI, Capture, CaptureUI, SwiftUI |
 
@@ -71,6 +71,11 @@ recorder.liveActivityState      // what the Live Activity shows (parity: the Loc
   shows changes (a slide stamp, the course), one update after another; ended on Stop (or when a
   failure stopped the recording) with its final state (`stoppedAt`: the time freezes) and
   `.immediate` dismissal. Its buttons act only on their own recording; Stop there stops at once.
+  The system may run one tap's intent twice, so every command is safe to repeat: Next Slide
+  carries the slide its button was drawn for (`NextSlideIntent.slide`, `nextSlide(from:)`) and
+  moves only while the recorder is still on it (otherwise it logs, does nothing and sends the
+  activity the slide on screen again); a second Stop finds nothing recording. Two real taps
+  before the activity redraws count as one.
   `activate()` ends activities of a recording the app no longer has. The elapsed time counts by
   itself (`Text(timerInterval:)`), so a locked phone does no work between stamps.
 - **Waveform**: four level samples a second while recording with the screen active (nothing while
