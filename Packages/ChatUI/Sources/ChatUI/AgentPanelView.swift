@@ -2,83 +2,73 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// The panel's one component, in both sizes (mockup "the agent panel: one component, two sizes"):
+/// The chat's one component, in every size (mockup "the agent panel: one component, two sizes"):
 /// the title row (the conversation's title as the history menu, ⤢ / ⤡, close), the thread, the
-/// task line and the composer.
+/// task line and the composer. The Mac's Agent pane draws it without the title row (the pane host's
+/// header carries the menu, `AgentPaneAccessory`).
 struct AgentPanelView: View {
     enum Style: Hashable {
+        /// The small chat (the Mac's floating panel, the iPad's overlay).
         case compact
+        /// The Mac's Agent pane, the iPad's column.
         case expanded
         /// M7: the iPhone's sheet (`AgentSheet`; its thread only).
         case sheet
     }
 
-    enum HeaderPlacement: Hashable {
-        /// In the panel (compact; expanded in renders).
+    enum Header: Hashable {
+        /// None: the Mac's Agent pane (its header is the pane host's).
+        case none
+        /// In the chat (the small chat; the expanded one in renders).
         case inline
-        /// The expanded column's header as a toolbar item level with the toolbar, while shown.
+        #if os(iOS)
+        /// The iPad's expanded column: its header as toolbar items level with the toolbar.
         case toolbar
+        #endif
     }
 
     let style: Style
     let model: AgentPanelModel
-    /// The context on screen, settled (the prompt, the context lines).
-    let context: AgentContext
-    /// The context a message carries, read at ↩ (the playhead).
-    let sendContext: @MainActor () -> AgentContext
-    /// Compact: the panel's greatest height (half the window); expanded: the thread's (infinity).
+    /// Compact: the chat's greatest height (half the window; infinity in the Mac's floating panel,
+    /// which proposes its own); expanded: the thread's (infinity).
     let maxHeight: CGFloat
-    let headerPlacement: HeaderPlacement
-    /// The compact panel's drag (nil: not movable).
-    let move: PanelMove?
-    let moveEnded: ((CGSize) -> Void)?
+    let header: Header
+    /// Dragging the title row's free part moves the small chat (nil: it does not move).
+    let drag: PanelDrag?
+    /// The small chat fills the height it is given (the student resized the floating panel): the
+    /// thread takes the room left, its rows at the bottom.
+    let fillsHeight: Bool
 
     @Environment(\.agentPanelActions) private var actions
     private let historyQuery: FetchAll<AgentConversation>
-    /// Memory… from the expanded header's title menu (a toolbar item).
-    @State private var showsMemory = false
-    /// The compact panel's task line, composer and notice, measured (the thread gets the rest).
+    /// The small chat's task line, composer and notice, measured (the thread gets the rest).
     @State private var bottomHeight: CGFloat = 52
     /// mt: the kind of the material the reader shows (the prompt names a book or a paper).
     @State private var materialKind: MaterialKind?
     @Dependency(\.defaultDatabase) private var database
 
     init(
-        style: Style,
-        model: AgentPanelModel,
-        context: AgentContext,
-        sendContext: @escaping @MainActor () -> AgentContext,
-        maxHeight: CGFloat,
-        headerPlacement: HeaderPlacement = .inline,
-        move: PanelMove? = nil,
-        moveEnded: ((CGSize) -> Void)? = nil
+        style: Style, model: AgentPanelModel, maxHeight: CGFloat, header: Header, drag: PanelDrag? = nil, fillsHeight: Bool = false
     ) {
         self.style = style
         self.model = model
-        self.context = context
-        self.sendContext = sendContext
         self.maxHeight = maxHeight
-        self.headerPlacement = headerPlacement
-        self.move = move
-        self.moveEnded = moveEnded
-        historyQuery = FetchAll(
-            AgentConversation.where { $0.kind.eq(ConversationKind.app) }.order { $0.createdAt.desc() }.limit(AgentPanelView.historyLimit)
-        )
+        self.header = header
+        self.drag = drag
+        self.fillsHeight = fillsHeight
+        historyQuery = AgentHistory.query()
     }
-
-    static let historyLimit = 40
 
     private var history: [AgentConversation] { historyQuery.wrappedValue }
 
-    /// The most recently active conversation: the one the panel opens on.
-    private var newest: AgentConversation.ID? {
-        history.max { $0.updatedAt < $1.updatedAt }?.id
-    }
+    /// The most recently active conversation: the one the chat opens on.
+    private var newest: AgentConversation.ID? { AgentHistory.newest(history) }
 
     private var conversationID: AgentConversation.ID? { model.conversationID(newest: newest) }
 
     var body: some View {
-        if headerPlacement == .toolbar {
+        #if os(iOS)
+        if header == .toolbar {
             // The header as the toolbar's own items over the column (title, flexible space, ⤡ and
             // Close), laid out by the toolbar: nothing measures the column, so dragging its edge
             // or resizing the window never rebuilds a toolbar item.
@@ -87,8 +77,8 @@ struct AgentPanelView: View {
                     // Only while shown: SwiftUI keeps a hidden inspector's content (and these) alive.
                     if model.mode == .expanded {
                         ToolbarItem(placement: .automatic) {
-                            AgentTitleMenu(model: model, history: history, conversationID: conversationID, showsMemory: $showsMemory)
-                                .frame(maxWidth: AgentPanelMetrics.toolbarTitleWidth, alignment: .leading)
+                            AgentTitleMenu(model: model, history: history, conversationID: conversationID)
+                                .frame(maxWidth: AgentPanelMetrics.titleWidth, alignment: .leading)
                         }
                         .sharedBackgroundVisibility(.hidden)
                         ToolbarSpacer(.flexible)
@@ -100,34 +90,39 @@ struct AgentPanelView: View {
                         .sharedBackgroundVisibility(.hidden)
                     }
                 }
-                .sheet(isPresented: $showsMemory) {
-                    ChatMemorySheet()
-                }
         } else {
             // No toolbar content from the compact panel: its updates never touch the window's toolbar.
             panel
         }
+        #else
+        panel
+        #endif
     }
 
     private var panel: some View {
         let conversationID = conversationID
+        let context = model.shownContext
+        let fills = style == .expanded || fillsHeight
         return VStack(spacing: 0) {
-            switch headerPlacement {
-            case .inline:
-                header
+            if header == .inline {
+                titleRow
                     .frame(height: style == .compact ? AgentPanelMetrics.compactHeader : AgentPanelMetrics.expandedHeader)
                 if style == .expanded { Hairline() }
-            case .toolbar:
-                Hairline()
             }
+            #if os(iOS)
+            if header == .toolbar { Hairline() }
+            #endif
             AgentThreadView(style: style, conversationID: conversationID, model: model, context: context, maxHeight: threadMaxHeight)
                 .id(conversationID)
+                .frame(maxHeight: fillsHeight ? .infinity : nil, alignment: .bottom)
             VStack(spacing: 0) {
                 AgentTaskLineSection(conversationID: conversationID, now: model.now)
                     .padding(.horizontal, style == .compact ? 14 : 16)
-                AgentComposer(model: model, prompt: prompt, conversationID: conversationID, send: { send(to: conversationID) })
-                    .padding(.horizontal, style == .compact ? 8 : 12)
-                    .padding(.bottom, model.notice == nil ? (style == .compact ? 8 : 12) : 4)
+                AgentComposer(model: model, style: style, prompt: prompt(context), conversationID: conversationID) {
+                    send(to: conversationID)
+                }
+                .padding(.horizontal, style == .compact ? 8 : 12)
+                .padding(.bottom, model.notice == nil ? (style == .compact ? 8 : 12) : 4)
                 if let notice = model.notice {
                     // Why the message or a file did not go, until the next edit.
                     Text(verbatim: notice)
@@ -143,7 +138,7 @@ struct AgentPanelView: View {
                 if style == .compact { bottomHeight = height }
             }
         }
-        .frame(maxHeight: style == .expanded ? .infinity : nil, alignment: .top)
+        .frame(maxHeight: fills ? .infinity : nil, alignment: .top)
         .task(id: context.materialID) {
             guard let id = context.materialID else {
                 materialKind = nil
@@ -158,8 +153,8 @@ struct AgentPanelView: View {
         }
     }
 
-    /// The thread's room: compact, the panel is at most `maxHeight` (half the window) with its
-    /// title row, task line, composer and notice (a tall composer takes from the thread).
+    /// The thread's room: compact, the chat is at most `maxHeight` with its title row, task line,
+    /// composer and notice (a tall composer takes from the thread).
     private var threadMaxHeight: CGFloat {
         guard style == .compact else { return maxHeight }
         return max(80, maxHeight - AgentPanelMetrics.compactHeader - bottomHeight)
@@ -167,26 +162,23 @@ struct AgentPanelView: View {
 
     // MARK: Header
 
-    private var header: some View {
-        AgentPanelHeader(
-            model: model, history: history, conversationID: conversationID, isExpanded: style == .expanded,
-            move: move, moveEnded: moveEnded
-        )
-        .padding(.leading, style == .compact ? 6 : 8)
-        .padding(.trailing, style == .compact ? 6 : 10)
+    private var titleRow: some View {
+        AgentPanelHeader(model: model, history: history, conversationID: conversationID, isExpanded: style == .expanded, drag: drag)
+            .padding(.leading, style == .compact ? 6 : 8)
+            .padding(.trailing, style == .compact ? 6 : 10)
     }
 
     // MARK: Composer
 
-    /// The prompt names what the next message is about; after a question in this opening of the
-    /// panel, "Ask a follow-up…".
-    private var prompt: Text {
+    /// The prompt names what the next message is about; after a question since the chat appeared,
+    /// "Ask a follow-up…".
+    private func prompt(_ context: AgentContext) -> Text {
         if model.askedSinceOpen || model.pending != nil { return Text("Ask a follow-up…") }
         return Self.prompt(for: context, materialKind: materialKind)
     }
 
     /// mt: in a material's reader (a page in view) the prompt names it, "Ask about this book" /
-    /// "Ask about this paper", and a passage taken to the panel "Ask about the selection"; the
+    /// "Ask about this paper", and a passage taken to the chat "Ask about the selection"; the
     /// shelf stays "Ask about this course".
     static func prompt(for context: AgentContext, materialKind: MaterialKind? = nil) -> Text {
         switch context.screen {
@@ -214,7 +206,7 @@ struct AgentPanelView: View {
     /// handed over or not stored yet (`pending`), or while the agent answers; never empty.
     private func send(to conversationID: AgentConversation.ID?) {
         guard model.canSendNow else { return }
-        model.send(to: conversationID, context: sendContext(), actions: actions)
+        model.send(to: conversationID, context: model.sendContext(), actions: actions)
     }
 }
 
@@ -297,31 +289,50 @@ extension AgentPanelModel {
     }
 }
 
+/// A drag on the small chat's title row: the Mac's floating panel moves its layer
+/// (`\.floatingPanelMover`), the iPad's overlay moves by an offset (`PanelMove`). Translations are
+/// in window points since the drag began.
+struct PanelDrag {
+    var changed: @MainActor (CGSize) -> Void
+    var ended: @MainActor (CGSize) -> Void
+    /// The gesture ended without `ended` (the window lost the pointer).
+    var cancelled: @MainActor () -> Void
+}
+
+#if os(macOS)
+extension PanelDrag {
+    /// The floating panel's mover: a cancelled drag leaves the panel where it was dragged to.
+    init(_ mover: FloatingPanelMover) {
+        self.init(changed: mover.changed, ended: { _ in mover.ended() }, cancelled: mover.ended)
+    }
+}
+#endif
+
 /// The title row: the conversation's title as a menu (recent conversations by day, titles only;
-/// New Chat, Memory…), then ⤢ Expand / ⤡ Shrink and Close. The compact panel moves by dragging it.
+/// New Chat, Memory…), then ⤢ Expand / ⤡ Shrink and Close. The small chat moves by dragging it.
 private struct AgentPanelHeader: View {
     let model: AgentPanelModel
     let history: [AgentConversation]
     let conversationID: AgentConversation.ID?
     let isExpanded: Bool
-    let move: PanelMove?
-    let moveEnded: ((CGSize) -> Void)?
+    let drag: PanelDrag?
 
-    @State private var showsMemory = false
-    /// A drag is in flight (a cancelled one puts the panel back).
+    /// A drag is in flight (a cancelled one ends where it is).
     @GestureState private var isMoving = false
+    /// `ended` has not run for the drag in flight.
+    @State private var isDragging = false
 
     var body: some View {
         HStack(spacing: 2) {
-            // At most 200 pt: a long title truncates and leaves the row free to drag the panel by.
-            titleMenu
-                .frame(maxWidth: isExpanded ? nil : 200, alignment: .leading)
+            // At most 200 pt: a long title truncates and leaves the row free to drag the chat by.
+            AgentTitleMenu(model: model, history: history, conversationID: conversationID)
+                .frame(maxWidth: isExpanded ? nil : AgentPanelMetrics.titleWidth, alignment: .leading)
                 .layoutPriority(1)
             Color.clear
                 .frame(minWidth: 4, maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 #if os(macOS)
-                .pointerStyle(move == nil ? nil : (isMoving ? .grabActive : .grabIdle))
+                .pointerStyle(drag == nil ? nil : (isMoving ? .grabActive : .grabIdle))
                 #endif
             AgentPanelHeaderButtons(model: model, isExpanded: isExpanded)
         }
@@ -329,25 +340,25 @@ private struct AgentPanelHeader: View {
         .foregroundStyle(.secondary)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
-        // Window coordinates: the translation does not change as the panel moves under the
-        // pointer. It only goes into `PanelMove` (read where the panel is placed, not here).
+        // Window coordinates: the translation does not change as the chat moves under the pointer.
         .gesture(
             DragGesture(minimumDistance: 3, coordinateSpace: .global)
                 .updating($isMoving) { _, moving, _ in moving = true }
-                .onChanged { value in move?.translation = value.translation }
-                .onEnded { value in moveEnded?(value.translation) },
-            isEnabled: move != nil
+                .onChanged { value in
+                    isDragging = true
+                    drag?.changed(value.translation)
+                }
+                .onEnded { value in
+                    isDragging = false
+                    drag?.ended(value.translation)
+                },
+            isEnabled: drag != nil
         )
         .onChange(of: isMoving) { _, moving in
-            if !moving, let move, move.translation != .zero { move.translation = .zero }
+            guard !moving, isDragging else { return }
+            isDragging = false
+            drag?.cancelled()
         }
-        .sheet(isPresented: $showsMemory) {
-            ChatMemorySheet()
-        }
-    }
-
-    private var titleMenu: some View {
-        AgentTitleMenu(model: model, history: history, conversationID: conversationID, showsMemory: $showsMemory)
     }
 }
 
@@ -393,7 +404,6 @@ struct AgentTitleMenu: View {
     let conversationID: AgentConversation.ID?
     var fontSize: CGFloat = 13
     var chevronSize: CGFloat = 8.5
-    @Binding var showsMemory: Bool
 
     @Environment(\.locale) private var locale
     @Environment(\.timeZone) private var timeZone
@@ -426,7 +436,9 @@ struct AgentTitleMenu: View {
             }
             Divider()
             Button("New Chat") { model.newChat() }
-            Button("Memory…") { showsMemory = true }
+            // The sheet comes from `.agentPanel` (or the iPhone's sheet): never from a pane or the
+            // floating panel, which are other hosting views.
+            Button("Memory…") { model.showsMemory = true }
         } label: {
             HStack(spacing: 5) {
                 Text(verbatim: title)
@@ -453,6 +465,20 @@ struct AgentTitleMenu: View {
     static func menuTitle(_ conversation: AgentConversation) -> String {
         let title = conversation.title.trimmingCharacters(in: .whitespacesAndNewlines)
         return title.isEmpty ? String(localized: "New Chat") : title
+    }
+}
+
+/// The title menu's conversations: the 40 most recent `app` conversations, newest first.
+enum AgentHistory {
+    static let limit = 40
+
+    static func query() -> FetchAll<AgentConversation> {
+        FetchAll(AgentConversation.where { $0.kind.eq(ConversationKind.app) }.order { $0.createdAt.desc() }.limit(limit))
+    }
+
+    /// The most recently active conversation: the one a chat opens on.
+    static func newest(_ history: [AgentConversation]) -> AgentConversation.ID? {
+        history.max { $0.updatedAt < $1.updatedAt }?.id
     }
 }
 

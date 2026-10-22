@@ -64,7 +64,6 @@ public struct AgentSheet: View {
     @Environment(\.agentPanelActions) private var actions
     @State private var model: AgentPanelModel
     @State private var detent: PresentationDetent
-    @State private var showsMemory = false
     private let historyQuery: FetchAll<AgentConversation>
 
     /// - Parameters:
@@ -78,16 +77,12 @@ public struct AgentSheet: View {
             now: launch.now
         )))
         _detent = State(initialValue: launch.detent == .large ? .large : .height(Self.smallHeight))
-        historyQuery = FetchAll(
-            AgentConversation.where { $0.kind.eq(ConversationKind.app) }.order { $0.createdAt.desc() }.limit(AgentPanelView.historyLimit)
-        )
+        historyQuery = AgentHistory.query()
     }
 
     private var history: [AgentConversation] { historyQuery.wrappedValue }
 
-    private var newest: AgentConversation.ID? {
-        history.max { $0.updatedAt < $1.updatedAt }?.id
-    }
+    private var newest: AgentConversation.ID? { AgentHistory.newest(history) }
 
     public var body: some View {
         let model = model
@@ -96,7 +91,7 @@ public struct AgentSheet: View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 AgentTitleMenu(
-                    model: model, history: history, conversationID: conversationID, fontSize: 17, chevronSize: 11, showsMemory: $showsMemory
+                    model: model, history: history, conversationID: conversationID, fontSize: 17, chevronSize: 11
                 )
                 Spacer(minLength: 8)
             }
@@ -122,7 +117,7 @@ public struct AgentSheet: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.agentThreadMetrics, .sheet)
-        .sheet(isPresented: $showsMemory) {
+        .sheet(isPresented: Bindable(model).showsMemory) {
             ChatMemorySheet()
         }
         .presentationDetents([.height(Self.smallHeight), .large], selection: $detent)
@@ -281,7 +276,12 @@ struct SheetComposer: View {
         .background(Color.contentBackground, in: shape)
         .overlay { shape.strokeBorder(.separator, lineWidth: 0.5) }
         .onChange(of: isFocused) { _, focused in model.composerFocused = focused }
-        .onChange(of: model.focusRequests) { isFocused = true }
+        .onChange(of: model.composerRequest) { _, request in
+            // The sheet's one composer takes every request.
+            guard let request else { return }
+            model.composerRequest = nil
+            isFocused = request.action == .focus
+        }
     }
 
     @ViewBuilder

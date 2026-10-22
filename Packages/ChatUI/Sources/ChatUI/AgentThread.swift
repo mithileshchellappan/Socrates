@@ -417,14 +417,16 @@ struct AgentThreadView: View {
         if let reply = box.reply, awaited.replaces.contains(reply) { box.reply = nil }
     }
 
-    /// Compact: as tall as the thread up to `maxHeight` (sized in the same layout pass as its
-    /// rows, so it grows and shrinks with them without a frame's lag), then it scrolls under a
-    /// faded top edge, and a 14 pt faded bottom edge while more is below (as Review's rail and
-    /// transcript). Expanded and the sheet: the whole height, the rows at its bottom.
+    /// Compact: as tall as the thread up to `maxHeight` and the height offered (the Mac's floating
+    /// panel, at most half the window or the size the student gave it; sized in the same layout
+    /// pass as its rows, so it grows and shrinks with them without a frame's lag), then it scrolls
+    /// under a faded top edge, and a 14 pt faded bottom edge while more is below (as Review's rail
+    /// and transcript). Expanded and the sheet: the whole height, the rows at its bottom.
     @ViewBuilder
     private func scroll(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
         if style == .compact {
-            let overflows = contentHeight > maxHeight + 0.5
+            let shownHeight = min(maxHeight, viewportHeight > 1 ? viewportHeight : .infinity)
+            let overflows = contentHeight > shownHeight + 0.5
             UpToHeight(maxHeight: maxHeight) {
                 scrollView(items: items, requests: requests, working: working, state: state)
             }
@@ -1396,15 +1398,16 @@ struct TileFlow: Layout {
 
 // MARK: - Compact height
 
-/// Its content's ideal height up to `maxHeight` (a scroll view: as tall as its rows, then it
-/// scrolls), worked out in the same layout pass as the rows.
+/// Its content's ideal height up to `maxHeight` and the height offered (a scroll view: as tall as
+/// its rows, then it scrolls), worked out in the same layout pass as the rows.
 struct UpToHeight: Layout {
     var maxHeight: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard let content = subviews.first else { return .zero }
         let ideal = content.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
-        return CGSize(width: proposal.width ?? ideal.width, height: min(max(ideal.height, 1), maxHeight))
+        let cap = min(maxHeight, proposal.height ?? .infinity)
+        return CGSize(width: proposal.width ?? ideal.width, height: min(max(ideal.height, 1), cap))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {

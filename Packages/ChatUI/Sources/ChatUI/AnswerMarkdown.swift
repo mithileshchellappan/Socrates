@@ -129,7 +129,8 @@ struct AnswerMarkdownView: View {
         switch block {
         case .table(let table):
             // As wide as its cells when that fits the panel; else it scrolls sideways, never
-            // squeezing its columns into a word per line.
+            // squeezing its columns into a word per line. Its width holds while a divider or the
+            // small chat's edge is dragged (the words around it reflow).
             ViewThatFits(in: .horizontal) {
                 tableGrid(table)
                 ScrollView(.horizontal) {
@@ -138,6 +139,7 @@ struct AnswerMarkdownView: View {
                 }
                 .scrollIndicators(.automatic)
             }
+            .defersReflowWhileResizing()
         case .code(let code, _):
             ScrollView(.horizontal) {
                 Text(verbatim: code)
@@ -152,6 +154,7 @@ struct AnswerMarkdownView: View {
             .scrollIndicators(.automatic)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(QuietFill(), in: .rect(cornerRadius: 8))
+            .defersReflowWhileResizing()
         case .quote(let text), .callout(_, let text):
             words(text, sparkle: false)
                 .padding(.leading, 10)
