@@ -74,8 +74,9 @@ recorder.liveActivityState      // what the Live Activity shows (parity: the Loc
   The system may run one tap's intent twice, so every command is safe to repeat: Next Slide
   carries the slide its button was drawn for (`NextSlideIntent.slide`, `nextSlide(from:)`) and
   moves only while the recorder is still on it (otherwise it logs, does nothing and sends the
-  activity the slide on screen again); a second Stop finds nothing recording. Two real taps
-  before the activity redraws count as one.
+  activity the slide on screen again); a second Stop finds nothing recording. The intent
+  returns only once the activity has the new slide, so a suspended app never leaves an old
+  button behind. Two real taps before the activity redraws count as one.
   `activate()` ends activities of a recording the app no longer has. The elapsed time counts by
   itself (`Text(timerInterval:)`), so a locked phone does no work between stamps.
 - **Waveform**: four level samples a second while recording with the screen active (nothing while
