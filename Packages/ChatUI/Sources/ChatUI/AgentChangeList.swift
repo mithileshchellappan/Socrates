@@ -62,7 +62,9 @@ struct AgentChangeRowsRequest: FetchKeyRequest {
                 entry.receivedAt = message.receivedAt
             }
         }
-        if let lectureID = change.lectureID, let lecture = try Lecture.find(lectureID).fetchOne(db) {
+        // A slide (a course rule's): its page and the lecture showing it now.
+        try entry.readSlide(in: db)
+        if let lectureID = entry.source.lectureID, let lecture = try Lecture.find(lectureID).fetchOne(db) {
             entry.lectureNumber = lecture.number
             entry.lectureTitle = lecture.title
             entry.lectureHeldAt = lecture.heldAt
@@ -148,7 +150,7 @@ private struct AgentChangeRowView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(isUndone ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
                         .lineLimit(1)
-                    Image(systemName: Self.glyph(change.sourceKind))
+                    Image(systemName: change.sourceKind.symbol)
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 3)
@@ -246,15 +248,4 @@ private struct AgentChangeRowView: View {
         return Text("\(result)\(Text(verbatim: String(rest)))").monospacedDigit()
     }
 
-    /// The source's glyph: a mail, what the student said, a recording, a timetable or calendar.
-    static func glyph(_ kind: SourceRef.Kind) -> String {
-        switch kind {
-        case .mail: "envelope"
-        case .chat: "bubble.left"
-        case .timetable, .calendar: "calendar"
-        case .transcript: "waveform"
-        case .slide: "display"
-        default: "doc.text"
-        }
-    }
 }

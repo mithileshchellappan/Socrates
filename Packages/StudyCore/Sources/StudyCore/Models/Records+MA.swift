@@ -248,7 +248,7 @@ public struct AgentEvent: StudyRecord {
     public var state: AgentEventState
     /// One per source version: "mail:<Message-ID>:<parse version or flags hash>",
     /// "transcript:<recording id>:<newest line stamp>", "study_pass:<lecture id>:<input hash>",
-    /// "timetable:<file sha256>", "calendar:<event id>:<modified>", "slides:<deck id>:<blob sha256>".
+    /// "timetable:<file sha256>", "calendar:<event id>:<modified>", "slides:<deck id>:<blob sha256>:<course id>".
     @Column("source_key") public var sourceKey: String
     @Column("course_id") public var courseID: Course.ID?
     @Column("mail_message_id") public var mailMessageID: MailMessage.ID?
@@ -256,7 +256,7 @@ public struct AgentEvent: StudyRecord {
     @Column("recording_id") public var recordingID: Recording.ID?
     /// The fact itself when no other row holds it (a timetable diff, a calendar edit), ≤ 6,000
     /// characters; nil when triage reads the source rows (mail, transcript, study pass); for
-    /// slides, the page numbers triage reads.
+    /// slides, the pages triage reads ("<number>:<hash>").
     public var detail: String?
     public var attempts: Int
     public var error: String?

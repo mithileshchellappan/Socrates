@@ -224,7 +224,7 @@ public struct PracticeExamSheet: View {
 
     /// The glyph's help: the exam form rule when announced, else the handbook's range.
     private var lengthSource: String {
-        if let rule = course?.rules.first(where: { $0.kind == .examForm }), !rule.text.isEmpty {
+        if let rule = course?.rules.first(where: { $0.kind == .examForm && $0.isConfirmed }), !rule.text.isEmpty {
             return "\(rule.title): \(rule.text)"
         }
         let range = UniversityProfile.current.writtenExamMinutes

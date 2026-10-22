@@ -20,8 +20,9 @@ import StudyCore
 ///   applies it through the change log. Escalated to an Opus 5.5 task (effort medium, the event's
 ///   domain read tools + apply, mail as data, never web) instead: `escalate`, any confidence
 ///   < 0.7, more than 3 actions from one event (not for slides: a deck states several rules, and
-///   its rules wait for the student's Confirm), an exam moved or cancelled, several sessions that
-///   fit, or a conflict with a newer or stronger source or the student's own edit.
+///   its rules wait for the student's Confirm), an exam moved or cancelled (for slides, a new exam
+///   on a day none of the course's open exams has), several sessions that fit, or a conflict with
+///   a newer or stronger source or the student's own edit.
 /// - Service trouble (a usage limit, no Claude Code) leaves the events pending (no attempt); an
 ///   unusable answer counts an attempt per event (`failed` after 3).
 actor FactTriage {
@@ -46,7 +47,7 @@ actor FactTriage {
         self.services = services
         self.client = client
         self.changeLog = changeLog
-        applier = FactApplier(services: services)
+        applier = FactApplier(services: services, now: now)
         self.quit = quit
         self.now = now
     }
@@ -305,30 +306,28 @@ actor FactTriage {
     func decide(
         _ event: AgentEvent, decision: FactDecision, prepared: Prepared, model: String, apiCallID: APICall.ID?, report: inout Report
     ) async throws {
-        let fromSlides = event.kind == .slides
-        // A deck's rules and dates are its own course's.
-        let actions = fromSlides ? decision.actions.map { action in
-            var action = action
-            action.course = prepared.courseID?.uuidString.lowercased() ?? action.course
-            return action
-        } : decision.actions
         var reasons: [String] = []
         if decision.escalate { reasons.append(decision.reason.isEmpty ? "The triage asked for a careful decision." : decision.reason) }
-        if !fromSlides, actions.count > Self.maximumActions { reasons.append("\(actions.count) changes from one source.") }
-        if actions.contains(where: { $0.confidence < Self.minimumConfidence }) { reasons.append("The triage was not sure.") }
+        if event.kind != .slides, decision.actions.count > Self.maximumActions { reasons.append("\(decision.actions.count) changes from one source.") }
+        if decision.actions.contains(where: { $0.confidence < Self.minimumConfidence }) { reasons.append("The triage was not sure.") }
         // Verify and convert first; nothing is applied when the event goes to a careful decision.
         var planned: [(ChangeLog.Request, VerifiedQuote, FactAction)] = []
-        for action in actions {
+        for action in decision.actions {
             guard let verified = try await applier.verify(action.quote, line: action.line, material: prepared.material) else {
                 AppAgentModule.log.notice("Triage action dropped: its quote is not in the source")
                 continue
             }
-            if !fromSlides, try await touchesExam(action) {
+            if try await touchesExam(action) {
                 reasons.append("An exam date would change.")
                 continue
             }
             switch try await applier.request(action, verified: verified) {
-            case .success(let request): planned.append((request, verified, action))
+            case .success(let request):
+                if verified.isSlide, try await addsAnotherExam(request) {
+                    reasons.append("An exam date would change.")
+                    continue
+                }
+                planned.append((request, verified, action))
             case .failure(.ambiguous(let text)): reasons.append(text)
             case .failure(let refusal): AppAgentModule.log.notice("Triage action dropped: \(refusal.description, privacy: .public)")
             }
@@ -366,13 +365,29 @@ actor FactTriage {
         }
     }
 
+    /// An exam from slides on a day none of the course's open exams has (±1 day): the exam may have
+    /// moved, and slides cannot change an item, so it would stand beside the old one.
+    func addsAnotherExam(_ request: ChangeLog.Request) async throws -> Bool {
+        guard case .itemAdd(let draft, _) = request, draft.kind == .exam, let courseID = draft.courseID, let due = draft.dueAt else { return false }
+        let exams = try await services.database.read { db in
+            try TrackedItem.where { $0.status.eq(TrackedItemStatus.open) && $0.kind.eq(TrackedItemKind.exam) }.fetchAll(db)
+        }
+        let timeZone = AppAgentModule.timeZone
+        let day = CalendarDay(due, in: timeZone)
+        let days = exams.filter { $0.courseID == courseID }.compactMap { $0.dueAt.map { CalendarDay($0, in: timeZone) } }
+        return !days.isEmpty && !days.contains { abs(day.days(to: $0)) <= 1 }
+    }
+
     /// The escalation task: Opus 5.5, effort medium, the event's domain read tools and apply,
     /// mail only for a mail event, never web.
     func escalate(_ event: AgentEvent, decision: FactDecision, prepared: Prepared, reasons: [String]) async throws -> AgentTask {
         var tools: [AgentToolGroup] = [.items, .sessions, .calendar, .apply]
         switch event.kind {
         case .mail: tools.insert(.mail, at: 0)
-        case .transcript, .studyPass, .slides: tools.insert(.lectures, at: 0)
+        case .transcript, .studyPass: tools.insert(.lectures, at: 0)
+        // The pages are in the task's input; slides give no session change, and the lecture
+        // tools would read pages the triage left out (text that talks to a model).
+        case .slides: tools = [.items, .apply]
         default: break
         }
         let encoder = JSONEncoder()
@@ -385,8 +400,8 @@ actor FactTriage {
         case .timetable: "a timetable re-import"
         case .slides:
             "a course's organisational slides (deck \(SlideEvents.deckID(of: event)?.uuidString.lowercased() ?? "?")); they give "
-                + "only course rules, which wait for the student's Confirm and never replace the student's own rule, and items "
-                + "whose date the slide states"
+                + "only course rules of the deck's course, which wait for the student's Confirm and never replace the student's "
+                + "own rule, and new items whose date the slide states (never a change to an item that is there)"
         default: "an edit the student made in the Calendar app"
         }
         let goal = """

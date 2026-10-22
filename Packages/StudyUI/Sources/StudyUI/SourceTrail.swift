@@ -107,7 +107,7 @@ public struct SourceGlyph: View {
     public var body: some View {
         HStack(spacing: 2) {
             ForEach(kinds, id: \.self) { kind in
-                Image(systemName: Self.symbol(kind))
+                Image(systemName: kind.symbol)
                     .font(.system(size: 11.5))
                     .frame(width: 14, height: 14)
             }
@@ -123,16 +123,6 @@ public struct SourceGlyph: View {
         .accessibilityLabel(Text(label))
     }
 
-    static func symbol(_ kind: SourceRef.Kind) -> String {
-        switch kind {
-        case .mail: "envelope"
-        case .timetable, .calendar: "calendar"
-        case .profile: "doc.text"
-        case .slide: "display"
-        default: "waveform"
-        }
-    }
-
     private var label: String {
         if kinds == [.timetable] { return String(localized: "Source: timetable") }
         if kinds == [.slide] { return String(localized: "Source: slides") }
@@ -141,6 +131,22 @@ public struct SourceGlyph: View {
         case (true, false): String(localized: "Source: recording")
         case (false, true): String(localized: "Source: mail")
         case (false, false): String(localized: "Sources")
+        }
+    }
+}
+
+public extension SourceRef.Kind {
+    /// The source's glyph wherever a row names where it came from (DESIGN 4.6): a recording, a
+    /// mail, a timetable file or the calendar, a slide, what the student said, a web page.
+    var symbol: String {
+        switch self {
+        case .transcript: "waveform"
+        case .mail: "envelope"
+        case .timetable, .calendar: "calendar"
+        case .slide: "display"
+        case .chat: "bubble.left"
+        case .web: "globe"
+        default: "doc.text"
         }
     }
 }
@@ -305,8 +311,7 @@ public struct SourceTrailRows: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 4)
-            // The activity list builds its entries from a change's columns: the page from its reference.
-            if let page = entry.page ?? SlideReference(entry.source.rfcMessageID)?.page, let lectureID = entry.source.lectureID {
+            if let page = entry.page, let lectureID = entry.source.lectureID {
                 SlideChip(page: page) { openDestination(.lecture(lectureID, ReviewTarget(page: page))) }
             }
         }

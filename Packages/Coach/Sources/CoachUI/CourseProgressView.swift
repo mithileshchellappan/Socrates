@@ -721,20 +721,10 @@ private struct ReadingSourceButton: View {
     private var symbols: [String] {
         var symbols: [String] = []
         for source in reading.sources {
-            let symbol = Self.symbol(source.kind)
+            let symbol = source.kind.symbol
             if !symbols.contains(symbol) { symbols.append(symbol) }
         }
         return symbols
-    }
-
-    static func symbol(_ kind: SourceRef.Kind) -> String {
-        switch kind {
-        case .web: "globe"
-        case .slide: "display"
-        case .transcript: "waveform"
-        case .mail: "envelope"
-        default: "doc.text"
-        }
     }
 
     private var popover: some View {
@@ -747,7 +737,7 @@ private struct ReadingSourceButton: View {
             }
             ForEach(Array(reading.sources.enumerated()), id: \.offset) { _, source in
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: Self.symbol(source.kind))
+                    Image(systemName: source.kind.symbol)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .frame(width: 16)

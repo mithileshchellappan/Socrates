@@ -419,7 +419,8 @@ public actor ReplyDrafter {
             var courseLine = "The mail is about the course \(course.name)"
             if !course.professors.isEmpty { courseLine += " (lecturers: \(course.professors.joined(separator: ", ")))" }
             lines.append(courseLine + ".")
-            let rules = course.rules.filter { !$0.text.isEmpty }.map { "\($0.title): \($0.text)" }
+            // Only rules that stand: a proposal read from slides waits for the student's Confirm.
+            let rules = course.rules.filter { $0.isConfirmed && !$0.text.isEmpty }.map { "\($0.title): \($0.text)" }
             if !rules.isEmpty { lines.append("Course rules the student knows: " + rules.joined(separator: "; ") + ".") }
         }
         let languageName = language == "de" ? "German" : "English"

@@ -438,8 +438,8 @@ public struct AgentEventKind: StringKind {
     /// A "Socrates" event the student changed in another calendar app (`detail`).
     public static let calendar: Self = "calendar"
     /// A course deck's organisational pages (how the exercises, the admission and the exam work),
-    /// found in code: `detail` their page numbers ("2,3,7"), `lecture_id` the lecture showing the
-    /// first. One per deck version; a deck without such pages gets a `skipped` row (read once).
+    /// found in code: `detail` their numbers with a hash of their words ("2:1a2b3c4d,7:…"). One per
+    /// deck version and course; a deck without new such pages gets a `skipped` row (read once).
     public static let slides: Self = "slides"
 }
 
