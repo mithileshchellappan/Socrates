@@ -37,13 +37,15 @@ import SwiftUI
 // panes (DESIGN 6.4): every shot opens with the side panes as `RenderShot.panes` seeds them (each
 // kind's layout and the window-wide Agent pane, in the registration domain); a shot whose agent
 // starts expanded (`AgentPanelLaunch.Mode.expanded`) opens the Agent pane. On a library with DC
-// Lecture 2's notes and the student's own (`tools/parity/seed --panes-sample` makes one from
-// scratch, all invented) and Claude Code available (`--claude`): `40-panes` (1600 × 1000, Review on
-// slide 6: Notes on Whole lecture, the Agent pane beside it), `41-maximized` (the Agent pane
-// maximized over both), `41-stacked` (Notes stacked over Agent in one column), `panes-summary`
-// (Notes on Summary: Claude's notes), `panes-mail-1180` (Mail in a 1180 × 740 window with the Agent
-// pane: the sidebar hides, nothing grows), `panes-small-chat` (the small chat on Review) and, with a
-// DC Lecture 3 that has notes but none of the student's, `35-notes-empty`.
+// Lecture 2's notes, the student's own and their ink, its recording (transcript, no audio) and its
+// study pass (`tools/parity/seed --panes-sample` makes one from scratch, all invented) and Claude
+// Code available (`--claude`): `40-panes` (1600 × 1000, Review following slide 6: Notes on Whole
+// lecture, the Agent pane beside it), `41-maximized` (the Agent pane maximized over both),
+// `41-stacked` (Notes stacked over Agent in one column), `panes-summary` (Notes on Summary:
+// Claude's notes), `panes-this-slide` (Notes on This slide: the study pass's blocks beside the
+// transcript and the player), `panes-mail-1180` (Mail in a 1180 × 740 window with the Agent pane:
+// the sidebar hides, nothing grows), `panes-small-chat` (the small chat on Review) and, with a DC
+// Lecture 3 that has notes but none of the student's, `35-notes-empty`.
 //
 // `--review-tab lecture` (Whole lecture: the student's own notes) or `summary` (Claude's notes,
 // what Whole lecture showed before panes): every review opens on that tab of its Notes pane
@@ -612,6 +614,9 @@ struct ParityRender {
             RenderShot(name: "41-maximized", window: review(agent), panes: maximized, reviewTab: .lecture, size: wide),
             RenderShot(name: "41-stacked", window: review(agent), panes: stacked, reviewTab: .lecture, size: wide),
             RenderShot(name: "panes-summary", window: review(AgentPanelLaunch()), reviewTab: .summary),
+            // Mockup 03 in the pane: This slide's study blocks under the pane header, the transcript
+            // and the floating player at the width beside it.
+            RenderShot(name: "panes-this-slide", window: review(AgentPanelLaunch()), reviewTab: .slide),
             RenderShot(
                 name: "panes-small-chat", window: review(AgentPanelLaunch(mode: .compact, conversationID: conversation)),
                 reviewTab: .lecture

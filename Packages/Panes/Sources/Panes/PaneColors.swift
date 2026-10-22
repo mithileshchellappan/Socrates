@@ -5,8 +5,12 @@ import StudyUI
 /// The panes' AppKit colours (docs/DESIGN.md 3.1), light and dark: the headers, dividers and the
 /// floating panel here draw with AppKit.
 enum PaneColors {
-    /// The panel surface (StudyUI's `PanelSurface`, which the chat's SwiftUI views fill with).
-    static let surface = NSColor.panelSurface
+    /// The panel surface: StudyUI's `PanelSurface` (which the chat's SwiftUI views fill with) for
+    /// AppKit drawing, in the appearance it is drawn in.
+    static let surface = NSColor(name: nil) { appearance in
+        let rgb = PanelSurface.rgb(isDark: isDark(appearance))
+        return NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+    }
     /// Fill 2 (`--fill2`): the header buttons' hover.
     static let hoverFill = dynamic(light: NSColor(srgbRed: 120 / 255, green: 120 / 255, blue: 128 / 255, alpha: 0.17),
                                    dark: NSColor(srgbRed: 120 / 255, green: 120 / 255, blue: 128 / 255, alpha: 0.30))

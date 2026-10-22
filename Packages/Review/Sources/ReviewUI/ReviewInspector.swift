@@ -15,7 +15,7 @@ import SwiftUI
 /// - Whole lecture: only the student's own notes. On the Mac `YourNotesColumn` (the lecture's own
 ///   note, then the notes and ink by slide), following the slide on screen; a chip or thumbnail
 ///   moves the review. On iOS the lecture's own note and the slides' notes (`LectureYourNotes`).
-/// - Summary: Claude's notes of the lecture (`WholeLecturePane`), or the study pass's blocks until
+/// - Summary: Claude's notes of the lecture (`SummaryPane`), or the study pass's blocks until
 ///   they are written.
 struct ReviewNotesContent: View {
     let model: ReviewModel
@@ -50,7 +50,7 @@ struct ReviewNotesContent: View {
             WholeLectureNotes(model: model, notes: notes)
         case .summary:
             ScrollView {
-                WholeLecturePane(model: model, items: items)
+                SummaryPane(model: model, items: items)
             }
             .scrollIndicators(.automatic)
         }
@@ -392,14 +392,18 @@ private struct WholeLectureNotes: View {
     var body: some View {
         #if os(macOS)
         // The notes page's Your notes, following the slide on screen; a chip or a thumbnail moves
-        // the review (it never opens it again). It scrolls itself.
+        // the review (it never opens it again), and a new note gets the recording and the playhead
+        // then, as on This slide. It scrolls itself.
         let model = model
         YourNotesColumn(
             lectureID: model.lecture.id,
             follow: { .page(model.session.shownPage) },
+            recordingID: model.recording?.id,
+            playhead: { model.player?.time },
             onOpenSlide: { page in
                 Task { await model.session.selectThumbnail(page: page) }
             },
+            onLink: { ReviewNoteLinks.open($0, model: model) },
             onEditingChange: { editing in model.isEditingText = editing }
         )
         #else
@@ -465,8 +469,9 @@ private struct LectureYourNotes: View {
 /// Until the notes are written (or while a version is paused or failed): the study pass's blocks,
 /// and on the Mac the first show queues the notes (`queueIfNeeded`). A version that failed puts
 /// its failure line over the blocks (triangle, reason, Write Again…: `LectureNotesFailureBar`).
-/// The student's own notes are Whole lecture's.
-private struct WholeLecturePane: View {
+/// Write Again… for a finished version and Previous Version are the notes page's (its ⋯), as
+/// before panes. The student's own notes are Whole lecture's.
+private struct SummaryPane: View {
     let model: ReviewModel
     let items: StudyItems
     private let versionsQuery: FetchAll<LectureNotes>
@@ -509,7 +514,7 @@ private struct WholeLecturePane: View {
                     .padding(.horizontal, 14)
                     .padding(.top, 12)
             }
-            LectureNotesPane(model: model, items: items)
+            SummaryStudyBlocks(model: model, items: items)
         }
         .task(id: model.lecture.id) {
             guard queuesOnOpen else { return }
@@ -520,7 +525,7 @@ private struct WholeLecturePane: View {
             }
         }
         #else
-        LectureNotesPane(model: model, items: items)
+        SummaryStudyBlocks(model: model, items: items)
         #endif
     }
 }
@@ -559,7 +564,7 @@ private struct SummaryNotes: View {
 
 /// Summary before the notes are written: the study pass's summary, exam hints, things said in
 /// class and further reading.
-private struct LectureNotesPane: View {
+private struct SummaryStudyBlocks: View {
     let model: ReviewModel
     /// The study pass's rows (M4): the lecture's summary, every exam hint, everything only said in
     /// class by category, every further reading.

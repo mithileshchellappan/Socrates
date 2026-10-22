@@ -49,7 +49,7 @@ final class ReviewModel {
     /// so the screen publishes them (`ReviewActionsPublisher`).
     let notesCommands = LectureNotesCommandRelay()
     #endif
-    /// ln: a passage of the lecture's notes taken to the agent panel from Whole lecture (Continue
+    /// ln: a passage of the lecture's notes taken to the agent panel from Summary (Continue
     /// in Chat), sent with the review's own context (`ReviewAgentContext`) by the next message.
     var notesPassage: NotesPassageContext?
     /// A manual anchor is being written and re-aligned.

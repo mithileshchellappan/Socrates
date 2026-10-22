@@ -21,7 +21,7 @@ let package = Package(
         .package(path: "../ChatUI"),
         // M6: "Your notes" are rich notes (`NoteSession`, `NotesUI.NoteEditor`).
         .package(path: "../Notes"),
-        // ln: Whole lecture shows the lecture's notes (`LectureNotesView`).
+        // ln: Summary shows the lecture's notes (`LectureNotesView`); Whole lecture is Your notes (`YourNotesColumn`).
         .package(path: "../StudyPage")
     ],
     targets: [

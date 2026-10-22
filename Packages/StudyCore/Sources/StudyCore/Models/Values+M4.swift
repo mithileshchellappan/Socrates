@@ -41,8 +41,8 @@ public struct SaidInClassCategory: StringKind {
     /// pipeline owns deadlines).
     public static let deadline: Self = "deadline"
 
-    /// The order of "Whole lecture"'s subheadlines (Admin, Deadlines, Questions, Examples,
-    /// Explanations); unknown categories go last.
+    /// The order of the subheadlines in Review's Summary before Claude's notes are written (Admin,
+    /// Deadlines, Questions, Examples, Explanations); unknown categories go last.
     public static let displayOrder: [Self] = [.admin, .deadline, .question, .example, .explanation]
 }
 

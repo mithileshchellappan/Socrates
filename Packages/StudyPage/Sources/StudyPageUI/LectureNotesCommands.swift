@@ -42,7 +42,7 @@ extension EnvironmentValues {
     /// the outline. Nil: available, or unknown (renders).
     @Entry public var lectureNotesUnavailable: String?
 
-    /// The notes page and Review's Whole lecture pane queue a lecture's first notes when they open
+    /// The notes page and Review's Summary tab queue a lecture's first notes when they open
     /// (`LectureNotesRepository.queueIfNeeded`). Off in renders (parity, snapshots): opening a
     /// screen there never writes.
     @Entry public var lectureNotesQueuesOnOpen = true

@@ -24,10 +24,18 @@ through the screen's values, bindings or environment.
       lectureID: id,
       sections: { state.sections },                 // the notes page; Review passes none
       follow: { .section(state.readingSection) },   // or .page(model.session.shownPage) in Review
+      recordingID: model.recording?.id,             // Review only: a new note's recording
+      playhead: { model.player?.time },             // Review only: a new note's moment
       onOpenSlide: { page in … },                   // nil: a chip opens Review at the slide
+      onLink: { ReviewNoteLinks.open($0, model: model) }, // Review: a chip in a note moves it
       onEditingChange: { state.typingInColumn = $0 }
   )
   ```
+
+  With a recording, a note started in the column gets it and the playhead then (as Review's This
+  slide); the lecture's own note shows its moment after its last word (a slide's group has its
+  chip instead). Without a deck such a note lists by its moment once the typing ends (it stays in
+  the lecture's own note while it is typed in).
 
   `YourNotesFollow.page(n)` gives slide n's group the quiet fill and scrolls it a third down, as
   `.section` does for a section's groups: never while the pointer is over the column, while one of

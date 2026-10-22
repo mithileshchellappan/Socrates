@@ -6,7 +6,7 @@ import SwiftUI
 import AppKit
 #endif
 
-/// Where a lecture's notes are read: the pushed page (Lectures) or Review's Whole lecture pane.
+/// Where a lecture's notes are read: the pushed page (Lectures) or Review's Summary tab.
 public enum LectureNotesStyle: Hashable, Sendable {
     /// The page: Notes' 14 pt body on 21.7 pt lines (docs/plan-lecture-notes.md §2.2).
     case page

@@ -331,7 +331,7 @@ private struct ReviewInspectorColumn<Inspector: View>: ViewModifier {
 
 /// ma: tells the agent panel what the review shows (the lecture, the recording, the slide on
 /// screen) and, read at ↩, the playhead. Its own view, so the slide changing never re-renders the
-/// screen. ln: a notes passage taken to the chat from Whole lecture goes with the next message
+/// screen. ln: a notes passage taken to the chat from Summary goes with the next message
 /// (`refine` runs once per message).
 private struct ReviewAgentContext: View {
     let model: ReviewModel

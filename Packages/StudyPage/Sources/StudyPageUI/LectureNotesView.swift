@@ -6,7 +6,7 @@ import StudyUI
 import SwiftUI
 
 /// A lecture's notes (docs/plan-lecture-notes.md): one study text Claude wrote, read on the
-/// course's Lectures page (`.page`) and in Review's Whole lecture pane (`.inspector`): ONE
+/// course's Lectures page (`.page`) and in Review's Summary tab (`.inspector`): ONE
 /// read-only TextKit 2 document, so a selection spans paragraphs and figures.
 ///
 /// - The outline (from the version's sections) shows before the text; while it is written, the

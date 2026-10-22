@@ -2,7 +2,7 @@ import SwiftUI
 
 // nl (docs/plan-notes-layout.md §11): content zoom "like Word". View ▸ Actual Size (⌘0), Zoom In
 // (⌘+, also ⌘=) and Zoom Out (⌘−) scale the reading and writing CONTENT of the course screens (the
-// lecture notes page and Review's Whole lecture, the Your notes column, the note editor, Review's
+// lecture notes page and Review's Summary, the Your notes column, the note editor, Review's
 // transcript and inspector text, the course's Lectures list), never the sidebar, toolbar, buttons
 // or other chrome. One value for the whole app, kept in UserDefaults. Mac only: on iOS the scale
 // stays 1 and nothing is published.

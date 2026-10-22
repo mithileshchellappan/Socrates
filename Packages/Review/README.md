@@ -63,14 +63,15 @@ deck link on the default database, which the app already points at the same data
   last discussed slide (once per opening, never after Mark as Reviewed was toggled by hand).
 - **Screen.** Rail of 320 px thumbnails (CaptureUI `SlideImageView`, pencil when the slide has
   notes), the 2048 px slide (`SlideBitmapView`, prefetching ±2), the transcript in a lazy list with
-  `Slide 16 36:57–38:28` dividers, a floating glass player, and the inspector (This slide | Whole
-  lecture). No deck: no rail and no slide, notes on the lecture. No recording: no player and no
+  `Slide 16 36:57–38:28` dividers, a floating glass player, and the notes (This slide | Whole
+  lecture | Summary: the Mac's Notes pane, the iPad's inspector; see "Panes" below). No deck: no
+  rail and no slide, notes on the lecture. No recording: no player and no
   transcript. No transcript yet: the transcription job's determinate progress.
 - **Window layout (mockup 03).** The toolbar title is the screen's own item (title 3 semibold over
   the course and day; `.toolbar(removing: .title)`, the navigation title stays for the Window
-  menu). macOS 26 lays the toolbar out as one row with no section over the inspector, so the
-  inspector's header (segmented This slide | Whole lecture on a glass track, Hide Inspector) is one
-  toolbar item as wide as the inspector column, declared only while the inspector is shown (a
+  menu). The iPad (the Mac's notes are a side pane since panes): the toolbar is one row with no
+  section over the inspector, so the inspector's header (the segmented tabs on a glass track, Hide
+  Inspector) is one toolbar item as wide as the inspector column, declared only while it is shown (a
   hidden inspector's content stays alive, and its item would stay in the toolbar); Show Inspector
   appears in the main toolbar only while it is hidden. This needs the window's toolbar search field to be absent on this screen
   (the app shell attaches it on Today and Search only); with it, the header sits beside the
@@ -99,9 +100,10 @@ StudyCore rows; the pass itself is `Packages/StudyPass`.
 - **Inspector.** This slide: Summary (sparkle, grey 12.5 with one `TimeChip`), Your notes, Further
   reading (≤ 2 `FurtherReadingRow`s; a click opens the URL), a hairline, then the lecture-wide Exam
   hints (amber star; 16 pt professor pin + “quote” + chip) and Only said in class, 3 rows each in
-  time order, then "Show N more". Whole lecture: the lecture's summary, every exam hint, said in
-  class under Admin / Deadlines / Questions / Examples / Explanations, every further reading with a
-  `SlideChip`, notes by slide. Rows have Hide in their context menu.
+  time order, then "Show N more". Summary before Claude's notes are written (Whole lecture until
+  panes): the lecture's summary, every exam hint, said in class under Admin / Deadlines / Questions
+  / Examples / Explanations, every further reading with a `SlideChip`. Whole lecture is the
+  student's own notes ("Panes" below). Rows have Hide in their context menu.
 - **Pins** (`SlidePins`, StudyUI `AnnotationPin` + `PinCard`): an overlay in the slide's frame
   over the bitmap (never re-rendered). A professor pin sits 8 pt after the end of the line its
   `anchor_text` ends on (`SlideTextLocator`: PDFKit on the deck's PDF, whitespace, case, quotes,
@@ -397,12 +399,14 @@ three-tab header.
   chrome; without a deck "Whole lecture | Summary" (`ReviewModel.shownTab`).
   - This slide: unchanged.
   - Whole lecture: only the student's notes. Mac: `YourNotesColumn` following the slide on screen
-    (`.page(model.session.shownPage)`), its chips and thumbnails moving the review. iOS:
-    `LectureYourNotes`.
+    (`.page(model.session.shownPage)`), its chips and thumbnails moving the review; a note started
+    there gets the recording on screen and the playhead (`recordingID:`, `playhead:`), as on This
+    slide, and a chip in a note moves the review (`onLink:`). iOS: `LectureYourNotes`.
   - Summary: Claude's notes (`LectureNotesView`) and Further reading, without the own-note
     editor; before they are written, the study pass's blocks without Your notes. Queueing, the
-    failure bar, Ask, Keep, Highlight, Continue in Chat, Write Again and Previous Version as
-    before.
+    failure bar (and its Write Again…), Ask, Keep, Highlight and Continue in Chat as before. Write
+    Again… for a finished version and Previous Version stay on the notes page's ⋯ (and Edit ▸
+    Undo): Whole lecture never had them. `SummaryPane`, `SummaryNotes`, `SummaryStudyBlocks`.
 - **Kept per window.** `@SceneStorage("review.notesTab")` in `LectureReviewView` goes into each
   loaded `ReviewModel` and back on change; a render's `\.reviewInspectorTab` (now optional) wins.
 - **Ask / Highlight.** The pane is another hosting view than the screen, so Summary's notes hand

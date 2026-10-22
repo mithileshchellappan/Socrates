@@ -21,6 +21,9 @@ import SwiftUI
 ///   note has its empty note under the thumbnail. A chip or a thumbnail opens the slide
 ///   (`onOpenSlide`, else Review there).
 /// - A lecture without a deck: its notes with a moment, in time order, each after its time chip.
+/// - In Review a note started here gets the recording on screen and the playhead then (DESIGN 8.1);
+///   the lecture's own note shows its moment after its last word, and without a deck a note with a
+///   moment lists by it once the typing ends (it stays where it is typed until then).
 /// - What it follows (`YourNotesFollow`: the section being read, or the slide on screen) shares one
 ///   quiet fill, and the column scrolls it a third down from its top, never while the pointer is
 ///   over it, while one of its notes is being typed in, or within 2 s of the student scrolling it.
@@ -39,7 +42,10 @@ public struct YourNotesColumn: View {
     private let lectureID: Lecture.ID
     private let sections: @MainActor () -> [LectureNotesSection]
     private let follow: @MainActor () -> YourNotesFollow
+    private let recordingID: Recording.ID?
+    private let playhead: @MainActor () -> Double?
     private let onOpenSlide: ((Int) -> Void)?
+    private let onLink: ((NoteLink) -> Bool)?
     private let onEditingChange: (Bool) -> Void
 
     @Fetch private var rows: YourNotesRows
@@ -61,26 +67,41 @@ public struct YourNotesColumn: View {
     /// While its rows load and grow (editors made as they appear), the opening placement is taken
     /// again as the groups move, at once.
     @State private var appearedAt = Date()
+    /// The notes typed in the lecture's own note since the typing started. Without a deck one with
+    /// a moment lists by time, but not before the typing ends (it would show twice).
+    @State private var typedInOwn: Set<Note.ID> = []
+    /// Bumped when the typing in the own note ends without a deck: it is drawn again without the
+    /// notes that now list by their moment.
+    @State private var ownGeneration = 0
 
     /// - Parameters:
     ///   - sections: the current version's sections (the notes page reads them; this column's read
     ///     leaves `lecture_notes` alone, which is written ten times a second while notes stream).
     ///   - follow: what the column marks and scrolls to.
+    ///   - recordingID: the recording on screen (Review), which a new note is anchored to.
+    ///   - playhead: the player's time when a new note is started (Review); nil: no moment.
     ///   - onOpenSlide: a slide's chip or thumbnail (Review moves its own review); nil: Review opens
     ///     at the slide.
+    ///   - onLink: a chip inside a note (Review moves its own review); nil, or false: it navigates.
     ///   - onEditingChange: a note in the column has focus or no longer has (the page's ↩ and the
     ///     review's keys stand down meanwhile).
     public init(
         lectureID: Lecture.ID,
         sections: @escaping @MainActor () -> [LectureNotesSection] = { [] },
         follow: @escaping @MainActor () -> YourNotesFollow,
+        recordingID: Recording.ID? = nil,
+        playhead: @escaping @MainActor () -> Double? = { nil },
         onOpenSlide: ((Int) -> Void)? = nil,
+        onLink: ((NoteLink) -> Bool)? = nil,
         onEditingChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.lectureID = lectureID
         self.sections = sections
         self.follow = follow
+        self.recordingID = recordingID
+        self.playhead = playhead
         self.onOpenSlide = onOpenSlide
+        self.onLink = onLink
         self.onEditingChange = onEditingChange
         _rows = Fetch(wrappedValue: .empty, YourNotesRequest(lectureID: lectureID))
     }
@@ -125,6 +146,10 @@ public struct YourNotesColumn: View {
         .modifier(EscapeEndsTyping(isActive: !focused.isEmpty))
         .onChange(of: focused.isEmpty) { _, idle in
             frozen = idle ? nil : Frozen(keys: Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.key) }), pages: Set(items.compactMap(\.page)), ownKey: ownKey)
+            if idle {
+                if rows.deck == nil, !typedInOwn.isEmpty { ownGeneration += 1 }
+                typedInOwn = []
+            }
             onEditingChange(!idle)
         }
         .onChange(of: follow) {
@@ -151,8 +176,9 @@ public struct YourNotesColumn: View {
         if rows.isLoaded, let store = services?.records {
             VStack(alignment: .leading, spacing: 0) {
                 OwnNoteView(
-                    anchor: NoteAnchor(courseID: rows.lecture?.courseID, lectureID: lectureID, deckID: nil, page: nil, recordingID: nil),
-                    notes: ownNotes, store: store, lectureID: lectureID, zoom: zoom, onFocus: focusChanged
+                    anchor: NoteAnchor(courseID: rows.lecture?.courseID, lectureID: lectureID, deckID: nil, page: nil, recordingID: recordingID),
+                    notes: ownNotes, store: store, lectureID: lectureID, zoom: zoom, playhead: playhead, showsMoments: recordingID != nil,
+                    onLink: onLink, onFocus: ownFocusChanged
                 )
                 .id(frozen?.ownKey ?? ownKey)
                 if !items.isEmpty {
@@ -173,7 +199,7 @@ public struct YourNotesColumn: View {
     private func row(_ item: Item, store: RecordStore) -> some View {
         NoteGroupRow(
             item: item, lectureID: lectureID, courseID: rows.lecture?.courseID, deck: rows.deck, store: store, services: services,
-            zoom: zoom, onOpenSlide: onOpenSlide, onFocus: focusChanged
+            zoom: zoom, recordingID: recordingID, playhead: playhead, onOpenSlide: onOpenSlide, onLink: onLink, onFocus: focusChanged
         )
         .padding(.vertical, 7 * zoom)
         .padding(.horizontal, 8)
@@ -208,7 +234,7 @@ public struct YourNotesColumn: View {
     }
 
     private var ownKey: String {
-        "own|" + ownNotes.map { "\($0.id)@\($0.updatedAt.timeIntervalSinceReferenceDate)" }.joined(separator: ",")
+        "own\(ownGeneration)|" + ownNotes.map { "\($0.id)@\($0.updatedAt.timeIntervalSinceReferenceDate)" }.joined(separator: ",")
     }
 
     private func items(sections: [LectureNotesSection]) -> [Item] {
@@ -226,7 +252,9 @@ public struct YourNotesColumn: View {
             )
         }
         if rows.deck == nil {
-            let timed = rows.notes.filter { $0.pageNumber == nil && $0.audioTime != nil }.sorted { ($0.audioTime ?? 0) < ($1.audioTime ?? 0) }
+            let timed = rows.notes
+                .filter { $0.pageNumber == nil && $0.audioTime != nil && !typedInOwn.contains($0.id) }
+                .sorted { ($0.audioTime ?? 0) < ($1.audioTime ?? 0) }
             items += timed.map { note in
                 Item(
                     id: "t\(note.id)", time: note.audioTime, notes: [note],
@@ -274,6 +302,11 @@ public struct YourNotesColumn: View {
     private func focusChanged(_ id: Note.ID, _ isFocused: Bool) {
         if isFocused { focused.insert(id) } else { focused.remove(id) }
     }
+
+    private func ownFocusChanged(_ id: Note.ID, _ isFocused: Bool) {
+        if isFocused { typedInOwn.insert(id) }
+        focusChanged(id, isFocused)
+    }
 }
 
 /// The lecture's own note(s), edited as in Notes. Empty: a 96 pt area on the quiet fill (radius
@@ -284,6 +317,10 @@ private struct OwnNoteView: View {
     let store: RecordStore
     let lectureID: Lecture.ID
     let zoom: CGFloat
+    let playhead: @MainActor () -> Double?
+    /// A note's moment shows after its last word (Review).
+    let showsMoments: Bool
+    let onLink: ((NoteLink) -> Bool)?
     let onFocus: (Note.ID, Bool) -> Void
     /// Made once, when the view appears: never in `init`, which runs on every redraw of the column
     /// (each time a session per note, with its body decoded, thrown away by `State`).
@@ -296,8 +333,10 @@ private struct OwnNoteView: View {
             ForEach(editor?.sessions ?? []) { session in
                 NoteEditor(
                     session: session, style: .inspector, startsWith: .body, lectureID: lectureID,
+                    trailingTime: showsMoments ? session.note?.audioTime : nil,
                     focusRequest: session.isBlank ? focusRequest : 0,
-                    onFocusChange: { onFocus(session.id, $0) }
+                    onFocusChange: { onFocus(session.id, $0) },
+                    onLink: onLink
                 )
             }
         }
@@ -313,7 +352,7 @@ private struct OwnNoteView: View {
         }
         .padding(.horizontal, -8)
         .onAppear {
-            if editor == nil { editor = SlideNoteEditor(anchor: anchor, notes: notes, store: store, playhead: { nil }) }
+            if editor == nil { editor = SlideNoteEditor(anchor: anchor, notes: notes, store: store, playhead: playhead) }
         }
         .onDisappear {
             guard let editor else { return }
@@ -331,8 +370,12 @@ private struct NoteGroupRow: View {
     let store: RecordStore
     let services: StudyServices?
     let zoom: CGFloat
+    /// The recording a new note of the slide is anchored to, and the playhead then (Review).
+    let recordingID: Recording.ID?
+    let playhead: @MainActor () -> Double?
     /// Review moves its own review to the slide; nil: Review opens there.
     let onOpenSlide: ((Int) -> Void)?
+    let onLink: ((NoteLink) -> Bool)?
     let onFocus: (Note.ID, Bool) -> Void
     /// Made once, when the row appears (as `OwnNoteView`'s).
     @State private var editor: SlideNoteEditor?
@@ -354,9 +397,12 @@ private struct NoteGroupRow: View {
                     .accessibilityLabel(Text("Slide \(page) with your ink"))
                 }
                 ForEach(editor?.sessions ?? []) { session in
+                    // No moment after the last word: the group's chip says where it belongs (mockups
+                    // 34–35, 40), and a note listed by its moment has it as its chip.
                     NoteEditor(
                         session: session, style: .inspector, startsWith: .body, lectureID: lectureID,
-                        onFocusChange: { onFocus(session.id, $0) }
+                        onFocusChange: { onFocus(session.id, $0) },
+                        onLink: onLink
                     )
                 }
             }
@@ -364,8 +410,10 @@ private struct NoteGroupRow: View {
         }
         .onAppear {
             guard editor == nil else { return }
-            let anchor = NoteAnchor(courseID: courseID, lectureID: lectureID, deckID: item.page == nil ? nil : deck?.id, page: item.page, recordingID: nil)
-            editor = SlideNoteEditor(anchor: anchor, notes: item.notes, store: store, playhead: { nil })
+            let anchor = NoteAnchor(
+                courseID: courseID, lectureID: lectureID, deckID: item.page == nil ? nil : deck?.id, page: item.page, recordingID: recordingID
+            )
+            editor = SlideNoteEditor(anchor: anchor, notes: item.notes, store: store, playhead: playhead)
         }
         .onDisappear {
             guard let editor else { return }

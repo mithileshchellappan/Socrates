@@ -98,7 +98,7 @@ public struct LectureNotesRepository: Sendable {
         }
     }
 
-    /// First open of a lecture's notes page or Review's Whole lecture pane (`user`): queues the
+    /// First open of a lecture's notes page or Review's Summary tab (`user`): queues the
     /// first version when the lecture has none that can be current (all discarded, cancelled or
     /// waiting for their material, or none at all) and no open one. A failed version is not
     /// queued again (Write Again is).

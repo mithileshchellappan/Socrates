@@ -44,7 +44,7 @@ final class LectureNotesController {
     @ObservationIgnored var openAgentPanel = OpenAgentPanelAction { _ in }
     @ObservationIgnored var onChip: ((NotesChipTarget) -> Bool)?
     @ObservationIgnored var onWriteAgain: (() -> Void)?
-    /// Review's Whole lecture: the passage taken to the chat goes up to the review, which sends it
+    /// Review's Summary: the passage taken to the chat goes up to the review, which sends it
     /// with its own context (a preference from the inspector column may not reach the panel, and
     /// would replace the review's). Nil: the view publishes `chatPassage` itself (the page).
     @ObservationIgnored var onChatPassage: ((NotesPassageContext?) -> Void)?

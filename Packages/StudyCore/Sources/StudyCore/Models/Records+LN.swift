@@ -78,7 +78,7 @@ public struct LectureNotesSection: Hashable, Sendable, Codable {
     public var title: String
     /// The `annotation` ai · topic row (nil once the study pass replaced it; the key stays).
     public var topicID: Annotation.ID?
-    /// Its slides (deck pages); Review's Follow scrolls the Whole lecture pane to the section whose
+    /// Its slides (deck pages); Review's Follow scrolls the Summary tab to the section whose
     /// range holds the slide on screen.
     public var firstPage: Int?
     public var lastPage: Int?
@@ -198,7 +198,7 @@ public enum LectureNotesCalls {
 
 /// One version of a lecture's notes (docs/plan-lecture-notes.md): one study text per lecture that
 /// Claude writes after the study pass (or from the slides alone), read on the course's Lectures
-/// page and in Review's Whole lecture pane. Read-only Claude text (AI provenance); the student adds
+/// page and in Review's Summary tab. Read-only Claude text (AI provenance); the student adds
 /// marks (`lecture_notes_mark`) and their own notes show in place (live, from `note`).
 ///
 /// Rows are never deleted: Write Again adds a version (`version` + 1), Previous Version sets

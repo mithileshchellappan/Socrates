@@ -127,7 +127,7 @@ struct SummaryBlock: View {
 }
 
 /// Further reading: verified sources, title over byline and site; a click opens the page.
-/// `showsSlides` (Whole lecture) adds one slide chip per row.
+/// `showsSlides` (Summary) adds one slide chip per row.
 struct FurtherReadingBlock: View {
     let model: ReviewModel
     let readings: [Annotation]
@@ -196,7 +196,7 @@ struct ExamHintsBlock: View {
 }
 
 /// Only said in class: grey lines with their time chips, in time order (`limit` rows, then
-/// "Show N more"), or under the category subheadlines (Whole lecture).
+/// "Show N more"), or under the category subheadlines (Summary).
 struct SaidInClassBlock: View {
     let model: ReviewModel
     let items: [Annotation]

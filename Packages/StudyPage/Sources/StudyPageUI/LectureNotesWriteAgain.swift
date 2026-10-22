@@ -5,7 +5,7 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// Write Again… (the notes page's ⋯ and failure line, Review's Whole lecture): a new version with
+/// Write Again… (the notes page's ⋯ and failure line, Review's Summary): a new version with
 /// the student's sentence, queued through `LectureNotesRepository.queue` (which logs why when it
 /// queues nothing: a version is open, or there is nothing to write from), with Edit ▸ Undo "Undo
 /// Write Again" (Previous Version; Redo brings the new one back). The task queue writes it on the
@@ -69,7 +69,7 @@ public struct LectureNotesWriteAgainPopover: View {
     }
 }
 
-/// Review's Whole lecture while the lecture's current notes failed (the study pass's blocks stay
+/// Review's Summary while the lecture's current notes failed (the study pass's blocks stay
 /// under it): the failure line, triangle, the reason and Write Again…, whose popover hangs off this
 /// plain view; a version without text is queued again at once. Nothing otherwise.
 public struct LectureNotesFailureBar: View {
