@@ -67,17 +67,6 @@ struct CompactPanelChrome: ViewModifier {
     }
 }
 
-/// The inspector's opaque surface (#f8f8fa / #222225, the Live inspector's `Color.inspector
-/// Background`, internal to CaptureUI; promote both into StudyUI): answers are content, never
-/// glass.
-struct PanelSurface: ShapeStyle {
-    func resolve(in environment: EnvironmentValues) -> Color.Resolved {
-        environment.colorScheme == .dark
-            ? Color(red: 0x22 / 255, green: 0x22 / 255, blue: 0x25 / 255).resolve(in: environment)
-            : Color(red: 0xF8 / 255, green: 0xF8 / 255, blue: 0xFA / 255).resolve(in: environment)
-    }
-}
-
 /// The expanded chat's opaque surface, as the small chat's (mockup `.agent { background:
 /// var(--inspector) }`, #f8f8fa / #222225), with a 0.5 pt hairline on its leading edge where it
 /// stands beside the screen on its own (the iPad's column, renders): nothing of the screen beside

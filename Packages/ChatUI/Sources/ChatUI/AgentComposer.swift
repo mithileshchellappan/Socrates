@@ -152,10 +152,10 @@ struct AgentComposer: View {
                 .onTapGesture { if !isFocused { isFocused = true } }
         }
         .overlay { shape.strokeBorder(.separator, lineWidth: 0.5).allowsHitTesting(false) }
-        .onChange(of: isFocused) { _, focused in model.composerFocused = focused }
+        .onChange(of: isFocused) { _, focused in model.composer(style, isFocused: focused) }
         .onChange(of: model.composerRequest) { takeRequest() }
         .onAppear { takeRequest() }
-        .onDisappear { model.composerFocused = false }
+        .onDisappear { model.composer(style, isFocused: false) }
         .fileImporter(isPresented: $showsImporter, allowedContentTypes: AttachmentTypes.accepted, allowsMultipleSelection: true) { result in
             guard let services, case .success(let urls) = result else { return }
             model.attach(urls: urls, blobs: services.blobs)

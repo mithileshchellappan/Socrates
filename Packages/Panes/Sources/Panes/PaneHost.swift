@@ -18,8 +18,9 @@ import SwiftUI
 ///   - room: the screen's declared minimum and the sidebar's width while it shows.
 ///   - main: the screen.
 ///
-/// Sets for the screen: `\.isLiveResizing`, `\.mainIsCovered`, `\.paneControl`. Each pane's root
-/// gets this place's environment (the window's values) plus `\.isLiveResizing` and
+/// Sets for the screen: `\.isLiveResizing` (only while a drag resizes the screen: the window's or
+/// the screen's edge, never a divider between panes), `\.mainIsCovered`, `\.paneControl`. Each
+/// pane's root gets this place's environment (the window's values) plus `\.isLiveResizing` and
 /// `\.paneIsMaximized`; a screen's own values (its zoom, its chrome) are the offer content's to
 /// apply.
 public struct PaneHost<Main: View>: View {
@@ -46,7 +47,7 @@ public struct PaneHost<Main: View>: View {
         let room = room
         PaneHostLayout(stripWidth: model.stripWidth, placedNeed: model.placedNeed, screenMinimum: room.screenMinimum) {
             main
-                .environment(\.isLiveResizing, model.isLiveResizing)
+                .environment(\.isLiveResizing, model.liveResize == .screen)
                 .environment(\.mainIsCovered, model.maximized != nil)
                 .environment(\.paneControl, model.control)
                 .onPreferenceChange(PaneOfferKey.self) { offers in

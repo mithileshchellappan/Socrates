@@ -1,9 +1,9 @@
 #if os(macOS)
 import AppKit
 
-/// The strip's root view: the screen's edge (a hairline on the panel surface, under a 5 pt drag
-/// handle) and the columns right of it. Reports the window it moves to.
-final class PaneStripView: NSView {
+/// The strip's root view, on the panel surface: the screen's edge (a 5 pt drag handle drawing the
+/// hairline) and the columns right of it. Reports the window it moves to.
+final class PaneStripView: PanelSurfaceView {
     let edge = PaneEdgeHandle()
     var columns: NSView? {
         didSet {
@@ -36,15 +36,6 @@ final class PaneStripView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         onWindowChange(window)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let divider = PaneHostModel.dividerThickness
-        guard bounds.width >= divider else { return }
-        PaneColors.surface.setFill()
-        NSRect(x: 0, y: 0, width: divider, height: bounds.height).fill()
-        NSColor.separatorColor.setFill()
-        NSRect(x: 0, y: 0, width: 1 / (window?.backingScaleFactor ?? 2), height: bounds.height).fill()
     }
 }
 #endif

@@ -68,8 +68,8 @@ struct RootView: View {
     @State private var agentModel: AgentPanelModel
     #if os(macOS)
     /// The window's side panes (DESIGN 6.4): what the screen offers, what is open, the room they
-    /// need.
-    @State private var paneHost = PaneHostModel()
+    /// need. The agent's chat holds its control (the Agent pane is the expanded chat).
+    @State private var paneHost: PaneHostModel
     #endif
     /// mc renders: Progress opens with its practice exam sheet presented (mockup 17).
     private let examSheet: Course.ID?
@@ -106,7 +106,13 @@ struct RootView: View {
             _columns = State(initialValue: .detailOnly)
             _columnsBeforePractice = State(initialValue: .all)
         }
+        #if os(macOS)
+        let panes = PaneHostModel()
+        _paneHost = State(initialValue: panes)
+        _agentModel = State(initialValue: AgentPanelModel(launch: panel, panes: panes.control))
+        #else
         _agentModel = State(initialValue: AgentPanelModel(launch: panel))
+        #endif
         self.examSheet = examSheet
     }
 
@@ -123,16 +129,15 @@ struct RootView: View {
                 #if os(macOS)
                 // The small chat floats over the content area (moved and resized by AppKit, its
                 // place and size kept per window); hidden, never closed, while the Agent pane is open.
-                .modifier(AgentMiniChatPanel(model: agentModel))
+                .modifier(AgentMiniChatPanel(model: agentModel, isAvailable: panelActions.isAvailable))
                 #endif
                 // ma: ONE agent chat for the window, inside the search field's focus value (it folds
                 // its composer's focus into it, so every screen's plain keys stand down while the
                 // student types to the agent).
                 .agentPanel(model: agentModel, context: agentContext, floatingLauncher: columns == .detailOnly)
                 #if os(macOS)
-                // The panes for Expand / Shrink Chat (read by `.agentPanel`, so outside it) and every
-                // screen; a pane holding the keyboard counts as typing (the screens' plain keys
-                // stand down); View ▸ Show / Hide <pane> and Maximize Pane.
+                // The panes for every screen; a pane holding the keyboard counts as typing (the
+                // screens' plain keys stand down); View ▸ Show / Hide <pane> and Maximize Pane.
                 .environment(\.paneControl, paneHost.control)
                 .modifier(PaneTypingFold(panes: paneHost, searchFocused: searchFocused))
                 .paneCommandsTarget(paneHost)

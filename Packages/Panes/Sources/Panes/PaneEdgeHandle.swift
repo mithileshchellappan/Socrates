@@ -1,9 +1,10 @@
 #if os(macOS)
 import AppKit
 
-/// The screen's edge: a 5 pt band at the strip's leading side with the column-resize pointer.
-/// Its drag reports the pointer's horizontal travel since the press (window points, right
-/// positive); the strip turns it into the first column's width.
+/// The screen's edge: a 5 pt band at the strip's leading side with the column-resize pointer; it
+/// draws the edge's hairline (the strip under it is the panel surface). Its drag reports the
+/// pointer's horizontal travel since the press (window points, right positive); the strip turns
+/// it into the first column's width.
 final class PaneEdgeHandle: NSView {
     static let width: CGFloat = 5
 
@@ -18,6 +19,11 @@ final class PaneEdgeHandle: NSView {
     private var start: CGFloat?
 
     override var mouseDownCanMoveWindow: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.separatorColor.setFill()
+        NSRect(x: 0, y: 0, width: 1 / (window?.backingScaleFactor ?? 2), height: bounds.height).fill()
+    }
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .columnResize)

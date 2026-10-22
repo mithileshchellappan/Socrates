@@ -5,6 +5,9 @@ import AppKit
 /// column's panes stacked. Its dividers are drawn as hairlines and hit 3 pt either side.
 final class PaneSplitController: NSSplitViewController {
     let paneSplitView = PaneSplitView()
+    /// A stack's shares waiting for the stack to have a height (one inserted in this layout pass
+    /// has none yet).
+    private var pendingFractions: [CGFloat]?
 
     /// - Parameter stacked: panes over each other (horizontal dividers), else columns.
     init(stacked: Bool) {
@@ -32,6 +35,29 @@ final class PaneSplitController: NSSplitViewController {
     /// The views of its items, in order.
     var itemViews: [NSView] {
         splitViewItems.map(\.viewController.view)
+    }
+
+    /// A stack's dividers at these shares of its height (one per pane, summing to 1): now, or once
+    /// the stack has a height.
+    func position(fractions: [CGFloat]) {
+        let divider = PaneHostModel.dividerThickness
+        let height = splitView.bounds.height - CGFloat(fractions.count - 1) * divider
+        guard height > 0 else {
+            pendingFractions = fractions
+            return
+        }
+        pendingFractions = nil
+        var y: CGFloat = 0
+        for (row, fraction) in fractions.enumerated().dropLast() {
+            y += height * fraction
+            splitView.setPosition(y, ofDividerAt: row)
+            y += divider
+        }
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        if let pendingFractions { position(fractions: pendingFractions) }
     }
 }
 #endif

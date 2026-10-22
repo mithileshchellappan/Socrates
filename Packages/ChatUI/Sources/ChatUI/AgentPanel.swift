@@ -13,8 +13,8 @@ extension View {
     /// app owns: View ▸ Show Chat ⌘J / Expand Chat ⌥⌘J (`AgentPanelCommands`), `\.openAgentPanel`,
     /// Memory…'s sheet, the floating launcher and the composer's focus (`\.isAgentComposerFocused`,
     /// also folded into `\.isSearchFieldFocused`, so apply it inside the app's own
-    /// `.environment(\.isSearchFieldFocused, …)`). On the Mac it reads the window's panes from
-    /// `\.paneControl` (apply that outside); the app presents `AgentMiniChat` in its floating panel
+    /// `.environment(\.isSearchFieldFocused, …)`). On the Mac the model holds the window's panes
+    /// (`AgentPanelModel(launch:panes:)`); the app presents `AgentMiniChat` in its floating panel
     /// while `model.isMiniShown` and offers `AgentPane` as the Agent pane. On iOS it draws the
     /// compact overlay and the expanded inspector column itself (`\.agentPanelExpanded`). Without
     /// `AgentPanelActions.isAvailable` none of it shows.
@@ -63,9 +63,6 @@ struct AgentPanelModifier: ViewModifier {
 
     @Environment(\.agentPanelActions) private var actions
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
-    #if os(macOS)
-    @Environment(\.paneControl) private var paneControl
-    #endif
 
     func body(content: Content) -> some View {
         let model = model
@@ -96,12 +93,6 @@ struct AgentPanelModifier: ViewModifier {
             .onChange(of: context, initial: true) { _, context in
                 model.appContext = context
             }
-            #if os(macOS)
-            .onAppear {
-                // The host's control is the window's for its whole life: read once.
-                if !model.panes.isInstalled { model.panes = paneControl }
-            }
-            #endif
             .focusedSceneValue(\.agentPanel, available ? AgentPanelFocus(
                 togglesOff: model.togglesOff, isExpanded: model.isExpanded,
                 toggle: { model.toggleChat() }, toggleExpanded: { model.toggleExpanded() }

@@ -51,9 +51,12 @@ public struct PaneLayout: Codable, Equatable, Sendable {
         )
     }
 
-    /// This layout for `specs`: panes no longer offered leave their stacks (an emptied column goes),
-    /// panes not placed yet get a column of their own at the end, widths stay within each column's
-    /// panes' limits. A stored layout of another version starts over.
+    /// This layout for `specs`: panes offered and not placed yet get a column of their own at the
+    /// end, a pane listed twice keeps its first place, widths stay within the offered panes' limits.
+    /// A pane not offered now (the agent without Claude Code) keeps its place, width, stack share,
+    /// open state and maximize: the arrangement leaves it out, and the student's actions meanwhile
+    /// store it as it was, so it comes back where it was. A stored layout of another version starts
+    /// over.
     public func normalized(for specs: [PaneSpec]) -> PaneLayout {
         guard version == Self.currentVersion else { return Self.initial(for: specs) }
         let offered = Dictionary(specs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -61,7 +64,7 @@ public struct PaneLayout: Codable, Equatable, Sendable {
         var placed = Set<PaneID>()
         for column in self.columns {
             var kept = Column(panes: [], width: column.width, heights: [])
-            for (index, id) in column.panes.enumerated() where offered[id] != nil && !placed.contains(id) {
+            for (index, id) in column.panes.enumerated() where !placed.contains(id) {
                 kept.panes.append(id)
                 kept.heights.append(index < column.heights.count ? column.heights[index] : 1)
                 placed.insert(id)
@@ -69,9 +72,10 @@ public struct PaneLayout: Codable, Equatable, Sendable {
             guard !kept.panes.isEmpty else { continue }
             let total = kept.heights.reduce(0, +)
             kept.heights = kept.heights.map { total > 0 ? $0 / total : 1 / Double(kept.heights.count) }
-            let lower = kept.panes.compactMap { offered[$0]?.minWidth }.max() ?? PaneSpec.minimumWidth
-            let upper = kept.panes.compactMap { offered[$0]?.maxWidth }.min() ?? PaneSpec.maximumWidth
-            kept.width = min(max(kept.width, Double(lower)), Double(max(lower, upper)))
+            let limits = kept.panes.compactMap { offered[$0] }
+            if let lower = limits.map(\.minWidth).max(), let upper = limits.map(\.maxWidth).min() {
+                kept.width = min(max(kept.width, Double(lower)), Double(max(lower, upper)))
+            }
             columns.append(kept)
         }
         for spec in specs where !placed.contains(spec.id) {
@@ -79,8 +83,8 @@ public struct PaneLayout: Codable, Equatable, Sendable {
         }
         return PaneLayout(
             columns: columns,
-            open: open.filter { offered[$0].map { !$0.opensPerWindow } ?? false },
-            maximized: maximized.flatMap { offered[$0] == nil ? nil : $0 }
+            open: open.filter { offered[$0].map { !$0.opensPerWindow } ?? true },
+            maximized: maximized
         )
     }
 
@@ -160,6 +164,16 @@ public enum PaneLayoutStore {
 
     public static func saveWindowOpen(_ open: Set<PaneID>, defaults: UserDefaults = .standard) {
         defaults.set(open.map(\.rawValue).sorted(), forKey: windowOpenKey)
+    }
+
+    /// A window-wide pane closed: no other kind's stored layout keeps it maximized (`kind`'s is the
+    /// caller's to save).
+    static func forgetMaximized(_ id: PaneID, except kind: PaneScreenKind, defaults: UserDefaults = .standard) {
+        for other in PaneScreenKind.all where other != kind {
+            guard var layout = load(other, defaults: defaults), layout.maximized == id else { continue }
+            layout.maximized = nil
+            save(layout, for: other, defaults: defaults)
+        }
     }
 }
 #endif

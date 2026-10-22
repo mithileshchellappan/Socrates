@@ -12,7 +12,8 @@ import SwiftUI
 ///   the update in which SwiftUI places the view there.
 /// - Resizing: the 4 edges and 4 corners (12 pt squares) show the system's frame-resize pointers;
 ///   a drag resizes the panel live (`\.isLiveResizing` on), 280 × 160 at least, the content area
-///   less its margins at most, and writes the frame once when it ends.
+///   less its margins at most, and writes the frame once when it ends (a click writes nothing; a
+///   panel hugging its content keeps hugging after a resize of its width alone).
 /// - Fades in and out in 0.15 s (at once with Reduce Motion); keeps inside the window when the
 ///   window changes.
 final class FloatingPanelView: NSView {
@@ -43,7 +44,14 @@ final class FloatingPanelView: NSView {
     private let shadowView = FloatingPanelShadow()
     private let surface = FloatingPanelSurface()
     private let hosting: NSHostingView<FloatingPanelRoot>
-    private var gesture: Gesture?
+    /// The content's `\.isLiveResizing` follows it: on for a resize, off however the resize ends
+    /// (mouse-up, or the panel hiding under it).
+    private var gesture: Gesture? {
+        didSet {
+            let resizing = isResizing
+            if state.isLiveResizing != resizing { state.isLiveResizing = resizing }
+        }
+    }
     /// The frame written at the end of a gesture, until SwiftUI places the view there.
     private var placed: FloatingPanelFrame?
     private var fading: Task<Void, Never>?
@@ -216,7 +224,6 @@ final class FloatingPanelView: NSView {
         let start = panelRectInWindow
         gesture = .resize(edges: edges, start: start, pointer: event.locationInWindow, now: start)
         state.hugs = false
-        state.isLiveResizing = true
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -234,14 +241,20 @@ final class FloatingPanelView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard case .resize(_, let start, _, let now)? = gesture else { return }
+        guard case .resize(let edges, let start, _, let now)? = gesture else { return }
         gesture = nil
-        state.isLiveResizing = false
+        guard now != start else {
+            // A click on the band: nothing moved, nothing is written (a hugging panel keeps hugging).
+            return place(state.frame)
+        }
         var frame = state.frame
         frame.dx -= Double(now.maxX - start.maxX)
         frame.dy += Double(now.minY - start.minY)
         frame.width = Double(now.width.rounded())
-        frame.height = Double(now.height.rounded())
+        // A hugging panel resized only in width keeps hugging its content.
+        if frame.height != nil || !edges.isDisjoint(with: [.top, .bottom]) {
+            frame.height = Double(now.height.rounded())
+        }
         place(frame)
     }
 
@@ -354,6 +367,8 @@ final class FloatingPanelView: NSView {
         let frame = FloatingPanelFrame(dx: frame.dx.rounded(), dy: frame.dy.rounded(), width: frame.width.rounded(), height: frame.height.map { $0.rounded() })
         guard frame != state.frame else {
             clearTranslation()
+            let hugs = frame.height == nil
+            if state.hugs != hugs { state.hugs = hugs }
             needsLayout = true
             return
         }

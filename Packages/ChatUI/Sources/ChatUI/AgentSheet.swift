@@ -275,7 +275,7 @@ struct SheetComposer: View {
         .frame(minHeight: 38)
         .background(Color.contentBackground, in: shape)
         .overlay { shape.strokeBorder(.separator, lineWidth: 0.5) }
-        .onChange(of: isFocused) { _, focused in model.composerFocused = focused }
+        .onChange(of: isFocused) { _, focused in model.composer(.sheet, isFocused: focused) }
         .onChange(of: model.composerRequest) { _, request in
             // The sheet's one composer takes every request.
             guard let request else { return }

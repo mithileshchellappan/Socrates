@@ -37,10 +37,14 @@ final class PaneItemController: NSViewController {
         nil
     }
 
+    /// The pane goes in unless the maximize slot holds it (a pane opened maximized gets its column
+    /// later): the column then shows the bare surface until `takeBack()`.
     override func loadView() {
         let view = PaneItemView(frame: NSRect(x: 0, y: 0, width: 336, height: 400))
-        pane.frame = view.bounds
-        view.addSubview(pane)
+        if pane.superview == nil {
+            pane.frame = view.bounds
+            view.addSubview(pane)
+        }
         self.view = view
     }
 

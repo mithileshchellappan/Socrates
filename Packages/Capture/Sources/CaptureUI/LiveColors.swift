@@ -41,7 +41,8 @@ extension Color {
     /// The live inspector: a flat, opaque panel a shade off the window background, like the
     /// canvas beside it (the mockups' inspector colour, #f8f8fa and #222225 in dark mode). The
     /// system's own inspector is glass, which shows the main column through it and tints in dark
-    /// mode; `.background` inside an inspector resolves to an elevated grey (#4b4a4a dark).
+    /// mode; `.background` inside an inspector resolves to an elevated grey (#4b4a4a dark). The
+    /// same colour as StudyUI's `PanelSurface`, which this package does not depend on.
     static let inspectorBackground = dynamic(light: (0xf8, 0xf8, 0xfa), dark: (0x22, 0x22, 0x25), name: "Socrates.liveInspector")
 
     /// One sRGB colour in light appearance, another in dark.

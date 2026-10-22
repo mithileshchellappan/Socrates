@@ -8,7 +8,10 @@ import SwiftUI
 /// panes want, or when no pane needs room. The window is never made wider.
 ///
 /// - It hides while the sidebar shows, W − screen − sidebar < `requestedNeed` and
-///   W − screen ≥ `requestedMinimum` (the panes fit without it).
+///   W − screen ≥ `requestedMinimum` (the panes fit without it). It measures when those change,
+///   the window or the screen changes, or a pane waits for it (`awaitingSidebar`: a folded pane
+///   opened again changes neither need, so the wait is the request).
+/// - It comes back animated, at once with Reduce Motion.
 /// - The student's own drag of the window's edge never hides it (the panes give way instead);
 ///   widening by a drag brings it back.
 /// - The student's own toggle (the toolbar's button, View ▸ Show Sidebar ⌃⌘S, dragging it shut)
@@ -21,6 +24,8 @@ struct SidebarFit: View {
     /// What the open panes want and need (read here, so a change re-renders only this view).
     let panes: PaneHostModel
     let isPaused: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Measured here, so a window resize re-renders only this view.
     @State private var windowWidth: CGFloat = 0
@@ -35,6 +40,9 @@ struct SidebarFit: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.width.rounded() } action: { windowWidth = $0 }
             .onChange(of: panes.requestedNeed) { fit() }
             .onChange(of: panes.requestedMinimum) { fit() }
+            .onChange(of: panes.awaitingSidebar) { _, waiting in
+                if waiting != nil { fit() }
+            }
             .onChange(of: windowWidth) { fit() }
             // Another screen (Mail needs more than 480): the sidebar makes room or comes back.
             .onChange(of: screenMin) { fit() }
@@ -56,7 +64,7 @@ struct SidebarFit: View {
             write(.detailOnly, animated: false)
         } else if hidSidebar, need == 0 || besideSidebar - WindowColumns.sidebarReturn >= need {
             hidSidebar = false
-            write(.all, animated: true)
+            write(.all, animated: !reduceMotion)
         }
     }
 

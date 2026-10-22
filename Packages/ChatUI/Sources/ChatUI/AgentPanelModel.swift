@@ -11,7 +11,7 @@ import UniformTypeIdentifiers
 /// Shrink. Every size shows the whole conversation; only a render may show some of its exchanges.
 ///
 /// On the Mac the chat is the small floating chat (`mode` compact) or the Agent pane, which the
-/// window's pane host opens and closes (`\.paneControl`): the small chat is hidden, never closed,
+/// window's pane host opens and closes (`panes`): the small chat is hidden, never closed,
 /// while the pane is open. On iOS the chat is the iPad's compact overlay or its trailing inspector
 /// column (`mode` expanded).
 @MainActor
@@ -60,8 +60,10 @@ public final class AgentPanelModel {
     var turnCount = 0
     /// The student asked something since the chat appeared: the prompt turns to "Ask a follow-up…".
     var askedSinceOpen = false
-    /// Mirrors the composer's focus.
-    var composerFocused = false
+    /// The composer holding the caret (nil: none). Each composer reports its own; one going away
+    /// after another took the caret (the Agent pane fading out, the small chat fading out) leaves
+    /// the newer one's.
+    private(set) var focusedComposer: AgentPanelView.Style?
     /// The caret request the composer on screen has not taken yet.
     var composerRequest: ComposerRequest?
     @ObservationIgnored private var requestSerial = 0
@@ -84,14 +86,16 @@ public final class AgentPanelModel {
     var appContext = AgentContext(screen: .other)
     /// What the screen on display publishes (`.agentContext`).
     var source: AgentContextSource?
-    #if os(macOS)
-    /// The window's panes (`\.paneControl`, from `.agentPanel`): the Agent pane is the expanded
-    /// chat.
-    var panes = PaneControl.none
-    #endif
+    /// The window's panes (the Mac's pane host; `.none` on iOS and in snapshots): the Agent pane is
+    /// the expanded chat.
+    let panes: PaneControl
     let fixedNow: Date?
 
-    public init(launch: AgentPanelLaunch = AgentPanelLaunch()) {
+    /// - Parameters:
+    ///   - launch: how the chat starts (renders; closed otherwise).
+    ///   - panes: the window's pane host (`PaneHostModel.control` on the Mac's main window).
+    public init(launch: AgentPanelLaunch = AgentPanelLaunch(), panes: PaneControl = .none) {
+        self.panes = panes
         switch launch.mode {
         case .closed:
             mode = .closed
@@ -120,6 +124,18 @@ public final class AgentPanelModel {
     }
 
     var now: Date { fixedNow ?? Date() }
+
+    /// A composer holds the caret (the screen's plain keys stand down).
+    var composerFocused: Bool { focusedComposer != nil }
+
+    /// The composer of `style` took the caret or gave it up.
+    func composer(_ style: AgentPanelView.Style, isFocused: Bool) {
+        if isFocused {
+            if focusedComposer != style { focusedComposer = style }
+        } else if focusedComposer == style {
+            focusedComposer = nil
+        }
+    }
 
     /// The answer being written in `id` (one box per conversation, for this window's chat).
     func liveBox(for id: AgentConversation.ID) -> LiveReplyBox {
@@ -247,7 +263,7 @@ public final class AgentPanelModel {
     /// The small chat's ✕ (Hide Chat), Esc in its empty composer, ⌘J.
     func close() {
         mode = .closed
-        composerFocused = false
+        focusedComposer = nil
     }
 
     /// ⌥⌘J, ⤢ / ⤡. On the Mac: Expand Chat opens the Agent pane under the room rules with the caret

@@ -206,16 +206,17 @@ struct AgentThreadView: View {
     @State private var rows = CitationRows()
     /// A new chat's answer box (a conversation's is the panel's, `AgentPanelModel.liveBox`).
     @State private var newChatLive = LiveReplyBox()
-    /// The compact thread's rows' height, for its faded top edge only (its own height is laid out
-    /// with the rows, `UpToHeight`). Reported from the first layout on, so a thread that is too
-    /// tall when it appears has the edge too.
-    @State private var contentHeight: CGFloat = 0
+    /// The compact thread's rows are taller than its scroll view: its faded top edge shows (its
+    /// own height is laid out with the rows, `UpToHeight`). A flag, not the heights: resizing the
+    /// small chat changes those on every frame, and the thread's body reads only this.
+    @State private var overflows = false
     /// The thread is scrolled to (within 24 pt of) its end: a streaming answer follows it.
     @State private var isAtBottom = true
     /// More than the thread's bottom padding is below the visible part: the compact thread fades
     /// its bottom edge (no row is cut off hard against the task line or the composer).
     @State private var hidesEnd = false
     /// The scroll view's visible height (the opening place keeps `topClear` above the question).
+    /// Read only by `scroll(_:to:)`, never in `body`: a write re-renders nothing.
     @State private var viewportHeight: CGFloat = 0
     /// When the thread was placed on its latest question (once per thread view).
     @State private var placedAt: Date?
@@ -425,8 +426,6 @@ struct AgentThreadView: View {
     @ViewBuilder
     private func scroll(items: [PanelThreadItem], requests: [AgentRequest], working: Bool, state: AnyView?) -> some View {
         if style == .compact {
-            let shownHeight = min(maxHeight, viewportHeight > 1 ? viewportHeight : .infinity)
-            let overflows = contentHeight > shownHeight + 0.5
             UpToHeight(maxHeight: maxHeight) {
                 scrollView(items: items, requests: requests, working: working, state: state)
             }
@@ -459,9 +458,7 @@ struct AgentThreadView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 threadContent(items: items, requests: requests, working: working, state: state)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded() } action: { height in
-                        // Only the compact thread's faded edge reads it (a write re-renders the thread).
-                        if style == .compact { contentHeight = height }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded() } action: { _ in
                         // Rows that load after the first layout (change rows, chips) never push
                         // the opening place away.
                         replace(proxy, lastExchange: lastExchange)
@@ -481,6 +478,11 @@ struct AgentThreadView: View {
                 geometry.contentSize.height - geometry.visibleRect.maxY > 12
             } action: { _, hides in
                 if style == .compact { hidesEnd = hides }
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height > geometry.containerSize.height + 0.5
+            } action: { _, overflow in
+                if style == .compact, overflows != overflow { overflows = overflow }
             }
             .onScrollGeometryChange(for: ThreadViewport.self) { geometry in
                 ThreadViewport(

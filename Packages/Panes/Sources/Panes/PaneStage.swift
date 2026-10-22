@@ -40,7 +40,7 @@ final class PaneStage {
         strip.onWindowChange = { [weak self] window in self?.watch(window) }
         self.strip = strip
         watcher.onWidth = { [weak model] width in model?.update(windowWidth: width) }
-        watcher.onLiveResize = { [weak model] resizing in model?.setLiveResizing(resizing) }
+        watcher.onLiveResize = { [weak model] resizing in model?.setLiveResize(resizing ? .screen : nil) }
         watcher.onFirstResponder = { [weak self] responder in self?.firstResponderChanged(responder) }
         return strip
     }
@@ -67,7 +67,7 @@ final class PaneStage {
     private func watch(_ window: NSWindow?) {
         watcher.watch(window)
         if window == nil {
-            model?.setLiveResizing(false)
+            model?.setLiveResize(nil)
             model?.setTypingPane(nil)
         }
     }
@@ -88,7 +88,7 @@ final class PaneStage {
                 window?.makeFirstResponder(nil)
             }
         }
-        strip.arrange(state.arrangement, items: items, opened: model.takeJustOpened(), closing: state.closing)
+        strip.arrange(state.arrangement, items: items, opened: model.takeJustOpened(placedIn: state.arrangement), closing: state.closing)
         reconcileSlot()
         for item in retired.values where item.pane.window == nil {
             item.empty()
@@ -149,14 +149,20 @@ final class PaneStage {
         guard let target, slotPane == nil, let slot, slot.window != nil, let item = items[target] else { return }
         slotFade?.cancel()
         slotFade = nil
+        // The small chat floats over the slot: its composer keeps the caret.
         if let window = slot.window, let responder = window.firstResponder as? NSView,
-           !responder.isDescendant(of: item.pane),
+           !responder.isDescendant(of: item.pane), !Self.floats(responder),
            responder.convert(responder.bounds, to: nil).intersects(slot.convert(slot.bounds, to: nil)) {
             window.makeFirstResponder(nil)
         }
         if !reducesMotion { slot.fadeNextChange() }
         slot.hold(item.pane)
         slotPane = target
+    }
+
+    /// `view` is in the floating panel (over the slot, never covered by it).
+    private static func floats(_ view: NSView) -> Bool {
+        sequence(first: view) { $0.superview }.contains { $0 is FloatingPanelView }
     }
 
     /// Runs the offer's `focus` of a pane opened or maximized with focus, once its content is in

@@ -24,6 +24,7 @@ import SwiftUI
 /// - What it follows (`YourNotesFollow`: the section being read, or the slide on screen) shares one
 ///   quiet fill, and the column scrolls it a third down from its top, never while the pointer is
 ///   over it, while one of its notes is being typed in, or within 2 s of the student scrolling it.
+///   It opens there too (Review's Whole lecture on a late slide), placed at once as its rows load.
 ///
 /// The pane's header ("Your notes", Maximize, Close) is the pane host's. The notes, chips and
 /// thumbnails grow with `\.contentZoom`; thumbnails keep their width while a divider is dragged.
@@ -54,7 +55,12 @@ public struct YourNotesColumn: View {
     @State private var visible: CGRect = .zero
     @State private var isHovering = false
     @State private var userScrolledAt = Date.distantPast
-    @State private var pendingScroll = false
+    /// What it follows is to be scrolled into view: from the start (it opens there) and after each
+    /// change of what it follows, until one placement was decided.
+    @State private var pendingScroll = true
+    /// While its rows load and grow (editors made as they appear), the opening placement is taken
+    /// again as the groups move, at once.
+    @State private var appearedAt = Date()
 
     /// - Parameters:
     ///   - sections: the current version's sections (the notes page reads them; this column's read
@@ -126,6 +132,9 @@ public struct YourNotesColumn: View {
             scrollToRun(run)
         }
         .onChange(of: run) { _, run in
+            if pendingScroll { scrollToRun(run) }
+        }
+        .onChange(of: visible.height) {
             if pendingScroll { scrollToRun(run) }
         }
         .onDisappear {
@@ -245,12 +254,13 @@ public struct YourNotesColumn: View {
 
     /// The marked groups a third down from the top, when they are not in view.
     private func scrollToRun(_ run: CGRect?) {
-        guard let run else { return }
-        pendingScroll = false
-        guard !isHovering, focused.isEmpty, Date().timeIntervalSince(userScrolledAt) >= 2, visible.height > 0 else { return }
+        guard let run, visible.height > 0 else { return }
+        let isOpening = Date().timeIntervalSince(appearedAt) < 1
+        if !isOpening { pendingScroll = false }
+        guard !isHovering, focused.isEmpty, Date().timeIntervalSince(userScrolledAt) >= 2 else { return }
         guard run.minY < visible.minY || run.maxY > visible.maxY else { return }
         let y = max(0, run.minY - visible.height / 3)
-        if reduceMotion {
+        if reduceMotion || isOpening {
             position.scrollTo(y: y)
         } else {
             withAnimation(.smooth(duration: 0.3)) { position.scrollTo(y: y) }

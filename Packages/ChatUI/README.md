@@ -11,7 +11,8 @@ extension View {
     // Once, on the main window's split view, on the model the app owns (`@State`): \.openAgentPanel,
     // \.isAgentComposerFocused (also folded into \.isSearchFieldFocused: apply it INSIDE the app's
     // .environment(\.isSearchFieldFocused, …)), Memory…'s sheet, the floating launcher, the focused
-    // value AgentPanelCommands reads. Mac: reads \.paneControl (apply it OUTSIDE); the app presents
+    // value AgentPanelCommands reads. Mac: the model holds the window's panes
+    // (AgentPanelModel(launch:panes:)); the app presents
     // AgentMiniChat in its floating panel and offers AgentPane as the Agent pane. iOS: the compact
     // overlay and the expanded .inspector, \.agentPanelExpanded. Nothing without
     // AgentPanelActions.isAvailable.
@@ -148,7 +149,7 @@ extension AgentPanelActions {
    - Remove: every `.chatInspector`, `ChatToolbarItem`, `@SceneStorage("chat.shown")`, `CourseChat`, `showsChat:` (DetailView, RootView, `CourseSettingsView(showsChat:)` no longer exists), `\.chatActions` (then `ChatActions`, `ChatPanel`, `.chatCommand`, `ChatInspector`, `ChatPane`, `ChatCommands` can be deleted from ChatUI), `\.reviewInspectorTab, .tutor` (the case is gone; `ParityMode.Launch.reviewInspectorTab` and `showsChat`).
    - `DeadlineActions.undo` and MailUI's found-row Undo → `AppAgent.undo(sourceID:)` (session changes through the log, else `DeadlineMemory`): Calendar's popover footer and Mail's "In Calendar" row now offer Undo for session changes applied on their own. `DeadlineActions.preview` / `.submit` are no longer used by CalendarUI.
 2. **ParityMode** (`ParityMode.Launch`): `panel: AgentPanelLaunch` (closed by default; compact / expanded with `conversationID`, `exchanges` and `now` for the shots) and pass it to `.agentPanel(context:launch:)`. Shots (plan §8.3): `ma-review` (DC L2 slide 12, `AgentPanelLaunch(mode: .compact, conversationID: <Weekend plan>, exchanges: 0..<1)`), `ma-calendar` (Week 43, compact, same conversation, no exchanges: title row + composer), `ma-calendar-expanded` (`mode: .expanded`, Weekend plan: two context lines, the S13 chip, the 7 change rows), `ma-today-files` (Today, compact, `conversationID: <QEMU on the M3>, exchanges: 0..<1`; and/or `newChat: true, attachments: <the turn's PDF and script>` for mockup §4's composer). `--now 2026-10-17T10:40`.
-3. **StudyUI promotions** (when you touch it): `PanelSurface` (ChatUI, the inspector's opaque surface #f8f8fa / #222225; CaptureUI has a private `Color.inspectorBackground` of the same values) and `Fill2` into StudyUI.
+3. **StudyUI promotions** (when you touch it): `Fill2` into StudyUI (`PanelSurface`, the inspector's opaque surface #f8f8fa / #222225, is StudyUI's since panes; CaptureUI keeps a private `Color.inspectorBackground` of the same values).
 4. **Calendar's [+] without Claude Code**: `\.openAgentPanel` is a no-op then, so [+] does nothing. If that should hide [+], give `OpenAgentPanelAction` an `isAvailable` (StudyUI) and CalendarUI will read it.
 5. **Not wired here**: a screen's bottom inset of the compact panel's height (mockup §1/§4 "the column below it keeps a bottom inset of its height"): only the toasts move up (`\.overlayInsets`). If wanted, publish the compact panel's height in StudyUI and let Review's inspector and Today's list read it.
 
@@ -185,30 +186,34 @@ On the Mac the chat is the small floating chat or the window's Agent pane, never
 host (the app's `Panes` package) owns the pane, ChatUI only draws what goes in it. iOS keeps the
 compact overlay, the expanded `.inspector` and the iPhone's sheet as before.
 
-- **The model is the app's.** `AgentPanelModel(launch:)` is a public handle the app keeps per
-  window and hands to `.agentPanel(model:context:floatingLauncher:)`, `AgentPane`,
+- **The model is the app's.** `AgentPanelModel(launch:panes:)` is a public handle the app keeps per
+  window (made with the window's `PaneHostModel.control` on the Mac) and hands to `.agentPanel(model:context:floatingLauncher:)`, `AgentPane`,
   `AgentPaneAccessory` and `AgentMiniChat`, so the draft, files and conversation survive Expand and
   Shrink and one conversation is never on screen twice. The shown and send contexts are the
   model's (`appContext`, set by `.agentPanel`, with the screen's publication merged over it).
-- **Modes.** Mac: closed or compact; whether the Agent pane is open is
-  `\.paneControl.isOpen(.agent)` (read from the environment by `.agentPanel`). `isMiniShown` is
-  compact with the pane closed: the small chat is hidden, never closed, while the pane is open.
+- **Modes.** Mac: closed or compact; whether the Agent pane is open is the model's
+  `panes.isOpen(.agent)`. `isMiniShown` is compact with the pane closed: the small chat is
+  hidden, never closed, while the pane is open (and while the chat is not offered: the app
+  presents it only with `AgentPanelActions.isAvailable`).
   `AgentPanelLaunch(.expanded)` starts compact on the Mac (the render opens the pane through its
   layout).
 - **Keys.** ⌘J shows or hides the small chat (also while typing); with the Agent pane open it puts
   the caret in the pane's composer, and pressed again gives the keyboard back to the screen
   (the menu reads Show Chat / Hide Chat accordingly). ⌥⌘J is Expand Chat
-  (`paneControl.open(.agent, true)`; the small chat hides with its draft) and, while the pane is
+  (`panes.open(.agent, true)`; the small chat hides with its draft) and, while the pane is
   open, Shrink Chat (the pane closes, the small chat shows). `\.openAgentPanel(expanded:)` follows
   the same rules. Esc in the pane's composer clears the text and files, then gives the screen the
   keyboard; it never closes the pane. In the small chat Esc works as before.
 - **Caret requests.** `focusComposer()` and the release are requests the composer of the chat on
   screen takes once (`composerRequest`), so a hidden small chat never takes the caret from the
-  pane, and opening a pane by its toggle never moves focus.
+  pane, and opening a pane by its toggle never moves focus. Each composer reports its own focus
+  (`focusedComposer`, by style), so the one fading out (the pane's, the small chat's) never clears
+  the caret the other just took.
 - **The small chat** (`AgentMiniChat`): the 38 pt title row whose free part drags the floating
   panel (`\.floatingPanelMover`, grab pointer), the thread, the task line and the composer. It hugs
   its content (the panel caps it at half the window; the thread honours the height offered) until
-  the student resizes the panel (`\.floatingPanelFrame.height`), then fills it. The surface, ring,
+  the student resizes the panel (`\.floatingPanelFrame.height`; from the resize's first frame),
+  then fills it; the toasts' room moves once, when a resize ends. The surface, ring,
   shadow and 336 pt width are the floating panel's. Toasts stay above it while
   `\.floatingPanelFrame?.sitsInCorner`.
 - **The Agent pane** (`AgentPane`): no header (the pane host's carries `AgentPaneAccessory`), file

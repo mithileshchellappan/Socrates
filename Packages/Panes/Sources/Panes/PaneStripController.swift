@@ -183,14 +183,7 @@ final class PaneStripController: NSViewController {
             x += divider
         }
         for (index, column) in arrangement.columns.enumerated() where column.panes.count > 1 && index < stacks.count {
-            let stack = stacks[index]
-            let height = stack.splitView.bounds.height - CGFloat(column.panes.count - 1) * divider
-            var y: CGFloat = 0
-            for (row, fraction) in column.fractions.enumerated().dropLast() {
-                y += height * fraction
-                stack.splitView.setPosition(y, ofDividerAt: row)
-                y += divider
-            }
+            stacks[index].position(fractions: column.fractions)
         }
     }
 
@@ -216,7 +209,7 @@ final class PaneStripController: NSViewController {
         case .began(let index):
             drag = .divider(index)
             applyLimits()
-            model.setLiveResizing(true)
+            model.setLiveResize(.panes)
         case .ended(let index):
             drag = .none
             let views = columns.itemViews
@@ -227,7 +220,7 @@ final class PaneStripController: NSViewController {
                 widths[arrangement.columns[column].panes[0]] = width
             }
             applyLimits()
-            model.setLiveResizing(false)
+            model.setLiveResize(nil)
             model.setColumnWidths(widths)
         }
     }
@@ -235,9 +228,9 @@ final class PaneStripController: NSViewController {
     private func stackDividerDragged(_ event: PaneSplitView.DividerDrag, stack: PaneSplitController) {
         switch event {
         case .began:
-            model.setLiveResizing(true)
+            model.setLiveResize(.panes)
         case .ended:
-            model.setLiveResizing(false)
+            model.setLiveResize(nil)
             guard let column = stacks.firstIndex(where: { $0 === stack }), column < arrangement.columns.count else { return }
             let views = stack.itemViews
             let total = views.reduce(0) { $0 + $1.frame.height }
@@ -256,7 +249,7 @@ final class PaneStripController: NSViewController {
         case .began:
             drag = .edge(strip: view.bounds.width, first: firstView.frame.width)
             applyLimits()
-            model.setLiveResizing(true)
+            model.setLiveResize(.screen)
         case .changed(let travel):
             guard case .edge(let strip, let start) = drag else { return }
             let width = min(max(start - travel, first.minimum), first.maximum)

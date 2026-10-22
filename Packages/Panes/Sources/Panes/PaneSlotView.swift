@@ -36,13 +36,18 @@ final class PaneSlotView: NSView {
         layoutSubtreeIfNeeded()
     }
 
+    /// The pane as long as it is still here (never one that went back to its column meanwhile).
+    private var heldPane: NSView? {
+        pane?.superview === self ? pane : nil
+    }
+
     override func layout() {
         super.layout()
-        pane?.frame = bounds
+        heldPane?.frame = bounds
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        pane == nil ? nil : super.hitTest(point)
+        heldPane == nil ? nil : super.hitTest(point)
     }
 
     override func viewDidMoveToWindow() {

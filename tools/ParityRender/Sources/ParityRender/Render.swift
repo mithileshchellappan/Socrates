@@ -600,12 +600,12 @@ struct ParityRender {
             ))
         }
         let beside = PaneSeed(layouts: [.review: PaneLayout(
-            columns: [PaneLayout.Column(panes: [.notes], width: 336), PaneLayout.Column(panes: [.agent], width: 344)], open: [.notes]
+            columns: [PaneLayout.Column(panes: [.notes], width: 360), PaneLayout.Column(panes: [.agent], width: 344)], open: [.notes]
         )])
         var maximized = beside
         maximized.layouts[.review]?.maximized = .agent
         let stacked = PaneSeed(layouts: [.review: PaneLayout(
-            columns: [PaneLayout.Column(panes: [.notes, .agent], width: 344, heights: [0.5, 0.5])], open: [.notes]
+            columns: [PaneLayout.Column(panes: [.notes, .agent], width: 360, heights: [0.5, 0.5])], open: [.notes]
         )])
         var shots = [
             RenderShot(name: "40-panes", window: review(agent), panes: beside, reviewTab: .lecture, size: wide),

@@ -11,9 +11,10 @@ import SwiftUI
 /// Nothing closes another pane: only Close, the pane's toggle or its View menu item close one.
 /// Opening follows the room rules (`open`), and the window never grows:
 /// 1. the columns at the student's widths fit beside the sidebar: the pane opens at its width;
-/// 2. else, where the window holds the columns' minimums without the sidebar, the sidebar hides
-///    first (the app's sidebar fit reads `requestedNeed` and `requestedMinimum`) and the column is
-///    placed in the update the sidebar has gone; the widest pane gives way toward its minimum;
+/// 2. else, where the window holds the columns' minimums without the sidebar, the pane waits for
+///    the sidebar (`awaitingSidebar`, which the app's sidebar fit answers by hiding it, measured
+///    against `requestedNeed` and `requestedMinimum`) and the column is placed in the update the
+///    sidebar has gone; the widest pane gives way toward its minimum;
 /// 3. else the pane opens maximized only, with no column, until the window has room.
 /// A width the window imposes (a tile, full screen, a screen with a larger minimum, the
 /// student's own sidebar) folds the most recently opened columns: they stay open, their toggles
@@ -35,9 +36,8 @@ public final class PaneHostModel {
     public private(set) var openIDs: Set<PaneID> = []
     /// The pane laid over the content area, if any (the others stay open behind it).
     public private(set) var maximized: PaneID?
-    /// A pane divider, the screen's edge, a stack divider or the window's edge is being dragged
-    /// (`\.isLiveResizing`). Flips twice per drag.
-    public private(set) var isLiveResizing = false
+    /// What a drag in flight resizes (nil: no drag). Set twice per drag.
+    private(set) var liveResize: PaneLiveResize?
     /// The pane holding the keyboard (an editable text view inside it is the window's first
     /// responder); the app folds it into `\.isSearchFieldFocused`, so the screen's plain keys stand
     /// down while the student types in a pane.
@@ -56,6 +56,10 @@ public final class PaneHostModel {
     public private(set) var requestedMinimum: CGFloat = 0
     /// The screen's offers, by pane (their content arrives a moment after the screen).
     public private(set) var offers: [PaneID: PaneOffer] = [:]
+    /// Room rule 2: a pane the student opened that shows once the sidebar has gone (the app's
+    /// sidebar fit hides it when this is set). Placed as the room allows after `holdLimit` should
+    /// the sidebar stay.
+    public private(set) var awaitingSidebar: PaneID?
 
     /// The columns laid out now.
     private(set) var arrangement = PaneArrangement()
@@ -82,9 +86,6 @@ public final class PaneHostModel {
     @ObservationIgnored private var windowWidth: CGFloat = 0
     /// The open panes, the oldest opened first (the most recent fold first).
     @ObservationIgnored private var openOrder: [PaneID] = []
-    /// A pane opened where the sidebar must hide first: it shows in the update the sidebar has
-    /// gone (or, should the sidebar stay, after `holdLimit`, folded or placed as the room allows).
-    @ObservationIgnored private var awaitingSidebar: PaneID?
     @ObservationIgnored private var holdTimeout: Task<Void, Never>?
     /// A pane whose offer's `focus` runs once its content is installed.
     @ObservationIgnored private(set) var pendingFocus: PaneID?
@@ -115,10 +116,15 @@ public final class PaneHostModel {
         openIDs.contains(id)
     }
 
-    /// The toggle, its View menu item (⌥⌘n): opens a closed pane, closes an open one. While
-    /// another pane is maximized it restores the layout first (a closed pane then opens too).
+    /// A pane divider, the screen's edge, a stack divider or the window's edge is being dragged
+    /// (the panes' `\.isLiveResizing`).
+    public var isLiveResizing: Bool { liveResize != nil }
+
+    /// The toggle, its View menu item (⌥⌘n): opens a closed pane, closes an open one. While a pane
+    /// is maximized any toggle restores the layout first (a closed pane then opens too); the
+    /// maximized pane's own toggle closes it only while it has no column to go back to.
     public func toggle(_ id: PaneID) {
-        if let maximized, maximized != id {
+        if let maximized, maximized != id || canRestore {
             restore()
             if !isOpen(id) { open(id) }
             return
@@ -154,16 +160,19 @@ public final class PaneHostModel {
         }
     }
 
-    /// Close, the toggle of an open pane. A maximized pane that closes gives the layout back.
-    /// A pane in a column fades out first (none with Reduce Motion); the columns change after.
+    /// Close, the toggle of an open pane. A maximized pane that closes gives the layout back; a
+    /// window-wide pane (the agent) is no longer maximized in any kind's layout either, so another
+    /// screen never comes back covered by a pane the student closed. A pane in a column fades out
+    /// first (none with Reduce Motion); the columns change after.
     public func close(_ id: PaneID) {
         let fades = arrangement.panes.contains(id) && maximized != id
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if maximized == id {
-            maximized = nil
-            layout.maximized = nil
+        if maximized == id { maximized = nil }
+        if layout.maximized == id { layout.maximized = nil }
+        if windowOpen.remove(id) != nil {
+            PaneLayoutStore.saveWindowOpen(windowOpen)
+            PaneLayoutStore.forgetMaximized(id, except: kind)
         }
-        if windowOpen.remove(id) != nil { PaneLayoutStore.saveWindowOpen(windowOpen) }
         layout.open.removeAll { $0 == id }
         PaneLayoutStore.save(layout, for: kind)
         openOrder.removeAll { $0 == id }
@@ -229,12 +238,22 @@ public final class PaneHostModel {
     /// Another screen kind (or its offered panes), in the update the screen changes: the kind's
     /// layout as stored, for these specs. Read from the store every time (it always holds the
     /// student's last action), so a pane offered again (the agent after a practice exam, or once
-    /// Claude Code is back) returns at its place and width.
+    /// Claude Code is back) returns at its place and width, maximized if it was.
     func configure(kind: PaneScreenKind, specs: [PaneSpec], room: PaneRoom) {
+        let wasOffered = Set(self.specs.map(\.id))
         layout = (PaneLayoutStore.load(kind) ?? PaneLayout.initial(for: specs)).normalized(for: specs)
         if kind != loadedKind {
             loadedKind = kind
+            if let stored = layout.maximized, !layout.open.contains(stored), !windowOpen.contains(stored) {
+                // Its pane was closed since: the maximize is forgotten, never brought back later.
+                layout.maximized = nil
+                PaneLayoutStore.save(layout, for: kind)
+            }
             maximized = layout.maximized
+        } else if maximized == nil, let stored = layout.maximized, !wasOffered.contains(stored),
+                  specs.contains(where: { $0.id == stored }) {
+            // The maximized pane is offered again on this screen (Claude Code is back): as stored.
+            maximized = stored
         }
         self.kind = kind
         self.specs = specs
@@ -265,8 +284,8 @@ public final class PaneHostModel {
         if byID != self.offers { self.offers = byID }
     }
 
-    func setLiveResizing(_ resizing: Bool) {
-        if isLiveResizing != resizing { isLiveResizing = resizing }
+    func setLiveResize(_ resize: PaneLiveResize?) {
+        if liveResize != resize { liveResize = resize }
     }
 
     func setTypingPane(_ id: PaneID?) {
@@ -279,10 +298,12 @@ public final class PaneHostModel {
         return pendingFocus
     }
 
-    /// The pane the student just opened (the strip slides it in once).
-    func takeJustOpened() -> PaneID? {
-        defer { justOpened = nil }
-        return justOpened
+    /// The pane the student just opened, once it is in `arrangement` (the strip slides it in once;
+    /// a pane waiting for the sidebar slides in when it gets its column, a maximized one never).
+    func takeJustOpened(placedIn arrangement: PaneArrangement) -> PaneID? {
+        guard let id = justOpened, arrangement.panes.contains(id) || maximized == id else { return nil }
+        justOpened = nil
+        return maximized == id ? nil : id
     }
 
     /// The fading pane leaves its column (the caller refreshes).
@@ -329,7 +350,7 @@ public final class PaneHostModel {
 
     /// The screen's edge is dragged: the strip follows `width` (its first column takes the change).
     func dragEdge(to width: CGFloat) {
-        if !isLiveResizing { isLiveResizing = true }
+        setLiveResize(.screen)
         let width = max(width.rounded(), placedNeed)
         if edgeWidth != width { edgeWidth = width }
     }
@@ -337,7 +358,7 @@ public final class PaneHostModel {
     /// The screen's edge was let go: the first column keeps its width.
     func endEdgeDrag(widths: [PaneID: CGFloat]) {
         edgeWidth = nil
-        setLiveResizing(false)
+        setLiveResize(nil)
         setColumnWidths(widths)
     }
 
@@ -389,7 +410,7 @@ public final class PaneHostModel {
     }
 
     private func hold(_ id: PaneID) {
-        awaitingSidebar = id
+        if awaitingSidebar != id { awaitingSidebar = id }
         holdTimeout?.cancel()
         holdTimeout = Task { [weak self] in
             try? await Task.sleep(for: Self.holdLimit)
@@ -401,7 +422,7 @@ public final class PaneHostModel {
     }
 
     private func endHold() {
-        awaitingSidebar = nil
+        if awaitingSidebar != nil { awaitingSidebar = nil }
         holdTimeout?.cancel()
         holdTimeout = nil
     }

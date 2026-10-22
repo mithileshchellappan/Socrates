@@ -37,10 +37,11 @@ enum PaneTable {
     }
 
     /// Review's notes: the header holds the tab picker (This slide | Whole lecture | Summary) in
-    /// place of a title; 300 pt keeps its three segments and both buttons.
+    /// place of a title. 352 pt holds it: 14 leading + the picker's 276 + 4 + ⤢ 24 + 2 + ✕ 24 + 6
+    /// (its segments are as wide as the widest label; it never shrinks).
     static let notes = PaneSpec(
         id: .notes, title: String(localized: "Notes"), systemImage: "doc.text",
-        minWidth: 300, idealWidth: 336, opensByDefault: true, showsTitle: false
+        minWidth: 352, idealWidth: 360, opensByDefault: true, showsTitle: false
     )
 
     /// The lecture notes page's own notes: the lecture's note, then the notes by slide.

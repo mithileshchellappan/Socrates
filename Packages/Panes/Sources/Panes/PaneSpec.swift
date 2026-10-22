@@ -73,6 +73,9 @@ public struct PaneScreenKind: RawRepresentable, Hashable, Sendable {
     public static let calendar = PaneScreenKind(rawValue: "calendar")
     /// Every other main-window screen (it offers the agent only).
     public static let general = PaneScreenKind(rawValue: "general")
+
+    /// Every kind a layout is kept for.
+    static let all: [PaneScreenKind] = [.review, .lectureNotes, .calendar, .general]
 }
 
 /// What the window keeps beside the panes, as the app declares it (never measured): the screen's

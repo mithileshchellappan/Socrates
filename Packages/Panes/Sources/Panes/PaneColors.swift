@@ -1,13 +1,12 @@
 #if os(macOS)
 import AppKit
+import StudyUI
 
-/// The panes' AppKit colours (docs/DESIGN.md 3.1), light and dark. The same values as ChatUI's
-/// `PanelSurface` and CaptureUI's inspector background, which are SwiftUI and internal to their
-/// packages; the headers, dividers and the floating panel here draw with AppKit.
+/// The panes' AppKit colours (docs/DESIGN.md 3.1), light and dark: the headers, dividers and the
+/// floating panel here draw with AppKit.
 enum PaneColors {
-    /// The panel surface (the mockups' `--inspector`): #f8f8fa / #222225, opaque.
-    static let surface = dynamic(light: NSColor(srgbRed: 0xF8 / 255, green: 0xF8 / 255, blue: 0xFA / 255, alpha: 1),
-                                 dark: NSColor(srgbRed: 0x22 / 255, green: 0x22 / 255, blue: 0x25 / 255, alpha: 1))
+    /// The panel surface (StudyUI's `PanelSurface`, which the chat's SwiftUI views fill with).
+    static let surface = NSColor.panelSurface
     /// Fill 2 (`--fill2`): the header buttons' hover.
     static let hoverFill = dynamic(light: NSColor(srgbRed: 120 / 255, green: 120 / 255, blue: 128 / 255, alpha: 0.17),
                                    dark: NSColor(srgbRed: 120 / 255, green: 120 / 255, blue: 128 / 255, alpha: 0.30))
