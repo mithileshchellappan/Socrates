@@ -282,6 +282,9 @@ targets:
       # M7 (docs/plan-m7.md): the iPhone recorder, its Live Activity and the phone's shell (iOS);
       # iCloud sync (both, off unless SOCRATES_ICLOUD = YES signs the build for CloudKit).
       - package: Recorder
+        product: RecorderContract
+        destinationFilters: [iOS]
+      - package: Recorder
         product: RecorderActivity
         destinationFilters: [iOS]
       - package: Recorder
@@ -347,6 +350,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES
     dependencies:
+      - package: Recorder
+        product: RecorderContract
       - package: Recorder
         product: RecorderActivity
       - sdk: WidgetKit.framework

@@ -3,6 +3,7 @@ import ChatUI
 import PhoneUI
 import Recorder
 import RecorderActivity
+import RecorderContract
 import StudyCore
 import SwiftUI
 
@@ -12,10 +13,11 @@ import SwiftUI
 ///     SIMCTL_CHILD_SOCRATES_DATA_ROOT=<library copy> \
 ///         xcrun simctl launch <simulator> <your bundle id> -phoneParity <route>
 ///
-/// Routes: `recorder` (DC Lecture 2 at slide 17 of 88, 38:41 in), `recorder-after-stop` (the
-/// finished capture with Share and the outbox), `activity` (the Live Activity's Lock Screen view
-/// on a dark wallpaper; the real Live Activity starts too, for the Lock Screen and the Dynamic
-/// Island once the app is in the background), `today` (Fri 23 Oct 2026, 12:47), `sheet` /
+/// Routes: `recorder` (DC Lecture 2 at slide 17 of 88, 38:41 in), `recorder-paused` (the same,
+/// paused 4:12 ago), `recorder-after-stop` (the finished capture with Share and the outbox),
+/// `activity` (the Live Activity's Lock Screen view on a dark wallpaper; the real Live Activity
+/// starts too, for the Lock Screen and the Dynamic Island once the app is in the background),
+/// `activity-paused` (the same, paused), `today` (Fri 23 Oct 2026, 12:47), `sheet` /
 /// `sheet-small` and `sheet-large` (the agent sheet on "F1 on the board"), `round` (the plan
 /// card's round started, its first question), `round-answered` (the same, its first question
 /// answered right through the phone's coach, as after a tap). Nothing records (no microphone), nothing is sent,
@@ -23,8 +25,10 @@ import SwiftUI
 enum PhoneParity {
     enum Route: String {
         case recorder
+        case recorderPaused = "recorder-paused"
         case recorderAfterStop = "recorder-after-stop"
         case activity
+        case activityPaused = "activity-paused"
         case today
         case sheet
         case sheetSmall = "sheet-small"
@@ -92,12 +96,13 @@ struct PhoneParityView: View {
         model.fixedNow = PhoneParity.now
         do {
             switch route {
-            case .recorder:
-                launch = PhoneLaunch(cover: .recorder, recorder: try await PhoneRecorder.preview(services: services))
+            case .recorder, .recorderPaused:
+                let recorder = try await PhoneRecorder.preview(services: services, paused: route == .recorderPaused)
+                launch = PhoneLaunch(cover: .recorder, recorder: recorder)
             case .recorderAfterStop:
                 launch = PhoneLaunch(cover: .recorder, recorder: try await PhoneRecorder.preview(services: services, stopped: true))
-            case .activity:
-                let recorder = try await PhoneRecorder.preview(services: services, startsActivity: true)
+            case .activity, .activityPaused:
+                let recorder = try await PhoneRecorder.preview(services: services, startsActivity: true, paused: route == .activityPaused)
                 guard let state = recorder.liveActivityState else { throw PhoneParity.Failure("No Live Activity state") }
                 card = state
             case .today:
@@ -182,7 +187,7 @@ private struct ActivityParityView: View {
                     .font(.system(size: 92, weight: .bold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.9))
                 Spacer()
-                RecordingLockScreenParityCard(state: state, recordingID: UUID())
+                RecordingLockScreenParityCard(state: state, recordingID: RecordingID(UUID()))
                     .environment(\.colorScheme, .dark)
                     .padding(.bottom, 120)
             }

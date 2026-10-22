@@ -120,7 +120,6 @@ public enum LiveCaptioner {
         var run: Int?
         var analyzerSeconds: Double = 0
         for await chunk in chunks {
-            guard chunk.barrier == nil else { continue }
             let chunkTime = chunk.hostTime
                 .flatMap { clock.sampleTime(atHostTime: $0) }
                 .map { clock.seconds(forSample: $0) }

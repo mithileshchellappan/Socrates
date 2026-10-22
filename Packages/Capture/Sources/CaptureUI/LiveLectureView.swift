@@ -352,13 +352,14 @@ public struct LiveLectureView: View {
         case .microphoneDenied: String(localized: "Microphone access is off")
         case .noInputDevice: String(localized: "No microphone")
         case .storage: String(localized: "Recording stopped")
-        case .engine: String(localized: "Recording couldn’t start")
+        case .engine, .inputBusy: String(localized: "Recording couldn’t start")
         }
     }
 
     public static func message(for failure: LiveLectureSession.Failure) -> String? {
         switch failure {
         case .notConsented, .microphoneDenied, .noInputDevice: nil
+        case .inputBusy: String(localized: "The microphone is in use.")
         case .storage(let detail), .engine(let detail): detail
         }
     }

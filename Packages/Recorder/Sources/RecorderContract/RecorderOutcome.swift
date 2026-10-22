@@ -13,7 +13,7 @@ public struct RecorderOutcome: Codable, Hashable, Sendable {
         case rejected(Rejection)
         /// Tried and failed (a Resume during a phone call); the state is as before and the same
         /// command may be sent again.
-        case failed(String)
+        case failed(RecorderFailure)
     }
 
     public enum Rejection: Codable, Hashable, Sendable {

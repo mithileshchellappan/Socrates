@@ -11,15 +11,10 @@ public struct RecordingPauses: Sendable, Hashable {
         /// Wall clock of the pause and of the resume (nil: still paused, or never resumed).
         public var startedAt: Date
         public var endedAt: Date?
-        /// Clock positions: where the audio stopped, and where it went on.
+        /// Clock positions: where the pause sits (Pause stopped the input there), and where the
+        /// audio went on.
         public var startSample: Int64?
         public var endSample: Int64?
-
-        /// Frames of the clock the pause spans; 0 while it is open or unplaced.
-        public var gapFrames: Int64 {
-            guard let startSample, let endSample else { return 0 }
-            return max(0, endSample - startSample)
-        }
     }
 
     /// Oldest first.
@@ -44,18 +39,15 @@ public struct RecordingPauses: Sendable, Hashable {
         pauses.last.flatMap { $0.endedAt == nil ? $0 : nil }
     }
 
-    /// Clock frames inside closed pauses up to `sample`.
-    public func gapFrames(before sample: Int64) -> Int64 {
-        pauses.reduce(0) { total, pause in
-            guard let end = pause.endSample, end <= sample else { return total }
-            return total + pause.gapFrames
-        }
-    }
-
-    /// Seconds of the clock inside closed pauses.
-    public func gapSeconds(sampleRate: Double) -> TimeInterval {
+    /// Seconds of the clock inside closed pauses, counting only the part before `endSample` (the
+    /// end of the audio): a pause whose resume recorded nothing lies beyond the recording.
+    public func gapSeconds(sampleRate: Double, through endSample: Int64) -> TimeInterval {
         guard sampleRate > 0 else { return 0 }
-        return Double(pauses.reduce(0) { $0 + $1.gapFrames }) / sampleRate
+        let frames = pauses.reduce(Int64(0)) { total, pause in
+            guard let start = pause.startSample, let end = pause.endSample else { return total }
+            return total + max(0, min(end, endSample) - start)
+        }
+        return Double(frames) / sampleRate
     }
 
     /// Wall-clock seconds paused from the pauses' starts up to `end` (an open pause counts up to

@@ -3,10 +3,15 @@ import Foundation
 public enum CaptureError: Error, Equatable, Sendable {
     case microphoneDenied
     case noInputDevice
+    /// iOS: a call or another app holds the input, or iOS does not let the app record now; the
+    /// same step can be tried again later.
+    case inputBusy
     case alreadyRecording
     case notRecording
-    /// `resume()` without a pause.
+    /// `resume()` or `reopen(_:)` without a pause to continue.
     case notPaused
+    /// Writing audio failed earlier (storage full): the recording cannot go on.
+    case writeFailed
     case engineFailed(String)
 }
 
@@ -32,20 +37,25 @@ public struct CaptureStart: Sendable {
 
 /// Returned by `pause()` once the input is off and everything recorded is on disk.
 public struct CapturePause: Sendable {
-    /// The first frame after the audio written: where the pause sits on the recording clock.
-    public var endSample: Int64
+    /// Where the pause sits on the recording clock: the moment Pause stopped the input. Never
+    /// before `audioEnd`; after it when the input had been lost before the pause (the clock
+    /// counts that time as recorded, as it does for any interruption).
+    public var sampleTime: Int64
+    /// The first frame after the audio written.
+    public var audioEnd: Int64
     /// All segments, the last one closed.
     public var segments: [AudioSegmentInfo]
 
-    public init(endSample: Int64, segments: [AudioSegmentInfo]) {
-        self.endSample = endSample
+    public init(sampleTime: Int64, audioEnd: Int64, segments: [AudioSegmentInfo]) {
+        self.sampleTime = sampleTime
+        self.audioEnd = audioEnd
         self.segments = segments
     }
 }
 
 /// Returned by `resume()` once the input runs again.
 public struct CaptureResume: Sendable {
-    /// Where the next audio sits on the recording clock: the pause's end plus the time paused.
+    /// Where the next audio sits on the recording clock: the pause's place plus the time paused.
     public var sampleTime: Int64
     /// `mach_absolute_time()` when the clock was placed there.
     public var hostTime: UInt64
@@ -53,6 +63,33 @@ public struct CaptureResume: Sendable {
     public init(sampleTime: Int64, hostTime: UInt64) {
         self.sampleTime = sampleTime
         self.hostTime = hostTime
+    }
+}
+
+/// A recording an earlier run of the app left paused (the app was killed while paused), for
+/// `reopen(_:)`: what is on disk and where the pause sits.
+public struct PausedRecording: Sendable {
+    /// The package's audio folder.
+    public var directory: URL
+    public var format: RecordingFormat
+    public var segmentDuration: Duration
+    /// The segments on disk, all closed (`LecturePackageContents.segments`).
+    public var segments: [AudioSegmentInfo]
+    /// The `pause` event's place on the recording clock.
+    public var sampleTime: Int64
+    /// The `pause` event's wall clock: the time paused counts from here.
+    public var pausedAt: Date
+
+    public init(
+        directory: URL, format: RecordingFormat, segmentDuration: Duration,
+        segments: [AudioSegmentInfo], sampleTime: Int64, pausedAt: Date
+    ) {
+        self.directory = directory
+        self.format = format
+        self.segmentDuration = segmentDuration
+        self.segments = segments
+        self.sampleTime = sampleTime
+        self.pausedAt = pausedAt
     }
 }
 
@@ -103,6 +140,11 @@ public protocol AudioCaptureSource: AnyObject, Sendable {
     /// real time paused and the next audio opens a new segment there. On failure it stays
     /// paused.
     func resume() async throws -> CaptureResume
+
+    /// Takes up a recording an earlier run left paused, in the paused state: `resume()` then
+    /// records on into its folder after the time paused, and `stop()` closes it. Returns the
+    /// recording clock stamps map onto.
+    func reopen(_ paused: PausedRecording) async throws -> RecordingClock
 }
 
 extension AudioCaptureSource {
@@ -110,4 +152,5 @@ extension AudioCaptureSource {
     public func pause() async throws -> CapturePause { throw CaptureError.notRecording }
     public func releaseInput() async {}
     public func resume() async throws -> CaptureResume { throw CaptureError.notPaused }
+    public func reopen(_ paused: PausedRecording) async throws -> RecordingClock { throw CaptureError.notPaused }
 }

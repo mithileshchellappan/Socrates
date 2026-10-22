@@ -34,6 +34,8 @@ public final class LiveLectureSession {
         case notConsented
         case microphoneDenied
         case noInputDevice
+        /// iOS: a call or another app holds the input.
+        case inputBusy
         /// The package or audio could not be written.
         case storage(String)
         case engine(String)
@@ -273,13 +275,6 @@ public final class LiveLectureSession {
         event.time(sampleRate: sampleRate)
     }
 
-    /// Seconds of audio recorded before an event: its clock time without the pauses before it
-    /// (where it sits against `elapsed`).
-    public func recordedTime(of event: LectureEvent) -> TimeInterval? {
-        guard let sampleTime = event.sampleTime, sampleRate > 0 else { return nil }
-        return Double(sampleTime - pauses.gapFrames(before: sampleTime)) / sampleRate
-    }
-
     /// The pauses so far (iPhone); the last one is open while paused.
     public var pauses: RecordingPauses { RecordingPauses(events: events) }
 
@@ -366,17 +361,18 @@ public final class LiveLectureSession {
     /// Pauses (iPhone): the input stops, the audio so far is written and its segment closed, and
     /// the `pause` event and the manifest are on disk when this returns. The input stays claimed
     /// until `releaseInput()`, so the caller can finish its own updates before iOS may suspend
-    /// the app. Throws when not recording or when the capture cannot pause; then nothing changed.
+    /// the app. Throws when not recording, when the capture cannot pause, or when a failure
+    /// stopped the recording meanwhile; then it is not paused.
     public func pause() async throws {
         guard phase == .recording else { throw CaptureError.notRecording }
         let hostTime = host.now()
         let wallClock = now()
         let mark = try await capture.pause()
         // A failure stopped the recording while the input went off.
-        guard phase == .recording else { return }
+        guard phase == .recording else { throw CaptureError.notRecording }
         phase = .paused
         level = 0
-        record(.pause, page: tracksSlides ? currentPage : nil, hostTime: hostTime, sampleTime: mark.endSample, wallClock: wallClock)
+        record(.pause, page: tracksSlides ? currentPage : nil, hostTime: hostTime, sampleTime: mark.sampleTime, wallClock: wallClock)
         guard let writer else { return }
         let segments = mark.segments
         eventsRevision += 1
@@ -397,11 +393,12 @@ public final class LiveLectureSession {
     }
 
     /// Records again after `pause()`, into the same package: the next audio sits after the real
-    /// time paused. Throws (and stays paused) when the input cannot start, e.g. during a call.
+    /// time paused. Throws (and stays paused) when the input cannot start, e.g. during a call, and
+    /// when a failure stopped the recording meanwhile.
     public func resume() async throws {
         guard phase == .paused else { throw CaptureError.notPaused }
         let resumed = try await capture.resume()
-        guard phase == .paused else { return }
+        guard phase == .paused else { throw CaptureError.notPaused }
         record(.resume, page: tracksSlides ? currentPage : nil, hostTime: resumed.hostTime, sampleTime: resumed.sampleTime)
         phase = .recording
     }
@@ -447,20 +444,73 @@ public final class LiveLectureSession {
         if let package { onFinalized?(package) }
     }
 
+    /// Takes up a recording an earlier run of the app left paused (it was killed while paused):
+    /// the package as it is on disk, its events and notes, paused on the slide it paused on.
+    /// `resume()` then records on into it after the time paused, and `stop()` finishes it.
+    /// Throws when the package did not end in a pause, or was recorded in another format.
+    public func reopen(paused contents: LecturePackageContents) async throws {
+        guard phase == .ready, writer == nil else { throw CaptureError.alreadyRecording }
+        let manifest = contents.manifest
+        guard manifest.endedAt == nil,
+              contents.events.last?.kind == .pause,
+              let pause = contents.pauses.open,
+              let sampleTime = pause.startSample,
+              let startedAt = manifest.startedAt,
+              manifest.sampleRate == configuration.format.sampleRate
+        else { throw CaptureError.notPaused }
+
+        let writer = try LecturePackageWriter(package: contents.package, manifest: manifest)
+        let statusUpdates = capture.statusUpdates()
+        let clock = try await capture.reopen(PausedRecording(
+            directory: contents.package.audioDirectory,
+            format: configuration.format,
+            segmentDuration: configuration.segmentDuration,
+            segments: contents.segments,
+            sampleTime: sampleTime,
+            pausedAt: pause.startedAt
+        ))
+        package = contents.package
+        self.writer = writer
+        self.clock = clock
+        self.startedAt = startedAt
+        events = contents.events
+        notes = Dictionary(contents.notes.map { ($0.page, $0) }, uniquingKeysWith: { _, last in last })
+        if let page = contents.events.last?.page {
+            currentPage = hasDeck ? min(max(1, page), pageCount) : max(1, page)
+        }
+        inputName = nil
+        isInputAvailable = true
+        level = 0
+        phase = .paused
+        observe(statusUpdates, writer: writer)
+        startMeter()
+        do {
+            // The segments as found on disk (the manifest may lack a count after the kill).
+            let segments = contents.segments
+            try await writer.updateManifest { $0.segments = segments }
+        } catch {
+            CaptureLog.capture.error("Manifest update failed: \(error.localizedDescription, privacy: .public)")
+        }
+        CaptureLog.capture.info("Reopened \(manifest.id.uuidString, privacy: .public), paused")
+    }
+
     // MARK: - Slides
 
-    /// Next slide (→, Space). Stamps while recording.
-    public func next() {
+    /// Next slide (→, Space). Stamps while recording. Returns whether the slide moved.
+    @discardableResult
+    public func next() -> Bool {
         navigate(to: currentPage + 1, kind: .slide, hostTime: host.now())
     }
 
-    /// Previous slide (←). Stamps while recording.
-    public func previous() {
+    /// Previous slide (←). Stamps while recording. Returns whether the slide moved.
+    @discardableResult
+    public func previous() -> Bool {
         navigate(to: currentPage - 1, kind: .back, hostTime: host.now())
     }
 
-    /// Any slide (filmstrip). Stamps while recording.
-    public func jump(to page: Int) {
+    /// Any slide (filmstrip). Stamps while recording. Returns whether the slide moved.
+    @discardableResult
+    public func jump(to page: Int) -> Bool {
         navigate(to: page, kind: .jump, hostTime: host.now())
     }
 
@@ -524,18 +574,19 @@ public final class LiveLectureSession {
 
     // MARK: - Private
 
-    private func navigate(to page: Int, kind: LectureEventKind, hostTime: UInt64) {
+    private func navigate(to page: Int, kind: LectureEventKind, hostTime: UInt64) -> Bool {
         // Paused, a slide change could not be stamped: it waits for Resume.
-        guard phase != .paused else { return }
+        guard phase != .paused else { return false }
         // With a deck: its pages. Counting without one (iPhone): from 1 up, no upper bound.
         let inRange = hasDeck ? (1...pageCount).contains(page) : configuration.countsSlidesWithoutDeck && page >= 1
-        guard inRange, page != currentPage else { return }
+        guard inRange, page != currentPage else { return false }
         let from = currentPage
         currentPage = page
         if phase == .recording {
             record(kind, page: page, fromPage: from, hostTime: hostTime)
         }
         prefetchAround(page)
+        return true
     }
 
     @discardableResult
@@ -617,7 +668,9 @@ public final class LiveLectureSession {
                 case .inputLost:
                     self.isInputAvailable = false
                 case .failed(let message):
-                    guard self.phase == .recording else { continue }
+                    // Also while paused: a write that failed while the pause drained the input
+                    // means the audio cannot go on after a resume.
+                    guard self.phase == .recording || self.phase == .paused else { continue }
                     await self.stop()
                     self.phase = .failed(.storage(message))
                 }
@@ -688,6 +741,7 @@ public final class LiveLectureSession {
         switch error as? CaptureError {
         case .microphoneDenied: .microphoneDenied
         case .noInputDevice: .noInputDevice
+        case .inputBusy: .inputBusy
         case .engineFailed(let message): .engine(message)
         default: .storage(error.localizedDescription)
         }

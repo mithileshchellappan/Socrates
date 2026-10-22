@@ -13,9 +13,8 @@ let package = Package(
         .library(name: "RecorderContract", targets: ["RecorderContract"]),
         // The Live Activity's contract, shared by the app and the widget extension: its state and
         // attributes (ActivityKit, iOS) and the hook its buttons call in the app's process. No
-        // StudyCore, so the extension stays small.
-        // RecorderContract rides along, so the widget extension reaches it without its own product.
-        .library(name: "RecorderActivity", targets: ["RecorderActivity", "RecorderContract"]),
+        // StudyCore, so the extension stays small. Its users link RecorderContract themselves.
+        .library(name: "RecorderActivity", targets: ["RecorderActivity"]),
         // The phone's recording model over Capture's `LiveLectureSession`: courses that may record,
         // the session on now, stamps, the Live Activity, the outbox (`AppPaths.phoneCaptures`).
         .library(name: "Recorder", targets: ["Recorder"]),

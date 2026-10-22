@@ -27,13 +27,13 @@ struct PauseRecordingIntent: LiveActivityIntent {
 
     init() {}
 
-    init(recordingID: UUID, sequence: Int) {
+    init(recordingID: RecordingID, sequence: Int) {
         self.recordingID = recordingID.uuidString
         self.sequence = sequence
     }
 
     func perform() async throws -> some IntentResult {
-        if let id = UUID(uuidString: recordingID) {
+        if let id = RecordingID(uuidString: recordingID) {
             await RecorderControl.perform(.rendered(.pause, recordingID: id, sequence: sequence))
         }
         return .result()
@@ -54,13 +54,13 @@ struct ResumeRecordingIntent: LiveActivityIntent, AudioRecordingIntent {
 
     init() {}
 
-    init(recordingID: UUID, sequence: Int) {
+    init(recordingID: RecordingID, sequence: Int) {
         self.recordingID = recordingID.uuidString
         self.sequence = sequence
     }
 
     func perform() async throws -> some IntentResult {
-        if let id = UUID(uuidString: recordingID) {
+        if let id = RecordingID(uuidString: recordingID) {
             await RecorderControl.perform(.rendered(.resume, recordingID: id, sequence: sequence))
         }
         return .result()
@@ -84,14 +84,14 @@ struct NextSlideIntent: LiveActivityIntent {
 
     init() {}
 
-    init(recordingID: UUID, slide: Int, sequence: Int) {
+    init(recordingID: RecordingID, slide: Int, sequence: Int) {
         self.recordingID = recordingID.uuidString
         self.slide = slide
         self.sequence = sequence
     }
 
     func perform() async throws -> some IntentResult {
-        if let id = UUID(uuidString: recordingID) {
+        if let id = RecordingID(uuidString: recordingID) {
             await RecorderControl.perform(.rendered(.nextSlide(from: slide), recordingID: id, sequence: sequence))
         }
         return .result()
@@ -111,13 +111,13 @@ struct StopRecordingIntent: LiveActivityIntent {
 
     init() {}
 
-    init(recordingID: UUID, sequence: Int) {
+    init(recordingID: RecordingID, sequence: Int) {
         self.recordingID = recordingID.uuidString
         self.sequence = sequence
     }
 
     func perform() async throws -> some IntentResult {
-        if let id = UUID(uuidString: recordingID) {
+        if let id = RecordingID(uuidString: recordingID) {
             await RecorderControl.perform(.rendered(.stop, recordingID: id, sequence: sequence))
         }
         return .result()

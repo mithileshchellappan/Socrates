@@ -60,6 +60,35 @@ public struct RecordingActivityState: Codable, Hashable, Sendable {
         self.sequence = sequence
     }
 
+    /// Reads what this build wrote, and the state of a Live Activity an earlier build started
+    /// (it can outlive an update on the Lock Screen): no `accepts` or `sequence` yet, its start
+    /// and stop instead of the timer's. Kinds this build does not know are dropped.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        courseName = try container.decode(String.self, forKey: .courseName)
+        courseColorHex = try container.decode(String.self, forKey: .courseColorHex)
+        sessionName = try container.decode(String.self, forKey: .sessionName)
+        slide = try container.decode(Int.self, forKey: .slide)
+        slideCount = try container.decodeIfPresent(Int.self, forKey: .slideCount)
+        isPaused = try container.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false
+        if let timerStart = try container.decodeIfPresent(Date.self, forKey: .timerStart) {
+            self.timerStart = timerStart
+            timerPauseTime = try container.decodeIfPresent(Date.self, forKey: .timerPauseTime)
+        } else {
+            timerStart = try legacy.decode(Date.self, forKey: .startedAt)
+            timerPauseTime = try legacy.decodeIfPresent(Date.self, forKey: .stoppedAt)
+        }
+        accepts = try container.decodeIfPresent([String].self, forKey: .accepts).map(RecorderCommand.Kind.known)
+            ?? [.nextSlide, .stop]
+        sequence = try container.decodeIfPresent(Int.self, forKey: .sequence) ?? 0
+    }
+
+    /// The fields of the state before pause existed.
+    private enum LegacyKeys: String, CodingKey {
+        case startedAt, stoppedAt
+    }
+
     public init(snapshot: RecorderSnapshot) {
         self.init(
             courseName: snapshot.course.name,
@@ -113,11 +142,11 @@ extension RecordingActivityState {
 public struct RecordingActivityAttributes: ActivityAttributes {
     public typealias ContentState = RecordingActivityState
 
-    /// The recording it was started for (= the capture package's id): a button of an old
-    /// activity never acts on a newer recording.
-    public var recordingID: UUID
+    /// The recording it was started for: a button of an old activity never acts on a newer
+    /// recording. Encoded as the bare UUID, as before it was typed.
+    public var recordingID: RecordingID
 
-    public init(recordingID: UUID) {
+    public init(recordingID: RecordingID) {
         self.recordingID = recordingID
     }
 }

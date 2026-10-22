@@ -112,9 +112,9 @@ public struct LecturePackageContents: Sendable, Hashable {
     /// The pauses the events record (iPhone); empty for a recording never paused.
     public var pauses: RecordingPauses { RecordingPauses(events: events) }
 
-    /// Seconds of audio recorded: `duration` without the pauses (the phone's timer and outbox).
+    /// Seconds recorded: `duration` without the pauses inside it (the phone's timer and outbox).
     public var recordedDuration: TimeInterval {
-        max(0, duration - pauses.gapSeconds(sampleRate: manifest.sampleRate))
+        max(0, duration - pauses.gapSeconds(sampleRate: manifest.sampleRate, through: endSample))
     }
 
     /// The segment's file: always inside the package's audio folder, whatever `segment.file` says.
@@ -141,12 +141,13 @@ public enum LecturePackageReader {
         let notes = fileManager.fileExists(atPath: package.notesURL.path(percentEncoded: false))
             ? try CaptureJSON.read(QuickNoteLog.self, from: package.notesURL).notes
             : []
+        let sorted = events.sorted(by: eventOrder)
         return LecturePackageContents(
             package: package,
             manifest: manifest,
-            events: events.sorted(by: eventOrder),
+            events: sorted,
             notes: notes,
-            segments: resolveSegments(package: package, manifest: manifest)
+            segments: resolveSegments(package: package, manifest: manifest, events: sorted)
         )
     }
 
@@ -167,9 +168,11 @@ public enum LecturePackageReader {
     /// Matches the manifest's segment list with the audio files on disk.
     ///
     /// After a crash the manifest may lack the last segment's frame count or even the segment
-    /// itself (crash right after a rollover). Frame counts then come from the files, and
-    /// unknown files are placed right after the previous segment.
-    static func resolveSegments(package: LecturePackage, manifest: LectureManifest) -> [AudioSegmentInfo] {
+    /// itself (crash right after a rollover, or right after a resume). Frame counts then come
+    /// from the files, and an unknown file is placed right after the previous segment, or at the
+    /// first `resume` at or after that end (the audio after a pause starts there, not at the
+    /// pause).
+    static func resolveSegments(package: LecturePackage, manifest: LectureManifest, events: [LectureEvent]) -> [AudioSegmentInfo] {
         let files = (try? FileManager.default.contentsOfDirectory(
             at: package.audioDirectory, includingPropertiesForKeys: nil
         )) ?? []
@@ -180,16 +183,18 @@ public enum LecturePackageReader {
             uniquingKeysWith: { first, _ in first }
         )
         let known = Dictionary(manifest.segments.map { ($0.sequence, $0) }, uniquingKeysWith: { first, _ in first })
+        let resumes = events.filter { $0.kind == .resume }.compactMap(\.sampleTime).sorted()
 
         var resolved: [AudioSegmentInfo] = []
         for sequence in onDisk.keys.sorted() {
             guard let url = onDisk[sequence] else { continue }
             let previousEnd = resolved.last?.endSample ?? 0
+            let resumed = resumes.first { $0 >= previousEnd }
             var segment = known[sequence] ?? AudioSegmentInfo(
                 sequence: sequence,
                 file: "",
-                startSample: previousEnd,
-                startReason: sequence == 1 ? .start : .rollover
+                startSample: resumed ?? previousEnd,
+                startReason: sequence == 1 ? .start : (resumed == nil ? .rollover : .discontinuity)
             )
             // Always the file actually found: the manifest's path is untrusted (a package can
             // come from anywhere) and must never point outside the audio folder.

@@ -34,9 +34,10 @@ public struct RecordingTiming: Codable, Hashable, Sendable {
     }
 
     /// Seconds recorded at `date`: the span from the start, without the pauses, frozen once
-    /// stopped.
+    /// stopped. The one definition of recorded time: the timer counts it, and a stamp's place on
+    /// the recording is its wall clock read through it.
     public func elapsed(at date: Date) -> TimeInterval {
-        let end = stoppedAt ?? date
+        let end = min(date, stoppedAt ?? date)
         let paused = pauses.reduce(0.0) { total, pause in
             total + max(0, min(pause.end ?? end, end).timeIntervalSince(pause.start))
         }

@@ -15,7 +15,7 @@ import SwiftUI
 /// [⏸] [Next Slide] [Stop Recording].
 struct RecordingLockScreenView: View {
     let state: RecordingActivityState
-    let recordingID: UUID
+    let recordingID: RecordingID
 
     var body: some View {
         VStack(spacing: 12) {
@@ -93,7 +93,7 @@ struct RecordingElapsed: View {
 /// accept is drawn dimmed and is not a button (Next Slide while paused, at the deck's end).
 struct RecordingButtons: View {
     let state: RecordingActivityState
-    let recordingID: UUID
+    let recordingID: RecordingID
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -107,9 +107,15 @@ struct RecordingButtons: View {
                 }
                 .buttonStyle(.plain)
             } else {
+                // Not a button (a disabled widget button is not reliable): VoiceOver hears a
+                // dimmed Next Slide that does nothing, not one that opens the app.
                 nextSlideLabel
                     .foregroundStyle(.tertiary)
                     .background(RecordingActivityStyle.fill2(colorScheme), in: Capsule())
+                    .accessibilityRepresentation {
+                        Button("Next Slide") {}
+                            .disabled(true)
+                    }
             }
             Button(intent: StopRecordingIntent(recordingID: recordingID, sequence: state.sequence)) {
                 HStack(spacing: 7) {
@@ -202,7 +208,7 @@ enum RecordingActivityStyle {
 /// screenshot without a Lock Screen (radius 26, the regular material).
 struct RecordingLockScreenParityCard: View {
     let state: RecordingActivityState
-    let recordingID: UUID
+    let recordingID: RecordingID
 
     var body: some View {
         RecordingLockScreenView(state: state, recordingID: recordingID)

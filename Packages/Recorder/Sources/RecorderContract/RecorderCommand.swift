@@ -57,21 +57,28 @@ public struct RecorderCommand: Codable, Hashable, Sendable, Identifiable {
     /// An action without its arguments: what a snapshot says the recorder accepts now.
     public enum Kind: String, Codable, CaseIterable, Hashable, Sendable {
         case pause, resume, nextSlide, previousSlide, flag, stop
+
+        /// The kinds among `rawValues` this build knows; a newer sender's unknown kinds are
+        /// dropped, so its snapshot still decodes (`RecorderSnapshot.accepts`).
+        public static func known(_ rawValues: [String]) -> Set<Kind> {
+            Set(rawValues.compactMap(Kind.init(rawValue:)))
+        }
     }
 
-    /// Where a command came from (logging, and how the recorder answers the Live Activity).
+    /// Where a command came from. Logged, and it changes one thing: a Live Activity command
+    /// returns only once the activity shows its outcome (the app may be suspended right after an
+    /// intent returns), and one that did nothing redraws the activity from the current state.
     public enum Origin: String, Codable, Hashable, Sendable {
         case screen, liveActivity, remote
     }
 
     public var id: ID
-    /// The recording it is for (= the capture package's id): a command for another recording
-    /// never acts.
-    public var recordingID: UUID
+    /// The recording it is for: a command for another recording never acts.
+    public var recordingID: RecordingID
     public var action: Action
     public var origin: Origin
 
-    public init(id: ID, recordingID: UUID, action: Action, origin: Origin) {
+    public init(id: ID, recordingID: RecordingID, action: Action, origin: Origin) {
         self.id = id
         self.recordingID = recordingID
         self.action = action
@@ -80,14 +87,14 @@ public struct RecorderCommand: Codable, Hashable, Sendable, Identifiable {
 
     /// A new request with a new id: one tap on the screen, one remote button press. A retry of
     /// the same request reuses the command (and so its id).
-    public static func fresh(_ action: Action, recordingID: UUID, origin: Origin) -> Self {
+    public static func fresh(_ action: Action, recordingID: RecordingID, origin: Origin) -> Self {
         Self(id: ID(rawValue: UUID().uuidString), recordingID: recordingID, action: action, origin: origin)
     }
 
     /// A Live Activity button's request: the id is derived from what the button was drawn for
     /// (`<recording>/<snapshot sequence>/<kind>`), so every run of one tap, and every tap on one
     /// rendering, is the same request and acts once.
-    public static func rendered(_ action: Action, recordingID: UUID, sequence: Int) -> Self {
+    public static func rendered(_ action: Action, recordingID: RecordingID, sequence: Int) -> Self {
         Self(
             id: ID(rawValue: "\(recordingID.uuidString)/\(sequence)/\(action.kind.rawValue)"),
             recordingID: recordingID,

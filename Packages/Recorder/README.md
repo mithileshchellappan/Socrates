@@ -7,10 +7,10 @@ shared to the Mac as capture bundles (`.lecturebundle`) that the Mac's smart imp
 
 | Product | Contents | Imports |
 |---|---|---|
-| `RecorderContract` | `RecorderCommand`, `RecorderSnapshot`, `RecordingTiming`, `RecorderOutcome`, `RecorderMachine`, `RecorderContractVersion` (see "Recorder contract") | Foundation only: no UI, no transport. The Mac remote will link it |
-| `RecorderActivity` | `RecordingActivityState` (a projection of the snapshot: + `init(snapshot:)`, `slideText`, `detailLine`, `shortSlide`, `timerRange`, `showsSame(as:)`), `RecordingActivityAttributes` (iOS), `RecorderControl`; also carries the `RecorderContract` target | Foundation, RecorderContract, ActivityKit (iOS). Linked by the app and the widget extension |
-| `Recorder` | `PhoneRecorder` (+ `perform(_:)`, `send(_:)`, `snapshot`), `PhoneCapture`, `RecorderText` | RecorderContract, RecorderActivity, StudyCore, Capture, Courses (ActivityKit on iOS) |
-| `RecorderUI` | `RecorderScreen` (+ internal `OutboxView`, `RecorderWaveform`) | Recorder, RecorderContract, StudyUI, Capture, CaptureUI, SwiftUI |
+| `RecorderContract` | `RecorderCommand`, `RecorderSnapshot`, `RecordingTiming`, `RecorderOutcome`, `RecorderFailure`, `RecordingID`, `RecorderContractVersion` (see "Recorder contract") | Foundation only: no UI, no transport. The app, the widget extension, Phone (the Record slot) and the Mac remote link it |
+| `RecorderActivity` | `RecordingActivityState` (a projection of the snapshot: + `init(snapshot:)`, `slideText`, `detailLine`, `shortSlide`, `timerRange`, `showsSame(as:)`; reads states of earlier builds), `RecordingActivityAttributes` (iOS), `RecorderControl` | Foundation, RecorderContract, ActivityKit (iOS). Linked by the app and the widget extension, each with RecorderContract |
+| `Recorder` | `PhoneRecorder` (+ `perform(_:)`, `submit(_:)`, `record()`, `select(_:)`, `snapshot`, `problem`), `RecorderProblem`, `PhoneCapture`, `RecorderText`; internal `RecorderMachine` (the rules), `RecordingActivityController` | RecorderContract, RecorderActivity, StudyCore, Capture, Courses (ActivityKit on iOS) |
+| `RecorderUI` | `RecorderScreen` (+ internal `OutboxView`, `RecorderWaveform`, the problem's words) | Recorder, RecorderContract, StudyUI, Capture, CaptureUI, SwiftUI |
 
 The Live Activity's widget is in `Widgets/SocratesWidgets.swift` (the `SocratesWidgets`
 extension, RecorderActivity only); its views (`RecordingLockScreenView`, `RecordingTitle`,
@@ -25,61 +25,82 @@ One command API and one published state for the iPhone recorder. Every surface g
 it: the recorder screen's buttons, the Live Activity's intents (across the app–extension
 boundary) and, in the next milestone, the Mac remote over a direct link. The types are `Codable`
 value types in `RecorderContract` (Foundation only, no UI, no transport), so the link only has to
-carry them. Version: `RecorderContractVersion.current` (1); a new action, phase or field that an
-older build cannot decode raises it, and a link exchanges it first.
+carry them. Version: `RecorderContractVersion.current` (1). A link exchanges it first and checks
+it before decoding anything else; a new action, phase or required field that an older build
+cannot decode raises it. Within a version additions stay readable: `accepts` drops kinds it does
+not know, `RecorderFailure` reads an unknown reason as `unknown`.
 
-**Commands** (`RecorderCommand`): `id` (`RecorderCommand.ID`, the idempotency key), `recordingID`
-(= the capture package's id), `action`, `origin` (`screen`, `liveActivity`, `remote`; logging
-only). Actions: `pause`, `resume`, `nextSlide(from:)`, `previousSlide(from:)`, `flag`, `stop`.
-`from` is the slide the surface showed; the recorder moves only while it is still on it (nil:
-the in-process screen, which moves from wherever it is).
+**Ids**: `RecordingID` (= the capture package's id, encoded as the bare UUID) addresses a
+recording; `RecorderCommand.ID` is a command's idempotency key. Both are typed, so no other UUID
+addresses the recorder by mistake.
+
+**Commands** (`RecorderCommand`): `id`, `recordingID`, `action`, `origin` (`screen`,
+`liveActivity`, `remote`). Actions: `pause`, `resume`, `nextSlide(from:)`, `previousSlide(from:)`,
+`flag`, `stop`. `from` is the slide the surface showed; the recorder moves only while it is still
+on it (nil: the in-process screen, which moves from wherever it is). `origin` is logged and
+changes one thing: a Live Activity command returns only once the activity shows its outcome (the
+system may suspend the app as soon as the intent returns), and one that did nothing redraws the
+activity from the current state.
 
 - A new request gets a new id (`RecorderCommand.fresh`). A retry of the same request (a link
   resending after a timeout) sends the same command again: same id.
 - A Live Activity button's id is derived from what it was drawn for:
   `"<recordingID>/<snapshot sequence>/<kind>"` (`RecorderCommand.rendered`). The system running
   one tap's intent twice, and two taps on one rendering, are the same request and act once.
-- The recorder remembers the last 256 decided ids of the recording (`RecorderMachine.settle`);
-  a decided id answers `.duplicate`. A `.failed` command is not remembered, so the same command
-  can be retried (a Resume after a phone call).
+- The recorder remembers the last 256 decided ids of the recording; a decided id answers
+  `.duplicate`. A `.failed` command is not remembered, so the same command can be retried (a
+  Resume after a phone call).
 
-**Executor** (`PhoneRecorder.perform(_:) -> RecorderOutcome`): commands run one at a time on the
-main actor (the session's actor; stamps take their host time there), each waiting for the one
-before, so none interleave across their suspension points. Each is checked by
-`RecorderMachine.decide` against the current snapshot, in this order: the recording id
+**Executor** (`PhoneRecorder.perform(_:) -> RecorderOutcome`; the screen's `submit(_:)` queues
+the same without waiting): commands run one at a time on the model's serial queue on the main
+actor (the session's actor; stamps take their host time there), each waiting for the work
+before it (Record, the course menu and opening the screen use the same queue), so none
+interleave across their suspension points. The rules are the internal `RecorderMachine`; each
+command is checked against the current snapshot, in this order: the recording id
 (`.rejected(.noRecording)`, `.rejected(.otherRecording)`), a decided id (`.duplicate`), already
 in that state (`.unchanged`), not accepted now (`.rejected(.notAccepted(phase))`, or `.atEnd`
 for a slide move past the deck), the shown slide (`.rejected(.staleSlide(shown:current:))`);
-otherwise it is applied (`.applied`) or fails (`.failed(message)`, state unchanged). The outcome
-always carries the current snapshot, so a sender resyncs from it.
+otherwise it runs. One that ran is `.applied` only when the recorder reached the phase the table
+says (a failure can stop the recording while a command waits on the capture:
+`.failed(.stoppedMeanwhile)`); one that threw is `.failed(RecorderFailure)` with the state
+unchanged. Capture's errors become `RecorderFailure` in one place (`inputBusy` for a call or
+another app holding the input, `microphoneDenied`, `noInput`, `notConsented`, `storage`, `engine`,
+`stoppedMeanwhile`, `unknown`); the system's error goes to the log only. The outcome always
+carries the current snapshot, so a sender resyncs from it.
 
 | command \ phase | recording | paused | stopping, stopped |
 |---|---|---|---|
 | pause | apply → paused | unchanged | rejected |
 | resume | unchanged | apply → recording | rejected |
-| nextSlide, previousSlide | apply (deck bounds and shown slide checked) | rejected | rejected |
-| flag | apply | rejected | rejected |
+| nextSlide, previousSlide | apply (deck bounds and shown slide checked) → recording | rejected | rejected |
+| flag | apply → recording | rejected | rejected |
 | stop | apply → stopped | apply → stopped | unchanged |
 
 Start is not a command (there is no recording to address before it): the screen's Record button
-calls `start()`.
+calls `record()`, queued like a command.
 
 **Snapshot** (`RecorderSnapshot`, published as `PhoneRecorder.snapshot`): `recordingID`,
 `sequence`, `phase` (`recording`, `paused`, `stopping`, `stopped`), `timing`
 (`RecordingTiming`: `startedAt`, `pauses` [{`start`, `end?`}], `stoppedAt?`), `slide`,
 `slideCount?` (nil: counted without a deck), `flagCount`, `isInputAvailable`, `course` (name,
 short name, colour), `sessionName`, `accepts` (the command kinds the recorder takes now),
-`failure?` (why a recording stopped by itself).
+`failure?` (with `stopped`: why the recording stopped by itself, a `RecorderFailure`).
 
 - It is the single source of truth for every surface: the screen, the Live Activity
-  (`RecordingActivityState(snapshot:)`) and the remote render it and keep no state of their own.
-  What a surface enables is exactly `accepts`, computed by the same
-  `RecorderMachine.accepts(phase:canGoNext:canGoPrevious:)` that validates commands.
-- `sequence` counts up by one on every change of content, from 1 for each recording; it never
-  goes back. A receiver keeps the snapshot with the highest sequence and drops older ones.
-- Elapsed time is never sent as a ticking value: a receiver computes `timing.elapsed(at:)` on its
-  own clock (the recorded time, pauses left out), or counts with `timing.timerStart` /
-  `timing.timerPauseTime` (`Text(timerInterval:pauseTime:)`).
+  (`RecordingActivityState(snapshot:)`), the shell's Record slot (its phase) and the remote render
+  it and keep no state of their own. What a surface enables is exactly `accepts`, computed by the
+  same rules that validate commands. The recording session is internal to `Recorder`: nothing
+  reaches its mutators past the commands.
+- `sequence` counts up by one on every change of content and never goes back while the recorder
+  runs, across its recordings; a recording taken up after a relaunch continues from the sequence
+  its Live Activity showed. A receiver keeps the newest by one rule,
+  `RecorderSnapshot.supersedes(_:)`: of one recording the higher sequence, of two the one started
+  later.
+- Recorded time has one definition, `timing.elapsed(at:)` (wall clock since the start, pauses
+  left out, frozen at the stop). A receiver computes it on its own clock (nothing sends a
+  ticking value) or counts with `timing.timerStart` / `timing.timerPauseTime`
+  (`Text(timerInterval:pauseTime:)`); a stamp's place is its wall clock read through it (the
+  waveform's `PhoneRecorder.stampTimes`).
 - `PhoneRecorder.publish()` rebuilds it from the session and the course after every command and,
   through an `Observations` of everything it reads, after any other change (a failure, the input
   lost). It is idempotent: an unchanged state does not count the sequence up.
@@ -87,21 +108,34 @@ short name, colour), `sessionName`, `accepts` (the command kinds the recorder ta
 **Live Activity** (`RecordingActivityController`): requested at start from the snapshot, updated
 only when its projection changes (the sequence alone does not count), one request after another,
 ended with the final projection when the snapshot is stopped. A Live Activity command that did
-nothing (duplicate, rejected, failed, unchanged) sends the current projection again, so an
-activity that missed an update is never stuck; one for a recording that is gone ends the stale
-activities.
+nothing (duplicate, rejected, failed, unchanged) sends the current projection again, or ends the
+activity when its recording is gone or stopped, so an activity that missed an update or an end is
+never stuck. Its content state reads what earlier builds wrote (an activity can outlive an
+update on the Lock Screen).
 
 **Pause** ("cold"): the microphone goes off and the audio session is released, so nothing is
 captured, the microphone indicator goes out and iOS may suspend the app. Order: the capture
-stops and writes everything captured (`LiveLectureSession.pause()`: the `pause` event, events
-and manifest on disk), the snapshot is published, the Live Activity update is awaited, and only
-then the input is released (iOS suspends the app seconds after). Resume continues the same
-package as a new segment placed after the real time paused (Capture README, "Pause and resume").
-`ResumeRecordingIntent` is also an `AudioRecordingIntent`, which lets a suspended app start
-recording again from the Lock Screen. A failed Resume (a call in progress, the input refused)
-answers `.failed` and stays paused. Killed while paused, the package is valid as it is (closed
-segments, the last event `pause`, no `endedAt`: imported as incomplete); `activate()` ends its
-stale Live Activity at the next launch.
+stops and writes everything captured (`LiveLectureSession.pause()`: the `pause` event at the
+place Pause stopped the input, events and manifest on disk), the snapshot is published, the Live
+Activity update is awaited, and only then the input is released (iOS suspends the app seconds
+after). Resume continues the same package as a new segment placed after the real time paused
+(Capture README, "Pause and resume"). `ResumeRecordingIntent` is also an `AudioRecordingIntent`,
+which lets a suspended app start recording again from the Lock Screen. A failed Resume (a call in
+progress, the input refused) answers `.failed(.inputBusy)` and stays paused.
+
+**Killed while paused**: a suspended app can be killed; its Live Activity stays with Resume and
+Stop, and a tap relaunches the app in the background. At launch (`activate()`, queued before any
+command) a recording left paused whose activity is still up is taken up again in the same
+package, paused (`LiveLectureSession.reopen(paused:)`), for its course: the tap's Resume records
+on after the time paused, Stop finishes it. A recording left paused without its activity, or one
+that cannot be taken up (its course gone or without consent), is finished where it paused
+(`LecturePackageWriter.finishLeftPaused`: a `stop` at the pause, `endedAt`), and the activities of
+recordings the app no longer has end.
+
+**What the screen sees besides the snapshot** (read-only): `level` (the input level, a live
+signal), `stampTimes`, `deck` and `deckPageCount` (before recording), and `problem`
+(`RecorderProblem`: Record failed, the recording stopped by itself, or a command from any surface
+failed; the screen shows it until `showsProblem` is set false, and picks the words).
 
 ## Entry points
 
@@ -117,16 +151,18 @@ recorder.activate()
 // class's deck when its file is on the phone, the outbox).
 .fullScreenCover(isPresented: $recording) { RecorderScreen(recorder: recorder) }
 
-recorder.isRecording            // starting, recording or stopping: the shell's Record shows it
+recorder.snapshot?.phase        // the shell's Record slot: Record, Recording, Paused
 recorder.liveActivityState      // what the Live Activity shows (parity: the Lock Screen view)
 ```
 
-- `prepare(now:)`, `select(_:)` (the course menu; while recording it re-files the manifest and
-  the snapshot follows, queued with the commands), `start()`, `perform(_:)` (any surface's
-  command), `send(_:)` (a screen tap: a fresh command for the recording on now), `snapshot`,
-  `sessionName` ("DC Lecture 2", without a known class "DC Tue 13 Oct"), `sessionLine`
-  ("Lecture 2 · Tue 13 Oct"). The screen's Stop asks first; the Lock Screen's Stop Recording
-  does not.
+- `prepare(now:)` (queued), `select(_:)` (the course menu; while recording it re-files the
+  manifest and the snapshot follows, queued with the commands), `record()`, `perform(_:)` (any
+  surface's command, answered), `submit(_:)` (a screen tap: a fresh command for the recording on
+  show, queued), `snapshot`, `problem` / `showsProblem`, `level`, `stampTimes`, `deck`,
+  `deckPageCount`, `sessionName` ("DC Lecture 2", without a known class "DC Tue 13 Oct"),
+  `sessionLine` ("Lecture 2 · Tue 13 Oct"). The screen's Stop asks first; the Lock Screen's Stop
+  Recording does not. The screen creates no tasks of its own for these: the model's queue owns
+  them.
 - The outbox: `captures` (newest first; the recording in progress left out), `finished` (the
   capture Stop just finished, shown with Share until the screen opens again), `delete(_:)`,
   `reloadCaptures()`. `PhoneCapture.bundleItem` is the Share sheet's item.
@@ -134,8 +170,8 @@ recorder.liveActivityState      // what the Live Activity shows (parity: the Loc
   slide 17 of 88 (the deck when its blob is in the library), 38:41 in, six stamps, level 0.55,
   built on `LiveLectureSession.openPreview` / `showPreview`; it never records. `stopped: true`:
   the screen after Stop (the capture and two earlier ones; their packages do not exist, Share and
-  Delete do nothing). `paused: true`: paused 4:12 ago at 38:41. `startsActivity: true`: also
-  requests its Live Activity.
+  Delete do nothing). `paused: true`: paused 4:12 ago at 38:41 (parity routes `recorder-paused`,
+  `activity-paused`). `startsActivity: true`: also requests its Live Activity.
 
 ## Rules as built
 
@@ -164,12 +200,14 @@ recorder.liveActivityState      // what the Live Activity shows (parity: the Loc
   and is not a button (Next Slide while paused or at the deck's end). Every intent carries the
   recording and the snapshot sequence it was drawn for (contract above), so one tap acts once
   however often the system runs it; Next Slide also carries its slide. Stop there stops at once,
-  also while paused. `activate()` ends activities of a recording the app no longer has. The
-  elapsed time counts by itself (`Text(timerInterval:pauseTime:)`), so a locked phone does no
-  work between stamps.
+  also while paused. `activate()` takes up a recording left paused whose activity is still up
+  and ends activities of a recording the app no longer has. The elapsed time counts by itself
+  (`Text(timerInterval:pauseTime:)`), so a locked phone does no work between stamps. VoiceOver:
+  the dimmed Next Slide reads as a dimmed button, the Dynamic Island's mark as "Recording" or
+  "Paused".
 - **Waveform**: four level samples a second while recording with the screen active (nothing while
-  locked or paused); stamp lines for the slide changes in view, at their recorded time; paused,
-  the playhead is secondary.
+  locked or paused); stamp lines for the slide changes in view, at their recorded time (the
+  snapshot's timing, as the timer and the playhead); paused, the playhead is secondary.
 - **Outbox**: the phone's packages newest first (title = the manifest's session name, else the
   course's short name and the day; day; length; stamp count). Share writes the bundle when the
   destination is picked (`CaptureBundleItem`, a temporary folder; nothing is kept). Delete… asks,
@@ -190,8 +228,9 @@ Details: `Packages/Capture/README.md` ("Capture bundle"); filing: `Packages/Fili
 1. **Phone wiring (iOS)**: `AppModel` owns `PhoneRecorder(services:)` on iOS for the app's life and
    calls `activate()` at launch, before the first scene (in the App's `init`, so a Live Activity
    button that launches the app finds the handler). The shell's Record button and Today's Record
-   present `RecorderScreen(recorder:)` with `.fullScreenCover`; `PhoneShell(isRecording:)` gets
-   `recorder.isRecording`. No `LectureProcessor` on the iPhone and no package import there.
+   present `RecorderScreen(recorder:)` with `.fullScreenCover`; `PhoneShell(recordingPhase:)` gets
+   `recorder.snapshot?.phase`. The app and the widget extension link `RecorderContract` next to
+   `RecorderActivity`. No `LectureProcessor` on the iPhone and no package import there.
 2. **Mac: opening a capture**: `.onOpenURL` (and the document open of the `CFBundleDocumentTypes`
    for `.lecture` and `.lecturebundle`, already in project.yml) → `filingCenter.file([url])`
    (start and stop the URL's security scope; an AirDropped bundle lands in Downloads and Finder

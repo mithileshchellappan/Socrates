@@ -1,11 +1,12 @@
 import ActivityKit
 import RecorderActivity
+import RecorderContract
 import SwiftUI
 import WidgetKit
 
 // The widget extension (M7, docs/plan-m7.md §3, §5.1): the recording's Live Activity on the Lock
 // Screen and in the Dynamic Island. Its views and the button intents are in `Shared/`, which the
-// app compiles too. Links RecorderActivity only (with the recorder contract it carries).
+// app compiles too. Links RecorderActivity and the recorder contract (RecorderContract).
 
 @main
 struct SocratesWidgets: WidgetBundle {
@@ -60,6 +61,7 @@ struct RecordingLiveActivity: Widget {
 }
 
 /// The Dynamic Island's mark: the red dot while recording, `pause.fill` (secondary) while paused.
+/// VoiceOver reads the state ("Recording", "Paused"), not the glyph's action.
 struct RecordingMark: View {
     let isPaused: Bool
     let size: CGFloat
@@ -69,8 +71,10 @@ struct RecordingMark: View {
             Image(systemName: "pause.fill")
                 .font(.system(size: size + 3, weight: .semibold))
                 .foregroundStyle(.secondary)
+                .accessibilityLabel(Text("Paused"))
         } else {
             Circle().fill(.red).frame(width: size, height: size)
+                .accessibilityLabel(Text("Recording"))
         }
     }
 }

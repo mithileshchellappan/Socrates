@@ -1,5 +1,6 @@
 import Foundation
 import RecorderActivity
+import RecorderContract
 #if os(iOS)
 import ActivityKit
 #endif
@@ -12,7 +13,7 @@ import ActivityKit
 @MainActor
 final class RecordingActivityController {
     /// The recording the activity was started for (nil: none is showing).
-    private(set) var recordingID: UUID?
+    private(set) var recordingID: RecordingID?
     private var shown: RecordingActivityState?
     private var tail: Task<Void, Never>?
 
@@ -22,7 +23,7 @@ final class RecordingActivityController {
 
     /// Requests the activity when Live Activities are on. Returns whether it started.
     @discardableResult
-    func start(recordingID: UUID, state: RecordingActivityState) -> Bool {
+    func start(recordingID: RecordingID, state: RecordingActivityState) -> Bool {
         #if os(iOS)
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return false }
         do {
@@ -41,6 +42,28 @@ final class RecordingActivityController {
         #else
         return false
         #endif
+    }
+
+    /// The recordings whose activities are on screen, with the snapshot sequence each was last
+    /// drawn from: after a relaunch, what an earlier run left.
+    func showing() -> [RecordingID: Int] {
+        #if os(iOS)
+        var showing: [RecordingID: Int] = [:]
+        for activity in Activity<RecordingActivityAttributes>.activities
+        where activity.activityState == .active || activity.activityState == .stale {
+            showing[activity.attributes.recordingID] = activity.content.state.sequence
+        }
+        return showing
+        #else
+        return [:]
+        #endif
+    }
+
+    /// Follows the activity an earlier run started for `recordingID` (a recording taken up after
+    /// a relaunch): the next `show` updates it.
+    func adopt(_ recordingID: RecordingID) {
+        self.recordingID = recordingID
+        shown = nil
     }
 
     /// Shows `state` when it differs from what the activity shows; `force` sends it anyway (a
@@ -81,7 +104,7 @@ final class RecordingActivityController {
 
     // MARK: - ActivityKit
 
-    private nonisolated static func update(recordingID: UUID, state: RecordingActivityState) async {
+    private nonisolated static func update(recordingID: RecordingID, state: RecordingActivityState) async {
         #if os(iOS)
         for activity in Activity<RecordingActivityAttributes>.activities where activity.attributes.recordingID == recordingID {
             await activity.update(ActivityContent(state: state, staleDate: nil))
@@ -89,7 +112,7 @@ final class RecordingActivityController {
         #endif
     }
 
-    private nonisolated static func end(recordingID: UUID, state: RecordingActivityState?) async {
+    private nonisolated static func end(recordingID: RecordingID, state: RecordingActivityState?) async {
         #if os(iOS)
         for activity in Activity<RecordingActivityAttributes>.activities where activity.attributes.recordingID == recordingID {
             await activity.end(state.map { ActivityContent(state: $0, staleDate: nil) }, dismissalPolicy: .immediate)
@@ -97,7 +120,7 @@ final class RecordingActivityController {
         #endif
     }
 
-    private nonisolated static func endAll(keeping: UUID?) async {
+    private nonisolated static func endAll(keeping: RecordingID?) async {
         #if os(iOS)
         for activity in Activity<RecordingActivityAttributes>.activities where activity.attributes.recordingID != keeping {
             await activity.end(nil, dismissalPolicy: .immediate)

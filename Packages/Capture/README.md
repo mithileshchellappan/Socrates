@@ -84,27 +84,43 @@ lectureID:assignment:)` changes the course and class the manifest names, also wh
 `LiveLectureSession.pause()` / `releaseInput()` / `resume()` over `AudioCaptureSource.pause()` /
 `releaseInput()` / `resume()` (`MicrophoneCapture`; other sources refuse). The Mac never pauses.
 
-- **Pause**: the engine stops; a barrier chunk through the writer's queue makes sure everything
-  captured is written; the open segment closes; then the `pause` event (`sampleTime` = the first
-  frame after the audio written, `page` = the slide on screen, `wallClock` = when Pause was
-  pressed) and the manifest are written, awaited. `releaseInput()` then ends the audio session
-  (the microphone indicator goes out). Nothing is stamped while paused: slide moves and flags do
-  nothing, interruptions and route changes are ignored.
+- **Pause**: the clock is read the moment Pause stops the engine (host time, and
+  `ContinuousClock` for the gap). A barrier through the writer's own queue (private to the
+  capture: the tap sends audio there and to the fan-out; meters and captions never see it) makes
+  sure everything captured is written, awaited for at most 1 s; the open segment closes; then the
+  `pause` event (`sampleTime` = where the clock stood when Pause stopped the input: never before
+  the end of the audio written, and after it when the input had been lost before the pause, an
+  interruption iOS never ended, because the clock counts that time as recorded like any
+  interruption; `page` = the slide on screen; `wallClock` = when Pause was pressed) and the
+  manifest are written, awaited. `releaseInput()` then ends the audio session (the microphone
+  indicator goes out). Nothing is stamped while paused: slide moves and flags do nothing,
+  interruptions and route changes are ignored. A write that failed (storage full), also one
+  reported while paused, stops the recording.
 - **Resume**: the audio session and a new engine run start; the recording clock is placed at
-  the pause's end plus the time paused, measured with `ContinuousClock` (the host clock stops
+  the pause's place plus the time paused, measured with `ContinuousClock` (the host clock stops
   while the phone sleeps, which would place everything after the pause too early). The next
-  audio opens a new segment there (`startReason: discontinuity`, as after an interruption) and
-  the `resume` event carries that position. A failed resume (a call in progress) throws and
-  stays paused.
+  audio opens a new segment there, never before it (`SegmentedAudioWriter.nextSegmentFloor`, so a
+  first buffer without a host time cannot pull the gap shut; `startReason: discontinuity`, as
+  after an interruption), and the `resume` event carries that position. A resume that fails
+  throws and stays paused: `CaptureError.inputBusy` for a call or another app holding the input
+  (AVAudioSession's busy, priority, interrupt and cannot-record errors), `writeFailed` after a
+  failed write. Pause and resume throw when a failure stopped the recording meanwhile.
 - **On the clock** a closed pause is a gap without audio, like an interruption: players and
   transcribers treat it as silence, filing sees the recording's real span, and the stamps after
   it keep their real times. `LecturePackageContents.duration` includes it;
-  `recordedDuration` (and the phone's timer, its outbox and `LiveLectureSession.elapsed`) leave
-  it out. `RecordingPauses` reads the pauses from the events (`contents.pauses`,
-  `session.pauses`).
-- **Stopped while paused**: the `stop` event sits at the pause's end; no trailing gap. Killed
-  while paused: the segments are closed, the last event is `pause` and `endedAt` is nil, so the
-  package imports like any unfinished one.
+  `recordedDuration` (and the phone's timer and its outbox) leave out the part of each closed
+  pause that lies inside the audio. `RecordingPauses` reads the pauses from the events
+  (`contents.pauses`, `session.pauses`).
+- **Stopped while paused**: the `stop` event sits at the pause; no trailing gap.
+- **Killed while paused**: the segments are closed, the last event is `pause` and `endedAt` is
+  nil, so the package imports like any unfinished one. The iPhone takes such a recording up again
+  at launch when its Live Activity is still up (`LiveLectureSession.reopen(paused:)` over
+  `AudioCaptureSource.reopen(_:)` with a `PausedRecording`: the writer continues the segment
+  list, the pause's gap is measured from its wall clock since the process is gone; then
+  `resume()` and `stop()` as after any pause), and otherwise finishes it where it paused
+  (`LecturePackageWriter.finishLeftPaused`: a `stop` event at the pause, `endedAt` = the pause's
+  wall clock, the segments as found). A segment the manifest lost (killed right after a resume)
+  is placed at the first `resume` at or after the previous segment's end, not right after it.
 - No format change: the manifest keeps version 1 and its segment reasons (an older Mac decodes a
   new package and ignores the two event kinds). The importer makes no rows for them.
 

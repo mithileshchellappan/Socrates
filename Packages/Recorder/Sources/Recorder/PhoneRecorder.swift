@@ -11,9 +11,12 @@ import StudyCore
 /// captures (`AppPaths.phoneCaptures`), which the student shares to the Mac as capture bundles.
 /// Nothing it records enters the phone's library; the Mac files and processes it.
 ///
-/// Every surface drives it through one entry point, `perform(_:)` with a `RecorderCommand`
-/// (the screen through `send(_:)`, the Live Activity through `RecorderControl`, later the Mac
-/// remote), and renders one published state, `snapshot` (README "Recorder contract").
+/// Every surface drives it through commands (`perform(_:)` with a `RecorderCommand`; the screen
+/// through `submit(_:)`, the Live Activity through `RecorderControl`, later the Mac remote) and
+/// renders one published state, `snapshot` (README "Recorder contract"). The session it records
+/// with is internal, so nothing reaches past the commands. Everything that changes the recording
+/// (commands, Record, the course menu, opening the screen) runs on one serial queue the model
+/// owns, on the main actor.
 ///
 /// The app owns one for its lifetime (recording outlives the screen) and calls `activate()` at
 /// launch; the screen calls `prepare()` when it opens.
@@ -23,15 +26,16 @@ public final class PhoneRecorder {
     public let services: StudyServices
 
     /// The courses that may record (recording consent), in the sidebar's order.
-    public private(set) var courses: [Course] = []
+    public internal(set) var courses: [Course] = []
     /// The course the recording is (or will be) for.
-    public private(set) var course: Course?
+    public internal(set) var course: Course?
     /// The course's class on now (`CourseSchedule.session(forRecordingAt:)`), if it has one.
-    public private(set) var classSession: LectureSession?
+    public internal(set) var classSession: LectureSession?
     /// The lecture filed to that class; its deck shows when the phone has the file.
-    public private(set) var lecture: Lecture?
-    /// The recording: ready, recording, finished (or failed to start).
-    public private(set) var session: LiveLectureSession?
+    public internal(set) var lecture: Lecture?
+    /// The recording: ready, recording, finished (or failed to start). Internal: surfaces send
+    /// commands and render `snapshot`.
+    var session: LiveLectureSession?
     /// The outbox, newest first (the recording in progress is left out).
     public private(set) var captures: [PhoneCapture] = []
     /// The capture Stop just finished: the screen shows it with Share until it opens again.
@@ -41,14 +45,19 @@ public final class PhoneRecorder {
     /// The recording's state as every surface shows it (`PhoneRecorder+Commands`): nil until the
     /// recording's first audio, kept after Stop until another session opens.
     public internal(set) var snapshot: RecorderSnapshot?
+    /// What the screen should show the student until it is dismissed: Record failed, the
+    /// recording stopped by itself, or a command failed (from any surface).
+    public internal(set) var problem: RecorderProblem?
 
     /// The command rules and the ids already decided for this recording.
     @ObservationIgnored var machine = RecorderMachine()
     @ObservationIgnored let activity = RecordingActivityController()
-    /// The last command (or re-filing) queued: each waits for the one before.
+    /// The last piece of work queued: each waits for the one before.
     @ObservationIgnored var commandTail: Task<Void, Never>?
+    /// The last snapshot sequence published; it never goes back while the recorder runs.
+    @ObservationIgnored var lastSequence = 0
     #if DEBUG
-    @ObservationIgnored var previewRecordingID: UUID?
+    @ObservationIgnored var previewRecordingID: RecordingID?
     #endif
     @ObservationIgnored private var colors: [Course.ID: String] = [:]
     @ObservationIgnored private var snapshotUpdates: Task<Void, Never>?
@@ -63,17 +72,20 @@ public final class PhoneRecorder {
 
     isolated deinit {
         snapshotUpdates?.cancel()
+        commandTail?.cancel()
     }
 
-    /// A recording is running (starting, recording, paused or stopping): the shell's Record
-    /// button shows it, and Record opens this recording instead of a new one.
-    public var isRecording: Bool { session?.isCapturing == true }
+    /// A recording is running (starting, recording, paused or stopping): Record opens this
+    /// recording instead of a new one.
+    var isCapturing: Bool { session?.isCapturing == true }
 
     // MARK: - Launch
 
     /// Registers the Live Activity buttons' handler (`RecorderControl.handler`). Call once at
-    /// launch, before the first scene. Also removes what an earlier run left: shared bundles in
-    /// the temporary folder, and Live Activities of a recording the app no longer has.
+    /// launch, before the first scene. Then, queued before any command: a recording an earlier
+    /// run left paused whose Live Activity is still up is taken up again (its Resume and Stop act
+    /// on it), other recordings left paused are finished where they paused, Live Activities of
+    /// recordings the app no longer has end, and shared bundles in the temporary folder go.
     public func activate() {
         RecorderControl.handler = { [weak self] command in
             guard let self else {
@@ -81,17 +93,18 @@ public final class PhoneRecorder {
             }
             return await self.perform(command)
         }
-        Task.detached(priority: .utility) {
-            CaptureBundle.removeTemporaryBundles(olderThan: 0)
-        }
-        activity.endStale()
+        enqueue { await self.recoverLeftovers() }
     }
 
     /// Readies the screen: the courses that may record, the default course (the class on now,
     /// else the last one used), a session for it and the outbox. While recording it only reloads
-    /// the outbox.
+    /// the outbox. Queued with the commands, so Record never starts on a session it replaces.
     public func prepare(now: Date = Date()) async {
         guard !isPreview else { return }
+        await serially { await self.readyScreen(now: now) }
+    }
+
+    private func readyScreen(now: Date) async {
         if session?.isCapturing == true {
             await reloadCaptures()
             return
@@ -125,18 +138,21 @@ public final class PhoneRecorder {
     /// Records for `course` instead (the course menu). Before recording the deck follows the
     /// course's class; while recording the manifest and the snapshot (so the Live Activity)
     /// follow it, queued with the commands so it never lands in the middle of one.
-    public func select(_ course: Course) async {
+    public func select(_ course: Course) {
         guard course.id != self.course?.id, !isPreview else { return }
+        enqueue { await self.refile(for: course) }
+    }
+
+    private func refile(for course: Course) async {
+        guard course.id != self.course?.id else { return }
         guard let session, session.isCapturing else {
             await choose(course)
             await openSession()
             return
         }
-        await serially {
-            await self.choose(course)
-            await session.reassign(courseID: course.id, lectureID: self.lecture?.id, assignment: self.assignment())
-            self.publish()
-        }
+        await choose(course)
+        await session.reassign(courseID: course.id, lectureID: lecture?.id, assignment: assignment())
+        publish()
     }
 
     private func choose(_ course: Course) async {
@@ -154,10 +170,16 @@ public final class PhoneRecorder {
         course != nil && (session?.canStartRecording ?? false) && !isPreview
     }
 
-    /// Starts recording into the outbox, then the Live Activity (when Live Activities are on).
-    /// Not a command: there is no recording to address before it. Everything after it is
-    /// (`perform(_:)`).
-    public func start() async {
+    /// Starts recording into the outbox (the screen's Record), then the Live Activity (when Live
+    /// Activities are on), queued after anything before it. Not a command: there is no recording
+    /// to address before it. Everything after it is (`perform(_:)`). A start that fails sets
+    /// `problem`.
+    public func record() {
+        guard canRecord else { return }
+        enqueue { await self.start() }
+    }
+
+    private func start() async {
         guard canRecord, let session else { return }
         do {
             try FileManager.default.createDirectory(at: services.paths.phoneCaptures, withIntermediateDirectories: true)
@@ -166,9 +188,15 @@ public final class PhoneRecorder {
         }
         finished = nil
         snapshot = nil
+        problem = nil
         machine = RecorderMachine()
         await session.start()
-        guard session.isRecording else { return }
+        guard session.isRecording else {
+            if case .failed(let reason) = session.phase {
+                problem = RecorderProblem(moment: .start, failure: RecorderFailure(reason))
+            }
+            return
+        }
         if let course { defaults.set(course.id.uuidString, forKey: Self.lastCourseKey) }
         publish()
         if let snapshot {
@@ -200,6 +228,36 @@ public final class PhoneRecorder {
         snapshot.map(RecordingActivityState.init(snapshot:))
     }
 
+    // MARK: - What the screen draws besides the snapshot
+
+    /// The input level, 0…1, for the waveform: a live signal, not part of the snapshot.
+    public var level: Float { session?.level ?? 0 }
+
+    /// Where the slide stamps sit on the recording, in seconds recorded (pauses left out): each
+    /// stamp's wall clock read through the snapshot's timing, the same recorded time the timer
+    /// and the waveform's playhead show.
+    public var stampTimes: [TimeInterval] {
+        guard let timing = snapshot?.timing, let session else { return [] }
+        return session.events
+            .filter { $0.kind.showsSlide && $0.kind != .start }
+            .map { timing.elapsed(at: $0.wallClock) }
+    }
+
+    /// The deck on show when the phone has it; the screen draws its pages.
+    public var deck: SlideDeck? { session?.deck }
+
+    /// The deck's pages before recording ("of 88"); once recording, the snapshot's `slideCount`.
+    public var deckPageCount: Int? {
+        guard let session, session.hasDeck else { return nil }
+        return session.pageCount
+    }
+
+    /// Whether `problem` shows; setting it false dismisses the problem (the screen's alert).
+    public var showsProblem: Bool {
+        get { problem != nil }
+        set { if !newValue { problem = nil } }
+    }
+
     /// A course's colour, for outbox rows.
     public func colorHex(of courseID: Course.ID?) -> String? {
         courseID.flatMap { colors[$0] }
@@ -207,9 +265,15 @@ public final class PhoneRecorder {
 
     // MARK: - Outbox
 
-    /// Deletes a capture from the phone (the screen asks first, naming it).
-    public func delete(_ capture: PhoneCapture) async {
-        guard !isPreview, capture.id != session?.package?.id || session?.isCapturing != true else { return }
+    /// Deletes a capture from the phone (the screen asks first, naming it), queued with the
+    /// recorder's other work.
+    public func delete(_ capture: PhoneCapture) {
+        guard !isPreview else { return }
+        enqueue { await self.remove(capture) }
+    }
+
+    private func remove(_ capture: PhoneCapture) async {
+        guard capture.id != session?.package?.id || session?.isCapturing != true else { return }
         let url = capture.package.url
         await Task.detached(priority: .userInitiated) {
             do {
@@ -230,7 +294,7 @@ public final class PhoneRecorder {
 
     // MARK: - Private
 
-    private func loadCourses() async {
+    func loadCourses() async {
         let all = (try? await services.database.read { db in
             try Course.order(by: \.sortOrder).fetchAll(db)
         }) ?? []
@@ -239,7 +303,7 @@ public final class PhoneRecorder {
     }
 
     /// The lecture filed to the class, else the course's lecture of its number.
-    private func lecture(of classOn: LectureSession?) async -> Lecture? {
+    func lecture(of classOn: LectureSession?) async -> Lecture? {
         guard let classOn else { return nil }
         let lectures = LectureRepository(store: services.records)
         if let filed = try? await lectures.lecture(sessionID: classOn.id) { return filed }
@@ -266,6 +330,11 @@ public final class PhoneRecorder {
             session = nil
             return
         }
+        session = await makeSession(for: course)
+    }
+
+    /// A ready session for `course` and the class chosen, with its deck when the phone has it.
+    func makeSession(for course: Course) async -> LiveLectureSession {
         let deck = await deckOnPhone(of: lecture)
         let configuration = LiveLectureSession.Configuration(
             directory: services.paths.phoneCaptures,
@@ -290,15 +359,20 @@ public final class PhoneRecorder {
             return (try? await self.services.records.fetch(Course.self, id: id))?.recordsLectures ?? false
         }
         opened.onFinalized = { [weak self] package in
-            Task { await self?.didFinish(package) }
+            guard let self else { return }
+            self.enqueue { await self.didFinish(package) }
         }
-        session = opened
+        return opened
     }
 
     /// The package is final (Stop, or a failure that stopped the recording): the stopped
-    /// snapshot ends the Live Activity, and the capture joins the outbox.
+    /// snapshot ends the Live Activity, the capture joins the outbox, and a recording that
+    /// stopped by itself says why.
     private func didFinish(_ package: LecturePackage) async {
         publish()
+        if let failure = snapshot?.failure {
+            problem = RecorderProblem(moment: .recording, failure: failure)
+        }
         await reloadCaptures()
         finished = captures.first { $0.id == package.id }
     }
@@ -324,7 +398,7 @@ public final class PhoneRecorder {
     ) async throws -> PhoneRecorder {
         let recorder = PhoneRecorder(services: services)
         recorder.isPreview = true
-        recorder.previewRecordingID = UUID()
+        recorder.previewRecordingID = RecordingID(UUID())
         await recorder.loadCourses()
         let course = recorder.courses.first { $0.shortName == "DC" } ?? recorder.courses.first
         recorder.course = course

@@ -1,8 +1,8 @@
 import Foundation
 
 /// The recorder's state as every surface renders it: the recorder screen, the Live Activity and
-/// later the Mac remote. The recorder is the only one that makes these; a surface keeps the one
-/// with the highest `sequence` and computes nothing of its own beyond the elapsed time
+/// later the Mac remote. The recorder is the only one that makes these; a surface keeps the
+/// newest (`supersedes(_:)`) and computes nothing of its own beyond the elapsed time
 /// (`timing.elapsed(at:)` on its own clock).
 public struct RecorderSnapshot: Codable, Hashable, Sendable {
     public enum Phase: String, Codable, Hashable, Sendable {
@@ -32,10 +32,10 @@ public struct RecorderSnapshot: Codable, Hashable, Sendable {
         }
     }
 
-    /// The recording (= the capture package's id).
-    public var recordingID: UUID
-    /// One more on every change of content, from 1 for each recording: a surface that receives
-    /// two keeps the higher.
+    public var recordingID: RecordingID
+    /// Counts up by one on every change of content and never goes back while the recorder runs,
+    /// across its recordings (a recording taken up after a relaunch continues from what its Live
+    /// Activity showed).
     public var sequence: Int
     public var phase: Phase
     public var timing: RecordingTiming
@@ -49,14 +49,15 @@ public struct RecorderSnapshot: Codable, Hashable, Sendable {
     public var course: Course
     /// "DC Lecture 2"; the short name and the day without a known class.
     public var sessionName: String
-    /// The commands the recorder takes now (`RecorderMachine.accepts`): a surface enables exactly
-    /// these.
+    /// The commands the recorder takes now: a surface enables exactly these. Kinds a newer
+    /// sender adds that this build does not know are dropped when decoding.
     public var accepts: Set<RecorderCommand.Kind>
-    /// Why the recording stopped by itself (storage full, consent withdrawn); nil after Stop.
-    public var failure: String?
+    /// With `phase` stopped: why the recording stopped by itself (storage full, consent
+    /// withdrawn); nil after Stop and while it runs.
+    public var failure: RecorderFailure?
 
     public init(
-        recordingID: UUID,
+        recordingID: RecordingID,
         sequence: Int,
         phase: Phase,
         timing: RecordingTiming,
@@ -67,7 +68,7 @@ public struct RecorderSnapshot: Codable, Hashable, Sendable {
         course: Course,
         sessionName: String,
         accepts: Set<RecorderCommand.Kind>,
-        failure: String? = nil
+        failure: RecorderFailure? = nil
     ) {
         self.recordingID = recordingID
         self.sequence = sequence
@@ -83,5 +84,29 @@ public struct RecorderSnapshot: Codable, Hashable, Sendable {
         self.failure = failure
     }
 
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        recordingID = try container.decode(RecordingID.self, forKey: .recordingID)
+        sequence = try container.decode(Int.self, forKey: .sequence)
+        phase = try container.decode(Phase.self, forKey: .phase)
+        timing = try container.decode(RecordingTiming.self, forKey: .timing)
+        slide = try container.decode(Int.self, forKey: .slide)
+        slideCount = try container.decodeIfPresent(Int.self, forKey: .slideCount)
+        flagCount = try container.decode(Int.self, forKey: .flagCount)
+        isInputAvailable = try container.decode(Bool.self, forKey: .isInputAvailable)
+        course = try container.decode(Course.self, forKey: .course)
+        sessionName = try container.decode(String.self, forKey: .sessionName)
+        accepts = RecorderCommand.Kind.known(try container.decode([String].self, forKey: .accepts))
+        failure = try container.decodeIfPresent(RecorderFailure.self, forKey: .failure)
+    }
+
     public var isPaused: Bool { phase == .paused }
+
+    /// Whether this snapshot is newer than `other`, the one rule a receiver keeps: of one
+    /// recording the higher sequence wins; of two recordings the one started later.
+    public func supersedes(_ other: RecorderSnapshot?) -> Bool {
+        guard let other else { return true }
+        if recordingID == other.recordingID { return sequence > other.sequence }
+        return timing.startedAt > other.timing.startedAt
+    }
 }
