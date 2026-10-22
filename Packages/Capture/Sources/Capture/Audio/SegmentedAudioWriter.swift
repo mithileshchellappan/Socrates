@@ -10,8 +10,12 @@ public enum AudioWriterError: Error, Equatable, Sendable {
 /// (`seg-0001.caf`, `seg-0002.caf`, …), placing every file on the recording clock.
 ///
 /// - A full segment is closed and the next one starts at exactly the following frame.
-/// - A chunk from a new engine run (input reconfigured) closes the open segment; the next one
-///   starts where real time had got to according to `clock`, never before the previous end.
+/// - A chunk from a new engine run (input reconfigured, or recording resumed after a pause)
+///   closes the open segment; the next one starts where real time had got to according to
+///   `clock`, never before the previous end, nor before `nextSegmentFloor` (a resume says where
+///   it placed the clock, so a first buffer without a host time cannot pull the gap shut).
+/// - It can continue a recording an earlier run left (`continuing:`): its segments come first and
+///   the next audio opens the following segment as after a discontinuity.
 /// - Input at another sample rate is converted to `format.sampleRate`.
 /// - After each chunk the clock is anchored to "this chunk's first frame was captured at its
 ///   host time", so stamps map onto the audio actually written.
@@ -25,6 +29,8 @@ public final class SegmentedAudioWriter {
     public let clock: RecordingClock?
     /// Recorded on segments opened from now on.
     public var deviceName: String?
+    /// The earliest place on the clock for the next segment opened (set by a resume; used once).
+    public var nextSegmentFloor: Int64?
     /// All segments so far; the last one has `frameCount == nil` while open.
     public private(set) var segments: [AudioSegmentInfo] = []
 
@@ -41,7 +47,8 @@ public final class SegmentedAudioWriter {
         format: RecordingFormat = .standard,
         segmentFrames: Int64,
         clock: RecordingClock? = nil,
-        firstSequence: Int = 1
+        firstSequence: Int = 1,
+        continuing segments: [AudioSegmentInfo] = []
     ) throws {
         guard let processingFormat = format.processingFormat, segmentFrames > 0 else {
             throw AudioWriterError.unsupportedFormat
@@ -53,6 +60,8 @@ public final class SegmentedAudioWriter {
         self.clock = clock
         self.processingFormat = processingFormat
         self.firstSequence = firstSequence
+        self.segments = segments
+        if !segments.isEmpty { nextReason = .discontinuity }
     }
 
     /// True while a segment file is open.
@@ -82,7 +91,8 @@ public final class SegmentedAudioWriter {
     }
 
     /// Closes the open segment, draining any conversion tail unless `drainingConversion` is
-    /// false (after a write error, write nothing more). Returns all segments.
+    /// false (after a write error, write nothing more). Returns all segments. At Stop, and at a
+    /// pause: audio from a later engine run then opens the next segment where the clock says.
     @discardableResult
     public func finish(drainingConversion: Bool = true) throws -> [AudioSegmentInfo] {
         try flushAndClose(drainConverter: drainingConversion)
@@ -133,13 +143,17 @@ public final class SegmentedAudioWriter {
 
     private func openSegment(hostTime: UInt64?) throws {
         let previousEnd = endSample
-        let startSample: Int64
+        var startSample: Int64
         switch nextReason {
         case .start, .rollover:
             startSample = previousEnd
         case .discontinuity:
             let byClock = hostTime.flatMap { clock?.sampleTime(atHostTime: $0) } ?? previousEnd
             startSample = max(previousEnd, byClock)
+        }
+        if let floor = nextSegmentFloor {
+            startSample = max(startSample, floor)
+            nextSegmentFloor = nil
         }
         let sequence = (segments.last?.sequence ?? (firstSequence - 1)) + 1
         let name = LecturePackage.segmentFileName(sequence: sequence, fileExtension: format.fileExtension)

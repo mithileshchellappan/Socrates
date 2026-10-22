@@ -14,7 +14,9 @@ let package = Package(
         .package(path: "../StudyCore"),
         .package(path: "../StudyUI"),
         // The agent sheet (`AgentSheet`) and its actions.
-        .package(path: "../ChatUI")
+        .package(path: "../ChatUI"),
+        // The Record slot shows the recorder's phase (`RecorderSnapshot.Phase`; the contract only).
+        .package(path: "../Recorder")
     ],
     targets: [
         .target(
@@ -22,7 +24,8 @@ let package = Package(
             dependencies: [
                 .product(name: "StudyCore", package: "StudyCore"),
                 .product(name: "StudyUI", package: "StudyUI"),
-                .product(name: "ChatUI", package: "ChatUI")
+                .product(name: "ChatUI", package: "ChatUI"),
+                .product(name: "RecorderContract", package: "Recorder")
             ]
         ),
     ],

@@ -66,7 +66,7 @@ struct PhoneRootView: View {
         } else {
             PhoneShell(
                 selection: $tab,
-                isRecording: recorder?.isRecording ?? false,
+                recordingPhase: recorder?.snapshot?.phase,
                 record: { cover = .recorder },
                 search: { cover = .search },
                 agentLaunch: launch.agentLaunch

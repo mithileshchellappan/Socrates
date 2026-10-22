@@ -80,7 +80,7 @@ struct OutboxView: View {
             presenting: deleting
         ) { capture in
             Button("Delete", role: .destructive) {
-                Task { await recorder.delete(capture) }
+                recorder.delete(capture)
             }
         }
     }

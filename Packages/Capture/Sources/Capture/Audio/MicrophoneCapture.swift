@@ -3,18 +3,46 @@ import Foundation
 
 /// Records the default audio input into rolling segment files with `AVAudioEngine`.
 ///
-/// - The input tap copies each buffer into an `AudioChunk` and fans it out; the writer task on
-///   this actor writes it, so the audio thread never touches files.
+/// - The input tap copies each buffer into an `AudioChunk` and hands it to the writer's own
+///   queue and to the fan-out for meters and captions; the writer task on this actor writes it,
+///   so the audio thread never touches files.
 /// - When the engine's configuration changes (input device switched, format changed) or an
 ///   interruption ends, the engine is rebuilt and a new segment starts: the previous segment
 ///   stays intact and the clock keeps following real time.
+/// - A pause (iPhone) stops the engine, writes everything captured and closes the segment. It
+///   sits on the recording clock where Pause stopped the input (the clock runs on through an
+///   input outage before it, as it does for any interruption), and it remembers when on a clock
+///   that keeps counting while the phone sleeps (`ContinuousClock`; the host clock stops then).
+///   Resume places the recording clock after the real time paused and starts a new engine run,
+///   so the next audio opens a new segment after the gap, as after an interruption.
+/// - A recording an earlier run left paused (the app was killed meanwhile) can be taken up
+///   (`reopen(_:)`) and resumed into the same folder.
 /// - While recording, a `ProcessInfo` activity keeps the Mac from idle-sleeping.
 /// - Nothing it starts keeps it alive: when its owner lets go without stopping, `deinit` stops
 ///   the engine and ends the activity (the package is then recovered like after a crash).
 ///
 /// One instance records one lecture.
 public actor MicrophoneCapture: AudioCaptureSource {
-    private enum State { case idle, starting, recording, stopped }
+    private enum State { case idle, starting, recording, paused, stopped }
+
+    /// What the writer's queue carries, in the order it was sent: audio from the tap, or a
+    /// pause's barrier (once the writer reaches it, everything sent before it is on disk).
+    private enum WriterInput: Sendable {
+        case audio(AudioChunk)
+        case barrier(Int)
+    }
+
+    /// Where a pause sits on the recording clock, and when it began on the continuous clock.
+    private struct PauseMark {
+        var sampleTime: Int64
+        var at: ContinuousClock.Instant
+    }
+
+    /// A pause waiting for the writer to reach its barrier.
+    private struct BarrierWaiter {
+        var barrier: Int
+        var continuation: CheckedContinuation<Void, Never>
+    }
 
     public nonisolated let broadcaster = AudioBroadcaster()
     private nonisolated let status = AsyncStream.makeStream(of: CaptureStatus.self)
@@ -24,6 +52,8 @@ public actor MicrophoneCapture: AudioCaptureSource {
     private var state = State.idle
     private var engine: AVAudioEngine?
     private var writer: SegmentedAudioWriter?
+    /// The writer task's queue (nil before start and after stop).
+    private var writerInput: AsyncStream<WriterInput>.Continuation?
     /// Set when writing audio failed; the writer keeps its segment list but gets no more audio.
     private var writerFailed = false
     private var run = 0
@@ -31,6 +61,14 @@ public actor MicrophoneCapture: AudioCaptureSource {
     private var writerTask: Task<Void, Never>?
     private var observerTasks: [Task<Void, Never>] = []
     private var activity: (any NSObjectProtocol)?
+    private var pauseMark: PauseMark?
+    /// Barriers sent by `pause()`, the last one the writer reached, and the pause waiting for one.
+    private var barriersSent = 0
+    private var barrierReached = 0
+    private var barrierWaiter: BarrierWaiter?
+    /// Engine runs up to this one ended in a pause: audio of theirs still arriving is dropped
+    /// (their segment is closed).
+    private var sealedRun = 0
 
     public init(host: HostClock = .system, tapBufferSize: AVAudioFrameCount = 4096) {
         self.host = host
@@ -39,6 +77,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
 
     isolated deinit {
         for task in observerTasks { task.cancel() }
+        writerInput?.finish()
         writerTask?.cancel()
         tearDownEngine()
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
@@ -85,15 +124,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
         var device = AudioInput.currentDevice()
         writer.deviceName = device?.name
         self.writer = writer
-
-        let chunks = broadcaster.subscribe()
-        // Weak, so a capture its owner dropped without stopping is released (and stops in deinit).
-        writerTask = Task { [weak self] in
-            for await chunk in chunks {
-                guard let self else { return }
-                await self.write(chunk)
-            }
-        }
+        startWriting()
 
         let engineStart = host.now()
         clock.setAnchor(.init(sampleTime: 0, hostTime: engineStart))
@@ -102,6 +133,8 @@ public actor MicrophoneCapture: AudioCaptureSource {
             inputFormat = try startEngine()
         } catch {
             // Nothing was written; leave the instance ready for another attempt.
+            writerInput?.finish()
+            writerInput = nil
             writerTask?.cancel()
             await writerTask?.value
             writerTask = nil
@@ -113,10 +146,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
         device?.nativeSampleRate = inputFormat.sampleRate
         device?.nativeChannelCount = Int(inputFormat.channelCount)
         state = .recording
-        activity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleSystemSleepDisabled],
-            reason: "Recording a lecture"
-        )
+        beginActivity()
         observerTasks = makeObservers()
 
         // Sample 0 is the first frame that reaches the writer; wait briefly for it.
@@ -139,16 +169,18 @@ public actor MicrophoneCapture: AudioCaptureSource {
     }
 
     public func stop() async throws -> [AudioSegmentInfo] {
-        guard state == .recording || state == .starting else { throw CaptureError.notRecording }
+        guard state == .recording || state == .starting || state == .paused else { throw CaptureError.notRecording }
         state = .stopped
+        pauseMark = nil
         for task in observerTasks { task.cancel() }
         observerTasks = []
         tearDownEngine()
         broadcaster.finish()
+        writerInput?.finish()
+        writerInput = nil
         await writerTask?.value
         writerTask = nil
-        if let activity { ProcessInfo.processInfo.endActivity(activity) }
-        activity = nil
+        endActivity()
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif
@@ -171,10 +203,149 @@ public actor MicrophoneCapture: AudioCaptureSource {
         return segments
     }
 
+    // MARK: - Pause
+
+    public func pause() async throws -> CapturePause {
+        guard state == .recording, let writer, let writerInput else { throw CaptureError.notRecording }
+        state = .paused
+        // The pause sits where Pause stopped the input: read the clock now, before waiting for
+        // the writer, so neither that wait nor an input outage before the pause (an interruption
+        // iOS never ended) goes missing from the clock.
+        let stoppedHostTime = host.now()
+        let stoppedAt = ContinuousClock.now
+        tearDownEngine()
+        endActivity()
+
+        // Everything the tap sent before the barrier is in the writer's queue ahead of it; once
+        // the writer reaches it, all of it is on disk. Bounded, so a stuck writer never holds up
+        // the commands behind this one.
+        barriersSent += 1
+        let barrier = barriersSent
+        writerInput.yield(.barrier(barrier))
+        let drained = await waitForWriter(through: barrier, timeout: .seconds(1))
+        guard state == .paused else { throw CaptureError.notRecording }
+        if !drained {
+            CaptureLog.capture.error("Pause: the writer did not catch up within 1 s; later audio of this run is dropped")
+        }
+        sealedRun = run
+
+        var segments = writer.segments
+        do {
+            segments = try writer.finish(drainingConversion: !writerFailed)
+        } catch {
+            CaptureLog.capture.fault("Closing the segment at a pause failed: \(error.localizedDescription, privacy: .public)")
+        }
+        if writerFailed, let last = segments.indices.last {
+            // As at Stop: without a count the package reader measures the file.
+            segments[last].frameCount = nil
+        }
+        status.continuation.yield(.segmentsChanged(segments))
+        let audioEnd = writer.endSample
+        let byClock = writer.clock?.sampleTime(atHostTime: stoppedHostTime) ?? audioEnd
+        let sampleTime = max(audioEnd, byClock)
+        pauseMark = PauseMark(sampleTime: sampleTime, at: stoppedAt)
+        CaptureLog.capture.info("Paused at sample \(sampleTime) (audio ends at \(audioEnd))")
+        return CapturePause(sampleTime: sampleTime, audioEnd: audioEnd, segments: segments)
+    }
+
+    public func releaseInput() async {
+        guard state == .paused else { return }
+        #if os(iOS)
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            CaptureLog.capture.error("Releasing the audio session failed: \(error.localizedDescription, privacy: .public)")
+        }
+        #endif
+    }
+
+    public func resume() async throws -> CaptureResume {
+        guard state == .paused, let writer, let clock = writer.clock, let mark = pauseMark else {
+            throw CaptureError.notPaused
+        }
+        // Audio that cannot be written must not look recorded: stay paused.
+        guard !writerFailed else { throw CaptureError.writeFailed }
+        #if os(iOS)
+        // Fails during a phone call, or when iOS does not let a suspended app record: stay paused.
+        try Self.activateAudioSession()
+        #endif
+        // The real time paused, also while the phone slept: the clock keeps wall time, so the
+        // Mac files, plays and transcribes the gap as silence and later stamps stay in place.
+        let paused = ContinuousClock.now - mark.at
+        let sampleTime = mark.sampleTime + writer.format.frames(in: paused)
+        let hostTime = host.now()
+        clock.setAnchor(.init(sampleTime: sampleTime, hostTime: hostTime))
+        writer.nextSegmentFloor = sampleTime
+        do {
+            try startEngine()
+        } catch {
+            #if os(iOS)
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            #endif
+            throw error
+        }
+        state = .recording
+        pauseMark = nil
+        beginActivity()
+        let device = AudioInput.currentDevice()
+        writer.deviceName = device?.name
+        status.continuation.yield(.inputChanged(device?.name))
+        CaptureLog.capture.info("Resumed at sample \(sampleTime) after \(paused.components.seconds) s")
+        return CaptureResume(sampleTime: sampleTime, hostTime: hostTime)
+    }
+
+    public func reopen(_ paused: PausedRecording) async throws -> RecordingClock {
+        guard state == .idle else { throw CaptureError.alreadyRecording }
+        let clock = RecordingClock(sampleRate: paused.format.sampleRate, host: host)
+        let writer = try SegmentedAudioWriter(
+            directory: paused.directory,
+            format: paused.format,
+            segmentFrames: paused.format.frames(in: paused.segmentDuration),
+            clock: clock,
+            continuing: paused.segments
+        )
+        self.writer = writer
+        startWriting()
+        // The run that paused is gone and its continuous-clock instant with it: the wall clock
+        // measures the time paused so far.
+        let pausedFor = max(0, Date().timeIntervalSince(paused.pausedAt))
+        pauseMark = PauseMark(sampleTime: paused.sampleTime, at: ContinuousClock.now - .seconds(pausedFor))
+        state = .paused
+        observerTasks = makeObservers()
+        CaptureLog.capture.info("Reopened a paused recording at sample \(paused.sampleTime)")
+        return clock
+    }
+
     // MARK: - Writing
 
+    /// Starts the writer task on a new queue.
+    private func startWriting() {
+        let (inputs, continuation) = AsyncStream.makeStream(of: WriterInput.self)
+        writerInput = continuation
+        // Weak, so a capture its owner dropped without stopping is released (and stops in deinit).
+        writerTask = Task { [weak self] in
+            for await input in inputs {
+                guard let self else { return }
+                await self.write(input)
+            }
+        }
+    }
+
+    private func write(_ input: WriterInput) {
+        switch input {
+        case .barrier(let barrier):
+            barrierReached = max(barrierReached, barrier)
+            if let waiter = barrierWaiter, waiter.barrier <= barrierReached {
+                barrierWaiter = nil
+                waiter.continuation.resume()
+            }
+        case .audio(let chunk):
+            write(chunk)
+        }
+    }
+
     private func write(_ chunk: AudioChunk) {
-        guard let writer, !writerFailed else { return }
+        guard let writer, !writerFailed, chunk.run > sealedRun else { return }
         if firstHostTime == nil {
             firstHostTime = chunk.hostTime ?? host.now()
         }
@@ -191,6 +362,36 @@ public actor MicrophoneCapture: AudioCaptureSource {
         }
     }
 
+    /// Waits until the writer reached `barrier`, at most `timeout` (less when the caller is
+    /// cancelled). True when it did.
+    private func waitForWriter(through barrier: Int, timeout: Duration) async -> Bool {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    // Cancelled: the waiter below was resumed, or the caller was cancelled.
+                }
+                await self?.stopWaiting(for: barrier)
+            }
+            await withCheckedContinuation { continuation in
+                if barrierReached >= barrier {
+                    continuation.resume()
+                } else {
+                    barrierWaiter = BarrierWaiter(barrier: barrier, continuation: continuation)
+                }
+            }
+            group.cancelAll()
+        }
+        return barrierReached >= barrier
+    }
+
+    private func stopWaiting(for barrier: Int) {
+        guard let waiter = barrierWaiter, waiter.barrier == barrier else { return }
+        barrierWaiter = nil
+        waiter.continuation.resume()
+    }
+
     // MARK: - Engine
 
     @discardableResult
@@ -204,7 +405,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
             onBus: 0,
             bufferSize: tapBufferSize,
             format: format,
-            block: Self.makeTapBlock(run: run, broadcaster: broadcaster)
+            block: Self.makeTapBlock(run: run, writer: writerInput, broadcaster: broadcaster)
         )
         engine.prepare()
         do {
@@ -218,6 +419,18 @@ public actor MicrophoneCapture: AudioCaptureSource {
             "Engine run \(self.run) started: \(format.sampleRate) Hz, \(format.channelCount) ch"
         )
         return format
+    }
+
+    private func beginActivity() {
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled],
+            reason: "Recording a lecture"
+        )
+    }
+
+    private func endActivity() {
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
     }
 
     private func tearDownEngine() {
@@ -301,18 +514,32 @@ public actor MicrophoneCapture: AudioCaptureSource {
         }
     }
 
+    /// Claims the input. A call, another app holding the input or iOS not letting the app record
+    /// now is `inputBusy` (try again later); anything else is an engine failure.
     private static func activateAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .default, options: [])
-        try session.setActive(true)
+        do {
+            try session.setCategory(.record, mode: .default, options: [])
+            try session.setActive(true)
+        } catch {
+            CaptureLog.capture.error("Audio session not active: \(String(describing: error), privacy: .public)")
+            let busy: [AVAudioSession.ErrorCode] = [.isBusy, .cannotInterruptOthers, .insufficientPriority, .cannotStartRecording, .siriIsRecording]
+            let code = (error as NSError).code
+            if busy.contains(where: { $0.rawValue == code }) { throw CaptureError.inputBusy }
+            throw CaptureError.engineFailed(error.localizedDescription)
+        }
     }
     #endif
 
-    /// The tap runs on an audio thread: it only copies the buffer and hands it on. Built in a
-    /// nonisolated static context so the closure carries no actor isolation.
-    private static func makeTapBlock(run: Int, broadcaster: AudioBroadcaster) -> AVAudioNodeTapBlock {
+    /// The tap runs on an audio thread: it only copies the buffer and hands it to the writer's
+    /// queue and the fan-out. Built in a nonisolated static context so the closure carries no
+    /// actor isolation.
+    private static func makeTapBlock(
+        run: Int, writer: AsyncStream<WriterInput>.Continuation?, broadcaster: AudioBroadcaster
+    ) -> AVAudioNodeTapBlock {
         { buffer, time in
             guard let chunk = AudioChunk(buffer: buffer, time: time, run: run) else { return }
+            writer?.yield(.audio(chunk))
             broadcaster.send(chunk)
         }
     }

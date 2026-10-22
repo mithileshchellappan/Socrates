@@ -45,6 +45,24 @@ public actor LecturePackageWriter {
         return true
     }
 
+    /// Finishes a package an earlier run left paused (the app was killed while paused and the
+    /// recording is not taken up again): a `stop` event at the pause, `endedAt` at the pause's
+    /// wall clock and the segments as found on disk, so it reads as a complete recording that
+    /// ended where its pause began. Does nothing to a package that did not end in a pause.
+    public static func finishLeftPaused(_ contents: LecturePackageContents) throws {
+        guard contents.manifest.endedAt == nil, let pause = contents.events.last, pause.kind == .pause else { return }
+        // One tick after the pause, so reading sorts it after the pause.
+        let stop = LectureEvent(
+            kind: .stop, page: pause.page, sampleTime: pause.sampleTime, hostTime: pause.hostTime &+ 1, wallClock: pause.wallClock
+        )
+        try CaptureJSON.write(LectureEventLog(events: contents.events + [stop]), to: contents.package.eventsURL)
+        let segments = contents.segments
+        _ = try updateManifest(of: contents.package) { manifest in
+            manifest.segments = segments
+            manifest.endedAt = pause.wallClock
+        }
+    }
+
     /// Rewrites the manifest of an existing package (e.g. to mark it imported).
     public static func updateManifest(
         of package: LecturePackage,

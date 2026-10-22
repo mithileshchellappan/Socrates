@@ -1,4 +1,5 @@
 import ChatUI
+import RecorderContract
 import StudyCore
 import StudyUI
 import SwiftUI
@@ -46,8 +47,8 @@ public enum PhoneTab: String, Hashable, Sendable, CaseIterable {
 
 /// The iPhone app's root (M7, docs/plan-m7.md §5.2, DESIGN 6.7, 8.5; mockups 09 and 16, agent
 /// panel mockup §7): the floating system tab bar (Today, Courses, Calendar, Mail) and the
-/// separate round Record button beside it (glass, a red glyph; a waveform while a recording runs;
-/// it opens the recorder either way), each tab in its own navigation stack with a large title,
+/// separate round Record button beside it (glass, a red glyph; a waveform while a recording runs,
+/// a secondary `pause.fill` while it is paused; it opens the recorder either way), each tab in its own navigation stack with a large title,
 /// and in each tab's header search and the agent bubble (`bubble.left`, only while
 /// `\.agentPanelActions.isAvailable`: with iCloud sync), which presents the agent sheet. The app
 /// passes the screens in and presents the recorder on `record`.
@@ -56,7 +57,7 @@ public enum PhoneTab: String, Hashable, Sendable, CaseIterable {
 /// there, beside the bar): choosing it never selects it, it calls `record`.
 public struct PhoneShell<Today: View, Courses: View, Calendar: View, Mail: View>: View {
     @Binding private var selection: PhoneTab
-    private let isRecording: Bool
+    private let recordingPhase: RecorderSnapshot.Phase?
     private let record: () -> Void
     private let search: (() -> Void)?
     private let agentLaunch: AgentSheetLaunch?
@@ -71,14 +72,15 @@ public struct PhoneShell<Today: View, Courses: View, Calendar: View, Mail: View>
     @State private var shell = ShellModel()
 
     /// - Parameters:
-    ///   - isRecording: a recording runs (the Record button shows it).
+    ///   - recordingPhase: the recorder's phase (`PhoneRecorder.snapshot`), nil when nothing
+    ///     records: the Record slot shows it.
     ///   - record: opens the recorder (a new recording, or the one running).
     ///   - search: the header's search button (nil: none).
     ///   - agentLaunch: renders: the agent sheet open from the start at this detent and
     ///     conversation (only while the agent is available).
     public init(
         selection: Binding<PhoneTab>,
-        isRecording: Bool,
+        recordingPhase: RecorderSnapshot.Phase?,
         record: @escaping () -> Void,
         search: (() -> Void)? = nil,
         agentLaunch: AgentSheetLaunch? = nil,
@@ -88,7 +90,7 @@ public struct PhoneShell<Today: View, Courses: View, Calendar: View, Mail: View>
         @ViewBuilder mail: () -> Mail
     ) {
         _selection = selection
-        self.isRecording = isRecording
+        self.recordingPhase = recordingPhase
         self.record = record
         self.search = search
         self.agentLaunch = agentLaunch
@@ -134,9 +136,9 @@ public struct PhoneShell<Today: View, Courses: View, Calendar: View, Mail: View>
                 Color.clear
             } label: {
                 Label {
-                    Text(isRecording ? "Recording" : "Record")
+                    Text(recordSlot.title)
                 } icon: {
-                    Self.recordImage(isRecording: isRecording)
+                    Self.recordImage(recordSlot)
                 }
             }
         }
@@ -150,10 +152,10 @@ public struct PhoneShell<Today: View, Courses: View, Calendar: View, Mail: View>
         }
         .overlay(alignment: .bottomTrailing) {
             Button(action: record) {
-                Label(isRecording ? "Recording" : "Record", systemImage: isRecording ? "waveform" : "circle.fill")
+                Label(recordSlot.title, systemImage: recordSlot.systemImage)
                     .labelStyle(.iconOnly)
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(recordSlot == .paused ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
                     .frame(width: 60, height: 60)
                     .contentShape(Circle())
             }
@@ -198,16 +200,48 @@ public struct PhoneShell<Today: View, Courses: View, Calendar: View, Mail: View>
         }
     }
 
-    /// The Record slot's glyph in red (a tab bar draws its glyphs as templates otherwise): the
-    /// record dot (`circle.fill`), a waveform while a recording runs.
-    private static func recordImage(isRecording: Bool) -> Image {
-        let name = isRecording ? "waveform" : "circle.fill"
+    private var recordSlot: RecordSlot { RecordSlot(recordingPhase) }
+
+    /// The Record slot's glyph (a tab bar draws its glyphs as templates otherwise): the red
+    /// record dot (`circle.fill`), a red waveform while a recording runs, `pause.fill` in the
+    /// secondary colour while it is paused.
+    private static func recordImage(_ slot: RecordSlot) -> Image {
         #if os(iOS)
-        if let image = UIImage(systemName: name)?.withTintColor(.systemRed, renderingMode: .alwaysOriginal) {
+        let color: UIColor = slot == .paused ? .secondaryLabel : .systemRed
+        if let image = UIImage(systemName: slot.systemImage)?.withTintColor(color, renderingMode: .alwaysOriginal) {
             return Image(uiImage: image)
         }
         #endif
-        return Image(systemName: name)
+        return Image(systemName: slot.systemImage)
+    }
+}
+
+/// What the Record slot shows for the recorder's phase.
+private enum RecordSlot: Equatable {
+    case record, recording, paused
+
+    init(_ phase: RecorderSnapshot.Phase?) {
+        switch phase {
+        case .recording?, .stopping?: self = .recording
+        case .paused?: self = .paused
+        case .stopped?, nil: self = .record
+        }
+    }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .record: "Record"
+        case .recording: "Recording"
+        case .paused: "Paused"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .record: "circle.fill"
+        case .recording: "waveform"
+        case .paused: "pause.fill"
+        }
     }
 }
 

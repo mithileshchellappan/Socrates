@@ -1,15 +1,20 @@
 import Capture
 import CaptureUI
 import Recorder
+import RecorderContract
 import StudyCore
 import StudyUI
 import SwiftUI
 
-/// The iPhone recorder (mockup 09 left, DESIGN 8.5): the course menu and Stop, the timer, the
-/// session line, the waveform with stamp lines, the slide, the 88 pt Next slide button, Previous
-/// and Flag. Before recording the same layout with one red Record button; after Stop the capture
-/// with Share and the outbox. The app presents it full screen; recording goes on when it closes
-/// or the phone locks.
+/// The iPhone recorder (mockup 09 left, DESIGN 8.5): the course menu, Pause and Stop, the timer,
+/// the session line, the waveform with stamp lines, the slide, the 88 pt Next slide button,
+/// Previous and Flag. Before recording the same layout with one red Record button; after Stop the
+/// capture with Share and the outbox. The app presents it full screen; recording goes on when it
+/// closes or the phone locks.
+///
+/// While recording it renders `recorder.snapshot` (and the model's read-only level, stamp times
+/// and deck), and every button goes through the model (`submit`, `record`, `select`); what is
+/// enabled is what the snapshot accepts. The alert shows the model's `problem`.
 public struct RecorderScreen: View {
     let recorder: PhoneRecorder
 
@@ -18,13 +23,13 @@ public struct RecorderScreen: View {
     @Environment(\.openURL) private var openURL
     @State private var confirmsStop = false
     @State private var showsOutbox = false
-    @State private var failure: LiveLectureSession.Failure?
 
     public init(recorder: PhoneRecorder) {
         self.recorder = recorder
     }
 
     public var body: some View {
+        @Bindable var recorder = recorder
         Group {
             if recorder.finished != nil || showsOutbox {
                 OutboxView(recorder: recorder, finished: recorder.finished) {
@@ -36,49 +41,55 @@ public struct RecorderScreen: View {
         }
         .background(Color.contentSurface.ignoresSafeArea())
         .task { await recorder.prepare() }
-        .onChange(of: recorder.session?.phase) { _, phase in
-            if case .failed(let reason)? = phase { failure = reason }
-        }
         .onChange(of: recorder.finished?.id) { _, id in
             if id != nil { showsOutbox = false }
         }
         .alert(
-            failure.map(LiveLectureView.title(for:)) ?? "",
-            isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } }),
-            presenting: failure
-        ) { failure in
-            if failure == .microphoneDenied {
+            recorder.problem?.title ?? "",
+            isPresented: $recorder.showsProblem,
+            presenting: recorder.problem
+        ) { problem in
+            if problem.failure == .microphoneDenied {
                 Button("Open Settings") { openURL(LiveLectureView.privacySettingsURL) }
             }
             Button("OK", role: .cancel) {}
-        } message: { failure in
-            if let message = LiveLectureView.message(for: failure) { Text(message) }
+        } message: { problem in
+            if let message = problem.message { Text(message) }
         }
     }
 
     // MARK: - Recording layout
 
-    private var isCapturing: Bool { recorder.session?.isCapturing == true }
+    private var snapshot: RecorderSnapshot? { recorder.snapshot }
+
+    /// A recording runs (recording, paused or stopping): its buttons show instead of Record.
+    private var isCapturing: Bool {
+        guard let snapshot else { return false }
+        return snapshot.phase != .stopped
+    }
+
+    private func accepts(_ kind: RecorderCommand.Kind) -> Bool {
+        snapshot?.accepts.contains(kind) == true
+    }
 
     private var recording: some View {
         VStack(spacing: 0) {
             topBar
                 .padding(.top, 4)
-            RecorderTimer(recorder: recorder)
+            RecorderTimer(timing: snapshot?.timing, phase: snapshot?.phase)
                 .padding(.top, 36)
-            Text(recorder.sessionLine)
-                .font(.system(size: 15))
-                .foregroundStyle(.secondary)
+            SessionLine(text: recorder.sessionLine, isPaused: snapshot?.isPaused == true)
                 .padding(.top, 10)
-            RecorderWaveform(
-                session: recorder.session,
-                isPreview: recorder.isPreview,
-                isActive: scenePhase == .active
+            RecorderWaveform(recorder: recorder, isActive: scenePhase == .active)
+                .frame(height: 70)
+                .padding(.top, 30)
+            // Before recording the deck's first page; then the recording's slide.
+            SlideBlock(
+                slide: snapshot?.slide ?? 1,
+                slideCount: snapshot.map(\.slideCount) ?? recorder.deckPageCount,
+                deck: recorder.deck
             )
-            .frame(height: 70)
-            .padding(.top, 30)
-            SlideBlock(session: recorder.session)
-                .padding(.top, 20)
+            .padding(.top, 20)
             Spacer(minLength: 16)
             if isCapturing {
                 capturingButtons
@@ -89,7 +100,7 @@ public struct RecorderScreen: View {
         .padding(.horizontal, 16)
         .confirmationDialog("Stop recording?", isPresented: $confirmsStop) {
             Button("Stop", role: .destructive) {
-                Task { await recorder.stop() }
+                recorder.submit(.stop)
             }
         }
     }
@@ -112,7 +123,13 @@ public struct RecorderScreen: View {
             CourseMenu(recorder: recorder)
             Spacer(minLength: 8)
             if isCapturing {
-                StopCapsule(isEnabled: recorder.session?.isRecording == true) { confirmsStop = true }
+                let isPaused = snapshot?.isPaused == true
+                PauseButton(isPaused: isPaused) {
+                    recorder.submit(isPaused ? .resume : .pause)
+                }
+                .disabled(!accepts(.pause) && !accepts(.resume))
+                .padding(.trailing, -5)
+                StopCapsule(isEnabled: accepts(.stop)) { confirmsStop = true }
             } else if !recorder.captures.isEmpty {
                 Button {
                     showsOutbox = true
@@ -132,24 +149,23 @@ public struct RecorderScreen: View {
         .frame(height: 44)
     }
 
-    /// Next slide where the thumb rests, then Previous and Flag.
+    /// Next slide where the thumb rests, then Previous and Flag; while paused all three wait
+    /// (nothing moves between the states).
     private var capturingButtons: some View {
-        let session = recorder.session
-        let isRecording = session?.isRecording == true
-        return VStack(spacing: 10) {
+        VStack(spacing: 10) {
             BigButton(title: "Next slide", systemImage: "chevron.right", color: .accentColor) {
-                recorder.next()
+                recorder.submit(.nextSlide(from: nil))
             }
-            .disabled(!isRecording || session?.canGoNext != true)
+            .disabled(!accepts(.nextSlide))
             HStack(spacing: 10) {
                 SecondaryButton(title: "Previous", systemImage: "chevron.left", glyphColor: .primary) {
-                    recorder.previous()
+                    recorder.submit(.previousSlide(from: nil))
                 }
-                .disabled(!isRecording || session?.canGoPrevious != true)
+                .disabled(!accepts(.previousSlide))
                 SecondaryButton(title: "Flag", systemImage: "flag", glyphColor: .red) {
-                    recorder.flag()
+                    recorder.submit(.flag)
                 }
-                .disabled(!isRecording)
+                .disabled(!accepts(.flag))
             }
         }
     }
@@ -159,7 +175,7 @@ public struct RecorderScreen: View {
     private var recordButton: some View {
         VStack(spacing: 10) {
             BigButton(title: "Record", systemImage: "circle.fill", color: .red) {
-                Task { await recorder.start() }
+                recorder.record()
             }
             .disabled(!recorder.canRecord)
             Color.clear.frame(height: 54)
@@ -199,7 +215,7 @@ struct CourseMenu: View {
                 get: { recorder.course?.id },
                 set: { id in
                     guard let picked = recorder.courses.first(where: { $0.id == id }) else { return }
-                    Task { await recorder.select(picked) }
+                    recorder.select(picked)
                 }
             )) {
                 ForEach(recorder.courses) { course in
@@ -233,6 +249,28 @@ struct CourseMenu: View {
     }
 }
 
+/// [⏸] / [▶]: pauses and resumes at once (both undo each other, so neither asks). Recording:
+/// `pause.fill` on the quiet fill; paused: `play.fill` in the accent on its 14 % tint. A 34 pt
+/// circle in a 44 pt target.
+struct PauseButton: View {
+    let isPaused: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(isPaused ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                .frame(width: 34, height: 34)
+                .background(isPaused ? AnyShapeStyle(Color.accentColor.opacity(0.14)) : AnyShapeStyle(QuietFill()), in: Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isPaused ? Text("Resume") : Text("Pause"))
+    }
+}
+
 /// [■ Stop]: the red-soft capsule (asks first).
 struct StopCapsule: View {
     let isEnabled: Bool
@@ -260,27 +298,47 @@ struct StopCapsule: View {
     }
 }
 
-/// The 76 pt SF Mono light timer with the recording dot to its left.
+/// The 76 pt SF Mono light timer with the recording dot to its left: the recorded time (pauses
+/// left out). Paused, the digits stand still in the secondary colour and the dot goes.
 struct RecorderTimer: View {
-    let recorder: PhoneRecorder
+    let timing: RecordingTiming?
+    let phase: RecorderSnapshot.Phase?
 
     var body: some View {
-        let isRecording = recorder.session?.isRecording == true
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            Text(ClockText.string(recorder.elapsed(at: timeline.date)))
+            Text(ClockText.string(timing?.elapsed(at: timeline.date) ?? 0))
                 .font(.system(size: 76, weight: .light, design: .monospaced))
                 .monospacedDigit()
                 .tracking(-3)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
+                .foregroundStyle(phase == .paused ? .secondary : .primary)
                 .overlay(alignment: .leading) {
-                    if isRecording {
+                    if phase == .recording {
                         PulsingDot()
                             .offset(x: -26)
                     }
                 }
         }
         .accessibilityLabel(Text("Recording time"))
+    }
+}
+
+/// "Lecture 2 · Tue 13 Oct" (15 pt secondary); paused, "Paused" leads it in 15 semibold primary.
+struct SessionLine: View {
+    let text: String
+    let isPaused: Bool
+
+    var body: some View {
+        Group {
+            if isPaused {
+                Text("\(Text("Paused").fontWeight(.semibold).foregroundStyle(.primary)) · \(text)")
+            } else {
+                Text(text)
+            }
+        }
+        .font(.system(size: 15))
+        .foregroundStyle(.secondary)
     }
 }
 
@@ -304,24 +362,26 @@ struct PulsingDot: View {
 
 /// "Slide 17 of 88" over the slide; without a deck "Slide 17" and no image.
 struct SlideBlock: View {
-    let session: LiveLectureSession?
+    let slide: Int
+    /// The deck's pages; nil: slides counted without a deck.
+    let slideCount: Int?
+    let deck: SlideDeck?
 
     var body: some View {
-        let page = session?.currentPage ?? 1
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text("Slide \(page)")
+                Text("Slide \(slide)")
                     .font(.system(size: 15, weight: .semibold))
-                if let session, session.hasDeck {
-                    Text("of \(session.pageCount)")
+                if let slideCount {
+                    Text("of \(slideCount)")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
             }
             .padding(.leading, 2)
             .accessibilityElement(children: .combine)
-            if let deck = session?.deck {
-                SlideImageView(deck: deck, page: page, pixelWidth: SlideWidth.display, cornerRadius: 10)
+            if let deck {
+                SlideImageView(deck: deck, page: slide, pixelWidth: SlideWidth.display, cornerRadius: 10)
                     .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
             }
         }

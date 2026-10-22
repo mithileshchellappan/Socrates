@@ -1,11 +1,12 @@
 import ActivityKit
 import RecorderActivity
+import RecorderContract
 import SwiftUI
 import WidgetKit
 
 // The widget extension (M7, docs/plan-m7.md §3, §5.1): the recording's Live Activity on the Lock
-// Screen and in the Dynamic Island. Its views and the two button intents are in `Shared/`, which
-// the app compiles too. Links RecorderActivity only.
+// Screen and in the Dynamic Island. Its views and the button intents are in `Shared/`, which the
+// app compiles too. Links RecorderActivity and the recorder contract (RecorderContract).
 
 @main
 struct SocratesWidgets: WidgetBundle {
@@ -14,9 +15,10 @@ struct SocratesWidgets: WidgetBundle {
     }
 }
 
-/// The recording's Live Activity: course, session, slide, elapsed; [Next Slide] [Stop Recording].
-/// The Lock Screen and the expanded Dynamic Island show the same content; compact: the red dot
-/// and the elapsed time, "S17"; minimal: the red dot.
+/// The recording's Live Activity: course, session, slide, elapsed; [⏸] [Next Slide] [Stop
+/// Recording]. The Lock Screen and the expanded Dynamic Island show the same content; compact:
+/// the red dot and the elapsed time, "S17"; minimal: the red dot. Paused, `pause.fill` in the
+/// secondary colour takes the red dot's place and the keyline turns secondary.
 struct RecordingLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: RecordingActivityAttributes.self) { context in
@@ -34,15 +36,16 @@ struct RecordingLiveActivity: Widget {
                         .padding(.trailing, 4)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    RecordingButtons(recordingID: context.attributes.recordingID, slide: context.state.slide)
+                    RecordingButtons(state: context.state, recordingID: context.attributes.recordingID)
                         .padding(.top, 6)
                 }
             } compactLeading: {
                 HStack(spacing: 5) {
-                    Circle().fill(.red).frame(width: 7, height: 7)
-                    Text(timerInterval: context.state.timerRange, pauseTime: context.state.stoppedAt, countsDown: false, showsHours: true)
+                    RecordingMark(isPaused: context.state.isPaused, size: 7)
+                    Text(timerInterval: context.state.timerRange, pauseTime: context.state.timerPauseTime, countsDown: false, showsHours: true)
                         .font(.system(size: 14, weight: .semibold, design: .monospaced))
                         .monospacedDigit()
+                        .foregroundStyle(context.state.isPaused ? .secondary : .primary)
                         .frame(maxWidth: 58, alignment: .leading)
                 }
             } compactTrailing: {
@@ -50,9 +53,28 @@ struct RecordingLiveActivity: Widget {
                     .font(.system(size: 14, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
             } minimal: {
-                Circle().fill(.red).frame(width: 9, height: 9)
+                RecordingMark(isPaused: context.state.isPaused, size: 9)
             }
-            .keylineTint(.red)
+            .keylineTint(context.state.isPaused ? .secondary : .red)
+        }
+    }
+}
+
+/// The Dynamic Island's mark: the red dot while recording, `pause.fill` (secondary) while paused.
+/// VoiceOver reads the state ("Recording", "Paused"), not the glyph's action.
+struct RecordingMark: View {
+    let isPaused: Bool
+    let size: CGFloat
+
+    var body: some View {
+        if isPaused {
+            Image(systemName: "pause.fill")
+                .font(.system(size: size + 3, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(Text("Paused"))
+        } else {
+            Circle().fill(.red).frame(width: size, height: size)
+                .accessibilityLabel(Text("Recording"))
         }
     }
 }
