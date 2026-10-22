@@ -11,12 +11,17 @@ let package = Package(
         .library(name: "Sync", targets: ["Sync"])
     ],
     dependencies: [
-        .package(path: "../StudyCore")
+        .package(path: "../StudyCore"),
+        // `TransactionObserver`, `Row` and the backup API (SQLiteData re-exports only a few GRDB types).
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0"),
     ],
     targets: [
         .target(
             name: "Sync",
-            dependencies: [.product(name: "StudyCore", package: "StudyCore")]
+            dependencies: [
+                .product(name: "StudyCore", package: "StudyCore"),
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]

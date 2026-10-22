@@ -34,9 +34,12 @@ enum SyncedTables {
         CourseMaterial.self, MaterialSection.self, MaterialCoverage.self,
     ] }
 
+    /// The synced tables' names.
+    static var tableNames: [String] { types.map { $0.tableName } }
+
     /// Library tables the list above lacks (empty when sync covers the schema).
     static var missingTables: [String] {
-        let listed = Set(types.map { $0.tableName })
+        let listed = Set(tableNames)
         return Schema.tableNames.filter { !excluded.contains($0) && !listed.contains($0) }
     }
 
@@ -81,7 +84,7 @@ enum SyncedTables {
     /// touched; a running engine sends them. Returns how many.
     static func queueUntracked(_ db: Database) throws -> Int {
         var queued = 0
-        for table in types.map({ $0.tableName }) {
+        for table in tableNames {
             try db.execute(
                 sql: """
                     UPDATE "\(table)" SET "id" = "id"

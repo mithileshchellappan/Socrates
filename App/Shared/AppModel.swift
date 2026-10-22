@@ -181,6 +181,8 @@ final class AppModel {
     @ObservationIgnored private var activationObserver: Task<Void, Never>?
     @ObservationIgnored private var calendarStoreObserver: Task<Void, Never>?
     @ObservationIgnored private var memoryObserver: Task<Void, Never>?
+    /// The daily library backup (Mac): at launch, once an hour and after each wake.
+    @ObservationIgnored private var backupTask: Task<Void, Never>?
     /// ma: the full calendar sync after the student's calendars changed (coalesced, at most one a
     /// minute), and when the last one ran.
     @ObservationIgnored private var calendarEditSync: Task<Void, Never>?
@@ -452,9 +454,34 @@ final class AppModel {
     func startBackgroundWork() async {
         guard runsBackgroundWork, !didStartBackgroundWork, let services else { return }
         didStartBackgroundWork = true
+        #if os(macOS)
+        // Once, before sync starts and before anything replans: rows the Mac's first upload
+        // deleted come back from the copy made before it, and the courses they belong to are
+        // replanned (`LibraryRestore.runOnce`). Only over a built sync engine, whose triggers
+        // queue what the restore writes for upload; without one the next launch tries again.
+        if runsLibraryPasses, cloudSync?.hasEngine == true {
+            let schedule = CourseSchedule(services: services)
+            await LibraryRestore(services: services).runOnce { courseID in
+                let plan = try await schedule.replan(courseID: courseID)
+                return (plan.inserted.count, plan.updated.count, plan.deleted.count)
+            }
+        }
+        #endif
         // M7: iCloud sync first (only in a build configured for it), so the other device's rows
         // come down before anything is created here.
         if let cloudSync { Task { await cloudSync.start() } }
+        #if os(macOS)
+        // One copy of the library a day, in the background: at launch and once an hour
+        // (`runHourly`), and after each wake (the Mac app stays open for days).
+        let backup = LibraryBackup(services: services)
+        backupTask = Task(priority: .background) {
+            async let hourly: Void = backup.runHourly()
+            for await _ in NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification) {
+                await backup.runDaily()
+            }
+            await hourly
+        }
+        #endif
         observeClaudeAvailability()
         #if os(macOS)
         // md: returns at once (reading resumes after 20 s at utility, file removal after 60 s).

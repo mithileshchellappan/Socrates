@@ -22,6 +22,7 @@ import os
 /// - Every later start queues again the rows iCloud has not received (`SyncedTables.queueUnsent`)
 ///   and rows written while no engine noted them (`SyncedTables.queueUntracked`), so a first
 ///   upload that a quit, a crash or a lost network interrupted resumes where it stopped.
+/// - Rows sync deletes on this device are logged by table and count (`SyncDeletionLog`).
 @MainActor
 @Observable
 public final class CloudSync {
@@ -52,6 +53,12 @@ public final class CloudSync {
     /// Built once (`prepare()`), kept for the app's life; stopped and started again as the account
     /// comes and goes. Its triggers note changes also while it is stopped (sent at the next start).
     @ObservationIgnored private var engine: SyncEngine?
+    /// True once the engine is built: its triggers note every write from then on, so rows written
+    /// now are queued for upload (`LibraryRestore` waits for it).
+    public var hasEngine: Bool { engine != nil }
+    /// Logs the rows sync deletes on this device (`SyncDeletionLog`); on the library's writer
+    /// from the first engine on, added once.
+    private let deletionLog = SyncDeletionLog(tables: Set(SyncedTables.tableNames))
 
     /// Nil unless the library was opened for a CloudKit container (`services.syncContainer`).
     /// Builds the engine at once (not started; no CloudKit call).
@@ -149,12 +156,17 @@ public final class CloudSync {
         }
     }
 
-    /// Builds the engine over the library (installs SQLiteData's triggers; not started).
+    /// Builds the engine over the library (installs SQLiteData's triggers; not started). The
+    /// first engine also adds the deletion log to the library's writer.
     private func prepare() throws {
         let guardDelegate = AccountChangeGuard { [weak self] change in
             await self?.accountChanged(change)
         }
+        let isFirstEngine = engine == nil
         engine = try SyncedTables.engine(for: services.database, container: container, delegate: guardDelegate)
+        if isFirstEngine {
+            services.database.add(transactionObserver: deletionLog, extent: .databaseLifetime)
+        }
     }
 
     /// An iCloud sign-out or a switch to another account: syncing stops and every row stays
@@ -218,4 +230,10 @@ final class AccountChangeGuard: SyncEngineDelegate {
 
 enum SyncLog {
     static let sync = Log.logger(category: "sync")
+    /// `LibraryBackup`: the daily copies, their pruning and row-count drops.
+    static let backup = Log.logger(category: "sync.backup")
+    /// `LibraryRestore`: rows put back from the pre-sync copy, and the replans after it.
+    static let restore = Log.logger(category: "sync.restore")
+    /// `SyncDeletionLog`: deletes sync makes on this device.
+    static let deletes = Log.logger(category: "sync.deletes")
 }

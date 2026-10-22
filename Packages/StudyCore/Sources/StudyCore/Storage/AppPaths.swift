@@ -134,6 +134,11 @@ public struct AppPaths: Hashable, Sendable {
     /// M7, the Mac: the one copy of the library made before its first sync (kept, never
     /// overwritten), next to the database.
     public var preSyncBackup: URL { databaseDirectory.appending(path: "\(databaseName)-before-sync.sqlite") }
+    /// The Mac: the one copy of the library made before rows lost to its first sync were restored
+    /// (`LibraryRestore`; kept, never overwritten).
+    public var preRestoreBackup: URL { databaseDirectory.appending(path: "\(databaseName)-before-restore.sqlite") }
+    /// The Mac: the daily copies of the library (`LibraryBackup`), `<name>-<yyyy-MM-dd>.sqlite`.
+    public var backups: URL { databaseDirectory.appending(path: "Backups", directoryHint: .isDirectory) }
     public var blobs: URL { root.appending(path: "Blobs", directoryHint: .isDirectory) }
     public var models: URL { root.appending(path: "Models", directoryHint: .isDirectory) }
     public var recordings: URL { root.appending(path: "Recordings", directoryHint: .isDirectory) }
