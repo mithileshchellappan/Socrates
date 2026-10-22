@@ -1039,7 +1039,7 @@ Built in `Packages/Documents` (`Materials`: `MaterialLibrary`, `MaterialClassifi
 | Search | query < 50 ms; indexing a 90-minute transcript < 1 s |
 | Filing | HUD prediction about 300 ms from drag-enter |
 | Mail | a message opens in < 50 ms; 2,000 messages scroll without hitches; a sync burst never rebuilds the reader |
-| Panes (Mac) | with a 88-slide lecture in Review and Notes and Agent open (a release build, Instruments: Animation Hitches, SwiftUI, Time Profiler): no frame over 8.3 ms at 120 Hz while a divider, the screen's edge, the window's edge or a stack divider is dragged, a pane toggled, maximized and restored, or the small chat moved and resized; no body runs in a pane whose size did not change; one screen layout per toggle; pane bodies never run per keystroke in the search field; < 300 MB |
+| Panes (Mac) | with an 88-slide lecture in Review and Notes and Agent open (a release build, Instruments: Animation Hitches, SwiftUI, Time Profiler): no frame over 8.3 ms at 120 Hz while a divider, the screen's edge, the window's edge or a stack divider is dragged, a pane toggled, maximized and restored, or the small chat moved and resized; no body runs in a pane whose size did not change; one screen layout per toggle; pane bodies never run per keystroke in the search field; < 300 MB |
 
 ---
 
