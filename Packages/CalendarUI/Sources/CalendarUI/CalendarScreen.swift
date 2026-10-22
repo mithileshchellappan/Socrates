@@ -6,10 +6,11 @@ import SwiftUI
 
 /// Calendar & deadlines (PRD #36, #37; mockup 06; docs/DESIGN.md §8.3): the week grid (Mon–Sun:
 /// sessions, due lines and tags, all-day pills, waiting proposals, other calendars read-only) and
-/// the inspector "Deadlines" (proposal cards, what is due from today). Draws its own title,
-/// toolbar items and inspector. ma: [+] opens the agent panel (`\.openAgentPanel`; the "New
-/// deadline" composer is gone), the screen publishes its week and selection for it
-/// (`.agentContext`), and the inspector yields to the expanded panel (`\.agentPanelExpanded`).
+/// "Deadlines" (proposal cards, what is due from today). Draws its own title and toolbar items.
+/// ma: [+] opens the agent panel (`\.openAgentPanel`; the "New deadline" composer is gone), and the
+/// screen publishes its week and selection for it (`.agentContext`). On the Mac, Deadlines is the
+/// screen's side pane (`.pane(.deadlines, …)`, reading `CalendarPaneState`); on iOS it is the
+/// inspector, which yields to the expanded agent panel (`\.agentPanelExpanded`).
 ///
 /// Reads rows itself (one request per week); every effect goes through `\.deadlineActions`,
 /// navigation through `\.openDestination`, other calendars through `\.foreignCalendars`,
@@ -18,15 +19,18 @@ public struct CalendarScreen: View {
     private let fixedNow: Date?
 
     @State private var week: CalendarWeek
-    @State private var selection: CalendarSelection?
+    /// The selection, the rows and the minute, shared with the Deadlines pane.
+    @State private var paneState: CalendarPaneState
     /// The grid item whose detail popover is open (a click opens it, Esc closes it).
     @State private var detailTarget: CalendarSelection?
-    @State private var showsInspector = true
     @State private var gridWidth: CGFloat = 0
     @State private var scroll = ScrollPosition(y: GridMetrics.openingOffset)
     /// The body has been scrolled to its opening offset at its real height, for the grid laid out
-    /// with the agent panel expanded (true) or not (false); nil: not yet.
+    /// as it is now (`gridLayout`); nil: not yet.
     @State private var openedFor: Bool?
+    #if os(iOS)
+    @State private var showsInspector = true
+    #endif
     /// Where the body is scrolled to (08:00 until the student scrolls).
     @State private var lastOffset = GridOffset(y: GridMetrics.openingOffset)
     @State private var foreignList = ForeignCalendarList.empty
@@ -47,7 +51,9 @@ public struct CalendarScreen: View {
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
     @Environment(\.calendarDetailPreview) private var detailPreview
     @Environment(\.openAgentPanel) private var openAgentPanel
+    #if os(iOS)
     @Environment(\.agentPanelExpanded) private var agentPanelExpanded
+    #endif
 
     /// - Parameters:
     ///   - week: a day of the week to open on; nil: this week.
@@ -63,7 +69,7 @@ public struct CalendarScreen: View {
         let today = CalendarDay(now ?? Date(), in: zone)
         let shown = CalendarWeek(containing: week ?? today)
         _week = State(initialValue: shown)
-        _selection = State(initialValue: selection)
+        _paneState = State(initialValue: CalendarPaneState(now: now ?? Date(), selection: selection))
         initialRequest = CalendarRequest(week: shown, today: today, timeZone: zone)
         _data = Fetch(wrappedValue: CalendarData(), initialRequest)
     }
@@ -93,15 +99,22 @@ public struct CalendarScreen: View {
         )
         let title = CalendarText.title(shown, locale: locale)
         let subtitle = CalendarText.subtitle(shown)
+        let paneState = paneState
         return Group {
             switch chrome {
             case .window:
                 grid(plan: plan, week: shown, now: now, today: today)
                     .screenTitle(title, subtitle: subtitle, leadingInset: ScreenTitleInset.firstItem)
                     .toolbar { toolbar }
+                    #if os(macOS)
+                    .pane(.deadlines, identity: "deadlines") {
+                        DeadlinesPane(state: paneState)
+                    }
+                    #else
                     .modifier(DeadlinesInspectorColumn(isPanelExpanded: agentPanelExpanded, isPresented: inspectorShown) {
                         inspector(now: now)
                     })
+                    #endif
             case .snapshot:
                 HStack(spacing: 0) {
                     VStack(spacing: 0) {
@@ -116,6 +129,9 @@ public struct CalendarScreen: View {
         }
         .focusedSceneValue(\.calendarScreen, commandActions)
         .agentContext(agentContext(week: shown))
+        .onChange(of: PaneInputs(data: data, now: now), initial: true) { _, inputs in
+            paneState.update(data: inputs.data, now: inputs.now, handlers: inspectorHandlers(now: inputs.now))
+        }
         .task(id: request) {
             // Another week, a new day or another time zone: one read per week.
             guard request != (loaded ?? initialRequest) else { return }
@@ -130,7 +146,7 @@ public struct CalendarScreen: View {
     /// What the agent panel knows of the screen: the week on screen, the selected item or session.
     private func agentContext(week: CalendarWeek) -> AgentContext {
         var context = AgentContext(screen: .calendar, week: week.monday)
-        switch selection {
+        switch paneState.selection {
         case .item(let id)?: context.itemID = id
         case .session(let id)?: context.sessionID = id
         case nil: break
@@ -138,6 +154,13 @@ public struct CalendarScreen: View {
         return context
     }
 
+    /// What the pane's rows are made from: they change together.
+    private struct PaneInputs: Equatable {
+        var data: CalendarData
+        var now: Date
+    }
+
+    #if os(iOS)
     /// The inspector shows unless hidden, or while the agent panel is expanded in its place.
     private var inspectorShown: Binding<Bool> {
         let expanded = agentPanelExpanded
@@ -145,6 +168,18 @@ public struct CalendarScreen: View {
             get: { showsInspector && !expanded },
             set: { shown in if !expanded { showsInspector = shown } }
         )
+    }
+    #endif
+
+    /// How the grid is laid out: on iOS the agent panel expanded in the inspector's place (true) or
+    /// not. The grid is built again when it changes, and opens where the last one was. Always the
+    /// same on the Mac, where nothing takes the screen's place: the body opens once.
+    private var gridLayout: Bool {
+        #if os(iOS)
+        agentPanelExpanded
+        #else
+        false
+        #endif
     }
 
     /// Day headers, the all-day row, then the hours, scrolling, opened at 08:00.
@@ -154,7 +189,7 @@ public struct CalendarScreen: View {
         let nowSlot = week.index(of: today).map { (day: $0, minute: WallClock.minute(of: now, in: timeZone)) }
         // Off-screen renders: the previewed item drawn selected, its detail inline.
         let previewTarget = detailPreview?.target(plan: plan, data: data)
-        let shown = previewTarget ?? selection
+        let shown = previewTarget ?? paneState.selection
         let allDayHeight = GridMetrics.allDayHeight(pills: plan.maxPills)
         return VStack(spacing: 0) {
             WeekHeader(week: week, columns: columns, today: today)
@@ -177,19 +212,19 @@ public struct CalendarScreen: View {
             .scrollPosition($scroll)
             // Never a legacy scroller: it would narrow the body under the day headers.
             .scrollIndicators(.never)
-            .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { [expanded = agentPanelExpanded] _, height in
+            .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { [layout = gridLayout] _, height in
                 // Opens at 08:00 once the body has its height: AppKit resets the offset when the
-                // scroll view first grows, so a position set before that is lost. The inspector
-                // comes and goes with the expanded agent panel, and the grid with it: the new
-                // one opens where the old one was.
-                guard openedFor != expanded, height > GridMetrics.hourHeight * 2 else { return }
-                openedFor = expanded
+                // scroll view first grows, so a position set before that is lost. On iOS the
+                // inspector comes and goes with the expanded agent panel, and the grid with it:
+                // the new one opens where the old one was.
+                guard openedFor != layout, height > GridMetrics.hourHeight * 2 else { return }
+                openedFor = layout
                 scroll.scrollTo(y: lastOffset.y)
             }
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { [expanded = agentPanelExpanded] _, y in
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { [layout = gridLayout] _, y in
                 // Kept without re-rendering the screen (a reference, not state); only once this
                 // grid has opened (a new one starts at the top).
-                guard openedFor == expanded else { return }
+                guard openedFor == layout else { return }
                 lastOffset.y = y
             }
         }
@@ -212,10 +247,16 @@ public struct CalendarScreen: View {
         }
     }
 
+    /// Deadlines drawn in the screen's own tree: the iOS inspector, and inline in snapshots.
     private func inspector(now: Date) -> some View {
+        #if os(iOS)
         DeadlinesInspector(
-            data: data, now: now, selection: selection, handlers: inspectorHandlers(now: now), isShown: showsInspector && !agentPanelExpanded
+            data: data, now: now, selection: paneState.selection, handlers: inspectorHandlers(now: now),
+            isShown: showsInspector && !agentPanelExpanded
         )
+        #else
+        DeadlinesInspector(data: data, now: now, selection: paneState.selection, handlers: inspectorHandlers(now: now))
+        #endif
     }
 
     @ToolbarContentBuilder
@@ -234,6 +275,7 @@ public struct CalendarScreen: View {
             Button("New Deadline", systemImage: "plus", action: newDeadline)
                 .help(Text("New Deadline"))
         }
+        #if os(iOS)
         if !showsInspector, !agentPanelExpanded {
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
@@ -241,6 +283,7 @@ public struct CalendarScreen: View {
                     .help(Text("Show Inspector"))
             }
         }
+        #endif
     }
 
     // MARK: Actions
@@ -269,7 +312,7 @@ public struct CalendarScreen: View {
 
     /// The proposal ⌘↩ / ⌘⌫ act on: the selected one (or the selected session's), else the first.
     private var targetProposal: TrackedItem.ID? {
-        switch selection {
+        switch paneState.selection {
         case .item(let id)? where data.proposals.contains(where: { $0.id == id }):
             return id
         case .session(let id)?:
@@ -317,7 +360,7 @@ public struct CalendarScreen: View {
         let details = detailHandlers()
         return GridHandlers(
             select: { target in
-                selection = target
+                paneState.selection = target
                 detailTarget = target
             },
             open: open,
@@ -350,7 +393,7 @@ public struct CalendarScreen: View {
             trail: trail,
             selectItem: { item in
                 detailTarget = nil
-                selection = .item(item.id)
+                paneState.selection = .item(item.id)
                 if let due = item.dueAt { week = CalendarWeek(containing: CalendarDay(due, in: timeZone)) }
             }
         )
@@ -379,7 +422,7 @@ public struct CalendarScreen: View {
         let actions = actions
         return InspectorHandlers(
             select: { item in
-                selection = .item(item.id)
+                paneState.selection = .item(item.id)
                 // The grid follows to the item's week.
                 if let due = item.dueAt { week = CalendarWeek(containing: CalendarDay(due, in: timeZone)) }
             },
@@ -484,9 +527,9 @@ private struct SnapshotCapsule: ViewModifier {
     }
 }
 
+#if os(iOS)
 /// The Deadlines inspector, left out entirely while the agent panel is expanded into the window's
-/// trailing column: a hidden inspector still kept its column's room, and with the panel's column
-/// the window grew past a 14" screen (about 1,612 pt from 1,440).
+/// trailing column: a hidden inspector still kept its column's room.
 private struct DeadlinesInspectorColumn<Inspector: View>: ViewModifier {
     let isPanelExpanded: Bool
     let isPresented: Binding<Bool>
@@ -504,6 +547,7 @@ private struct DeadlinesInspectorColumn<Inspector: View>: ViewModifier {
         }
     }
 }
+#endif
 
 /// The week body's scroll offset, kept outside state: it changes with every scrolled point.
 @MainActor
