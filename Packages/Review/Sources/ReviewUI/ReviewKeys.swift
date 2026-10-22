@@ -4,7 +4,8 @@ import SwiftUI
 
 /// ← / → (and Page Up / Page Down) page the slides whenever the review shows them in the key
 /// window and no editable text there has the keyboard; a note, the agent panel's composer and the
-/// search field keep their arrows.
+/// search field keep their arrows. While a pane is maximized over the review (`\.mainIsCovered`)
+/// the keys are not the review's.
 ///
 /// A local key monitor decides as each key comes, from the window's first responder: the Review
 /// menu's ← / → depend on focus flags, and a flag that went stale (a note's editor that went away
@@ -12,9 +13,10 @@ import SwiftUI
 /// keyboard (the sidebar) left the arrows dead or elsewhere. Space stays Play/Pause.
 struct ReviewSlideKeys: View {
     let model: ReviewModel
+    @Environment(\.mainIsCovered) private var mainIsCovered
 
     var body: some View {
-        SlideKeyAnchor(model: model)
+        SlideKeyAnchor(model: model, isCovered: mainIsCovered)
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
     }
@@ -23,15 +25,18 @@ struct ReviewSlideKeys: View {
 /// Knows the review's window (the monitor acts only on keys for it).
 private struct SlideKeyAnchor: NSViewRepresentable {
     let model: ReviewModel
+    let isCovered: Bool
 
     func makeNSView(context: Context) -> AnchorView {
         let view = AnchorView()
         view.keys.model = model
+        view.keys.isCovered = isCovered
         return view
     }
 
     func updateNSView(_ view: AnchorView, context: Context) {
         view.keys.model = model
+        view.keys.isCovered = isCovered
     }
 
     static func dismantleNSView(_ view: AnchorView, coordinator: ()) {
@@ -54,6 +59,8 @@ private struct SlideKeyAnchor: NSViewRepresentable {
 final class SlideKeyMonitor {
     weak var window: NSWindow?
     weak var model: ReviewModel?
+    /// A pane is maximized over the review: its keys stand down.
+    var isCovered = false
     private var monitor: Any?
 
     func start() {
@@ -71,7 +78,7 @@ final class SlideKeyMonitor {
 
     private func handle(_ event: NSEvent) -> Bool {
         guard let window, event.window === window, window.isKeyWindow, window.attachedSheet == nil,
-              let model, model.deck != nil,
+              !isCovered, let model, model.deck != nil,
               event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
         else { return false }
         let forward: Bool

@@ -5,26 +5,34 @@ import StudyUI
 import SwiftUI
 
 /// The lecture review screen (PRD #14, mockup 03): the slide on screen, a rail of thumbnails, the
-/// transcript grouped by slide visit, a floating player on one recording clock, and an inspector
-/// with the slide's notes (#15) or every note of the lecture. Clicking a line plays from it;
-/// "Slide N Starts Here" sets a manual anchor and re-aligns at once through `realign` (#9).
+/// transcript grouped by slide visit, a floating player on one recording clock, and the notes:
+/// This slide (#15), Whole lecture (the student's own notes) and Summary (Claude's notes of the
+/// lecture). On the Mac the notes are the screen's side pane (`.pane(.notes, …)`), on the iPad its
+/// inspector. Clicking a line plays from it; "Slide N Starts Here" sets a manual anchor and
+/// re-aligns at once through `realign` (#9).
 ///
 /// The app passes `Realigner(services:).realign` and installs `\.studyServices`, SQLiteData's
 /// default database and `ReviewCommands` (Space, ⌥←/⌥→, ←/→, ⇧⌘F, ⌘\, ⇧⌘R; M6 on the Mac: P, H, E,
-/// F, Esc; View ⌥⌘1, ⌥⌘2). On the Mac ← / → and Page Up / Page Down page the slides through the
-/// screen's own key monitor (`ReviewSlideKeys`) whenever no text in the window has the keyboard.
+/// F, Esc; View ⌃⌥⌘1, ⌃⌥⌘2). On the Mac ← / → and Page Up / Page Down page the slides through the
+/// screen's own key monitor (`ReviewSlideKeys`) whenever no text in the window has the keyboard
+/// and no pane is maximized over the screen.
 ///
 /// - Without a deck there is no rail and no slide; without a recording no player and no
 ///   transcript; before the transcript exists the transcript zone shows the job's progress.
 /// - Opens at `target` (page and/or time, optionally playing), else where review left off.
-/// - nl: its content zooms (`.contentZoomable()`): the transcript and the inspector's text.
+/// - The notes tab is kept per window (`review.notesTab`); renders pick theirs
+///   (`\.reviewInspectorTab`).
+/// - nl: its content zooms (`.contentZoomable()`): the transcript and the notes' text.
 public struct LectureReviewView: View {
     private let lectureID: Lecture.ID
     private let target: ReviewTarget
     private let realign: @Sendable (Lecture.ID, Recording.ID) async throws -> Void
 
     @Environment(\.studyServices) private var services
-    @Environment(\.reviewInspectorTab) private var inspectorTab
+    /// Renders' tab: it wins over the window's.
+    @Environment(\.reviewInspectorTab) private var renderTab
+    /// The notes tab this window shows (`ReviewInspectorTab.rawValue`), for every review it opens.
+    @SceneStorage("review.notesTab") private var storedTab = ReviewInspectorTab.slide.rawValue
     private let recordingsQuery: FetchAll<Recording>
     private var recordings: [Recording] { recordingsQuery.wrappedValue }
     private let deckLinksQuery: FetchAll<LectureDeckSpan>
@@ -71,7 +79,7 @@ public struct LectureReviewView: View {
                 loaded?.discard()
                 return
             }
-            loaded?.inspectorTab = inspectorTab
+            loaded?.inspectorTab = renderTab ?? ReviewInspectorTab(rawValue: storedTab) ?? .slide
             appliedTarget = applying
             movedTo = nil
             model = loaded
@@ -81,6 +89,9 @@ public struct LectureReviewView: View {
         .onChange(of: target) { _, target in
             apply(target)
         }
+        .onChange(of: model?.inspectorTab) { _, tab in
+            if let tab, tab.rawValue != storedTab { storedTab = tab.rawValue }
+        }
         .onChange(of: model?.requestedRecordingID) { _, recordingID in
             if let recordingID { chosenRecording = recordingID }
         }
@@ -89,8 +100,9 @@ public struct LectureReviewView: View {
             movedTo = moment
             chosenRecording = recordingID
         }
-        // nl: View ▸ Zoom In / Zoom Out / Actual Size scale the transcript and the inspector's
-        // text (both chromes); the toolbar, tabs, rail, stage and player stay.
+        // nl: View ▸ Zoom In / Zoom Out / Actual Size scale the transcript and the notes' text
+        // (both chromes; the Mac's Notes pane applies its own); the toolbar, tabs, rail, stage
+        // and player stay.
         .contentZoomable()
     }
 
@@ -165,9 +177,11 @@ struct ReviewScreen: View {
     @Environment(\.reviewChrome) private var chrome
     @Environment(\.undoManager) private var undoManager
     @Environment(\.deleteFromLibrary) private var deleteFromLibrary
+    #if os(iOS)
     /// ma: the agent panel is expanded into the window's trailing column: it takes the
     /// inspector's place until it shrinks (never two inspectors).
     @Environment(\.agentPanelExpanded) private var agentPanelExpanded
+    #endif
 
     init(model: ReviewModel) {
         self.model = model
@@ -182,6 +196,7 @@ struct ReviewScreen: View {
     }
 
     var body: some View {
+        let model = model
         let timeline = SlideTimeline(spans)
         Group {
             switch chrome {
@@ -208,12 +223,24 @@ struct ReviewScreen: View {
                         .sharedBackgroundVisibility(.hidden)
                         // Without the system title nothing pushes the items to the trailing edge.
                         ToolbarSpacer(.flexible)
+                        #if os(iOS)
                         ReviewToolbar(model: model, isPanelExpanded: agentPanelExpanded)
+                        #else
+                        ReviewToolbar(model: model)
+                        #endif
                     }
+                    #if os(macOS)
+                    // The notes as the screen's side pane: built again only for another loaded
+                    // review; its header's accessory is the tab picker.
+                    .pane(.notes, identity: ObjectIdentifier(model), accessory: { NotesTabPicker(model: model) }) {
+                        ReviewNotesPane(model: model)
+                    }
+                    #else
                     .modifier(ReviewInspectorColumn(isPanelExpanded: agentPanelExpanded, isPresented: inspectorShown) {
                         ReviewInspector(model: model, isShown: !agentPanelExpanded)
                             .inspectorColumnWidth(min: 260, ideal: ReviewInspector.width, max: 440)
                     })
+                    #endif
             case .snapshot:
                 SnapshotChrome(model: model, title: title, subtitle: subtitle) {
                     ReviewContent(model: model, timeline: timeline)
@@ -241,6 +268,7 @@ struct ReviewScreen: View {
         }
     }
 
+    #if os(iOS)
     /// The inspector shows unless hidden, or while the agent panel is expanded in its place.
     private var inspectorShown: Binding<Bool> {
         let model = model
@@ -250,6 +278,7 @@ struct ReviewScreen: View {
             set: { shown in if !expanded { model.showsInspector = shown } }
         )
     }
+    #endif
 
     private var title: String {
         model.lecture.title.isEmpty ? String(localized: "Lecture") : model.lecture.title
@@ -279,14 +308,12 @@ struct ReviewScreen: View {
     static let playerClearance: CGFloat = PlayerBar.height + playerBottom + 8
 }
 
-/// The notes inspector, left out entirely while the agent panel is expanded into the window's
-/// trailing column (as Calendar's Deadlines): a hidden inspector still kept its column's room, so
-/// beside the sidebar and the agent's column the review took that room on one pass and gave it
-/// back on the next, a layout loop that AppKit ends by raising an exception (off screen a crash in
-/// `swift_beginAccess`, every time; an empty hidden inspector does the same, and one anchored on a
-/// background no longer insets the review). The `if` makes the review a new view each time the
-/// panel expands or shrinks: what that would cost is kept in `ReviewModel` (the transcript's lines
-/// and where the list was scrolled); the slide comes from the deck's cache in the same frame.
+#if os(iOS)
+/// The iPad's notes inspector, left out entirely while the agent panel is expanded into the
+/// window's trailing column (as Calendar's Deadlines): a hidden inspector still kept its column's
+/// room. The `if` makes the review a new view each time the panel expands or shrinks: what that
+/// would cost is kept in `ReviewModel` (the transcript's lines and where the list was scrolled);
+/// the slide comes from the deck's cache in the same frame.
 private struct ReviewInspectorColumn<Inspector: View>: ViewModifier {
     let isPanelExpanded: Bool
     let isPresented: Binding<Bool>
@@ -300,6 +327,7 @@ private struct ReviewInspectorColumn<Inspector: View>: ViewModifier {
         }
     }
 }
+#endif
 
 /// ma: tells the agent panel what the review shows (the lecture, the recording, the slide on
 /// screen) and, read at ↩, the playhead. Its own view, so the slide changing never re-renders the
@@ -358,13 +386,16 @@ struct ReviewTitle: View {
 }
 
 /// The toolbar: previous / "16 / 88" / next as one glass group, then (M6, Mac, with a deck) the ink
-/// group [Pen, Highlighter, (Eraser), Flag] in its own glass. The inspector's own header hides
+/// group [Pen, Highlighter, (Eraser), Flag] in its own glass. On the Mac the Notes pane's toggle is
+/// the app's (the pane toggles at the toolbar's end). On the iPad the inspector's own header hides
 /// it; while it is hidden, a button of its own brings it back (the header's item is gone then, see
 /// `ReviewInspector`), so exactly one of the two is in the toolbar.
 struct ReviewToolbar: ToolbarContent {
     let model: ReviewModel
+    #if os(iOS)
     /// ma: the agent panel is expanded in the inspector's place: no Show Inspector meanwhile.
     var isPanelExpanded = false
+    #endif
 
     var body: some ToolbarContent {
         if model.recordings.count > 1 {
@@ -387,6 +418,7 @@ struct ReviewToolbar: ToolbarContent {
             }
             #endif
         }
+        #if os(iOS)
         if !model.showsInspector, !isPanelExpanded {
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
@@ -398,6 +430,7 @@ struct ReviewToolbar: ToolbarContent {
                 .help(Text("Show Inspector"))
             }
         }
+        #endif
     }
 }
 
@@ -479,8 +512,8 @@ struct SlideStepper: View {
     }
 }
 
-/// What off-screen snapshots draw in place of the window toolbar and inspector column: the same
-/// title, toolbar items and inspector, laid out inline.
+/// What off-screen snapshots draw in place of the window toolbar and the notes: the same title,
+/// toolbar items and notes (with their tab picker), laid out inline.
 private struct SnapshotChrome<Content: View>: View {
     let model: ReviewModel
     let title: String

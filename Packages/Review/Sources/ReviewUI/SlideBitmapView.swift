@@ -77,6 +77,8 @@ private enum SlidePaper {
 #if canImport(AppKit)
 private struct SlideCanvas: NSViewRepresentable {
     let image: CGImage?
+    /// A pane divider, the screen's edge or the window's edge is dragged.
+    @Environment(\.isLiveResizing) private var isLiveResizing
 
     func makeNSView(context: Context) -> SlideCanvasView {
         SlideCanvasView()
@@ -84,15 +86,47 @@ private struct SlideCanvas: NSViewRepresentable {
 
     func updateNSView(_ view: SlideCanvasView, context: Context) {
         view.image = image
+        view.isHeldByHost = isLiveResizing
     }
 }
 
+/// While a drag resizes it (`\.isLiveResizing`, or the window's own live resize), Core Animation
+/// scales the last drawn backing store and nothing is drawn per frame; the slide is drawn sharp
+/// once, when the drag ends.
 final class SlideCanvasView: NSView {
     var image: CGImage? {
         didSet {
             guard image !== oldValue else { return }
             needsDisplay = true
         }
+    }
+
+    /// The host's drag (a pane divider, the screen's edge).
+    var isHeldByHost = false {
+        didSet { holdChanged() }
+    }
+
+    /// The window's own live resize.
+    private var isInLiveResize = false
+
+    override func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        isInLiveResize = true
+        holdChanged()
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        isInLiveResize = false
+        holdChanged()
+    }
+
+    private func holdChanged() {
+        let held = isHeldByHost || isInLiveResize
+        let policy: NSView.LayerContentsRedrawPolicy = held ? .never : .duringViewResize
+        guard layerContentsRedrawPolicy != policy else { return }
+        layerContentsRedrawPolicy = policy
+        if !held { needsDisplay = true }
     }
 
     override init(frame: NSRect) {
