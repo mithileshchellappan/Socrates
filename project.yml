@@ -96,6 +96,10 @@ packages:
   # agent panel's Markdown parser). SwiftMath (MIT, tools/oss/notices.tsv) comes through it.
   StudyPage:
     path: Packages/StudyPage
+  # panes (docs/DESIGN.md 6.4): the Mac main window's side panes and the floating panel (AppKit
+  # host). Linked by the Mac app only; feature screens use StudyUI's pane vocabulary.
+  Panes:
+    path: Packages/Panes
 
 targets:
   Socrates:
@@ -312,6 +316,10 @@ targets:
         product: StudyPageFormat
       - package: StudyPage
         product: StudyPageUI
+      # panes: the side panes and the floating panel, Mac only.
+      - package: Panes
+        product: Panes
+        destinationFilters: [macOS]
       - target: SocratesWidgets
         destinationFilters: [iOS]
         embed: true

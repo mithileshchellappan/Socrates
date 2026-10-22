@@ -15,6 +15,7 @@ Read `docs/PRD.md` (features, UI rules, trust rules, milestones) and `docs/DESIG
 - Calendar: EventKit full access; the app writes only to its own "Socrates" calendar.
 
 ## Code rules
+- Architecture: follow `docs/ARCHITECTURE.md` (layers, one source of truth, Swift 6 concurrency, ids on everything that crosses a process or device, no singletons or speculative abstraction).
 - No automated test suite at present: changes are verified by building the app and, for UI, by rendering it off screen (`tools/ParityRender`). Do not add test targets without discussing it first.
 - Banned: `@unchecked Sendable`, `nonisolated(unsafe)`, force-unwrapping, `GeometryReader` for simple size observation (use `onGeometryChange`), `DispatchQueue` in new code (use structured concurrency/actors), print-debugging left in code (use `os.Logger` with a category per module).
 - Secrets: the mail password (and any key) only via the Keychain helper. Never in code, files, logs, fixtures, prompts or commits.
