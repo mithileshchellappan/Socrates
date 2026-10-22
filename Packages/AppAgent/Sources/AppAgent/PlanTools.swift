@@ -359,6 +359,8 @@ struct PlanTools: Sendable {
             case .success(let value): checked = value
             case .failure(let refusal): return .error(refusal.message)
             }
+            // Not through `FactApplier.request`: its slide rule is checked here.
+            guard !checked.isSlide else { return .error("Slides give only course rules and dated items.") }
             let courses = try await CourseList.load(services.database)
             guard let course = courses.course(call.text("course")) else { return .error("course must be a course token.") }
             let credits = call.number("credits")

@@ -1,5 +1,6 @@
 import Deadlines
 import Foundation
+import StudyCore
 
 /// Checks a model's quote against the mail it came from: it must be an exact substring of the
 /// subject or the body after whitespace and typographic normalization, 8–300 characters long.
@@ -36,16 +37,11 @@ enum QuoteVerifier {
 }
 
 /// Defense in depth against instructions hidden in mail (the system prompt already says mail is
-/// data): the paragraphs of a mail that talk to the model ("ignore previous instructions", "you
-/// are now …", a forged `<mail>` element). An item quoting such a paragraph is dropped, and
-/// nothing from a mail that has one goes into the calendar on its own.
+/// data): the paragraphs of a mail that talk to the model (`UntrustedText`'s markers). An item
+/// quoting such a paragraph is dropped, and nothing from a mail that has one goes into the
+/// calendar on its own.
 enum InjectionGuard {
-    static let markers = [
-        "ignore previous", "ignore all previous", "ignore the above", "ignore any previous", "disregard previous",
-        "disregard all previous", "previous instructions", "prior instructions", "new instructions", "you are now",
-        "system prompt", "ignoriere alle", "ignoriere die", "ignoriere vorherige", "vorherigen anweisungen",
-        "bisherigen anweisungen", "<mail", "</mail", "<system", "</system",
-    ]
+    static var markers: [String] { UntrustedText.modelMarkers }
 
     /// Folded paragraphs of the subject and body that contain a marker.
     static func hostileParagraphs(subject: String, body: String) -> [String] {

@@ -112,7 +112,8 @@ extension APICallRepository {
 /// moment), for a mail its sender and time. Raw facts; StudyUI's `SourceTrailText` words them.
 public struct SourceTrailEntry: Hashable, Sendable, Identifiable {
     public var source: TrackedItemSource
-    /// Transcript sources: the lecture the recording belongs to.
+    /// Transcript sources: the lecture the recording belongs to (slide sources: the lecture
+    /// showing the page, set as `source.lectureID` by `readSlide`).
     public var lectureNumber: Int?
     public var lectureTitle: String?
     public var lectureHeldAt: Date?
@@ -121,7 +122,8 @@ public struct SourceTrailEntry: Hashable, Sendable, Identifiable {
     public var sessionKind: SessionKind?
     /// The lecture's course lecturers ("Prof. Dr. Ada Example").
     public var professors: [String]
-    /// The slide on screen at `source.time` (from the aligned spans), when known.
+    /// The slide on screen at `source.time` (from the aligned spans), or the page a slide source
+    /// names, when known.
     public var page: Int?
     /// Mail sources: the sender and when the mail arrived.
     public var senderName: String?
@@ -158,6 +160,16 @@ public struct SourceTrailEntry: Hashable, Sendable, Identifiable {
     public var isActive: Bool { source.undoneAt == nil }
 }
 
+extension SourceTrailEntry {
+    /// A slide source (`rfc_message_id` "<deck id>:<page>"): its page, and the lecture showing it
+    /// as the deck is linked now (never stored with the source: a deck may be linked later).
+    public mutating func readSlide(in db: Database) throws {
+        guard source.kind == .slide, let slide = SlideReference(source.rfcMessageID) else { return }
+        page = slide.page
+        source.lectureID = try LectureSlides.lecture(showing: slide.page, of: slide.deckID, in: db)
+    }
+}
+
 extension TrackedItemRepository {
     /// Every item's sources with their popover facts, oldest first.
     public func trails(itemIDs: [TrackedItem.ID]) async throws -> [TrackedItem.ID: [SourceTrailEntry]] {
@@ -176,7 +188,8 @@ extension TrackedItemRepository {
         var trails: [TrackedItem.ID: [SourceTrailEntry]] = [:]
         for source in sources {
             var entry = SourceTrailEntry(source: source)
-            if let lectureID = source.lectureID {
+            try entry.readSlide(in: db)
+            if let lectureID = entry.source.lectureID {
                 if lectures[lectureID] == nil { lectures[lectureID] = try Lecture.find(lectureID).fetchOne(db) }
                 if let lecture = lectures[lectureID] {
                     entry.lectureNumber = lecture.number

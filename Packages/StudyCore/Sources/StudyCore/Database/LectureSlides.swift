@@ -69,6 +69,17 @@ public enum LectureSlides {
         }
     }
 
+    /// The first lecture (by when it was held) whose range of `deckID` shows `page`; nil when
+    /// none does (a slide source's lecture, read when shown: a deck may be linked later).
+    public static func lecture(showing page: Int, of deckID: Deck.ID, in db: Database) throws -> Lecture.ID? {
+        lecture(showing: page, in: try lectures(usingDeck: deckID, in: db))
+    }
+
+    /// `lecture(showing:of:in:)` over a deck's ranges read already (`lectures(usingDeck:in:)`).
+    public static func lecture(showing page: Int, in ranges: [LectureSlideRange]) -> Lecture.ID? {
+        ranges.first { $0.firstPage <= page && page <= $0.lastPage }?.lectureID
+    }
+
     /// The decks the student turned down for this lecture: unlinked (a `deck_unlink` change not
     /// undone) or a link they undid (a `deck_link` change undone). Continuation detection never
     /// links them to it again.

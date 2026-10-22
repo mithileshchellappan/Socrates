@@ -26,6 +26,10 @@ import StudyCore
 ///   change a newer one replaced only gets its row (and its item source) marked undone.
 /// - **The student's own edits**: a session the student edited by hand, an item or a rule they
 ///   wrote, is never changed by Haiku (`.conflict`, escalated to Opus).
+/// - **Rules from slides** are proposals (`confirmed_at` nil, Confirm in Course Settings): they
+///   fill a missing or empty rule or replace their own waiting proposal, never a rule that stands;
+///   against the student's own rule they are a `.conflict`. Another source stating a proposal word
+///   for word confirms it. Slides never set the lecturers.
 /// - **Session changes** settle at once: the session row is changed (`edited_at`, replanned and
 ///   renumbered), a tracked item of the change's kind is written `done` with its source.
 public struct ChangeLog: Sendable {
@@ -884,7 +888,10 @@ public struct ChangeLog: Sendable {
         guard var course = try Course.find(courseID).fetchOne(db) else { return .refused("Unknown course.") }
         let before = AgentChangeValues(exists: true, professors: course.professors, rules: course.rules)
         let summary: String
+        let fromSlides = origin.sourceKind == .slide
         if let professors {
+            // Slides propose rules; the lecturers are the student's to say (New Course…, Course Settings).
+            guard !fromSlides else { return .refused("Slides do not set the lecturers.") }
             let names = professors.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             guard !names.isEmpty else { return .refused("No lecturers given.") }
             guard names != course.professors else { return .unchanged("The course has these lecturers already.") }
@@ -892,7 +899,14 @@ public struct ChangeLog: Sendable {
             summary = "Lecturers: " + names.joined(separator: "; ")
         } else {
             let kind = kind ?? .other
-            let text = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))
+            let title = ruleTitle(kind)
+            var text = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))
+            // "Bonus: 10 % …" under the title "Bonus" would read "Bonus. Bonus: 10 % …".
+            let heading = title + ":"
+            if kind != .other, text.lowercased().hasPrefix(heading.lowercased()) {
+                let rest = text.dropFirst(heading.count).trimmingCharacters(in: .whitespaces)
+                text = rest.prefix(1).uppercased() + rest.dropFirst()
+            }
             guard !text.isEmpty else { return .refused("The fact's text is empty.") }
             var source = SourceRef(kind: origin.sourceKind, quote: quote)
             switch origin.source {
@@ -901,24 +915,39 @@ public struct ChangeLog: Sendable {
                 source.lectureID = lectureID
                 source.recordingID = recordingID
                 source.time = time
+            case .external(let sourceKind, let reference) where sourceKind == .slide:
+                // The deck page only: the lecture showing it is read where the rule is shown (the
+                // deck may be linked to a lecture later).
+                if let slide = SlideReference(reference) {
+                    source.deckID = slide.deckID
+                    source.pageNumber = slide.page
+                }
             default: break
             }
-            let rule = CourseRule(kind: kind, title: ruleTitle(kind), text: text, provenance: .ai, source: source, confirmedAt: now)
-            if let index = course.rules.firstIndex(where: { $0.kind == kind && kind != .other }) {
-                if origin.isHaiku, course.rules[index].provenance == .user {
+            // A rule read from slides is a proposal: it counts once the student confirms it in
+            // Course Settings.
+            let confirmedAt: Date? = fromSlides ? nil : now
+            if let index = course.rules.firstIndex(where: { $0.kind == kind && TextFolding.fold($0.text) == TextFolding.fold(text) }) {
+                // Another source stating a waiting proposal word for word confirms it.
+                guard !fromSlides, !course.rules[index].isConfirmed else { return .unchanged("The course says that already.") }
+                course.rules[index].confirmedAt = now
+                course.rules[index].source = source
+            } else if let index = course.rules.firstIndex(where: { $0.kind == kind && kind != .other }) {
+                let existing = course.rules[index]
+                if origin.isHaiku || fromSlides, existing.provenance == .user {
                     return .conflict("The student wrote this course rule themselves.")
                 }
-                guard TextFolding.fold(course.rules[index].text) != TextFolding.fold(text) else {
-                    return .unchanged("The course says that already.")
+                // Slides never replace a rule that stands, only an empty one or their own waiting proposal.
+                if fromSlides, !existing.text.isEmpty, existing.isConfirmed || existing.source?.kind != .slide {
+                    return .unchanged("The course has a rule of this kind that stands; slides only propose one.")
                 }
                 course.rules[index] = CourseRule(
-                    id: course.rules[index].id, kind: kind, title: course.rules[index].title, text: text, provenance: .ai, source: source,
-                    confirmedAt: now
+                    id: existing.id, kind: kind, title: existing.title, text: text, provenance: .ai, source: source, confirmedAt: confirmedAt
                 )
             } else {
-                course.rules.append(rule)
+                course.rules.append(CourseRule(kind: kind, title: title, text: text, provenance: .ai, source: source, confirmedAt: confirmedAt))
             }
-            summary = "\(ruleTitle(kind)): \(text)"
+            summary = fromSlides ? "\(title), to confirm: \(text)" : "\(title): \(text)"
         }
         let stamped = store.stamp(course)
         try Course.upsert { stamped }.execute(db)
@@ -1353,7 +1382,9 @@ public struct ChangeLog: Sendable {
     /// holds what the change wrote. Every other rule stays. False: nothing to write.
     static func restoreFact(before: AgentChangeValues, after: AgentChangeValues, in course: inout Course) -> Bool {
         func same(_ lhs: CourseRule, _ rhs: CourseRule) -> Bool {
+            // Confirmation counts: a change that confirmed a proposal is undone to the proposal.
             lhs.id == rhs.id && lhs.kind == rhs.kind && lhs.text == rhs.text && lhs.provenance == rhs.provenance
+                && lhs.isConfirmed == rhs.isConfirmed
         }
         if let old = before.professors, let new = after.professors, old != new {
             guard course.professors == new else { return false }

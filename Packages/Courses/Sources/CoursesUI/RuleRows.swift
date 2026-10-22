@@ -7,25 +7,33 @@ import SwiftUI
 /// jump to where it was said (one chip), and Confirm while an AI-read rule waits.
 struct RuleRow: View {
     let rule: CourseRule
+    /// The lecture it was said in, or the first that shows its slide (nil: none does).
+    let lectureID: Lecture.ID?
     let lectureNumber: Int?
     let update: (CourseRule) -> Void
     let delete: (CourseRule.ID) -> Void
     let open: (Lecture.ID, ReviewTarget) -> Void
+    /// A slide no lecture shows: its deck (Quick Look).
+    let openDeck: (Deck.ID) -> Void
     @State private var editing: Bool
 
     init(
         rule: CourseRule,
+        lectureID: Lecture.ID?,
         lectureNumber: Int?,
         editing: Bool = false,
         update: @escaping (CourseRule) -> Void,
         delete: @escaping (CourseRule.ID) -> Void,
-        open: @escaping (Lecture.ID, ReviewTarget) -> Void
+        open: @escaping (Lecture.ID, ReviewTarget) -> Void,
+        openDeck: @escaping (Deck.ID) -> Void
     ) {
         self.rule = rule
+        self.lectureID = lectureID
         self.lectureNumber = lectureNumber
         self.update = update
         self.delete = delete
         self.open = open
+        self.openDeck = openDeck
         _editing = State(initialValue: editing)
     }
 
@@ -69,13 +77,18 @@ struct RuleRow: View {
         }
     }
 
-    /// "L2 · 0:20" for something said in a lecture, "S13" for a slide.
+    /// "L2 · 0:20" for something said in a lecture, "S13" for a slide (in the lecture that shows
+    /// it, else the deck).
     @ViewBuilder
     private var sourceChip: some View {
-        if let source = rule.source, let lectureID = source.lectureID {
+        if let source = rule.source {
             if source.kind == .slide, let page = source.pageNumber {
-                SlideChip(page: page) { open(lectureID, ReviewTarget(page: page)) }
-            } else if let time = source.time {
+                if let lectureID {
+                    SlideChip(page: page) { open(lectureID, ReviewTarget(page: page)) }
+                } else if let deckID = source.deckID {
+                    SlideChip(page: page) { openDeck(deckID) }
+                }
+            } else if let lectureID, let time = source.time {
                 TimeChip(time, prefix: lectureNumber.map { "L\($0)" }) {
                     open(lectureID, ReviewTarget(time: time, plays: true, recordingID: source.recordingID))
                 }

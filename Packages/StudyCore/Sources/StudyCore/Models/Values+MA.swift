@@ -437,6 +437,10 @@ public struct AgentEventKind: StringKind {
     public static let timetable: Self = "timetable"
     /// A "Socrates" event the student changed in another calendar app (`detail`).
     public static let calendar: Self = "calendar"
+    /// A course deck's organisational pages (how the exercises, the admission and the exam work),
+    /// found in code: `detail` their numbers with a hash of their words ("2:1a2b3c4d,7:…"). One per
+    /// deck version and course; a deck without new such pages gets a `skipped` row (read once).
+    public static let slides: Self = "slides"
 }
 
 /// Where an event is in triage (`agent_event.state`).

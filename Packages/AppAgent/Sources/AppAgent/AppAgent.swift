@@ -69,6 +69,8 @@ public actor AppAgent {
     private var follower: Task<Void, Never>?
     private var reminderObservation: AnyDatabaseCancellable?
     private var reminderFollower: Task<Void, Never>?
+    private var deckObservation: AnyDatabaseCancellable?
+    private var deckFollower: Task<Void, Never>?
     private var pauseWake: Task<Void, Never>?
     private var started = false
     /// M7: the questions asked on the iPhone (`agent_request`), answered here (Mac only).
@@ -348,7 +350,8 @@ public actor AppAgent {
     // MARK: - Background work
 
     /// Starts the task queue (re-queueing what a quit interrupted), follows the triage inbox
-    /// (`agent_event`), plans and delivers reminders, and runs a first triage in the background.
+    /// (`agent_event`) and the decks (`deck`, `deck_page`: organisational slides), plans and
+    /// delivers reminders, and runs a first triage in the background.
     public func start() async {
         guard !started else { return }
         started = true
@@ -384,6 +387,26 @@ public actor AppAgent {
                 await reminders.check()
             }
         }
+        // A deck imported, filed to a course or given its pages (a sync, a repair): its
+        // organisational pages become a triage event (nothing else wakes the agent for a deck
+        // without a recording to process). The library's decks once at launch, then each change.
+        let (decks, deckChanged) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        deckObservation = DatabaseRegionObservation(
+            tracking: SQLRequest<Row>(sql: "SELECT id, course_id, blob_sha256 FROM deck"), SQLRequest<Row>(sql: "SELECT deck_id FROM deck_page")
+        )
+        .start(
+            in: services.database,
+            onError: { error in AppAgentModule.log.error("Deck observation failed: \(String(describing: error), privacy: .public)") },
+            onChange: { _ in deckChanged.yield() }
+        )
+        deckChanged.yield()
+        deckFollower = Task { [weak self] in
+            for await _ in decks {
+                // Filing writes the deck, then its course and lecture: wait for a quiet moment.
+                do { try await Task.sleep(for: .seconds(10)) } catch { return }
+                await self?.recordSlides()
+            }
+        }
         #if os(macOS)
         // M7: the iPhone's questions, through the panel's own `send` (never on the phone).
         let pickup = AgentRequestPickup(services: services, client: client, runtime: runtime, now: now) { [weak self] text, context, files, id in
@@ -405,6 +428,18 @@ public actor AppAgent {
         await profileItems()
         await reminders.check()
         await wakeTriage()
+    }
+
+    /// Course decks without a `slides` event yet (the library's at launch, then each deck the
+    /// `deck` observation sees change): their organisational pages go to triage (`SlideEvents`);
+    /// the recorded events wake triage through the `agent_event` observation.
+    private func recordSlides() async {
+        do {
+            let recorded = try await SlideEvents.record(services: services, now: now())
+            if recorded > 0 { AppAgentModule.log.info("Slides: \(recorded) decks with organisational pages for triage") }
+        } catch {
+            AppAgentModule.log.error("Slide events failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     /// mc: the university profile's "Register for exams" items (through the change log, once per
@@ -438,6 +473,10 @@ public actor AppAgent {
         reminderObservation = nil
         reminderFollower?.cancel()
         reminderFollower = nil
+        deckObservation?.cancel()
+        deckObservation = nil
+        deckFollower?.cancel()
+        deckFollower = nil
         pauseWake?.cancel()
         pauseWake = nil
         triageTask?.cancel()

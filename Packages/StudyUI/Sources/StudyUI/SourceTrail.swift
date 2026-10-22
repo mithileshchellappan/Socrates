@@ -3,8 +3,8 @@ import StudyCore
 import SwiftUI
 
 // Sources as one quiet affordance (docs/DESIGN.md §4.6, §5.2): a faint glyph after a row's last
-// line (`waveform` = a recording, `envelope` = a mail, `calendar` = a timetable file, together
-// when they agree) that opens the full trail in a popover on hover (tap on iPad and iPhone), with the in-calendar check and Undo
+// line (`waveform` = a recording, `envelope` = a mail, `calendar` = a timetable file, `display` =
+// a slide, together when they agree) that opens the full trail in a popover on hover (tap on iPad and iPhone), with the in-calendar check and Undo
 // in its footer. Today and Calendar use the same pieces.
 
 /// Words for source trail rows.
@@ -16,7 +16,7 @@ public enum SourceTrailText {
 
     /// The row's name: "Lecture 2, Example" for a numbered lecture, a seminar meeting or an
     /// untitled lecture by its title ("Seminar intro"); the sender of a mail; "You" for what the
-    /// student told the agent; the file's name for a timetable.
+    /// student told the agent; the file's name for a timetable; "Slides" for a slide no lecture shows.
     public static func name(_ entry: SourceTrailEntry) -> String {
         switch entry.kind {
         case .timetable:
@@ -31,6 +31,8 @@ public enum SourceTrailText {
             return String(localized: "Calendar")
         case .profile:
             return String(localized: "Profile")
+        case .slide where entry.lectureNumber == nil && (entry.lectureTitle ?? "").isEmpty:
+            return String(localized: "Slides")
         default:
             let title = entry.lectureTitle?.trimmingCharacters(in: .whitespaces) ?? ""
             let isLecture = entry.sessionKind == nil || entry.sessionKind == .lecture
@@ -78,13 +80,14 @@ public enum SourceTrailText {
     }
 
     /// The glyphs a row shows for these sources: a recording first, then a mail, then a timetable
-    /// file; undone sources and what the student typed have none.
+    /// file, then a slide; undone sources and what the student typed have none.
     public static func glyphKinds(_ entries: [SourceTrailEntry]) -> [SourceRef.Kind] {
         let active = entries.filter(\.isActive)
         var kinds: [SourceRef.Kind] = []
         if active.contains(where: { $0.kind == .transcript }) { kinds.append(.transcript) }
         if active.contains(where: { $0.kind == .mail }) { kinds.append(.mail) }
         if active.contains(where: { $0.kind == .timetable }) { kinds.append(.timetable) }
+        if active.contains(where: { $0.kind == .slide }) { kinds.append(.slide) }
         return kinds
     }
 }
@@ -104,7 +107,7 @@ public struct SourceGlyph: View {
     public var body: some View {
         HStack(spacing: 2) {
             ForEach(kinds, id: \.self) { kind in
-                Image(systemName: Self.symbol(kind))
+                Image(systemName: kind.symbol)
                     .font(.system(size: 11.5))
                     .frame(width: 14, height: 14)
             }
@@ -120,22 +123,30 @@ public struct SourceGlyph: View {
         .accessibilityLabel(Text(label))
     }
 
-    static func symbol(_ kind: SourceRef.Kind) -> String {
-        switch kind {
-        case .mail: "envelope"
-        case .timetable, .calendar: "calendar"
-        case .profile: "doc.text"
-        default: "waveform"
-        }
-    }
-
     private var label: String {
         if kinds == [.timetable] { return String(localized: "Source: timetable") }
+        if kinds == [.slide] { return String(localized: "Source: slides") }
         return switch (kinds.contains(.transcript), kinds.contains(.mail)) {
         case (true, true): String(localized: "Sources: recording and mail")
         case (true, false): String(localized: "Source: recording")
         case (false, true): String(localized: "Source: mail")
         case (false, false): String(localized: "Sources")
+        }
+    }
+}
+
+public extension SourceRef.Kind {
+    /// The source's glyph wherever a row names where it came from (DESIGN 4.6): a recording, a
+    /// mail, a timetable file or the calendar, a slide, what the student said, a web page.
+    var symbol: String {
+        switch self {
+        case .transcript: "waveform"
+        case .mail: "envelope"
+        case .timetable, .calendar: "calendar"
+        case .slide: "display"
+        case .chat: "bubble.left"
+        case .web: "globe"
+        default: "doc.text"
         }
     }
 }
@@ -242,6 +253,8 @@ public struct SourceTrailRows: View {
         case .profile:
             // Not a lecture: no professor's pin.
             quoteRow(entry, glyph: "doc.text")
+        case .slide:
+            slideRow(entry)
         case .chat:
             HStack(alignment: .center, spacing: 9) {
                 ProvenancePin(.user)
@@ -278,6 +291,28 @@ public struct SourceTrailRows: View {
                         openDestination(.lecture(lectureID, ReviewTarget(time: time, plays: true, recordingID: entry.source.recordingID)))
                     }
                 }
+            }
+        }
+    }
+
+    /// A slide: the professor's pin, the lecture that shows it (or "Slides") over the quote, and
+    /// the slide chip that opens it there.
+    private func slideRow(_ entry: SourceTrailEntry) -> some View {
+        HStack(alignment: .center, spacing: 9) {
+            ProvenancePin(.professor)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(SourceTrailText.name(entry))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                Text(SourceTrailText.quote(entry.source.quote))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 4)
+            if let page = entry.page, let lectureID = entry.source.lectureID {
+                SlideChip(page: page) { openDestination(.lecture(lectureID, ReviewTarget(page: page))) }
             }
         }
     }

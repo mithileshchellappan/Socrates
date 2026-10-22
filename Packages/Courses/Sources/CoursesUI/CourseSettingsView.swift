@@ -245,9 +245,11 @@ public struct CourseSettingsView: View {
 
         SettingsGroup("Exam & exercises") {
             ForEach(displayedRules(of: course.wrappedValue)) { rule in
+                let lectureID = sourceLecture(of: rule)
                 RuleRow(
                     rule: rule,
-                    lectureNumber: rule.source?.lectureID.flatMap { id in lectures.first { $0.id == id }?.number },
+                    lectureID: lectureID,
+                    lectureNumber: lectureID.flatMap { id in lectures.first { $0.id == id }?.number },
                     editing: rule.id == newRuleID,
                     update: { changed in
                         if let index = draft?.rules.firstIndex(where: { $0.id == changed.id }) {
@@ -257,7 +259,11 @@ public struct CourseSettingsView: View {
                         }
                     },
                     delete: { id in draft?.rules.removeAll { $0.id == id } },
-                    open: { openDestination(.lecture($0, $1)) }
+                    open: { openDestination(.lecture($0, $1)) },
+                    openDeck: { deckID in
+                        guard let item = decks.first(where: { $0.deck.id == deckID }) else { return }
+                        quickLook.open(item.deck, services: services)
+                    }
                 )
             }
         }
@@ -368,6 +374,15 @@ public struct CourseSettingsView: View {
     /// The course's rules, with "Exam form · Not announced" until it has one.
     private func displayedRules(of course: Course) -> [CourseRule] {
         course.rules.contains { $0.kind == .examForm } ? course.rules : course.rules + [examFormPlaceholder]
+    }
+
+    /// The lecture a rule was said in, or the first that shows its slide as the course's decks are
+    /// linked now (a deck may be linked after the rule was read).
+    private func sourceLecture(of rule: CourseRule) -> Lecture.ID? {
+        guard let source = rule.source else { return nil }
+        guard source.kind == .slide else { return source.lectureID }
+        guard let deckID = source.deckID, let page = source.pageNumber, let item = decks.first(where: { $0.deck.id == deckID }) else { return nil }
+        return LectureSlides.lecture(showing: page, in: item.uses.map(\.range))
     }
 
     private func glossarySuggestions(for course: Course) -> [GlossarySuggestion] {
