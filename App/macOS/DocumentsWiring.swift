@@ -1,6 +1,7 @@
 import Documents
 import DocumentsUI
 import FilingUI
+import MaterialsUI
 import StudyCore
 import SwiftUI
 
@@ -24,16 +25,20 @@ extension AppModel {
 }
 
 /// File ▸ Import… (⇧⌘I): the Documents importer while Documents shows (`\.documentsImport`),
-/// smart import's panel everywhere else. Replaces FilingUI's `ImportCommands` on the Mac.
+/// the course's materials importer while its Materials shows (mt, `\.materialsImport`), smart
+/// import's panel everywhere else. Replaces FilingUI's `ImportCommands` on the Mac.
 struct AppImportCommands: Commands {
     let center: FilingCenter
     @FocusedValue(\.documentsImport) private var documentsImport
+    @FocusedValue(\.materialsImport) private var materialsImport
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("Import…") {
                 if let documentsImport {
                     documentsImport()
+                } else if let materialsImport {
+                    materialsImport()
                 } else {
                     center.importFiles()
                 }

@@ -6,6 +6,7 @@ import CaptureUI
 import Coach
 import Filing
 import FilingUI
+import MaterialsUI
 import ReviewUI
 import SearchUI
 import StudyCore
@@ -35,8 +36,10 @@ import SwiftUI
 /// latest handed-in practice exam). md (on a copy of .data/parity/docs/library): `documents` (the
 /// newest selected) and `documents/<title>?page=N` (that document, the page a hit named). ln (on a
 /// copy of .data/parity/ln/library): `lecture-notes/<course>/<lecture number>` (the lecture's notes
-/// pushed on its course's Lectures; opening them never queues notes in parity mode). Path parts
-/// may be percent-encoded.
+/// pushed on its course's Lectures; opening them never queues notes in parity mode). mt (on a copy
+/// of .data/parity/mt/library): `materials/<course>` (the course's Materials) and
+/// `material/<course>?page=N` (its primary book in the reader at PDF page N; summaries are never
+/// queued in parity mode). Path parts may be percent-encoded.
 ///
 /// The library comes from `-SocratesDataRoot` (or `SOCRATES_DATA_ROOT`); without either,
 /// or pointed at the real library, the app opens nothing. Nothing runs in the background (no
@@ -74,6 +77,9 @@ enum ParityMode {
         case documents(title: String?, page: Int?)
         // ln: a lecture's notes, pushed on its course's Lectures.
         case lectureNotes(course: String, number: Int)
+        // mt: a course's Materials, its primary book in the reader.
+        case materials(course: String)
+        case material(course: String, page: Int?)
     }
 
     enum WindowRole: Hashable {
@@ -102,6 +108,8 @@ enum ParityMode {
         /// md: the document selected on Documents (nil: the newest) and the page a hit named.
         var documentSelection: StudyDocument.ID?
         var documentPage: Int?
+        /// mt: the PDF page the reader opens at.
+        var materialPage: Int?
     }
 
     static let windowSize = CGSize(width: 1440, height: 900)
@@ -286,6 +294,12 @@ enum ParityMode {
             case .lectureNotes(let courseName, let number):
                 let (course, lecture) = try lecture(courseName, number, services: services)
                 show(Launch(selection: .lectureNotes(lecture.id, course: course.id)))
+            case .materials(let name):
+                show(Launch(selection: .courseMaterials(try course(name, services: services).id)))
+            case .material(let name, let page):
+                let course = try course(name, services: services)
+                let book = try primaryBook(course, services: services)
+                show(Launch(selection: .material(book.id, course: course.id), materialPage: page))
             }
             try await Task.sleep(for: options.settle)
             let active = quiet ? false : await activate(shown)
@@ -369,6 +383,16 @@ enum ParityMode {
             throw Failure("No document \(title)")
         }
         return document
+    }
+
+    /// mt: the course's primary book.
+    static func primaryBook(_ course: Course, services: StudyServices) throws -> CourseMaterial {
+        let courseID = course.id
+        let book = try services.database.read { db in
+            try CourseMaterial.where { $0.courseID.eq(courseID) && $0.isPrimary }.fetchOne(db)
+        }
+        guard let book else { throw Failure("No book for \(course.name)") }
+        return book
     }
 
     /// mc: the open round or exam whose current question is `question` (1-based).
@@ -602,6 +626,10 @@ extension ParityMode.Route {
         case ("lecture-notes", 3):
             guard let number = Int(path[2]) else { return nil }
             self = .lectureNotes(course: path[1], number: number)
+        case ("materials", 2):
+            self = .materials(course: path[1])
+        case ("material", 2):
+            self = .material(course: path[1], page: query["page"].flatMap(Int.init))
         default:
             return nil
         }
@@ -621,10 +649,12 @@ struct ParityRootView: View {
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
                     documentSelection: launch.documentSelection, documentPage: launch.documentPage,
-                    panel: launch.panel, examSheet: launch.examSheet
+                    materialPage: launch.materialPage, panel: launch.panel, examSheet: launch.examSheet
                 )
                 // ln: opening a lecture's notes or Review's Whole lecture never queues notes here.
                 .environment(\.lectureNotesQueuesOnOpen, false)
+                // mt: the reader never queues a chapter summary here.
+                .environment(\.materialReaderQueuesSummaries, false)
                 .environment(model)
             } else {
                 Color.clear

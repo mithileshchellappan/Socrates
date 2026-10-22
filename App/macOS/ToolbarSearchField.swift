@@ -1,3 +1,5 @@
+import MaterialsUI
+import StudyCore
 import SwiftUI
 
 /// The window's search field as a toolbar item of its own (mockups 01, 07, 10): a small tertiary
@@ -63,5 +65,28 @@ struct ToolbarSearchField: View {
         .padding(.leading, 5)
         .padding(.trailing, 2)
         .frame(width: width)
+    }
+}
+
+/// mt (docs/plan-materials.md §2.3): the reader's own field, 180 pt like Notes', its prompt by
+/// the material's kind ("Search book", "Search paper", "Search document"), read from its row.
+struct MaterialSearchField: View {
+    @Binding var text: String
+    var focused: FocusState<Bool>.Binding
+    let submit: () -> Void
+    @FetchOne private var material: CourseMaterial?
+
+    init(materialID: CourseMaterial.ID, text: Binding<String>, focused: FocusState<Bool>.Binding, submit: @escaping () -> Void) {
+        _text = text
+        self.focused = focused
+        self.submit = submit
+        _material = FetchOne(CourseMaterial.find(materialID))
+    }
+
+    var body: some View {
+        ToolbarSearchField(
+            text: $text, prompt: MaterialReader.searchPrompt(material?.kind), focused: focused, submit: submit,
+            width: ToolbarSearchField.notesWidth
+        )
     }
 }

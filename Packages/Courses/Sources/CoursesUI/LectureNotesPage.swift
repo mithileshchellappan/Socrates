@@ -607,7 +607,6 @@ struct LectureNotesPageRequest: FetchKeyRequest {
         return data
     }
 }
-#endif
 
 /// The meta line's book chip (mt, docs/plan-materials.md §2.5): "Ch. 6" or "Ch. 6, 7", the course
 /// book's chapters the lecture covers (a core section of them, `MaterialCoverage.effective`); its
@@ -649,6 +648,7 @@ struct LectureBookChip: Equatable, Sendable {
         )
     }
 }
+#endif
 
 /// The mini determinate ring of a lecture whose notes are being written (`.sig .pr`): accent on
 /// the fill-2 track, 12 pt.

@@ -6,6 +6,7 @@ import ClaudeKit
 import Coach
 import CoachUI
 import FilingUI
+import MaterialsUI
 import ReviewUI
 import SearchUI
 import StudyCore
@@ -70,6 +71,15 @@ import SwiftUI
 // `md-documents` (the Modulhandbuch selected), `md-documents-cv` (the CV, Word),
 // `md-documents-pending` (the letter whose summary is pending), `md-search` (Search "Prüfung" with
 // the Documents group); on a library without documents `md-documents-empty`.
+//
+// mt (course materials; a copy of .data/parity/mt/library, `tools/parity/seed --library <copy of
+// the ln library> --mt-sample`; mockups 36–39): `36-materials` (DC's shelf), `39-materials-empty`
+// (CL's), `37-material-reader` (DC's book at §6.3, chapter 6 covered by "L2 · L3"),
+// `37-material-search` (the reader's field holding "hypercall": the hits and the marked pages),
+// `38-materials-in-use` (DC L2's notes: "Ch. 6" on the meta line), `38-notes-chip` (scrolled to the
+// in-text book chip; give it `--settle 8`: the notes lay out before they scroll),
+// `38-further-reading` (DC L2's Review on the slide with the book row) and `38-search` (Search
+// "hypercall" with the Materials group). The reader never queues a summary.
 //
 // `06-calendar` opens on the week of `--week` (default: mockup 06's, Mon 19 Oct 2026); `--now`
 // also fixes Today's clock (the sample mail's is 2026-10-16T15:02).
@@ -405,6 +415,7 @@ struct ParityRender {
             shots += try await mdShots(services: services)
             shots += try await lnShots(dc: dc, services: services)
             shots += try await nlShots(dc: dc, services: services, zoomed: options.zoom != nil)
+            shots += try await mtShots(dc: dc, services: services)
             if options.mc { shots = try mcShots(dc: dc, services: services) }
             if !options.m35Sample || weekendPlan == nil || qemu == nil { shots = shots.filter { !$0.name.hasPrefix("ma-") } }
             if !options.calendarSample { shots = shots.filter { $0.calendarDetail == nil } }
@@ -558,6 +569,47 @@ struct ParityRender {
         return shots
     }
 
+    /// mt: the course materials' shots (mockups 36–39) on a library whose DC has a primary book.
+    static func mtShots(dc: Course, services: StudyServices) async throws -> [RenderShot] {
+        guard let book = try? ParityMode.primaryBook(dc, services: services) else { return [] }
+        let bookID = book.id
+        let (_, lecture2) = try ParityMode.lecture("DC", 2, services: services)
+        let lectureID = lecture2.id
+        let (section, reading) = try await services.database.read { db in
+            (
+                try MaterialSection.where { $0.materialID.eq(bookID) && $0.number.eq("6.3") }.fetchOne(db),
+                try Annotation
+                    .where { $0.lectureID.eq(Lecture.ID?.some(lectureID)) && $0.kind.eq(AnnotationKind.furtherReading) }
+                    .fetchAll(db)
+                    .first { $0.citations.contains { $0.kind == .material } }
+            )
+        }
+        func screen(_ selection: SidebarItem, query: String = "", page: Int? = nil) -> RenderShot.Window {
+            .main(ParityMode.Launch(selection: selection, query: query, materialPage: page))
+        }
+        let reader = SidebarItem.material(bookID, course: dc.id)
+        var shots = [
+            RenderShot(name: "36-materials", window: screen(.courseMaterials(dc.id))),
+            RenderShot(name: "37-material-reader", window: screen(reader, page: section?.firstPage)),
+            RenderShot(name: "37-material-search", window: screen(reader, query: "hypercall", page: section?.firstPage)),
+            RenderShot(name: "38-materials-in-use", window: screen(.lectureNotes(lectureID, course: dc.id))),
+            RenderShot(
+                name: "38-notes-chip", window: screen(.lectureNotes(lectureID, course: dc.id)),
+                notesPreview: LectureNotesPreview(reveal: "The course book walks through")
+            ),
+            RenderShot(name: "38-search", window: screen(.search, query: "hypercall"))
+        ]
+        if let page = reading?.pageNumber {
+            shots.append(RenderShot(name: "38-further-reading", window: .main(ParityMode.Launch(
+                selection: .lecture(lectureID), reviewTarget: (lectureID, ReviewTarget(page: page, request: UUID()))
+            ))))
+        }
+        if let cl = try? ParityMode.course("CL", services: services) {
+            shots.append(RenderShot(name: "39-materials-empty", window: screen(.courseMaterials(cl.id))))
+        }
+        return shots
+    }
+
     /// mc: the study coach's screens (mockups 11–19, 16 is M7's iPhone) the library has.
     static func mcShots(dc: Course, services: StudyServices) throws -> [RenderShot] {
         func screen(_ selection: SidebarItem) -> RenderShot.Window { .main(ParityMode.Launch(selection: selection)) }
@@ -658,7 +710,7 @@ struct ParityRender {
                     selection: launch.selection, query: launch.query, reviewTarget: launch.reviewTarget,
                     mailSelection: launch.mailSelection, noteSelection: launch.noteSelection,
                     documentSelection: launch.documentSelection, documentPage: launch.documentPage,
-                    panel: launch.panel
+                    materialPage: launch.materialPage, panel: launch.panel
                 )
                 .environment(\.calendarDetailPreview, shot.calendarDetail)
                 .environment(\.reviewInspectorTab, reviewTab)
@@ -666,6 +718,8 @@ struct ParityRender {
                 .environment(\.lectureNotesQueuesOnOpen, false)
                 .environment(\.lectureNotesPreview, shot.notesPreview)
                 .environment(\.yourNotesVisibilityOverride, shot.yourNotes)
+                // mt: the reader never queues a chapter summary here.
+                .environment(\.materialReaderQueuesSummaries, false)
                 .environment(model)
             )
         case .live:

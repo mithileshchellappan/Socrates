@@ -144,6 +144,9 @@ struct PhoneRootView: View {
         // md: documents stay on the Mac (never synced): the phone has no Documents screen.
         case .documents:
             break
+        // mt: the files and the reader stay on the Mac; the phone has no Materials screen yet.
+        case .material:
+            break
         case .search:
             cover = .search
         case .lecture(let id, var target):

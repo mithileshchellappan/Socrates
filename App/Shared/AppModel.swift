@@ -28,6 +28,7 @@ import Darwin
 import Documents
 import DocumentsUI
 import EventKit
+import Materials
 import StudyPageUI
 #endif
 #if os(iOS)
@@ -82,6 +83,12 @@ final class AppModel {
     /// keep_document and its summary tasks). Mac only: documents never sync. Started (it returns at
     /// once) only where background work runs; renders draw its rows.
     let documentBank: DocumentBank?
+    /// mt (docs/plan-materials.md): a course's books, papers, references and links, kept in the
+    /// bank as role `material` (files stay on the Mac; their rows sync): the Materials screen
+    /// (`\.materialLibrary`), window drops of books and papers, the agent's add_material, and
+    /// StudyPass's cover backfill when a file's sections land. Started only where background work
+    /// runs; renders draw its rows.
+    let materialLibrary: MaterialLibrary?
     /// ln (docs/plan-lecture-notes.md): Ask on a lecture's notes (Opus low, grounded in the
     /// section's material). Only where background work runs; `\.lectureNotesAsker` gets it while
     /// Claude Code is ready (`lectureNotesAsker`).
@@ -271,9 +278,20 @@ final class AppModel {
             #if os(macOS)
             let documentBank = DocumentBank(services: services)
             self.documentBank = documentBank
+            // mt: the course materials' passages, picked on device from Search's index (cover
+            // candidates, the notes' and Ask's book passages).
+            let passages = MaterialRetriever(engine: engine)
+            let studyPass = startsProcessing ? StudyPassPipeline(services: services, client: claude, passages: passages) : nil
+            self.studyPass = studyPass
+            // mt: after the bank (its role-material documents); a file's sections landing queues
+            // the cover units of its course's lectures (one Haiku call each, in the background).
+            let materialLibrary = MaterialLibrary(services: services, bank: documentBank) { material in
+                await studyPass?.queueCoverBackfill(courseID: material.courseID)
+            }
+            self.materialLibrary = materialLibrary
             let specs = AppAgent.specs(
                 services: services, search: engine, drafter: drafter, memory: memory, coach: coach, documents: documentBank,
-                wakeProcessing: wakeProcessing
+                materials: materialLibrary, wakeProcessing: wakeProcessing
             )
             #else
             let specs = AppAgent.specs(
@@ -291,17 +309,15 @@ final class AppModel {
             phoneRecorder = Self.isPhone ? PhoneRecorder(services: services) : nil
             #endif
             #if os(macOS)
-            let studyPass = startsProcessing ? StudyPassPipeline(services: services, client: claude) : nil
-            self.studyPass = studyPass
             // ln: the lecture notes are written in the agent's task queue (one at a time, background
             // slots), their figures checked by StudyPage's renderers.
             let notesWriter = startsProcessing
-                ? NotesWriter(services: services, client: claude, figureCheck: StudyPageFigureChecker()) : nil
-            notesAsker = startsProcessing ? NotesAsker(services: services, client: claude) : nil
+                ? NotesWriter(services: services, client: claude, figureCheck: StudyPageFigureChecker(), passages: passages) : nil
+            notesAsker = startsProcessing ? NotesAsker(services: services, client: claude, passages: passages) : nil
             let appAgent = startsProcessing ? AppAgent(
                 services: services, client: claude, runtime: agent, memory: memory,
                 schedule: CourseSchedule(services: services), studyPass: studyPass, coach: coach, specs: specs,
-                filing: service, advisor: advisor, documents: documentBank, notesWriter: notesWriter,
+                filing: service, advisor: advisor, documents: documentBank, materials: materialLibrary, notesWriter: notesWriter,
                 wakeProcessing: wakeProcessing
             ) : nil
             self.appAgent = appAgent
@@ -338,6 +354,7 @@ final class AppModel {
             mailEngine = nil
             mailSender = nil
             documentBank = nil
+            materialLibrary = nil
             notesAsker = nil
             #else
             phoneRecorder = nil
@@ -359,6 +376,10 @@ final class AppModel {
                 add: { urls in try await bank.add(urls, by: .user).filter(\.isNew).map(\.document.id) },
                 undo: { ids in for id in ids { _ = try? await bank.delete(id) } }
             )
+        }
+        // mt: books and papers among dropped or imported PDFs go to a course's Materials.
+        if let materialLibrary {
+            filingCenter?.materials = MaterialDropHandler(library: materialLibrary)
         }
         #endif
         owner.model = self
@@ -435,6 +456,8 @@ final class AppModel {
         #if os(macOS)
         // md: returns at once (reading resumes after 20 s at utility, file removal after 60 s).
         await documentBank?.start()
+        // mt: after the bank; returns at once (pending files and links resume after 20 s).
+        await materialLibrary?.start()
         #endif
         // Conversations a quit left running end as failed (only where the agent runs: on a
         // synced iPhone this would fail the conversation the Mac is answering).
@@ -896,6 +919,7 @@ final class AppModel {
         let semanticIndex = semanticIndex
         let appAgent = appAgent
         let coach = coach
+        let materialLibrary = materialLibrary
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
             // First, synchronously: a task or triage call failing because its process is ended
             // below writes nothing (the task resumes at the next launch, the events stay pending).
@@ -916,6 +940,10 @@ final class AppModel {
             // A batch ends after its current unit; unchanged text is never embedded twice.
             if let semanticIndex {
                 Task { await semanticIndex.stop() }
+            }
+            // mt: link fetches stop (their rows stay pending until the next launch).
+            if let materialLibrary {
+                Task { await materialLibrary.stop() }
             }
         }
         #endif

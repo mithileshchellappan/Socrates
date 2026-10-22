@@ -6,6 +6,7 @@ import DocumentsUI
 #endif
 import FilingUI
 import MailUI
+import MaterialsUI
 import NotesUI
 import ReviewUI
 import SearchUI
@@ -26,6 +27,12 @@ struct DetailView: View {
     /// md: the document selected on Documents, and the page a search hit or chip named.
     var documentSelection: Binding<StudyDocument.ID?> = .constant(nil)
     var documentPage: Int?
+    /// mt: the page a chip, hit or reading opened the reader at (nil: where the student was), and
+    /// that request (opening the same page again moves there again).
+    var materialPage: Int?
+    var materialRequest: UUID?
+    /// mt: the window's search field text, focus and ↩, for the reader's own field (Mac).
+    var readerSearch: ReaderSearch?
     /// Search's query and selected hits (`SearchResultsView` writes it; the agent panel's context).
     var searchContext: Binding<ChatContext> = .constant(.none)
     /// mc renders (`ParityMode`): Progress opens with the practice exam sheet presented.
@@ -79,6 +86,30 @@ struct DetailView: View {
         case .courseSlides(let id):
             // Import and drops go through `\.importFiles` (RootView).
             CourseSlidesView(courseID: id, changeDeck: changeDeck)
+                .modifier(CourseToolbarSpacer())
+                .id(id)
+        case .courseMaterials(let id):
+            // mt (mockups 36, 39): [Import +] trailing; drops, ⌘V and Import… through
+            // `\.materialLibrary` (RootView).
+            MaterialsView(courseID: id)
+                .modifier(CourseToolbarSpacer())
+                .id(id)
+        case .material(let id, _):
+            // mt (mockup 37): pushed full width on the course's Materials, with Back; the toolbar's
+            // field ("Search book") is the reader's (RootView passes its text and ↩).
+            MaterialReader(materialID: id, page: materialPage, request: materialRequest, query: query, submits: searchSubmits)
+                #if os(macOS)
+                // Inside the spacer's modifier: the field lands after it, at the trailing end.
+                .toolbar {
+                    if let readerSearch {
+                        ToolbarItem(placement: .primaryAction) {
+                            MaterialSearchField(
+                                materialID: id, text: readerSearch.text, focused: readerSearch.focused, submit: readerSearch.submit
+                            )
+                        }
+                    }
+                }
+                #endif
                 .modifier(CourseToolbarSpacer())
                 .id(id)
         case .courseNotes(let id):
@@ -157,6 +188,14 @@ struct DetailView: View {
 /// A screen whose toolbar items sit at the trailing end (a course's Lectures, Slides, Notes and
 /// Progress; Study; a round's End, an exam's Flag and Pause): a flexible spacer keeps the title and
 /// history chevrons at the leading end, as on Course Settings.
+/// mt: the window's search field as the material reader's own ("Search book"): its text, focus and
+/// ↩ (the next hit) stay RootView's.
+struct ReaderSearch {
+    var text: Binding<String>
+    var focused: FocusState<Bool>.Binding
+    var submit: () -> Void
+}
+
 private struct CourseToolbarSpacer: ViewModifier {
     func body(content: Content) -> some View {
         content

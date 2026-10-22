@@ -299,6 +299,13 @@ targets:
       - package: Documents
         product: DocumentsUI
         destinationFilters: [macOS]
+      # mt (docs/plan-materials.md): a course's materials (books, papers, references, links). The
+      # library and the reader run on the Mac; both compile for iOS (rows sync, files stay on the
+      # Mac; the phone shows no Materials screen yet).
+      - package: Documents
+        product: Materials
+      - package: Documents
+        product: MaterialsUI
       # ln (docs/plan-lecture-notes.md): the lecture notes (format, views, the figure checker, the
       # Lecture menu's Ask… and Highlight).
       - package: StudyPage

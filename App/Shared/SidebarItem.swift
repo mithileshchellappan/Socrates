@@ -30,6 +30,9 @@ enum SidebarItem: Hashable {
     case course(Course.ID)
     case courseLectures(Course.ID)
     case courseSlides(Course.ID)
+    /// mt (docs/plan-materials.md §2.1): a course's Materials (books, papers, references, links),
+    /// between its Slides and Notes.
+    case courseMaterials(Course.ID)
     case courseNotes(Course.ID)
     /// mc: a course's Progress (mockup 14), between its Notes and Course Settings.
     case courseProgress(Course.ID)
@@ -44,6 +47,9 @@ enum SidebarItem: Hashable {
     /// ln (docs/plan-lecture-notes.md, decision 1): a lecture's notes, pushed full width on its
     /// course's Lectures: the sidebar shows that course's Lectures row selected, the toolbar Back.
     case lectureNotes(Lecture.ID, course: Course.ID)
+    /// mt (§2.1): a PDF material in the reader, pushed full width on its course's Materials: the
+    /// sidebar shows that course's Materials row selected, the toolbar Back.
+    case material(CourseMaterial.ID, course: Course.ID)
 
     /// The top-level rows, in sidebar order: Go ⌘1…⌘7 (md: Documents ⌘5 on the Mac).
     #if os(macOS)
@@ -53,8 +59,14 @@ enum SidebarItem: Hashable {
     #endif
 
     /// A course's own screens, in sidebar order (mockups 08, 14).
+    /// mt: Materials between Slides and Notes on the Mac (the iPad's split view has none yet: the
+    /// files and the reader stay on the Mac).
     static func courseScreens(_ id: Course.ID) -> [SidebarItem] {
+        #if os(macOS)
+        [.courseLectures(id), .courseSlides(id), .courseMaterials(id), .courseNotes(id), .courseProgress(id), .courseSettings(id)]
+        #else
         [.courseLectures(id), .courseSlides(id), .courseNotes(id), .courseProgress(id), .courseSettings(id)]
+        #endif
     }
 
     var title: String {
@@ -69,6 +81,7 @@ enum SidebarItem: Hashable {
         case .course: String(localized: "Course")
         case .courseLectures: String(localized: "Lectures")
         case .courseSlides: String(localized: "Slides")
+        case .courseMaterials, .material: String(localized: "Materials")
         case .courseNotes: String(localized: "Notes")
         case .courseProgress: String(localized: "Progress")
         case .courseSettings: String(localized: "Course Settings")
@@ -80,10 +93,12 @@ enum SidebarItem: Hashable {
     }
 
     /// The sidebar row that shows as selected: a practice exam's results are pushed on its course's
-    /// Progress (mockup 19), a lecture's notes on its course's Lectures (ln).
+    /// Progress (mockup 19), a lecture's notes on its course's Lectures (ln), a material's reader on
+    /// its course's Materials (mt).
     var sidebarRow: SidebarItem {
         if case .practiceResults(_, let course) = self { return .courseProgress(course) }
         if case .lectureNotes(_, let course) = self { return .courseLectures(course) }
+        if case .material(_, let course) = self { return .courseMaterials(course) }
         return self
     }
 
@@ -119,10 +134,12 @@ enum SidebarItem: Hashable {
     }
 
     /// Whose question the toolbar search field holds: Mail and Notes filter their own list in
-    /// place ("Search mail", "Search notes"); everywhere else it searches the library.
+    /// place ("Search mail", "Search notes"), the reader searches its material ("Search book", mt);
+    /// everywhere else it searches the library.
     var searchOwner: SearchOwner {
         if isMail { return .mail }
         if isNotes { return .notes }
+        if case .material = self { return .material }
         return .library
     }
 
@@ -130,14 +147,16 @@ enum SidebarItem: Hashable {
         case library
         case mail
         case notes
+        /// mt: the reader's own field (DESIGN 6.3: the one course screen with a field).
+        case material
     }
 
     /// The course whose screen this is (its lectures, slides, notes or settings).
     var courseScreenID: Course.ID? {
         switch self {
-        case .course(let id), .courseLectures(let id), .courseSlides(let id), .courseNotes(let id),
+        case .course(let id), .courseLectures(let id), .courseSlides(let id), .courseMaterials(let id), .courseNotes(let id),
              .courseProgress(let id), .courseSettings(let id), .practiceResults(_, let id),
-             .lectureNotes(_, let id): id
+             .lectureNotes(_, let id), .material(_, let id): id
         case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .documents, .study, .search, .lecture, .practice: nil
         }
     }
@@ -147,8 +166,8 @@ enum SidebarItem: Hashable {
     var isTopLevel: Bool {
         switch self {
         case .today, .calendar, .mail, .mailScope, .notesRow, .notes, .documents, .study, .search: true
-        case .course, .courseLectures, .courseSlides, .courseNotes, .courseProgress, .courseSettings, .lecture,
-             .practice, .practiceResults, .lectureNotes: false
+        case .course, .courseLectures, .courseSlides, .courseMaterials, .courseNotes, .courseProgress, .courseSettings, .lecture,
+             .practice, .practiceResults, .lectureNotes, .material: false
         }
     }
 
@@ -167,6 +186,7 @@ enum SidebarItem: Hashable {
         case .course: "books.vertical"
         case .courseLectures: "waveform"
         case .courseSlides: "display"
+        case .courseMaterials, .material: "book.closed"
         case .courseNotes: "doc.text"
         case .courseProgress: "chart.bar"
         case .courseSettings: "gearshape"

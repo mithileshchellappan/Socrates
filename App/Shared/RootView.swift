@@ -9,6 +9,7 @@ import DocumentsUI
 import Filing
 import FilingUI
 import MailUI
+import MaterialsUI
 import Processing
 import SearchUI
 import StudyCore
@@ -20,6 +21,9 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    /// The system's (a link of a material opens in the browser); the window's own routes
+    /// `socrates://material/…` in process (`materialLinks`).
+    @Environment(\.openURL) private var systemOpenURL
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
@@ -37,6 +41,10 @@ struct RootView: View {
     /// (dropped when another screen opens).
     @State private var documentSelection: StudyDocument.ID?
     @State private var documentPage: Int?
+    /// mt: the page a chip, hit or reading opened the reader at (dropped when another screen
+    /// opens), and that request (opening the same page again moves there again).
+    @State private var materialPage: Int?
+    @State private var materialRequest: UUID?
     @State private var columns: NavigationSplitViewVisibility = .all
     @State private var query = ""
     /// Back and Forward (Go menu; the course screen's toolbar chevrons, mockup 08).
@@ -72,6 +80,7 @@ struct RootView: View {
         noteSelection: Note.ID? = nil,
         documentSelection: StudyDocument.ID? = nil,
         documentPage: Int? = nil,
+        materialPage: Int? = nil,
         panel: AgentPanelLaunch = AgentPanelLaunch(),
         examSheet: Course.ID? = nil
     ) {
@@ -82,6 +91,8 @@ struct RootView: View {
         _noteSelection = State(initialValue: noteSelection)
         _documentSelection = State(initialValue: documentSelection)
         _documentPage = State(initialValue: documentPage)
+        _materialPage = State(initialValue: materialPage)
+        _materialRequest = State(initialValue: materialPage.map { _ in UUID() })
         // A round or an exam opens full window (renders start on one).
         if selection?.isPractice == true {
             _columns = State(initialValue: .detailOnly)
@@ -121,6 +132,9 @@ struct RootView: View {
                 .smartImport(center)
                 .timetableImport(center: center)
                 .environment(\.openDestination, OpenDestinationAction(open))
+                // mt: `socrates://material/<uuid>?page=N` (a further-reading row, a reading's Read
+                // block) opens the reader in this window; every other link as before.
+                .environment(\.openURL, materialLinks)
                 // Empty Lectures, Slides, Progress, Study and Review's slides: Import… and drops
                 // go through smart import (filed to the screen's course or lecture).
                 .environment(\.importFiles, ImportFilesAction(
@@ -145,6 +159,8 @@ struct RootView: View {
                 // it), and why notes cannot be written when it is not.
                 .environment(\.lectureNotesAsker, model.lectureNotesAsker)
                 .environment(\.lectureNotesUnavailable, model.lectureNotesUnavailable)
+                // mt: the course materials' writes (drops, ⌘V, Import…, Delete with Undo).
+                .environment(\.materialLibrary, model.materialLibrary)
                 #endif
                 // The agent panel: absent until Claude Code is available, and while a practice exam
                 // is being written (mc: the panel, its launcher and ⌘J go until it is handed in).
@@ -262,6 +278,9 @@ struct RootView: View {
                     noteSelection: $noteSelection,
                     documentSelection: $documentSelection,
                     documentPage: documentPage,
+                    materialPage: materialPage,
+                    materialRequest: materialRequest,
+                    readerSearch: ReaderSearch(text: $query, focused: $searchFocused, submit: submitSearch),
                     searchContext: $searchContext,
                     examSheet: examSheet,
                     record: record
@@ -305,6 +324,8 @@ struct RootView: View {
         .frame(minWidth: screenMinWidth + shownSidebarWidth, maxWidth: .infinity)
         .ignoresSafeArea(.container, edges: .trailing)
         #endif
+        // mt: a book or paper dropped on the window goes to the course whose screen shows.
+        .onChange(of: selection?.courseScreenID, initial: true) { _, id in center.screenCourse = id }
         .onChange(of: query) { _, text in
             // Typing on Mail or Notes filters its list ("Search mail", "Search notes"); elsewhere
             // it opens Search.
@@ -325,6 +346,7 @@ struct RootView: View {
             }
             fullWindow(from: old, to: item)
             if item != .documents { documentPage = nil }
+            if case .material? = item {} else { materialPage = nil }
             // The target was for the lecture `open` showed; anywhere else drops it.
             if case .lecture(let id) = item, id == reviewTarget?.lectureID { return }
             reviewTarget = nil
@@ -352,8 +374,12 @@ struct RootView: View {
         }
     }
 
-    /// ⌘F: Search with the caret in its field.
+    /// ⌘F: Search with the caret in its field (mt: in the reader, the reader's own field).
     private func focusSearch() {
+        if searchOwner == .material {
+            searchFocused = true
+            return
+        }
         let hadField = showsSearchField
         selection = .search
         searchFocused = true
@@ -398,7 +424,7 @@ struct RootView: View {
         switch searchOwner {
         case .mail: "Search mail"
         case .notes: "Search notes"
-        case .library: "Search lectures, notes, mail"
+        case .library, .material: "Search lectures, notes, mail"
         }
     }
 
@@ -426,6 +452,11 @@ struct RootView: View {
     /// ↩ in the search field: the Search screen opens its selected (or first) hit. (On Mail and
     /// Notes the list filters as the student types.)
     private func submitSearch() {
+        // mt: ↩ in the reader's field goes to its next hit.
+        if searchOwner == .material {
+            searchSubmits += 1
+            return
+        }
         let text = query.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty, searchOwner == .library else { return }
         selection = .search
@@ -493,6 +524,8 @@ struct RootView: View {
                 )
             }
         }
+        // mt (mockup 37): the reader's own field is the reader's toolbar item (`DetailView`), after
+        // the course screens' flexible spacer, so it sits at the trailing end as the shelf's Import.
         #endif
         if let session = model.live?.session, session.isCapturing, session.startedAt != nil {
             ToolbarSpacer(.fixed, placement: .primaryAction)
@@ -569,6 +602,11 @@ struct RootView: View {
             return AgentContext(screen: .course, courseID: id, courseScreen: "lectures")
         case .courseSlides(let id):
             return AgentContext(screen: .course, courseID: id, courseScreen: "slides")
+        // mt: the shelf and the reader refine it (the focused material; the page, the selection).
+        case .courseMaterials(let id):
+            return AgentContext(screen: .course, courseID: id, courseScreen: "materials")
+        case .material(let materialID, let id):
+            return AgentContext(screen: .course, courseID: id, courseScreen: "materials", materialID: materialID)
         case .courseNotes(let id):
             return AgentContext(screen: .course, courseID: id, courseScreen: "notes", noteID: noteSelection)
         case .lecture(let id):
@@ -695,6 +733,42 @@ struct RootView: View {
             #else
             open(.lecture(id))
             #endif
+        // mt (§2.1): a PDF in the reader pushed on its course's Materials at the page (nil: where
+        // the student was), a link in the browser; another file or a wanted book shows the
+        // course's Materials (Quick Look is the shelf's). The iPad has no reader yet.
+        case .material(let id, let page):
+            #if os(macOS)
+            guard let services = model.services else { return }
+            Task {
+                guard let material = try? await services.records.fetch(CourseMaterial.self, id: id) else { return }
+                var document: StudyDocument?
+                if let documentID = material.documentID {
+                    document = try? await services.records.fetch(StudyDocument.self, id: documentID)
+                }
+                switch MaterialOpening.how(material, document: document) {
+                case .reader:
+                    materialPage = page
+                    materialRequest = UUID()
+                    selection = .material(id, course: material.courseID)
+                case .browser(let url):
+                    systemOpenURL(url)
+                case .quickLook, .nothing:
+                    selection = .courseMaterials(material.courseID)
+                }
+            }
+            #else
+            break
+            #endif
+        }
+    }
+
+    /// mt: the window's link handler: `socrates://material/<uuid>?page=N` opens the reader here;
+    /// any other link goes to the system.
+    private var materialLinks: OpenURLAction {
+        OpenURLAction { url in
+            guard let link = MaterialLink(url: url) else { return .systemAction }
+            open(link.destination)
+            return .handled
         }
     }
 
@@ -705,6 +779,11 @@ struct RootView: View {
     /// smart import like a drop (a bundle is unpacked, never changed; one already in the library is
     /// "known").
     private func openURL(_ url: URL) {
+        // mt: a material's place (the reader at a page).
+        if let link = MaterialLink(url: url) {
+            open(link.destination)
+            return
+        }
         #if os(macOS)
         if url.isFileURL, ["lecture", "lecturebundle"].contains(url.pathExtension.lowercased()), let center = model.filingCenter {
             Task {

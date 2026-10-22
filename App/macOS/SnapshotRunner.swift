@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import CoursesUI
+import PDFKit
 import FilingUI
 import StudyCore
 import StudyUI
@@ -230,9 +231,11 @@ enum SnapshotRunner {
         var sidebarGlass: [NSView] = []
         var titlebarGlass: [NSView] = []
         var overTitlebarGlass: [NSView] = []
+        var pdfViews: [PDFView] = []
         func collect(_ view: NSView, inTitlebar: Bool) {
             let name = String(describing: type(of: view))
             let titlebar = inTitlebar || name == "NSTitlebarContainerView"
+            if let pdf = view as? PDFView { pdfViews.append(pdf) }
             if name.hasPrefix("NSHostingView<") || name.hasPrefix("CellHostingView<") || name == "PlatformGroupContainer" {
                 hosts.append(view)
             } else if name == "NSTitlebarContainerView" {
@@ -273,11 +276,46 @@ enum SnapshotRunner {
         chrome.draw(in: frame.bounds, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         fill(sidebarGlass, NSColor(white: 0.16, alpha: 1))
         draw(hosts)
+        drawPages(pdfViews, in: frame)
         draw(titlebars)
         fill(titlebarGlass, NSColor(white: 0.24, alpha: 1))
         draw(overTitlebarGlass)
         NSGraphicsContext.restoreGraphicsState()
         return canvas.representation(using: .png, properties: [:])
+    }
+
+    /// mt: PDFKit draws its pages in layers an off-screen cache leaves out (the material reader):
+    /// the visible pages are drawn here, white paper with its shadow on the view's background, the
+    /// highlighted selections (search hits, the cited passage) over them.
+    private static func drawPages(_ views: [PDFView], in frame: NSView) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        for pdf in views {
+            guard let container = pdf.superview else { continue }
+            let visible = container.convert(pdf.frame, to: frame)
+            pdf.backgroundColor.setFill()
+            visible.fill()
+            for page in pdf.visiblePages {
+                let box = page.bounds(for: pdf.displayBox)
+                let rect = pdf.convert(pdf.convert(box, from: page), to: frame)
+                context.saveGState()
+                context.clip(to: visible)
+                context.setShadow(offset: CGSize(width: 0, height: -1), blur: 4, color: NSColor.black.withAlphaComponent(0.25).cgColor)
+                context.setFillColor(NSColor.white.cgColor)
+                context.fill(rect)
+                context.setShadow(offset: .zero, blur: 0, color: nil)
+                context.translateBy(x: rect.minX, y: frame.isFlipped ? rect.maxY : rect.minY)
+                context.scaleBy(x: rect.width / box.width, y: (frame.isFlipped ? -1 : 1) * rect.height / box.height)
+                context.translateBy(x: -box.minX, y: -box.minY)
+                page.draw(with: pdf.displayBox, to: context)
+                // Multiplied, as a highlighter marks paper: the words stay readable.
+                context.setBlendMode(.multiply)
+                for selection in pdf.highlightedSelections ?? [] where selection.pages.contains(page) {
+                    context.setFillColor((selection.color ?? .yellow).cgColor)
+                    context.fill(selection.bounds(for: page))
+                }
+                context.restoreGState()
+            }
+        }
     }
 }
 

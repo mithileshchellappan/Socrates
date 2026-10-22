@@ -79,6 +79,9 @@ let package = Package(
                 .product(name: "Sync", package: "Sync"),
                 .product(name: "Documents", package: "Documents"),
                 .product(name: "DocumentsUI", package: "Documents"),
+                // mt: the course materials (the library, the shelf and the reader).
+                .product(name: "Materials", package: "Documents"),
+                .product(name: "MaterialsUI", package: "Documents"),
                 .product(name: "StudyPageFormat", package: "StudyPage"),
                 .product(name: "StudyPageUI", package: "StudyPage")
             ],
