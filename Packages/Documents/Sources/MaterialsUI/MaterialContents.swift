@@ -148,7 +148,9 @@ struct MaterialContents: View {
     private func menu(_ chapter: MaterialSection) -> some View {
         ForEach(data.lectures(covering: chapter), id: \.id) { lecture in
             let name = lecture.number.map { String(localized: "Lecture \($0)") } ?? lecture.title
-            Button(String(localized: "Open \(name)’s Notes")) { openNotes(lecture.id) }
+            // Claude's notes of the lecture, which Review calls Summary (its Whole lecture is the
+            // student's own notes).
+            Button(String(localized: "Open \(name)’s Summary")) { openNotes(lecture.id) }
             Button(String(localized: "Open \(name) in Review")) { openReview(lecture.id) }
         }
         if !data.lectures(covering: chapter).isEmpty { Divider() }

@@ -85,8 +85,8 @@ public struct PaneOffer: Equatable, Sendable {
     }
 }
 
-/// The offers of the view tree under the pane host, the deepest last (a later offer of the same id
-/// wins).
+/// The offers of the view tree under the pane host: siblings in order, an offer after the ones of
+/// the view it is applied to (a later offer of the same id wins).
 public struct PaneOfferKey: PreferenceKey {
     public static let defaultValue: [PaneOffer] = []
 
@@ -105,9 +105,10 @@ extension View {
         focus: (@MainActor @Sendable () -> Void)? = nil,
         @ViewBuilder content: @escaping @MainActor @Sendable () -> Content
     ) -> some View {
-        preference(key: PaneOfferKey.self, value: [
-            PaneOffer(id: id, identity: PaneIdentity(identity), content: { AnyView(content()) }, focus: focus)
-        ])
+        // Added to the offers under it (a screen's own), never in their place.
+        transformPreference(PaneOfferKey.self) { offers in
+            offers.append(PaneOffer(id: id, identity: PaneIdentity(identity), content: { AnyView(content()) }, focus: focus))
+        }
     }
 
     /// Offers a pane with a header accessory (drawn after the title, or in its place where the
@@ -119,12 +120,12 @@ extension View {
         @ViewBuilder accessory: @escaping @MainActor @Sendable () -> Accessory,
         @ViewBuilder content: @escaping @MainActor @Sendable () -> Content
     ) -> some View {
-        preference(key: PaneOfferKey.self, value: [
-            PaneOffer(
+        transformPreference(PaneOfferKey.self) { offers in
+            offers.append(PaneOffer(
                 id: id, identity: PaneIdentity(identity), content: { AnyView(content()) },
                 accessory: { AnyView(accessory()) }, focus: focus
-            )
-        ])
+            ))
+        }
     }
 }
 

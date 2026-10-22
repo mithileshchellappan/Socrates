@@ -227,14 +227,14 @@ public final class PaneHostModel {
     // MARK: From the host
 
     /// Another screen kind (or its offered panes), in the update the screen changes: the kind's
-    /// layout as stored, for these specs.
+    /// layout as stored, for these specs. Read from the store every time (it always holds the
+    /// student's last action), so a pane offered again (the agent after a practice exam, or once
+    /// Claude Code is back) returns at its place and width.
     func configure(kind: PaneScreenKind, specs: [PaneSpec], room: PaneRoom) {
+        layout = (PaneLayoutStore.load(kind) ?? PaneLayout.initial(for: specs)).normalized(for: specs)
         if kind != loadedKind {
-            layout = (PaneLayoutStore.load(kind) ?? PaneLayout.initial(for: specs)).normalized(for: specs)
             loadedKind = kind
             maximized = layout.maximized
-        } else {
-            layout = layout.normalized(for: specs)
         }
         self.kind = kind
         self.specs = specs

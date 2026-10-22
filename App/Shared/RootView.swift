@@ -10,6 +10,9 @@ import Filing
 import FilingUI
 import MailUI
 import MaterialsUI
+#if os(macOS)
+import Panes
+#endif
 import Processing
 import SearchUI
 import StudyCore
@@ -59,18 +62,23 @@ struct RootView: View {
     /// Search's query and the hits selected on it (`SearchResultsView` writes it): what the agent
     /// panel's next message on Search is about.
     @State private var searchContext = ChatContext.none
-    /// How the agent panel starts (renders); closed otherwise.
-    private let panel: AgentPanelLaunch
+    /// The window's agent chat (one conversation across screens): on the Mac the small floating
+    /// chat or the Agent pane, on the iPad the compact overlay or the trailing column. Renders
+    /// start it as `AgentPanelLaunch` says; closed otherwise.
+    @State private var agentModel: AgentPanelModel
+    #if os(macOS)
+    /// The window's side panes (DESIGN 6.4): what the screen offers, what is open, the room they
+    /// need.
+    @State private var paneHost = PaneHostModel()
+    #endif
     /// mc renders: Progress opens with its practice exam sheet presented (mockup 17).
     private let examSheet: Course.ID?
     /// mc: what the practice session on screen asks of the window (`PracticeStateWatcher`).
     @State private var practiceState: PracticeWindowState?
     /// The sidebar as it was before a round or an exam hid it (restored after).
     @State private var columnsBeforePractice: NavigationSplitViewVisibility?
-    /// The sidebar column's width (rounded up to 4 pt), for the room the agent's sidebar has.
+    /// The sidebar column's width (rounded up to 4 pt), for the room the panes have beside it.
     @State private var sidebarWidth = SidebarView.idealWidth
-    /// The agent panel is the window's right sidebar.
-    @State private var agentExpanded = false
 
     init(
         selection: SidebarItem? = .today,
@@ -98,7 +106,7 @@ struct RootView: View {
             _columns = State(initialValue: .detailOnly)
             _columnsBeforePractice = State(initialValue: .all)
         }
-        self.panel = panel
+        _agentModel = State(initialValue: AgentPanelModel(launch: panel))
         self.examSheet = examSheet
     }
 
@@ -112,14 +120,25 @@ struct RootView: View {
             )
         } else if let center = model.filingCenter {
             splitView(center: center)
-                // ma: ONE agent panel for the window (compact and movable, or the full-height right
-                // sidebar), inside the search field's focus value (the panel folds its composer's
-                // focus into it, so every screen's plain keys stand down while the student types).
-                .agentPanel(
-                    context: agentContext, launch: panel, floatingLauncher: columns == .detailOnly,
-                    room: panelRoom, expandedChanged: { agentExpanded = $0 }
-                )
+                #if os(macOS)
+                // The small chat floats over the content area (moved and resized by AppKit, its
+                // place and size kept per window); hidden, never closed, while the Agent pane is open.
+                .modifier(AgentMiniChatPanel(model: agentModel))
+                #endif
+                // ma: ONE agent chat for the window, inside the search field's focus value (it folds
+                // its composer's focus into it, so every screen's plain keys stand down while the
+                // student types to the agent).
+                .agentPanel(model: agentModel, context: agentContext, floatingLauncher: columns == .detailOnly)
+                #if os(macOS)
+                // The panes for Expand / Shrink Chat (read by `.agentPanel`, so outside it) and every
+                // screen; a pane holding the keyboard counts as typing (the screens' plain keys
+                // stand down); View ▸ Show / Hide <pane> and Maximize Pane.
+                .environment(\.paneControl, paneHost.control)
+                .modifier(PaneTypingFold(panes: paneHost, searchFocused: searchFocused))
+                .paneCommandsTarget(paneHost)
+                #else
                 .environment(\.isSearchFieldFocused, searchFocused)
+                #endif
                 .focusedSceneValue(\.sidebarSelection, $selection)
                 // ⌘F would leave a practice exam being written: not while one is.
                 .focusedSceneValue(\.focusSearch, focusSearchAction)
@@ -220,22 +239,31 @@ struct RootView: View {
                 .background {
                     SidebarFit(
                         columns: $columns, sidebarWidth: sidebarWidth, screenMin: screenMinWidth,
-                        agentExpanded: agentExpanded, isPaused: selection?.isPractice == true
+                        panes: paneHost, isPaused: selection?.isPractice == true
                     )
                 }
                 #endif
         }
     }
 
-    /// What the window keeps beside the agent's right sidebar: the screen's minimum, and the
-    /// sidebar while it shows (the Mac's window; iOS has no limit).
-    private var panelRoom: AgentPanelRoom? {
-        #if os(macOS)
-        AgentPanelRoom(screen: screenMinWidth, sidebar: shownSidebarWidth)
-        #else
-        nil
-        #endif
+    #if os(macOS)
+    /// The screen on display's kind of pane layout (`Socrates.panes.<kind>`).
+    private var paneKind: PaneScreenKind {
+        PaneTable.kind(selection)
     }
+
+    /// The panes the screen on display offers, in toolbar order: the agent last, while the
+    /// window's chat is offered (`panelActions` withholds it while a practice exam is written).
+    private var paneSpecs: [PaneSpec] {
+        PaneTable.specs(paneKind, agent: panelActions.isAvailable)
+    }
+
+    /// What the window keeps beside the panes: the screen's declared minimum and the sidebar while
+    /// it shows.
+    private var paneRoom: PaneRoom {
+        PaneRoom(screenMinimum: screenMinWidth, sidebar: shownSidebarWidth)
+    }
+    #endif
 
     /// The screen on display's declared minimum (480; Mail's list and reader need more). From the
     /// selection, so it changes in the same update as the screen.
@@ -270,61 +298,23 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: WindowColumns.sidebarMin, ideal: SidebarView.idealWidth, max: WindowColumns.sidebarMax)
                 #endif
         } detail: {
-            NavigationStack {
-                DetailView(
-                    item: selection ?? .today,
-                    query: query,
-                    searchSubmits: searchSubmits,
-                    target: reviewTarget,
-                    mailSelection: $mailSelection,
-                    noteSelection: $noteSelection,
-                    documentSelection: $documentSelection,
-                    documentPage: documentPage,
-                    materialPage: materialPage,
-                    materialRequest: materialRequest,
-                    readerSearch: ReaderSearch(text: $query, focused: $searchFocused, submit: submitSearch),
-                    searchContext: $searchContext,
-                    examSheet: examSheet,
-                    record: record
-                )
-                #if os(iOS)
-                // The search field (mockups 01, 07), not on a lecture or a course (03, 08: the
-                // slide stepper and inspector header, Import, own the toolbar there; ⌘F still
-                // searches). Here, not on the split view: there it shows on every screen. (The Mac
-                // draws its own field in `trailingItems`.)
-                .modifier(SearchFieldModifier(isShown: showsSearchField, prompt: searchPrompt, text: $query, focused: $searchFocused, submit: submitSearch))
-                #endif
-                #if os(macOS)
-                .toolbar {
-                    sidebarToggle
-                    historyButtons
-                }
-                #endif
-            }
             #if os(macOS)
-            // The screen's minimum and ideal are declared, never measured from its content: a
-            // screen's rigid rows or one-line ideals never widen the window or push the sidebar
-            // and the agent's sidebar out of it (screens adapt to their declared minimum).
-            .frame(minWidth: screenMinWidth, idealWidth: max(WindowColumns.detailIdeal, screenMinWidth), maxWidth: .infinity)
+            // The screen and its side panes. Outside the stack's per-screen identity, so open panes
+            // keep their state across screens; the window's minimum holds every pane laid out at
+            // its minimum (declared, never measured).
+            PaneHost(model: paneHost, kind: paneKind, specs: paneSpecs, room: paneRoom) {
+                screen(center: center)
+            }
+            .modifier(PaneRoomMinimum(panes: paneHost, minimum: screenMinWidth, ideal: max(WindowColumns.detailIdeal, screenMinWidth)))
+            #else
+            screen(center: center)
             #endif
-            // A new stack per screen; the top-level screens share one, so the search field (and
-            // its focus while typing on Today opens Search) stays.
-            .id(selection.map(DetailIdentity.init) ?? .topLevel)
-            .toolbar { trailingItems(center: center) }
-            // What Review and Calendar publish (`.agentContext`) may stop at the column: read it here.
-            .agentPanelContextReader()
         }
         #if os(macOS)
-        // The split view's minimum is declared too: the sidebar while it shows and the screen's
-        // minimum (a frame with both bounds reports its own minimum, not its content's). On macOS 26
-        // the split view runs under the agent's right sidebar, so its own minimum (the detail's,
-        // which spans under both side columns) already holds that column's width, and the window
-        // added it once more (sidebar 236 + 480 + a 560 pt agent column needed 1836, not 1276): a
-        // window that cannot grow overflowed and cut the sidebar and the agent column off at its
-        // edges. Under the agent's column as before (AppKit still insets the detail's content by
-        // it), so the window's minimum counts that column once: sidebar + screen + its width.
-        .frame(minWidth: screenMinWidth + shownSidebarWidth, maxWidth: .infinity)
-        .ignoresSafeArea(.container, edges: .trailing)
+        // The split view's minimum is declared too: the sidebar while it shows, the screen's
+        // minimum and the panes laid out now (a frame with both bounds reports its own minimum,
+        // not its content's).
+        .modifier(PaneRoomMinimum(panes: paneHost, minimum: screenMinWidth + shownSidebarWidth))
         #endif
         // mt: a book or paper dropped on the window goes to the course whose screen shows.
         .onChange(of: selection?.courseScreenID, initial: true) { _, id in center.screenCourse = id }
@@ -353,6 +343,65 @@ struct RootView: View {
             if case .lecture(let id) = item, id == reviewTarget?.lectureID { return }
             reviewTarget = nil
         }
+    }
+
+    /// The screen on display in its navigation stack, with the window's toolbar items; on the Mac
+    /// also the Agent pane's offer (its content is the window's chat, built once).
+    private func screen(center: FilingCenter) -> some View {
+        #if os(macOS)
+        let agent = agentModel
+        #endif
+        return NavigationStack {
+            DetailView(
+                item: selection ?? .today,
+                query: query,
+                searchSubmits: searchSubmits,
+                target: reviewTarget,
+                mailSelection: $mailSelection,
+                noteSelection: $noteSelection,
+                documentSelection: $documentSelection,
+                documentPage: documentPage,
+                materialPage: materialPage,
+                materialRequest: materialRequest,
+                readerSearch: ReaderSearch(text: $query, focused: $searchFocused, submit: submitSearch),
+                searchContext: $searchContext,
+                examSheet: examSheet,
+                record: record
+            )
+            #if os(iOS)
+            // The search field (mockups 01, 07), not on a lecture or a course (03, 08: the
+            // slide stepper and inspector header, Import, own the toolbar there; ⌘F still
+            // searches). Here, not on the split view: there it shows on every screen. (The Mac
+            // draws its own field in `trailingItems`.)
+            .modifier(SearchFieldModifier(isShown: showsSearchField, prompt: searchPrompt, text: $query, focused: $searchFocused, submit: submitSearch))
+            #endif
+            #if os(macOS)
+            .toolbar {
+                sidebarToggle
+                historyButtons
+            }
+            #endif
+        }
+        // A new stack per screen; the top-level screens share one, so the search field (and
+        // its focus while typing on Today opens Search) stays.
+        .id(selection.map(DetailIdentity.init) ?? .topLevel)
+        .toolbar { trailingItems(center: center) }
+        #if os(macOS)
+        // Last in the toolbar: one toggle per pane the screen offers, the agent's at the very end.
+        .overlay { PaneToggleBar(panes: paneHost) }
+        #endif
+        // What Review and Calendar publish (`.agentContext`) may stop at the column: read it here.
+        .agentPanelContextReader()
+        #if os(macOS)
+        // The Agent pane: the window's chat, offered on every screen (the table decides where
+        // it is a pane); built once, for the window's whole life.
+        .pane(
+            .agent, identity: ObjectIdentifier(agent), focus: { agent.focusComposer() },
+            accessory: { AgentPaneAccessory(model: agent) }
+        ) {
+            AgentPane(model: agent)
+        }
+        #endif
     }
 
     private var isToday: Bool { (selection ?? .today) == .today }
@@ -505,10 +554,11 @@ struct RootView: View {
     }
 
     /// The content toolbar's trailing end (mockups 01, 10): [search] [● Record] […], each in its
-    /// own glass. The search field shows on the top-level screens (not on a lecture or a course,
-    /// mockups 03 and 08, where ⌘F still opens Search). Record is Today's while idle (File ▸ New
-    /// Lecture Capture, ⇧⌘N, starts one from anywhere); a running recording shows on every screen,
-    /// so it is never forgotten, and brings the live screen back.
+    /// own glass (on the Mac the pane toggles follow the screen's groups: `PaneToggleBar`). The
+    /// search field shows on the top-level screens (not on a lecture or a course, mockups 03 and
+    /// 08, where ⌘F still opens Search). Record is Today's while idle
+    /// (File ▸ New Lecture Capture, ⇧⌘N, starts one from anywhere); a running recording shows on
+    /// every screen, so it is never forgotten, and brings the live screen back.
     @ToolbarContentBuilder
     private func trailingItems(center: FilingCenter) -> some ToolbarContent {
         if showsSearchField {
@@ -896,9 +946,10 @@ private struct SearchFieldModifier: ViewModifier {
 #endif
 
 /// The main window's columns (DESIGN 3.3, 6.1): the sidebar 200–320, the screen at least 480 (Mail
-/// 700), the agent's right sidebar 300–560. The screen's minimum is declared per screen, never
-/// measured from its content, and the window's minimum is the sidebar's width while it shows + the
-/// screen's minimum + the agent column's width while it shows (`.windowResizability(.contentMinSize)`).
+/// 700), then on the Mac the side panes (260–560 each, `PaneTable`). The screen's minimum is
+/// declared per screen, never measured from its content, and the window's minimum is the sidebar's
+/// width while it shows + the screen's minimum + the panes laid out now at their minimums
+/// (`PaneHostModel.placedNeed`; `.windowResizability(.contentMinSize)`).
 enum WindowColumns {
     static let sidebarMin: CGFloat = 200
     static let sidebarMax: CGFloat = 320
@@ -907,17 +958,18 @@ enum WindowColumns {
     /// Mail's narrowest: its 318 pt list, the divider and the reader's rigid rows (a found row's
     /// text, lecture chip, Add to Calendar and its 64 pt trailing action; the route menu), about
     /// 380 pt with the reader's 26 pt margins. At 480 the list and reader were laid out wider than
-    /// the column, centred, and drawn over the sidebar and under the agent's column.
+    /// the column, centred, and drawn over the sidebar and under the panes.
     static let mailMin: CGFloat = 700
     /// The screen's own ideal, so no one-line text ideal of a screen sizes the window.
     static let detailIdeal: CGFloat = 720
     /// macOS 26's floating sidebar sits this far in from the window's edge.
     static let sidebarInset: CGFloat = 8
-    /// The room past the agent's minimum before a sidebar it hid comes back (no flicker at the edge).
+    /// The room past what the panes want before a sidebar hidden for them comes back (no flicker
+    /// at the edge).
     static let sidebarReturn: CGFloat = 40
 
-    /// What `screen` declares as its narrowest: the detail column's minimum, the room the agent's
-    /// sidebar leaves it and `SidebarFit`'s measure.
+    /// What `screen` declares as its narrowest: the detail column's minimum, the room the panes
+    /// leave it and `SidebarFit`'s measure.
     static func detailMin(for screen: SidebarItem?) -> CGFloat {
         switch screen {
         case .mail?, .mailScope?: mailMin
@@ -925,73 +977,6 @@ enum WindowColumns {
         }
     }
 }
-
-#if os(macOS)
-/// When the window cannot hold the sidebar, the screen's minimum and the agent's right sidebar
-/// together (a window as wide as the screen, full screen, a tile), the sidebar hides while the
-/// panel is expanded (the panel's column shows once it has), and comes back when the panel shrinks
-/// or closes or the window has room again, as Xcode and Finder collapse theirs; the window is never
-/// made wider. The student's own toggle (the toolbar's button, View ▸ Show Sidebar ⌃⌘S, dragging
-/// it shut) always wins, and a practice round or exam owns the sidebar while it runs.
-private struct SidebarFit: View {
-    @Binding var columns: NavigationSplitViewVisibility
-    let sidebarWidth: CGFloat
-    /// The screen on display's declared minimum (`WindowColumns.detailMin(for:)`).
-    let screenMin: CGFloat
-    let agentExpanded: Bool
-    let isPaused: Bool
-
-    /// Measured here, so a window resize re-renders only this view.
-    @State private var windowWidth: CGFloat = 0
-    /// The sidebar is hidden by this, not by the student.
-    @State private var hidSidebar = false
-    /// What this view last wrote (its own changes are not the student's).
-    @State private var wrote: NavigationSplitViewVisibility?
-
-    var body: some View {
-        Color.clear
-            .allowsHitTesting(false)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width.rounded() } action: { windowWidth = $0 }
-            .onChange(of: agentExpanded) { fit() }
-            .onChange(of: windowWidth) { fit() }
-            // Another screen (Mail needs more than 480): the sidebar makes room or comes back.
-            .onChange(of: screenMin) { fit() }
-            .onChange(of: columns) { _, visibility in
-                if visibility != wrote { hidSidebar = false }
-                wrote = nil
-            }
-    }
-
-    private func fit() {
-        guard !isPaused, windowWidth > 0 else { return }
-        let screen = screenMin
-        let sidebar = sidebarWidth + WindowColumns.sidebarInset
-        let showsSidebar = columns != .detailOnly
-        let fitsAlone = AgentPanelLayout.fits(windowWidth: windowWidth, beside: screen)
-        let fitsBeside = AgentPanelLayout.fits(windowWidth: windowWidth, beside: screen + sidebar)
-        if agentExpanded, showsSidebar, !fitsBeside, fitsAlone {
-            hidSidebar = true
-            // At once: the panel's column shows only after the sidebar has made room for it.
-            write(.detailOnly, animated: false)
-        } else if hidSidebar, !showsSidebar {
-            let returnsAt = screen + sidebar + WindowColumns.sidebarReturn
-            let roomReturned = AgentPanelLayout.fits(windowWidth: windowWidth, beside: returnsAt)
-            if !agentExpanded || roomReturned {
-                hidSidebar = false
-                write(.all, animated: true)
-            }
-        }
-    }
-
-    private func write(_ visibility: NavigationSplitViewVisibility, animated: Bool) {
-        guard columns != visibility else { return }
-        wrote = visibility
-        var transaction = Transaction(animation: animated ? .default : nil)
-        transaction.disablesAnimations = !animated
-        withTransaction(transaction) { columns = visibility }
-    }
-}
-#endif
 
 /// The detail column's stack identity: one for the top-level screens, one per course or lecture.
 private enum DetailIdentity: Hashable {

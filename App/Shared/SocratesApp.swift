@@ -6,6 +6,9 @@ import CoursesUI
 import FilingUI
 import MailUI
 import NotesUI
+#if os(macOS)
+import Panes
+#endif
 import ReviewUI
 import StudyCore
 import StudyUI
@@ -74,6 +77,7 @@ struct SocratesApp: App {
         #endif
         .commands {
             SidebarCommands()
+            // The live lecture's inspector (⌃⌘I) and the iPad's; the Mac main window has panes.
             InspectorCommands()
             LectureCommands(model: model)
             CourseCommands { model.sheet = .newCourse }
@@ -97,8 +101,8 @@ struct SocratesApp: App {
             Group {
                 MailCommands()
                 CalendarCommands()
-                // ma: View ▸ Show Chat / Hide Chat ⌘J and Expand Chat / Shrink Chat ⌥⌘J (the agent
-                // panel, every screen of the main window), only with Claude Code.
+                // ma: View ▸ Show Chat / Hide Chat ⌘J and Expand Chat / Shrink Chat ⌥⌘J (the small
+                // chat and the Agent pane, every screen of the main window), only with Claude Code.
                 AgentPanelCommands()
                 // Format (M6): the note editor's paragraph styles, lists and marks.
                 NoteFormatCommands()
@@ -109,6 +113,9 @@ struct SocratesApp: App {
                 // reading content; off where no zoomable screen shows). Mac only.
                 #if os(macOS)
                 ContentZoomCommands()
+                // panes: View ▸ Show / Hide <pane> ⌥⌘1… in toolbar order, Maximize / Restore Pane ⇧⌘↩
+                // (the key main window's panes).
+                PaneCommands()
                 #endif
             }
         }
