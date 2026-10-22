@@ -7,44 +7,44 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// Your notes (nl, docs/plan-notes-layout.md §4; mockups 34–35): the lecture notes page's trailing
-/// inspector column with the student's own notes for the class, beside Claude's text.
+/// Your notes (nl, docs/plan-notes-layout.md §4; mockups 34–35, 40): the student's own notes for
+/// the class, in a side pane beside Claude's text (the notes page) or the slide (Review's Whole
+/// lecture).
 ///
-/// - The lecture's own note first (the `Note` with the lecture and no slide, the one Review's
-///   Whole lecture edits), written as in Notes. Empty: an area on the quiet fill that takes the
-///   caret on a click (no placeholder); the first keystroke makes the note.
+/// - The lecture's own note first (the `Note` with the lecture and no slide), written as in Notes.
+///   Empty: an area on the quiet fill that takes the caret on a click (no placeholder); the first
+///   keystroke makes the note.
 /// - A hairline, then one group per slide with a note or ink, in deck order: the slide's chip in a
 ///   34 pt leading column; beside it the slide's ink as a thumbnail (white paper in both
 ///   appearances), then each note of the slide, edited in place (saved 0.5 s after typing stops
 ///   and on leaving; emptied, it is deleted, Edit ▸ Undo brings it back). A slide with ink and no
-///   note has its empty note under the thumbnail. A chip or a thumbnail opens Review there.
+///   note has its empty note under the thumbnail. A chip or a thumbnail opens the slide
+///   (`onOpenSlide`, else Review there).
 /// - A lecture without a deck: its notes with a moment, in time order, each after its time chip.
-/// - The groups of the section being read (`readingSection`) share one quiet fill, and the column
-///   scrolls them a third down from its top, never while the pointer is over it, while one of its
-///   notes is being typed in, or within 2 s of the student scrolling it.
+/// - What it follows (`YourNotesFollow`: the section being read, or the slide on screen) shares one
+///   quiet fill, and the column scrolls it a third down from its top, never while the pointer is
+///   over it, while one of its notes is being typed in, or within 2 s of the student scrolling it.
 ///
-/// The header ("Your notes", Hide) is a toolbar item over the column while it is shown; it never
-/// zooms. The notes, chips and thumbnails grow with `\.contentZoom`. An Edit as Note copy (Claude's
-/// words) is not listed. Every note is written when the column goes away. Esc ends typing.
+/// The pane's header ("Your notes", Maximize, Close) is the pane host's. The notes, chips and
+/// thumbnails grow with `\.contentZoom`; thumbnails keep their width while a divider is dragged.
+/// An Edit as Note copy (Claude's words) is not listed. Every note is written when the column goes
+/// away. Esc ends typing.
+///
+/// Its inputs are closures read in `body`: in a pane the column is drawn in another hosting view
+/// than the screen, and Observation follows what they read (the screen's `@Observable` state).
 public struct YourNotesColumn: View {
-    static let headerHeight: CGFloat = 52
-    /// The toolbar's inset from the window's trailing edge.
-    static let toolbarTrailingInset: CGFloat = 11
     private nonisolated static let space = "yourNotes"
 
     private let lectureID: Lecture.ID
-    private let sections: [LectureNotesSection]
-    private let readingSection: String?
-    private let isShown: Bool
-    private let hide: () -> Void
+    private let sections: @MainActor () -> [LectureNotesSection]
+    private let follow: @MainActor () -> YourNotesFollow
+    private let onOpenSlide: ((Int) -> Void)?
     private let onEditingChange: (Bool) -> Void
 
     @Fetch private var rows: YourNotesRows
     @Environment(\.studyServices) private var services
     @Environment(\.contentZoom) private var zoom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var columnWidth: CGFloat = 336
     /// The notes being typed in (their sessions).
     @State private var focused: Set<Note.ID> = []
     /// While a note is being typed in, its group stays and nothing is drawn again under it.
@@ -57,22 +57,24 @@ public struct YourNotesColumn: View {
     @State private var pendingScroll = false
 
     /// - Parameters:
-    ///   - sections: the current version's sections (the page reads them; this column's read
+    ///   - sections: the current version's sections (the notes page reads them; this column's read
     ///     leaves `lecture_notes` alone, which is written ten times a second while notes stream).
-    ///   - readingSection: the section of the notes under the reading line (nil: the overview).
-    ///   - isShown: the column is on screen (its header joins the toolbar only then).
-    ///   - hide: the header's Hide.
-    ///   - onEditingChange: a note in the column has focus or no longer has (the page detaches its
-    ///     ↩ meanwhile).
+    ///   - follow: what the column marks and scrolls to.
+    ///   - onOpenSlide: a slide's chip or thumbnail (Review moves its own review); nil: Review opens
+    ///     at the slide.
+    ///   - onEditingChange: a note in the column has focus or no longer has (the page's ↩ and the
+    ///     review's keys stand down meanwhile).
     public init(
-        lectureID: Lecture.ID, sections: [LectureNotesSection], readingSection: String?, isShown: Bool = true,
-        hide: @escaping () -> Void, onEditingChange: @escaping (Bool) -> Void = { _ in }
+        lectureID: Lecture.ID,
+        sections: @escaping @MainActor () -> [LectureNotesSection] = { [] },
+        follow: @escaping @MainActor () -> YourNotesFollow,
+        onOpenSlide: ((Int) -> Void)? = nil,
+        onEditingChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.lectureID = lectureID
         self.sections = sections
-        self.readingSection = readingSection
-        self.isShown = isShown
-        self.hide = hide
+        self.follow = follow
+        self.onOpenSlide = onOpenSlide
         self.onEditingChange = onEditingChange
         _rows = Fetch(wrappedValue: .empty, YourNotesRequest(lectureID: lectureID))
     }
@@ -84,56 +86,42 @@ public struct YourNotesColumn: View {
     }
 
     public var body: some View {
-        let items = items
-        let run = runRect(items)
-        VStack(spacing: 0) {
-            Hairline()
-            ScrollView {
-                content(items)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 14)
-                    .padding(.bottom, 12)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .coordinateSpace(.named(Self.space))
-                    .background(alignment: .topLeading) {
-                        if let run {
-                            // The quiet fill as a solid token (DESIGN 3.1), as the empty note's
-                            // area: a vibrant `.fill` style drew nothing on the inspector's glass.
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(QuietFill())
-                                .frame(width: run.width, height: run.height)
-                                .offset(x: run.minX, y: run.minY)
-                                .accessibilityHidden(true)
-                        }
+        let follow = follow()
+        let items = items(sections: sections())
+        let run = runRect(items, follow: follow)
+        ScrollView {
+            content(items)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .coordinateSpace(.named(Self.space))
+                .background(alignment: .topLeading) {
+                    if let run {
+                        // The quiet fill as a solid token (DESIGN 3.1), as the empty note's area.
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(QuietFill())
+                            .frame(width: run.width, height: run.height)
+                            .offset(x: run.minX, y: run.minY)
+                            .accessibilityHidden(true)
                     }
-            }
-            .scrollIndicators(.automatic)
-            .scrollPosition($position)
-            .onScrollGeometryChange(for: CGRect.self) { $0.visibleRect } action: { _, rect in visible = rect }
-            .onScrollPhaseChange { old, new in
-                if Self.isStudent(old) || Self.isStudent(new) { userScrolledAt = Date() }
-            }
-            .onHover { isHovering = $0 }
+                }
         }
+        .scrollIndicators(.automatic)
+        .scrollPosition($position)
+        .onScrollGeometryChange(for: CGRect.self) { $0.visibleRect } action: { _, rect in visible = rect }
+        .onScrollPhaseChange { old, new in
+            if Self.isStudent(old) || Self.isStudent(new) { userScrolledAt = Date() }
+        }
+        .onHover { isHovering = $0 }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { ColumnBackground() }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
-        .toolbar {
-            // Only while shown: SwiftUI keeps a hidden inspector's content (and its items) alive.
-            if isShown {
-                ToolbarItem(placement: .automatic) {
-                    header
-                        .frame(width: max(0, columnWidth - Self.toolbarTrailingInset), alignment: .leading)
-                }
-                .sharedBackgroundVisibility(.hidden)
-            }
-        }
         .modifier(EscapeEndsTyping(isActive: !focused.isEmpty))
         .onChange(of: focused.isEmpty) { _, idle in
             frozen = idle ? nil : Frozen(keys: Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.key) }), pages: Set(items.compactMap(\.page)), ownKey: ownKey)
             onEditingChange(!idle)
         }
-        .onChange(of: readingSection) {
+        .onChange(of: follow) {
             pendingScroll = true
             scrollToRun(run)
         }
@@ -145,26 +133,6 @@ public struct YourNotesColumn: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("Your notes"))
-    }
-
-    // MARK: Header
-
-    /// "Your notes", 13 semibold, and Hide, level with the toolbar (never zoomed).
-    private var header: some View {
-        HStack(spacing: 8) {
-            Text("Your notes")
-                .font(.system(size: 13, weight: .semibold))
-                .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 0)
-            Button(action: hide) {
-                Label("Hide Inspector", systemImage: "sidebar.trailing")
-                    .labelStyle(.iconOnly)
-            }
-            .buttonStyle(.borderless)
-            .help(Text("Hide Inspector"))
-        }
-        .padding(.leading, 12)
-        .padding(.trailing, 18)
     }
 
     // MARK: Content
@@ -196,7 +164,7 @@ public struct YourNotesColumn: View {
     private func row(_ item: Item, store: RecordStore) -> some View {
         NoteGroupRow(
             item: item, lectureID: lectureID, courseID: rows.lecture?.courseID, deck: rows.deck, store: store, services: services,
-            zoom: zoom, onFocus: focusChanged
+            zoom: zoom, onOpenSlide: onOpenSlide, onFocus: focusChanged
         )
         .padding(.vertical, 7 * zoom)
         .padding(.horizontal, 8)
@@ -234,8 +202,7 @@ public struct YourNotesColumn: View {
         "own|" + ownNotes.map { "\($0.id)@\($0.updatedAt.timeIntervalSinceReferenceDate)" }.joined(separator: ",")
     }
 
-    private var items: [Item] {
-        let sections = sections
+    private func items(sections: [LectureNotesSection]) -> [Item] {
         var byPage: [Int: [Note]] = [:]
         for note in rows.notes {
             if let page = note.pageNumber { byPage[page, default: []].append(note) }
@@ -263,10 +230,15 @@ public struct YourNotesColumn: View {
 
     // MARK: Marking and scrolling (§4.4)
 
-    /// The one quiet fill under the groups of the section being read.
-    private func runRect(_ items: [Item]) -> CGRect? {
-        guard let readingSection else { return nil }
-        let frames = items.filter { $0.section == readingSection }.compactMap { rowFrames[$0.id] }
+    /// The one quiet fill under the groups followed: the section's, or the slide's.
+    private func runRect(_ items: [Item], follow: YourNotesFollow) -> CGRect? {
+        let followed: [Item]
+        switch follow {
+        case .section(let key?): followed = items.filter { $0.section == key }
+        case .page(let page?): followed = items.filter { $0.page == page }
+        case .section(nil), .page(nil): return nil
+        }
+        let frames = followed.compactMap { rowFrames[$0.id] }
         guard let first = frames.first else { return nil }
         return frames.dropFirst().reduce(first) { $0.union($1) }
     }
@@ -349,6 +321,8 @@ private struct NoteGroupRow: View {
     let store: RecordStore
     let services: StudyServices?
     let zoom: CGFloat
+    /// Review moves its own review to the slide; nil: Review opens there.
+    let onOpenSlide: ((Int) -> Void)?
     let onFocus: (Note.ID, Bool) -> Void
     /// Made once, when the row appears (as `OwnNoteView`'s).
     @State private var editor: SlideNoteEditor?
@@ -365,6 +339,8 @@ private struct NoteGroupRow: View {
                         deck: deck, page: page, maxWidth: 176 * zoom, showsChip: false, showsInk: true, ink: ink, zoom: zoom,
                         services: services, openSlide: { open() }
                     )
+                    // Its width holds while a divider is dragged; the notes beside it reflow.
+                    .defersReflowWhileResizing()
                     .accessibilityLabel(Text("Slide \(page) with your ink"))
                 }
                 ForEach(editor?.sessions ?? []) { session in
@@ -397,7 +373,9 @@ private struct NoteGroupRow: View {
     }
 
     private func open() {
-        if let page = item.page {
+        if let page = item.page, let onOpenSlide {
+            onOpenSlide(page)
+        } else if let page = item.page {
             openDestination(.lecture(lectureID, ReviewTarget(page: page)))
         } else if let time = item.time {
             openDestination(.lecture(lectureID, ReviewTarget(time: time, plays: true, recordingID: item.notes.first?.recordingID)))
@@ -405,8 +383,8 @@ private struct NoteGroupRow: View {
     }
 }
 
-/// The inspector column's background: the system's in light mode, lifted a little in dark mode
-/// (as Review's and Calendar's).
+/// The pane's background: the system's in light mode, lifted a little in dark mode (as Review's
+/// and Calendar's).
 private struct ColumnBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 

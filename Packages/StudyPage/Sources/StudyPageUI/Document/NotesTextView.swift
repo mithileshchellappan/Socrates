@@ -172,6 +172,8 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
     private let parsed = NotesParseCache()
     /// The inset the prose is indented by now (blocks at the measure read it).
     private let measure = NotesLayoutBox()
+    /// A divider or the window's edge is being dragged: the figures hold their width.
+    private let liveResize = NotesLiveResize()
     /// The container width the indents were last applied for.
     private var indentedWidth: CGFloat = -1
     private var indentTask: Task<Void, Never>?
@@ -222,7 +224,9 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
         let reindent = abs(width - indentedWidth) > 0.5 || measure.inset != input.inset
         measure.inset = input.inset
         indentedWidth = width
-        let builder = NotesDocumentBuilder(input: input, actions: self, anchors: anchors, parsed: parsed, measure: measure)
+        let builder = NotesDocumentBuilder(
+            input: input, actions: self, anchors: anchors, parsed: parsed, measure: measure, liveResize: liveResize
+        )
         let next = builder.build()
         // Keep the units that did not change (their text and attachments stay on screen).
         var first = 0
@@ -276,6 +280,14 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
         applyIndents()
     }
 
+    /// `\.isLiveResizing` from the notes view (a pane divider, the screen's edge, the window's
+    /// edge): the figures hold their width meanwhile, and the prose is indented again at its end.
+    func setLiveResizing(_ resizing: Bool) {
+        guard liveResize.isActive != resizing else { return }
+        liveResize.isActive = resizing
+        if !resizing { liveResizeEnded() }
+    }
+
     /// The view is going away.
     func stopTasks() {
         indentTask?.cancel()
@@ -288,7 +300,7 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
     /// Indents now, or during a live resize at most every 100 ms (once more at its end).
     private func scheduleIndents() {
         guard let textView else { return }
-        guard textView.inLiveResize || textView.window?.inLiveResize == true else {
+        guard liveResize.isActive || textView.inLiveResize || textView.window?.inLiveResize == true else {
             applyIndents()
             return
         }
@@ -958,6 +970,8 @@ private struct CapsuleSurface: ViewModifier {
 struct NotesTextHost: NSViewRepresentable {
     let input: NotesDocumentInput
     let controller: LectureNotesController
+    /// `\.isLiveResizing` where the notes are drawn.
+    let isLiveResizing: Bool
     var onReadingSection: ((String?) -> Void)?
     let onHeight: (CGFloat) -> Void
 
@@ -1001,6 +1015,7 @@ struct NotesTextHost: NSViewRepresentable {
         coordinator.onReadingSection = onReadingSection
         controller.coordinator = coordinator
         coordinator.apply(input)
+        coordinator.setLiveResizing(isLiveResizing)
     }
 
     static func dismantleNSView(_ view: NotesTextView, coordinator: NotesTextCoordinator) {

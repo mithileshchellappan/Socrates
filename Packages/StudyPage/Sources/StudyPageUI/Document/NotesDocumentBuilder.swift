@@ -60,6 +60,8 @@ final class NotesDocumentBuilder {
     let parsed: NotesParseCache
     /// The page's inset, for blocks at the measure.
     let measure: NotesLayoutBox
+    /// While a divider is dragged the figures keep their width (`ResizeDeferredFigure`).
+    let liveResize: NotesLiveResize
     /// Changes everything (style, appearance, zoom): part of every signature.
     let stamp: String
 
@@ -69,7 +71,7 @@ final class NotesDocumentBuilder {
 
     init(
         input: NotesDocumentInput, actions: any NotesDocumentActions, anchors: NotesAnchorCache, parsed: NotesParseCache,
-        measure: NotesLayoutBox
+        measure: NotesLayoutBox, liveResize: NotesLiveResize
     ) {
         self.input = input
         metrics = NotesMetrics(style: input.style, zoom: input.zoom)
@@ -77,10 +79,16 @@ final class NotesDocumentBuilder {
         self.anchors = anchors
         self.parsed = parsed
         self.measure = measure
+        self.liveResize = liveResize
         stamp = "\(input.style)|\(input.isDark)|\(input.zoom)"
     }
 
     private func scaled(_ points: CGFloat) -> CGFloat { metrics.scaled(points) }
+
+    /// A figure that keeps its width while a divider or the window's edge is dragged.
+    private func deferred<Figure: View>(_ figure: Figure) -> ResizeDeferredFigure<Figure> {
+        ResizeDeferredFigure(resize: liveResize, content: figure)
+    }
 
     // MARK: The document
 
@@ -456,7 +464,7 @@ final class NotesDocumentBuilder {
         case .table(let table):
             // A breakout: the page's full width.
             let attachment = HostedBlockAttachment(
-                TableBlockView(table: table, size: metrics.small, zoom: metrics.zoom, fills: input.style == .page),
+                deferred(TableBlockView(table: table, size: metrics.small, zoom: metrics.zoom, fills: input.style == .page)),
                 estimate: CGFloat(table.rows.count + 1) * scaled(31), margin: 2,
                 plainText: ([table.header] + table.rows).map { $0.joined(separator: "\t") }.joined(separator: "\n")
             )
@@ -556,7 +564,7 @@ final class NotesDocumentBuilder {
     private func codeUnit(_ code: String, language: String, sectionKey: String, id: String) -> NotesUnit {
         let lines = max(1, code.split(separator: "\n", omittingEmptySubsequences: false).count)
         let attachment = HostedBlockAttachment(
-            CodeBlockView(code: code, language: language, size: metrics.code, zoom: metrics.zoom),
+            deferred(CodeBlockView(code: code, language: language, size: metrics.code, zoom: metrics.zoom)),
             estimate: CGFloat(lines) * metrics.code * 1.5 + scaled(24), plainText: code
         )
         return blockUnit(attachment, signature: "code|\(id)|\(language)|\(code)", sectionKey: sectionKey, spacing: scaled(16), breakout: true)
@@ -602,7 +610,7 @@ final class NotesDocumentBuilder {
             guard case .success(let diagram) = Diagram.parse(fence.body) else { return [] }
             let layout = DiagramLayout.layout(diagram)
             let attachment = HostedBlockAttachment(
-                DiagramView(diagram: diagram, scale: metrics.zoom, spreads: input.style == .page),
+                deferred(DiagramView(diagram: diagram, scale: metrics.zoom, spreads: input.style == .page)),
                 estimate: layout.size.height * metrics.zoom, plainText: fence.body
             )
             return [blockUnit(attachment, signature: signature, sectionKey: sectionKey, spacingBefore: scaled(6), spacing: scaled(14), breakout: true)]
@@ -610,7 +618,7 @@ final class NotesDocumentBuilder {
             // A breakout at the page's width; it keeps its height.
             guard case .success(let spec) = ChartSpec.parse(fence.body) else { return [] }
             let attachment = HostedBlockAttachment(
-                ChartBlockView(spec: spec, height: metrics.chartHeight, zoom: metrics.zoom), estimate: metrics.chartHeight + scaled(44),
+                deferred(ChartBlockView(spec: spec, height: metrics.chartHeight, zoom: metrics.zoom)), estimate: metrics.chartHeight + scaled(44),
                 plainText: spec.title ?? ""
             )
             return [blockUnit(attachment, signature: signature, sectionKey: sectionKey, spacingBefore: scaled(6), spacing: scaled(14), breakout: true)]
@@ -625,10 +633,10 @@ final class NotesDocumentBuilder {
             let actions = actions
             let lecture = input.lectureID
             let attachment = HostedBlockAttachment(
-                SlideFigureView(
+                deferred(SlideFigureView(
                     deck: deck, page: page, maxWidth: width, centred: input.style == .page, box: ref.box, caption: ref.caption,
                     zoom: metrics.zoom, services: actions?.services, openSlide: { actions?.open(.slide(lecture: lecture, page: page)) }
-                ),
+                )),
                 estimate: width * 9 / 16 + scaled(26), plainText: "S\(page)"
             )
             return [blockUnit(attachment, signature: signature, sectionKey: sectionKey, spacingBefore: scaled(6), spacing: scaled(18), breakout: true)]
