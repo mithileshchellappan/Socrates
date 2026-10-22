@@ -19,7 +19,7 @@ Workstream A also changed, outside this package: `Packages/Review` (`Package.swi
 |---|---|---|
 | `NotesView(scope:selection:query:)` | NotesUI | the Notes screen for `.all` or `.course(id)`; `selection` is the window's note selection, `query` the toolbar field's text (filters the list in place) |
 | `NoteEditor(session:style:startsWith:controller:professor:lectureID:trailingTime:focusRequest:startsFocused:onFocusChange:onLink:)` | NotesUI | one editable note; `.document` (Notes screen) or `.inspector` (Review) |
-| `NoteEditor(note:style:professor:onLink:)` | NotesUI | one note read-only (Review's Whole lecture: the slides' notes) |
+| `NoteEditor(note:style:professor:onLink:)` | NotesUI | one note read-only (Review's Whole lecture on iOS: the slides' notes) |
 | `NoteEditorController` | NotesUI | the toolbar's and Format menu's handle on an editor: `apply(_ NoteParagraphKind)`, `toggle(_ NoteMark)`, `addLink()`, `insertImages(at:)`, `insertSketch()`, `insertSlideClip(_:)`, `insertQuote(_:)`, `focus()`; `isFocused`, `paragraphKind` |
 | `NoteFormatCommands` | NotesUI | the Format menu (add to the scene's `.commands`) |
 | `NoteEditorFocus.shared.editor` | NotesUI | the focused editor (what the Format menu acts on) |

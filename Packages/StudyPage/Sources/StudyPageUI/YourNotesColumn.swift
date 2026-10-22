@@ -36,6 +36,9 @@ import SwiftUI
 ///
 /// Its inputs are closures read in `body`: in a pane the column is drawn in another hosting view
 /// than the screen, and Observation follows what they read (the screen's `@Observable` state).
+/// `body` does no work: the groups are prepared when their inputs change (`YourNotesGroups`), and
+/// a scroll frame writes only a box `body` never reads (the slide moving while the student scrolls
+/// redraws no group).
 public struct YourNotesColumn: View {
     private nonisolated static let space = "yourNotes"
 
@@ -52,13 +55,18 @@ public struct YourNotesColumn: View {
     @Environment(\.studyServices) private var services
     @Environment(\.contentZoom) private var zoom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// What the column lists, prepared when the rows, the sections or the typing change.
+    @State private var groups = YourNotesGroups()
     /// The notes being typed in (their sessions).
     @State private var focused: Set<Note.ID> = []
     /// While a note is being typed in, its group stays and nothing is drawn again under it.
     @State private var frozen: Frozen?
-    @State private var rowFrames: [String: CGRect] = [:]
+    /// The one quiet fill under the groups followed, placed again only when one of them moves.
+    @State private var run: CGRect?
+    /// The visible part and the groups' frames: written on every scroll and layout frame, never
+    /// read in `body`, so scrolling draws nothing again.
+    @State private var measured = Measured()
     @State private var position = ScrollPosition(edge: .top)
-    @State private var visible: CGRect = .zero
     @State private var isHovering = false
     @State private var userScrolledAt = Date.distantPast
     /// What it follows is to be scrolled into view: from the start (it opens there) and after each
@@ -114,10 +122,11 @@ public struct YourNotesColumn: View {
 
     public var body: some View {
         let follow = follow()
-        let items = items(sections: sections())
-        let run = runRect(items, follow: follow)
+        let source = YourNotesGroups.Source(
+            rows: rows, sections: sections(), keptPages: frozen?.pages ?? [], typedInOwn: typedInOwn, ownGeneration: ownGeneration
+        )
         ScrollView {
-            content(items)
+            content
                 .padding(.horizontal, 16)
                 .padding(.top, 14)
                 .padding(.bottom, 12)
@@ -136,7 +145,11 @@ public struct YourNotesColumn: View {
         }
         .scrollIndicators(.automatic)
         .scrollPosition($position)
-        .onScrollGeometryChange(for: CGRect.self) { $0.visibleRect } action: { _, rect in visible = rect }
+        .onScrollGeometryChange(for: CGRect.self) { $0.visibleRect } action: { _, rect in
+            let resized = rect.height != measured.visible.height
+            measured.visible = rect
+            if resized, pendingScroll { scrollToRun(run) }
+        }
         .onScrollPhaseChange { old, new in
             if Self.isStudent(old) || Self.isStudent(new) { userScrolledAt = Date() }
         }
@@ -144,22 +157,28 @@ public struct YourNotesColumn: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { ColumnBackground() }
         .modifier(EscapeEndsTyping(isActive: !focused.isEmpty))
+        .onChange(of: source, initial: true) { _, source in
+            let groups = YourNotesGroups(source)
+            self.groups = groups
+            placeRun(groups: groups, follow: self.follow())
+        }
         .onChange(of: focused.isEmpty) { _, idle in
-            frozen = idle ? nil : Frozen(keys: Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.key) }), pages: Set(items.compactMap(\.page)), ownKey: ownKey)
+            frozen = idle ? nil : Frozen(
+                keys: Dictionary(uniqueKeysWithValues: groups.items.map { ($0.id, $0.key) }),
+                pages: Set(groups.items.compactMap(\.page)),
+                ownKey: groups.ownKey
+            )
             if idle {
                 if rows.deck == nil, !typedInOwn.isEmpty { ownGeneration += 1 }
                 typedInOwn = []
             }
             onEditingChange(!idle)
         }
-        .onChange(of: follow) {
+        .onChange(of: follow) { _, follow in
             pendingScroll = true
-            scrollToRun(run)
+            scrollToRun(placeRun(groups: groups, follow: follow))
         }
         .onChange(of: run) { _, run in
-            if pendingScroll { scrollToRun(run) }
-        }
-        .onChange(of: visible.height) {
             if pendingScroll { scrollToRun(run) }
         }
         .onDisappear {
@@ -172,21 +191,21 @@ public struct YourNotesColumn: View {
     // MARK: Content
 
     @ViewBuilder
-    private func content(_ items: [Item]) -> some View {
-        if rows.isLoaded, let store = services?.records {
+    private var content: some View {
+        if groups.isLoaded, let store = services?.records {
             VStack(alignment: .leading, spacing: 0) {
                 OwnNoteView(
                     anchor: NoteAnchor(courseID: rows.lecture?.courseID, lectureID: lectureID, deckID: nil, page: nil, recordingID: recordingID),
-                    notes: ownNotes, store: store, lectureID: lectureID, zoom: zoom, playhead: playhead, showsMoments: recordingID != nil,
+                    notes: groups.ownNotes, store: store, lectureID: lectureID, zoom: zoom, playhead: playhead, showsMoments: recordingID != nil,
                     onLink: onLink, onFocus: ownFocusChanged
                 )
-                .id(frozen?.ownKey ?? ownKey)
-                if !items.isEmpty {
+                .id(frozen?.ownKey ?? groups.ownKey)
+                if !groups.items.isEmpty {
                     Hairline()
                         .padding(.top, 12 * zoom)
                         .padding(.bottom, 8 * zoom)
                     VStack(alignment: .leading, spacing: 2 * zoom) {
-                        ForEach(items) { item in
+                        ForEach(groups.items) { item in
                             row(item, store: store)
                                 .id(frozen?.keys[item.id] ?? item.key)
                         }
@@ -196,7 +215,7 @@ public struct YourNotesColumn: View {
         }
     }
 
-    private func row(_ item: Item, store: RecordStore) -> some View {
+    private func row(_ item: YourNotesGroups.Item, store: RecordStore) -> some View {
         NoteGroupRow(
             item: item, lectureID: lectureID, courseID: rows.lecture?.courseID, deck: rows.deck, store: store, services: services,
             zoom: zoom, recordingID: recordingID, playhead: playhead, onOpenSlide: onOpenSlide, onLink: onLink, onFocus: focusChanged
@@ -204,84 +223,28 @@ public struct YourNotesColumn: View {
         .padding(.vertical, 7 * zoom)
         .padding(.horizontal, 8)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in
-            rowFrames[item.id] = frame
+            measured.rowFrames[item.id] = frame
+            // Only a followed group moving moves the fill.
+            let follow = follow()
+            if item.isFollowed(by: follow) { placeRun(groups: groups, follow: follow) }
         }
         .padding(.horizontal, -8)
     }
 
-    // MARK: Rows
-
-    /// One group: a slide's notes and ink, or (a lecture without a deck) one note at its moment.
-    struct Item: Identifiable, Equatable {
-        let id: String
-        var page: Int?
-        var time: Double?
-        var notes: [Note]
-        var ink: InkDrawing?
-        /// The section it belongs to (§4.4).
-        var section: String?
-
-        /// Changes when the group is to be drawn again (a note added, edited or deleted elsewhere).
-        var key: String {
-            id + "|" + notes.map { "\($0.id)@\($0.updatedAt.timeIntervalSinceReferenceDate)" }.joined(separator: ",")
-        }
-    }
-
-    /// The lecture's own notes: the notes without a slide (with a deck), or without a slide and a
-    /// moment (without one: the timed notes list by time).
-    private var ownNotes: [Note] {
-        rows.notes.filter { $0.pageNumber == nil && (rows.deck != nil || $0.audioTime == nil) }
-    }
-
-    private var ownKey: String {
-        "own\(ownGeneration)|" + ownNotes.map { "\($0.id)@\($0.updatedAt.timeIntervalSinceReferenceDate)" }.joined(separator: ",")
-    }
-
-    private func items(sections: [LectureNotesSection]) -> [Item] {
-        var byPage: [Int: [Note]] = [:]
-        for note in rows.notes {
-            if let page = note.pageNumber { byPage[page, default: []].append(note) }
-        }
-        var pages = Set(byPage.keys).union(rows.ink.keys)
-        // A group whose note is being typed in stays (emptied, its note is deleted on save).
-        if let frozen { pages.formUnion(frozen.pages) }
-        var items = pages.sorted().map { page in
-            Item(
-                id: "p\(page)", page: page, notes: (byPage[page] ?? []).sorted { $0.createdAt < $1.createdAt }, ink: rows.ink[page],
-                section: LectureNotesSection.holding(page: page, in: sections)?.key
-            )
-        }
-        if rows.deck == nil {
-            let timed = rows.notes
-                .filter { $0.pageNumber == nil && $0.audioTime != nil && !typedInOwn.contains($0.id) }
-                .sorted { ($0.audioTime ?? 0) < ($1.audioTime ?? 0) }
-            items += timed.map { note in
-                Item(
-                    id: "t\(note.id)", time: note.audioTime, notes: [note],
-                    section: note.audioTime.flatMap { LectureNotesSection.holding(time: $0, recording: note.recordingID, in: sections)?.key }
-                )
-            }
-        }
-        return items
-    }
-
     // MARK: Marking and scrolling (§4.4)
 
-    /// The one quiet fill under the groups followed: the section's, or the slide's.
-    private func runRect(_ items: [Item], follow: YourNotesFollow) -> CGRect? {
-        let followed: [Item]
-        switch follow {
-        case .section(let key?): followed = items.filter { $0.section == key }
-        case .page(let page?): followed = items.filter { $0.page == page }
-        case .section(nil), .page(nil): return nil
-        }
-        let frames = followed.compactMap { rowFrames[$0.id] }
-        guard let first = frames.first else { return nil }
-        return frames.dropFirst().reduce(first) { $0.union($1) }
+    /// Places the quiet fill under the groups `follow` marks (written only when it moves) and
+    /// returns where it is.
+    @discardableResult
+    private func placeRun(groups: YourNotesGroups, follow: YourNotesFollow) -> CGRect? {
+        let rect = groups.run(following: follow, frames: measured.rowFrames)
+        if rect != run { run = rect }
+        return rect
     }
 
     /// The marked groups a third down from the top, when they are not in view.
     private func scrollToRun(_ run: CGRect?) {
+        let visible = measured.visible
         guard let run, visible.height > 0 else { return }
         let isOpening = Date().timeIntervalSince(appearedAt) < 1
         if !isOpening { pendingScroll = false }
@@ -363,7 +326,7 @@ private struct OwnNoteView: View {
 
 /// One group of Your notes: the chip in its leading column, then the ink thumbnail and the notes.
 private struct NoteGroupRow: View {
-    let item: YourNotesColumn.Item
+    let item: YourNotesGroups.Item
     let lectureID: Lecture.ID
     let courseID: Course.ID?
     let deck: Deck?
@@ -451,6 +414,15 @@ private struct ColumnBackground: View {
             Rectangle().fill(.white.opacity(0.025)).ignoresSafeArea()
         }
     }
+}
+
+/// Where Your notes' groups are laid out and which part of them is in view. A reference the
+/// column keeps in `@State` and never reads in `body`: writing it on every scroll or layout frame
+/// draws nothing again (as StudyUI's held widths).
+@MainActor
+private final class Measured {
+    var visible: CGRect = .zero
+    var rowFrames: [String: CGRect] = [:]
 }
 
 /// Esc ends typing in a note of the column (the note editor keeps Esc for its sketches): a local

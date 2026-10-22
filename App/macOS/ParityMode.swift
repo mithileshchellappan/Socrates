@@ -651,7 +651,7 @@ struct ParityRootView: View {
                     documentSelection: launch.documentSelection, documentPage: launch.documentPage,
                     materialPage: launch.materialPage, panel: launch.panel, examSheet: launch.examSheet
                 )
-                // ln: opening a lecture's notes or Review's Whole lecture never queues notes here.
+                // ln: opening a lecture's notes or Review's Summary never queues notes here.
                 .environment(\.lectureNotesQueuesOnOpen, false)
                 // mt: the reader never queues a chapter summary here.
                 .environment(\.materialReaderQueuesSummaries, false)

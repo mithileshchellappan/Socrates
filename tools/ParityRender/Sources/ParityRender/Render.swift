@@ -788,7 +788,7 @@ struct ParityRender {
                 )
                 .environment(\.calendarDetailPreview, shot.calendarDetail)
                 .environment(\.reviewInspectorTab, shot.reviewTab ?? reviewTab)
-                // ln: opening a lecture's notes or Review's Whole lecture never queues notes here.
+                // ln: opening a lecture's notes or Review's Summary never queues notes here.
                 .environment(\.lectureNotesQueuesOnOpen, false)
                 .environment(\.lectureNotesPreview, shot.notesPreview)
                 // mt: the reader never queues a chapter summary here.

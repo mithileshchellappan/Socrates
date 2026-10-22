@@ -40,7 +40,9 @@ through the screen's values, bindings or environment.
   `YourNotesFollow.page(n)` gives slide n's group the quiet fill and scrolls it a third down, as
   `.section` does for a section's groups: never while the pointer is over the column, while one of
   its notes is typed in, or within 2 s of the student scrolling it. The ink thumbnails keep their
-  width while a divider is dragged (`defersReflowWhileResizing()`).
+  width while a divider is dragged (`defersReflowWhileResizing()`). Scrolling runs no `body`: the
+  visible rect and the groups' frames live in a box the body never reads, and the groups
+  (`YourNotesGroups`) are prepared in `onChange` when the rows, the sections or the typing change.
 - **`LectureNotesView`** takes `commands: LectureNotesCommandRelay?`. Given a relay (Review's
   Summary tab, which sits in a pane), the view publishes no focused values itself; the screen
   publishes the relay's `ask` and `highlight` from its own tree, where the menu reads them. This

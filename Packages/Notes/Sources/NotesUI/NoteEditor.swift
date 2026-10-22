@@ -68,7 +68,7 @@ public struct NoteEditor: View {
         _context = State(initialValue: NoteEditorContext(metrics: NoteMetrics(style: style)))
     }
 
-    /// A note shown read-only (Review's Whole lecture: the notes of the slides).
+    /// A note shown read-only (Review's Whole lecture on iOS: the notes of the slides).
     public init(note: Note, style: NoteEditorStyle, professor: String? = nil, onLink: ((NoteLink) -> Bool)? = nil) {
         session = nil
         readOnlyNote = note

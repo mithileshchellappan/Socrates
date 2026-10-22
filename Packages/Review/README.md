@@ -6,7 +6,7 @@ manual "slide starts here" anchors (#9). Milestone 1, workstream C.
 | Product | Contents | Imports |
 |---|---|---|
 | `Review` | `LecturePlayer`, `LectureComposition`, `SlideTimeline`, `ReviewSession` (follow + navigation), `SlideNoteEditor` (on Notes' `NoteSession` since M6; moved to `Notes` in nl), `AnchorEditor`, `ReviewProgressTracker` / `ReviewStateKeeper`; M4: `StudyItems`, `StudyEdits`, `SlideTextLocator`, `ScrubberMoments`; M6: `SlideInkEditor`, `StudyEdits.addFlag` / `deleteFlag` | StudyCore, Capture, Notes (M6), AVFoundation, PDFKit (internal). No SwiftUI |
-| `ReviewUI` | `LectureReviewView`, `ReviewCommands`, `ReviewActions` (focused value); M5: `ReviewInspectorTab`, `\.reviewInspectorTab` (panes: `slide`, `lecture`, `summary`, see "Panes" below); M6: the ink layer, the toolbar's ink group and its keys (no new public API besides `ReviewActions`' ink fields) | Review, StudyUI, Capture + CaptureUI, ChatUI (M5: the Tutor tab), SwiftUI; AppKit/UIKit only for the large slide's backing-store view |
+| `ReviewUI` | `LectureReviewView`, `ReviewCommands`, `ReviewActions` (focused value); M5: `ReviewInspectorTab`, `\.reviewInspectorTab` (panes: `slide`, `lecture`, `summary`, see "Panes" below); M6: the ink layer, the toolbar's ink group and its keys (no new public API besides `ReviewActions`' ink fields) | Review, StudyUI, Capture + CaptureUI, ChatUI (M5: the Tutor tab), SwiftUI; AppKit/UIKit only where docs/ARCHITECTURE.md allows it: the large slide's backing-store view, the review's key monitor, system colours |
 
 No automated test suite at present; verified by building and rendering.
 
@@ -393,6 +393,12 @@ header with the tab picker in place of a title (docs/DESIGN.md 6.4, 8.1). Gone o
 `ReviewInspectorColumn`, the `.inspector`, Show Inspector, `\.agentPanelExpanded`, the
 `InspectorHeader` toolbar item and its column width reader. The iPad keeps its inspector with the
 three-tab header.
+
+Files (one view each): `ReviewNotesPane` (the Mac's pane), `ReviewInspector` (the iPad's
+inspector and the snapshot chrome's column), `ReviewNotesContent` (the tab on screen, shared by
+both), `NotesTabPicker`, `SlideNotesPane` (This slide) with `SlideNoteEditorView`,
+`WholeLectureNotes`, `SummaryPane` (Summary), `ReviewNoteLinks` (a chip in a note moves the
+review) and `ReviewNotesBackground`.
 
 - **Tabs** (`ReviewInspectorTab`, raw values `slide`, `lecture`, `summary`): "This slide",
   "Whole lecture", "Summary" in the pane's header, the iPad's inspector header and the snapshot

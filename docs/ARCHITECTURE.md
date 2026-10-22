@@ -8,8 +8,22 @@ break of one is a finding of its own, even when the code works.
   and wires them to views. It holds no feature logic.
 - **A feature is a package with a core and a UI.** The core holds models, repositories and services,
   with no SwiftUI, AppKit or UIKit. The UI holds the views, which depend on the core and never the
-  other way round. Only packages named as platform UI (`Panes`, the app's `macOS/` and `iOS/`
-  folders) import AppKit or UIKit.
+  other way round. A core's one exception is an `internal import` of PDFKit or AppKit to read a
+  file (slide and PDF text, Word and RTF), never to draw; each is a row in `docs/decisions.md`.
+- **SwiftUI first; AppKit and UIKit where SwiftUI has no equivalent.** `Panes` and the app's
+  `macOS/` and `iOS/` folders build window structure from them (split views, hosting views,
+  controllers, the floating panel). A feature's UI package imports AppKit or UIKit only for these,
+  each behind a SwiftUI view or modifier, with the screen itself in SwiftUI:
+  - TextKit editors and text documents (notes, the lecture notes page, the mail draft, the field
+    editor);
+  - platform views SwiftUI lacks: the slide's backing-store canvas, the PDF reader;
+  - key and event monitors (the review's keys, Esc in a column, the composer's ⌘V, modifier
+    flags on a click);
+  - platform services: pasteboard, workspace, sounds, cursors, the image picker, and system
+    colours, fonts and images where SwiftUI has no name for them.
+
+  Window structure, layout or a whole screen in AppKit or UIKit outside those three places is a
+  finding.
 - **Dependencies point one way, with no cycles.** A package uses another package's public API only.
   Shared vocabulary lives in `StudyCore` (data) or `StudyUI` (design system), never copied.
 - **Public API is deliberate.** `public` only for what another package uses. Everything else stays

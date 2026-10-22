@@ -1,8 +1,7 @@
 import SwiftUI
 
-// Shared by the inspector's notes (M6 workstream A's `ReviewInspector.swift`), the transcript's
-// inline pins and the study blocks: moved out of `ReviewInspector.swift` so both M6 workstreams
-// can rely on it (docs/plan-m6.md §5).
+// Shared by the transcript's inline pins and the study blocks (This slide and Summary in the
+// Notes pane).
 
 /// Words left to right, wrapping at the proposed width; a `LineBreak` view starts a new line.
 /// Each line is centred on its tallest item (the chip), lines `lineSpacing` apart.
