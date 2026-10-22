@@ -31,109 +31,152 @@ import StudyCore
 ///   synced attachment).
 /// Only columns both schemas have are written; the rest take their defaults. Every write is one
 /// transaction through the library's own writer, so SQLiteData's triggers queue each row for
-/// upload. Before writing, the library is copied once to `<name>-before-restore.sqlite`
-/// (`LibraryBackup.copy`); an existing copy is kept, so a retry never replaces it.
+/// upload. Before writing, the library is copied once to `AppPaths.preRestoreBackup`
+/// (`LibraryCopy.copy`); an existing copy is kept, so a retry never replaces it.
 ///
 /// Only a copy made before parent references were dropped (`parentReferencesDroppedAt`) is a
 /// source: a library that first synced later lost nothing this way, and its copy would only bring
 /// back what the student deleted since.
 ///
-/// `run()` has no once-logic (the app keeps that, `AppModel.restoreLostRowsOnce`) and is
-/// idempotent: a second run finds every row present, or its course with class times again. Logs
-/// table names and counts only (category "Restore").
+/// `runOnce(replan:)` restores once per library and then replans the courses it changed; `run()`
+/// is idempotent: a second run finds every row present, or its course with class times again.
+/// Logs table names and counts only (category "sync.restore").
 public struct LibraryRestore: Sendable {
-    public struct Outcome: Sendable, Equatable {
+    /// Replans one course and counts the sessions it inserted, updated and deleted (the app passes
+    /// Course Settings' `CourseSchedule.replan`).
+    public typealias Replan = @Sendable (Course.ID) async throws -> (inserted: Int, updated: Int, deleted: Int)
+
+    struct Outcome: Sendable {
         /// Rows inserted, by table.
-        public var restored: [String: Int] = [:]
+        var restored: [String: Int] = [:]
         /// Sessions whose slot link was set again.
-        public var relinkedSessions = 0
+        var relinkedSessions = 0
         /// Rows missing from the live library and left out, by reason.
-        public var skipped: [String: Int] = [:]
+        var skipped: [String: Int] = [:]
         /// Courses whose slots or sessions changed (to replan).
-        public var courses: Set<Course.ID> = []
-
-        public init() {}
-
-        public var isEmpty: Bool { restored.values.allSatisfy { $0 == 0 } && relinkedSessions == 0 }
+        var courses: Set<Course.ID> = []
     }
 
-    public enum Failure: Error {
+    enum Failure: Error {
         /// Not enough free disk for the copy before restoring.
         case lowDisk
     }
 
-    public let database: any DatabaseWriter
+    private let database: any DatabaseWriter
     /// The library copy to restore from (read-only).
-    public let source: URL
+    private let source: URL
     /// Where the live library is copied before the first restore.
-    public let copy: URL
-    private let now: @Sendable () -> Date
-
-    public init(database: any DatabaseWriter, source: URL, copy: URL, now: @escaping @Sendable () -> Date = { Date() }) {
-        self.database = database
-        self.source = source
-        self.copy = copy
-        self.now = now
-    }
+    private let copy: URL
 
     public init(services: StudyServices) {
-        let paths = services.paths
-        self.init(
-            database: services.database,
-            source: paths.preSyncBackup,
-            copy: paths.databaseDirectory.appending(path: "\(paths.databaseName)-before-restore.sqlite")
-        )
+        database = services.database
+        source = services.paths.preSyncBackup
+        copy = services.paths.preRestoreBackup
     }
 
     /// The build that made every synced table private (no parent references) dates from here
     /// (2026-10-22 03:06:07 UTC); a copy made later comes from a library whose first upload
     /// deleted nothing.
-    public static let parentReferencesDroppedAt = Date(timeIntervalSince1970: 1_792_638_367)
+    private static let parentReferencesDroppedAt = Date(timeIntervalSince1970: 1_792_638_367)
+
+    /// Set once the rows were restored, or once a launch found no copy from before the first sync
+    /// or only one made after parent references were dropped (`hasSource`: a library that syncs
+    /// for the first time later never restores from that newer copy, which would bring back rows
+    /// deleted since).
+    private static let restoredKey = "Socrates.restoredRowsLostToFirstSync"
+
+    /// The courses the restore changed that still wait for their replan (ids).
+    private static let replanKey = "Socrates.replanAfterRestore"
 
     /// True when the copy to restore from exists and was made before parent references were
     /// dropped (its file date; an unknown date counts as before).
-    public var hasSource: Bool {
+    var hasSource: Bool {
         guard FileManager.default.fileExists(atPath: source.path(percentEncoded: false)) else { return false }
-        return Self.fileDate(source).map { $0 < Self.parentReferencesDroppedAt } ?? true
+        return LibraryCopy.fileDate(source).map { $0 < Self.parentReferencesDroppedAt } ?? true
     }
 
-    /// A file's modification date: for the copy, when it was made (`VACUUM INTO`, never written
-    /// again).
-    static func fileDate(_ url: URL) -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: url.path(percentEncoded: false)))?[.modificationDate] as? Date
-    }
-
+    /// `run()` on the first launch with it, then the courses it changed are replanned (`replan`:
+    /// numbers, and sessions held by slot and day; a plan already right writes nothing). A failed
+    /// restore (logged) leaves `restoredKey` unset: the next launch tries again, and rows already
+    /// back are found present. The courses to replan are kept until each replan succeeds, so a
+    /// failed one is tried again at the next launch.
     @concurrent
-    public func run() async throws -> Outcome {
-        guard hasSource else { return Outcome() }
-        do {
-            if !FileManager.default.fileExists(atPath: copy.path(percentEncoded: false)) {
-                guard LibraryBackup.hasRoom(for: database) else { throw Failure.lowDisk }
-                try LibraryBackup.copy(database, to: copy)
-            }
-            let snapshot = try Snapshot.read(source)
-            let stamp = now()
-            let outcome = try await database.write { db in try Self.apply(snapshot, now: stamp, db: db) }
-            let restored = Self.restoredTables
-                .map { table -> String in
-                    let count = outcome.restored[table] ?? 0
-                    return table == "lecture_session" ? "\(table) \(count) (+\(outcome.relinkedSessions) relinked)" : "\(table) \(count)"
+    public func runOnce(replan: Replan) async {
+        let defaults = UserDefaults.standard
+        if !defaults.bool(forKey: Self.restoredKey) {
+            if hasSource {
+                let outcome: Outcome
+                do {
+                    outcome = try await run()
+                } catch {
+                    SyncLog.restore.error("Restoring rows failed: \(String(describing: type(of: error)), privacy: .public)")
+                    return
                 }
-                .joined(separator: ", ")
-            RestoreLog.restore.notice("Restored from the copy before the first sync: \(restored, privacy: .public)")
-            let reasons: [String] = outcome.skipped.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }
-            let skipped: String = reasons.isEmpty ? "none" : reasons.joined(separator: ", ")
-            RestoreLog.restore.notice("Not restored: \(skipped, privacy: .public)")
-            return outcome
-        } catch {
-            RestoreLog.restore.error("Restoring rows failed: \(String(describing: type(of: error)), privacy: .public)")
-            throw error
+                if !outcome.courses.isEmpty {
+                    defaults.set(outcome.courses.map(\.uuidString), forKey: Self.replanKey)
+                }
+            }
+            defaults.set(true, forKey: Self.restoredKey)
         }
+        await Self.replanPending(replan)
+    }
+
+    /// Replans the courses `replanKey` holds; the ones whose replan failed stay for the next launch.
+    private static func replanPending(_ replan: Replan) async {
+        let defaults = UserDefaults.standard
+        let pending = defaults.stringArray(forKey: replanKey) ?? []
+        guard !pending.isEmpty else { return }
+        var failed: [String] = []
+        var inserted = 0, updated = 0, deleted = 0
+        for text in pending {
+            guard let course = Course.ID(uuidString: text) else { continue }
+            do {
+                let plan = try await replan(course)
+                inserted += plan.inserted
+                updated += plan.updated
+                deleted += plan.deleted
+            } catch {
+                failed.append(text)
+                SyncLog.restore.error("Replanning a restored course failed: \(String(describing: type(of: error)), privacy: .public)")
+            }
+        }
+        let retry = failed.isEmpty ? "" : ", \(failed.count) again at the next launch"
+        SyncLog.restore.notice(
+            "Replanned \(pending.count - failed.count, privacy: .public) restored course(s): +\(inserted, privacy: .public) ~\(updated, privacy: .public) -\(deleted, privacy: .public)\(retry, privacy: .public)"
+        )
+        if failed.isEmpty {
+            defaults.removeObject(forKey: replanKey)
+        } else {
+            defaults.set(failed, forKey: replanKey)
+        }
+    }
+
+    /// Restores from `source` (`hasSource` said it is one): copies the live library first unless
+    /// that copy exists, then writes in one transaction and logs the counts.
+    func run() async throws -> Outcome {
+        if !FileManager.default.fileExists(atPath: copy.path(percentEncoded: false)) {
+            guard LibraryCopy.hasRoom(for: database) else { throw Failure.lowDisk }
+            try LibraryCopy.copy(database, to: copy)
+        }
+        let snapshot = try Snapshot.read(source)
+        let stamp = Date()
+        let outcome = try await database.write { db in try Self.apply(snapshot, now: stamp, db: db) }
+        let restored = Self.restoredTables
+            .map { table -> String in
+                let count = outcome.restored[table] ?? 0
+                return table == LectureSession.tableName ? "\(table) \(count) (+\(outcome.relinkedSessions) relinked)" : "\(table) \(count)"
+            }
+            .joined(separator: ", ")
+        SyncLog.restore.notice("Restored from the copy before the first sync: \(restored, privacy: .public)")
+        let reasons: [String] = outcome.skipped.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }
+        let skipped: String = reasons.isEmpty ? "none" : reasons.joined(separator: ", ")
+        SyncLog.restore.notice("Not restored: \(skipped, privacy: .public)")
+        return outcome
     }
 
     // MARK: - Source
 
-    static let restoredTables = ["weekly_slot", "lecture_session", "slide_ink", "mail_attachment"]
+    static let restoredTables = [WeeklySlot.tableName, LectureSession.tableName, SlideInk.tableName, MailAttachment.tableName]
 
     /// One table of the source: its columns and every row's values in that order.
     struct SourceTable: Sendable {
@@ -166,7 +209,7 @@ public struct LibraryRestore: Sendable {
             configuration.readonly = true
             let queue = try DatabaseQueue(path: url.path(percentEncoded: false), configuration: configuration)
             defer { try? queue.close() }
-            let copiedAt = LibraryRestore.fileDate(url)
+            let copiedAt = LibraryCopy.fileDate(url)
             return try queue.read { db in
                 var snapshot = Snapshot(copiedAt: copiedAt)
                 for table in LibraryRestore.restoredTables {
@@ -177,7 +220,7 @@ public struct LibraryRestore: Sendable {
                         .map { Array($0.databaseValues) }
                     snapshot.tables[table] = SourceTable(columns: columns, rows: rows)
                 }
-                for table in ["lecture", "filing"] {
+                for table in [Lecture.tableName, Filing.tableName] {
                     guard try db.tableExists(table) else { continue }
                     let ids = try String.fetchAll(
                         db,
@@ -196,9 +239,9 @@ public struct LibraryRestore: Sendable {
         var outcome = Outcome()
         func skip(_ reason: String) { outcome.skipped[reason, default: 0] += 1 }
         func restored(_ table: String) { outcome.restored[table, default: 0] += 1 }
-        func courseUUID(_ value: DatabaseValue) -> UUID? { String.fromDatabaseValue(value).flatMap(UUID.init(uuidString:)) }
+        func parsedCourseID(_ value: DatabaseValue) -> Course.ID? { String.fromDatabaseValue(value).flatMap(Course.ID.init(uuidString:)) }
         func course(_ value: DatabaseValue) {
-            if let id = courseUUID(value) { outcome.courses.insert(id) }
+            if let id = parsedCourseID(value) { outcome.courses.insert(id) }
         }
         // Decided before anything is inserted: a course whose slots come back here has none yet.
         let settled = try coursesWithClassTimesSince(snapshot.copiedAt, db)
@@ -206,33 +249,33 @@ public struct LibraryRestore: Sendable {
         // a) Weekly slots. slotMap: source slot id → the slot restored for it.
         var slotMap: [String: String] = [:]
         var slotCourse: [String: DatabaseValue] = [:]
-        if let slots = snapshot.tables["weekly_slot"] {
-            let columns = try sharedColumns(slots, "weekly_slot", db)
+        if let slots = snapshot.tables[WeeklySlot.tableName] {
+            let columns = try sharedColumns(slots, WeeklySlot.tableName, db)
             for row in slots.rows {
                 let idValue = slots.value(row, "id")
                 guard let id = String.fromDatabaseValue(idValue) else { continue }
                 let courseID = slots.value(row, "course_id")
                 slotCourse[id] = courseID
-                guard try !exists("weekly_slot", id: idValue, db) else { continue }
-                if let reason = courseUUID(courseID).flatMap({ settled[$0] }) { skip("weekly_slot: \(reason)"); continue }
-                guard try exists("course", id: courseID, db) else { skip("weekly_slot: course gone"); continue }
+                guard try !exists(WeeklySlot.tableName, id: idValue, db) else { continue }
+                if let reason = parsedCourseID(courseID).flatMap({ settled[$0] }) { skip("weekly_slot: \(reason)"); continue }
+                guard try exists(Course.tableName, id: courseID, db) else { skip("weekly_slot: course gone"); continue }
                 let removed = try Bool.fetchOne(
                     db,
                     sql: """
-                        SELECT EXISTS (SELECT 1 FROM "agent_change"
-                        WHERE "kind" = 'slot_remove' AND "target_id" = ? AND "undone_at" IS NULL)
+                        SELECT EXISTS (SELECT 1 FROM \(quoted(AgentChange.tableName))
+                        WHERE "kind" = ? AND "target_id" = ? AND "undone_at" IS NULL)
                         """,
-                    arguments: [idValue]
+                    arguments: [AgentChangeKind.slotRemove.rawValue, idValue]
                 ) ?? false
                 guard !removed else { skip("weekly_slot: removed by the agent"); continue }
-                try insert("weekly_slot", columns: columns, from: slots, row: row, db)
+                try insert(WeeklySlot.tableName, columns: columns, from: slots, row: row, db)
                 slotMap[id] = id
-                restored("weekly_slot")
+                restored(WeeklySlot.tableName)
                 course(courseID)
             }
         }
 
-        guard let sessions = snapshot.tables["lecture_session"] else { return outcome }
+        guard let sessions = snapshot.tables[LectureSession.tableName] else { return outcome }
 
         // b) Sessions whose slot link the delete cleared get it again (no `updated_at` stamp: the
         // calendar event does not show the slot, so it stays in step).
@@ -242,7 +285,7 @@ public struct LibraryRestore: Sendable {
             else { continue }
             try db.execute(
                 sql: """
-                    UPDATE "lecture_session" SET "weekly_slot_id" = ?
+                    UPDATE \(quoted(LectureSession.tableName)) SET "weekly_slot_id" = ?
                     WHERE "id" = ? AND "weekly_slot_id" IS NULL AND "course_id" = ?
                     """,
                 arguments: [live, sessions.value(row, "id"), slotCourseID]
@@ -254,12 +297,12 @@ public struct LibraryRestore: Sendable {
         }
 
         // c) Generated future sessions that went with their slots.
-        let sessionColumns = try sharedColumns(sessions, "lecture_session", db)
+        let sessionColumns = try sharedColumns(sessions, LectureSession.tableName, db)
         for row in sessions.rows {
             let idValue = sessions.value(row, "id")
-            guard let id = String.fromDatabaseValue(idValue), try !exists("lecture_session", id: idValue, db) else { continue }
+            guard let id = String.fromDatabaseValue(idValue), try !exists(LectureSession.tableName, id: idValue, db) else { continue }
             guard let slot = String.fromDatabaseValue(sessions.value(row, "weekly_slot_id")), let live = slotMap[slot] else {
-                let reason = courseUUID(sessions.value(row, "course_id")).flatMap { settled[$0] }
+                let reason = parsedCourseID(sessions.value(row, "course_id")).flatMap { settled[$0] }
                 skip("lecture_session: \(reason ?? "no slot")")
                 continue
             }
@@ -272,69 +315,69 @@ public struct LibraryRestore: Sendable {
                 continue
             }
             let courseID = sessions.value(row, "course_id")
-            guard try exists("course", id: courseID, db) else { skip("lecture_session: course gone"); continue }
+            guard try exists(Course.tableName, id: courseID, db) else { skip("lecture_session: course gone"); continue }
             guard !snapshot.filedSessions.contains(id) else { skip("lecture_session: filed"); continue }
             let starts = try DatabaseValue.fetchAll(
-                db, sql: #"SELECT "starts_at" FROM "lecture_session" WHERE "course_id" = ?"#, arguments: [courseID]
+                db, sql: #"SELECT "starts_at" FROM \#(quoted(LectureSession.tableName)) WHERE "course_id" = ?"#, arguments: [courseID]
             )
             let clashes = starts.contains { value in
                 Date.fromDatabaseValue(value).map { abs($0.timeIntervalSince(startsAt)) < 60 } ?? false
             }
             guard !clashes else { skip("lecture_session: clash"); continue }
             try insert(
-                "lecture_session", columns: sessionColumns, from: sessions, row: row,
+                LectureSession.tableName, columns: sessionColumns, from: sessions, row: row,
                 overrides: ["weekly_slot_id": live.databaseValue, "calendar_event_id": .null, "calendar_synced_at": .null],
                 db
             )
-            restored("lecture_session")
+            restored(LectureSession.tableName)
             course(courseID)
         }
 
         // d) Ink of a page that has none now.
-        if let ink = snapshot.tables["slide_ink"] {
-            let columns = try sharedColumns(ink, "slide_ink", db)
+        if let ink = snapshot.tables[SlideInk.tableName] {
+            let columns = try sharedColumns(ink, SlideInk.tableName, db)
             for row in ink.rows {
-                guard try !exists("slide_ink", id: ink.value(row, "id"), db) else { continue }
+                guard try !exists(SlideInk.tableName, id: ink.value(row, "id"), db) else { continue }
                 let deckID = ink.value(row, "deck_id")
-                guard try exists("deck", id: deckID, db) else { skip("slide_ink: deck gone"); continue }
+                guard try exists(Deck.tableName, id: deckID, db) else { skip("slide_ink: deck gone"); continue }
                 let inked = try Bool.fetchOne(
                     db,
-                    sql: #"SELECT EXISTS (SELECT 1 FROM "slide_ink" WHERE "deck_id" = ? AND "page_number" = ?)"#,
+                    sql: #"SELECT EXISTS (SELECT 1 FROM \#(quoted(SlideInk.tableName)) WHERE "deck_id" = ? AND "page_number" = ?)"#,
                     arguments: [deckID, ink.value(row, "page_number")]
                 ) ?? false
                 guard !inked else { skip("slide_ink: page has ink"); continue }
-                try insert("slide_ink", columns: columns, from: ink, row: row, db)
-                restored("slide_ink")
+                try insert(SlideInk.tableName, columns: columns, from: ink, row: row, db)
+                restored(SlideInk.tableName)
             }
         }
 
         // e) Attachments of messages that still exist; their files are fetched again on open.
-        if let attachments = snapshot.tables["mail_attachment"] {
-            let columns = try sharedColumns(attachments, "mail_attachment", db)
+        if let attachments = snapshot.tables[MailAttachment.tableName] {
+            let columns = try sharedColumns(attachments, MailAttachment.tableName, db)
             for row in attachments.rows {
-                guard try !exists("mail_attachment", id: attachments.value(row, "id"), db) else { continue }
+                guard try !exists(MailAttachment.tableName, id: attachments.value(row, "id"), db) else { continue }
                 let messageID = attachments.value(row, "mail_message_id")
-                guard try exists("mail_message", id: messageID, db) else { skip("mail_attachment: message gone"); continue }
+                guard try exists(MailMessage.tableName, id: messageID, db) else { skip("mail_attachment: message gone"); continue }
                 let part = String.fromDatabaseValue(attachments.value(row, "part")) ?? ""
                 let duplicate =
                     part.isEmpty
                     ? try Bool.fetchOne(
                         db,
-                        sql: #"SELECT EXISTS (SELECT 1 FROM "mail_attachment" WHERE "mail_message_id" = ? AND "file_name" = ?)"#,
+                        sql: #"SELECT EXISTS (SELECT 1 FROM \#(quoted(MailAttachment.tableName)) WHERE "mail_message_id" = ? AND "file_name" = ?)"#,
                         arguments: [messageID, attachments.value(row, "file_name")]
                     ) ?? false
                     : try Bool.fetchOne(
                         db,
-                        sql: #"SELECT EXISTS (SELECT 1 FROM "mail_attachment" WHERE "mail_message_id" = ? AND "part" = ?)"#,
+                        sql: #"SELECT EXISTS (SELECT 1 FROM \#(quoted(MailAttachment.tableName)) WHERE "mail_message_id" = ? AND "part" = ?)"#,
                         arguments: [messageID, part]
                     ) ?? false
                 guard !duplicate else { skip("mail_attachment: already there"); continue }
                 try insert(
-                    "mail_attachment", columns: columns, from: attachments, row: row,
+                    MailAttachment.tableName, columns: columns, from: attachments, row: row,
                     overrides: ["blob_sha256": "".databaseValue, "blob_path": "".databaseValue],
                     db
                 )
-                restored("mail_attachment")
+                restored(MailAttachment.tableName)
             }
         }
         return outcome
@@ -342,8 +385,8 @@ public struct LibraryRestore: Sendable {
 
     /// Courses whose class times were set since the copy, with the reason: any live slot, or a
     /// slot the agent added, changed or removed after the copy was made (undone or not).
-    static func coursesWithClassTimesSince(_ copiedAt: Date?, _ db: Database) throws -> [UUID: String] {
-        var settled: [UUID: String] = [:]
+    static func coursesWithClassTimesSince(_ copiedAt: Date?, _ db: Database) throws -> [Course.ID: String] {
+        var settled: [Course.ID: String] = [:]
         let since = copiedAt ?? .distantPast
         let changes = try Row.fetchAll(
             db,
@@ -352,16 +395,17 @@ public struct LibraryRestore: Sendable {
                     CASE WHEN json_valid("after") THEN json_extract("after", '$.courseID') END,
                     CASE WHEN json_valid("before") THEN json_extract("before", '$.courseID') END
                 ) AS "course", "created_at"
-                FROM "agent_change" WHERE "kind" IN ('slot_add', 'slot_change', 'slot_remove')
-                """
+                FROM \(quoted(AgentChange.tableName)) WHERE "kind" IN (?, ?, ?)
+                """,
+            arguments: [AgentChangeKind.slotAdd.rawValue, AgentChangeKind.slotChange.rawValue, AgentChangeKind.slotRemove.rawValue]
         )
         for change in changes {
-            guard let text: String = change["course"], let id = UUID(uuidString: text) else { continue }
+            guard let text: String = change["course"], let id = Course.ID(uuidString: text) else { continue }
             let createdAt: Date? = change["created_at"]
             if createdAt.map({ $0 > since }) ?? true { settled[id] = "class times changed since the copy" }
         }
-        for text in try String.fetchAll(db, sql: #"SELECT DISTINCT "course_id" FROM "weekly_slot""#) {
-            if let id = UUID(uuidString: text) { settled[id] = "course has class times again" }
+        for text in try String.fetchAll(db, sql: #"SELECT DISTINCT "course_id" FROM \#(quoted(WeeklySlot.tableName))"#) {
+            if let id = Course.ID(uuidString: text) { settled[id] = "course has class times again" }
         }
         return settled
     }
@@ -391,8 +435,4 @@ public struct LibraryRestore: Sendable {
     static func quoted(_ name: String) -> String {
         "\"" + name.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
-}
-
-enum RestoreLog {
-    static let restore = Log.logger(category: "Restore")
 }

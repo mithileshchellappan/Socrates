@@ -58,8 +58,7 @@ public final class CloudSync {
     public var hasEngine: Bool { engine != nil }
     /// Logs the rows sync deletes on this device (`SyncDeletionLog`); on the library's writer
     /// from the first engine on, added once.
-    private let deletionLog = SyncDeletionLog(tables: Set(SyncedTables.types.map { $0.tableName }))
-    @ObservationIgnored private var logsDeletions = false
+    private let deletionLog = SyncDeletionLog(tables: Set(SyncedTables.tableNames))
 
     /// Nil unless the library was opened for a CloudKit container (`services.syncContainer`).
     /// Builds the engine at once (not started; no CloudKit call).
@@ -157,15 +156,16 @@ public final class CloudSync {
         }
     }
 
-    /// Builds the engine over the library (installs SQLiteData's triggers; not started).
+    /// Builds the engine over the library (installs SQLiteData's triggers; not started). The
+    /// first engine also adds the deletion log to the library's writer.
     private func prepare() throws {
         let guardDelegate = AccountChangeGuard { [weak self] change in
             await self?.accountChanged(change)
         }
+        let isFirstEngine = engine == nil
         engine = try SyncedTables.engine(for: services.database, container: container, delegate: guardDelegate)
-        if !logsDeletions {
+        if isFirstEngine {
             services.database.add(transactionObserver: deletionLog, extent: .databaseLifetime)
-            logsDeletions = true
         }
     }
 
@@ -230,4 +230,10 @@ final class AccountChangeGuard: SyncEngineDelegate {
 
 enum SyncLog {
     static let sync = Log.logger(category: "sync")
+    /// `LibraryBackup`: the daily copies, their pruning and row-count drops.
+    static let backup = Log.logger(category: "sync.backup")
+    /// `LibraryRestore`: rows put back from the pre-sync copy, and the replans after it.
+    static let restore = Log.logger(category: "sync.restore")
+    /// `SyncDeletionLog`: deletes sync makes on this device.
+    static let deletes = Log.logger(category: "sync.deletes")
 }

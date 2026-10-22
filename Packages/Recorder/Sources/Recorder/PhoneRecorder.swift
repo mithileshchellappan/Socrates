@@ -253,7 +253,8 @@ public final class PhoneRecorder {
                 RecorderLog.recorder.notice(
                     "Next Slide ignored: button drawn for slide \(shown, privacy: .public), on slide \(current, privacy: .public)"
                 )
-                updateActivity(force: true)
+                lastActivityState = nil
+                updateActivity()
                 await activityTask?.value
                 return
             }
@@ -368,11 +369,11 @@ public final class PhoneRecorder {
         )
     }
 
-    /// Updates the Live Activity when what it shows changed (a stamp, the course); `force` sends
-    /// it even when unchanged (a button acted on a slide the activity should no longer show).
-    private func updateActivity(force: Bool = false) {
+    /// Updates the Live Activity when what it shows changed (a stamp, the course; a cleared
+    /// `lastActivityState` sends it again).
+    private func updateActivity() {
         #if os(iOS)
-        guard let id = activityID, let state = activityState(), force || state != lastActivityState else { return }
+        guard let id = activityID, let state = activityState(), state != lastActivityState else { return }
         lastActivityState = state
         let previous = activityTask
         activityTask = Task {

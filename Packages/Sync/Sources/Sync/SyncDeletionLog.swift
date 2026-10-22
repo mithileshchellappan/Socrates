@@ -5,7 +5,7 @@ import Synchronization
 
 /// Logs the rows iCloud sync deletes on this device: one public line per transaction with table
 /// names and counts ("iCloud deleted rows on this device: course 1, weekly_slot 4"), never ids or
-/// content (category "SyncDeletes").
+/// content (category "sync.deletes").
 ///
 /// SQLiteData reports none of its local deletes (another device's deletes, deleted, purged or
 /// reset zones), but it marks every write it makes with `SyncEngine.isSynchronizing`, which its
@@ -39,12 +39,10 @@ final class SyncDeletionLog: TransactionObserver, Sendable {
         }
         guard !deleted.isEmpty else { return }
         let line = deleted.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
-        SyncDeletionLog.logger.notice("iCloud deleted rows on this device: \(line, privacy: .public)")
+        SyncLog.deletes.notice("iCloud deleted rows on this device: \(line, privacy: .public)")
     }
 
     func databaseDidRollback(_ db: Database) {
         counts.withLock { $0 = [:] }
     }
-
-    private static let logger = Log.logger(category: "SyncDeletes")
 }

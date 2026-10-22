@@ -25,6 +25,11 @@ sync.isRunning       // the phone's agent sheet shows only while true
 sync.isSynchronizing // sending or fetching right now
 sync.unsentCount     // rows iCloud has not received (refreshUnsent()); Settings ▸ Accounts
 sync.stop()
+// Mac, before sync.start() (only once sync.hasEngine): rows the first upload deleted, once.
+await LibraryRestore(services: services).runOnce { courseID in /* CourseSchedule.replan, counted */ }
+// Mac: the daily backup (an actor).
+let backup = LibraryBackup(services: services)
+await backup.runHourly()   // now, then once an hour; runDaily() after each wake
 ```
 
 ## Rules
@@ -58,7 +63,7 @@ sync.stop()
 - **Rows the first upload deleted come back once** (Mac, `LibraryRestore`): before parent
   references were dropped, SQLiteData deleted some rows of one-foreign-key tables on the device
   when iCloud refused them, and ON DELETE CASCADE / SET NULL followed. On the first launch with
-  sync (`AppModel.restoreLostRowsOnce`, key `Socrates.restoredRowsLostToFirstSync`, before
+  sync (`LibraryRestore.runOnce(replan:)`, key `Socrates.restoredRowsLostToFirstSync`, before
   `start()`, only once `CloudSync.hasEngine`), weekly slots, generated future sessions, slide ink
   and mail attachments missing from the library are inserted again from
   `Socrates-before-sync.sqlite` (read-only), and sessions get their restored slot's link back; a
@@ -68,26 +73,29 @@ sync.stop()
   (undone or not), and a slot only when no `slot_remove` change names it: an old slot beside
   re-entered class times would double every class. Restored sessions start without a calendar
   event (the mirror adopts the one with their link or writes one), attachments without a file
-  (fetched again on open). The library is copied first to `Socrates-before-restore.sqlite` (kept).
-  One transaction through the syncing writer, so every row is queued for upload; changed courses
-  are replanned (kept in `Socrates.replanAfterRestore` until each replan succeeds). A library
+  (fetched again on open). The library is copied first to `Socrates-before-restore.sqlite`
+  (`AppPaths.preRestoreBackup`, kept). One transaction through the syncing writer, so every row is
+  queued for upload; changed courses are replanned through the app's `replan` closure (Course
+  Settings' `CourseSchedule.replan`; Sync does not depend on Courses), kept in
+  `Socrates.replanAfterRestore` until each replan succeeds. A library
   without that copy, or whose copy was made after parent references were dropped
   (`LibraryRestore.parentReferencesDroppedAt`, by the file's date), sets the key and never
-  restores. Logs only, category `Restore` (replans: `app`).
-- **One backup a day** (Mac, `LibraryBackup.runDaily`, at launch in the background, after each
-  wake and once an hour): `Database/Backups/Socrates-<yyyy-MM-dd>.sqlite` through SQLite's backup
+  restores. Logs only, category `sync.restore` (also the replans).
+- **One backup a day** (Mac, the actor `LibraryBackup`: `runHourly()` at launch in the background
+  and once an hour, `runDaily()` after each wake; calls at once run one after another):
+  `Database/Backups/Socrates-<yyyy-MM-dd>.sqlite` (`AppPaths.backups`) through SQLite's backup
   API from a reader snapshot (the writer never waits), written as `.partial` and renamed, rollback
   journal mode, main schema only; kept: the newest 7 and the newest of each of the 4 latest weeks
   and 3 latest months (at most 14), so a loss noticed weeks later still has a copy from before it;
   files are matched by their day whatever the name before it (a renamed library keeps pruning its
   older copies); skipped when free disk is under twice the library plus 2 GB.
   After each new backup, a synced table with fewer rows than in the previous backup gets one
-  `Backup` log line.
+  `sync.backup` log line. The copy itself (`LibraryCopy`) is shared with the restore's.
 - **Deletes made by sync are logged** (`SyncDeletionLog`, a GRDB transaction observer on the
   library's writer, added with the engine): deletes on synced tables while
   `SyncEngine.isSynchronizing` (another device's deletes, deleted or reset zones, and their
-  cascades) give one `SyncDeletes` line per transaction with table names and counts. Read them with
-  `log show --last 7d --info --predicate 'subsystem == "<bundle ID>" AND category IN {"Restore", "Backup", "SyncDeletes"}'`.
+  cascades) give one `sync.deletes` line per transaction with table names and counts. Read them with
+  `log show --last 7d --info --predicate 'subsystem == "<bundle ID>" AND category BEGINSWITH "sync."'`.
 - **Tables** (`SyncedTables`): every table of `Schema.tableNames` except `job` (device-local
   processing state) and the Mac-only `document` / `document_page`. The search index
   (`Schema.localTableNames`, `Schema.virtualTableNames`) is rebuilt per device and never syncs. The

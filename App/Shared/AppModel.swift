@@ -181,10 +181,8 @@ final class AppModel {
     @ObservationIgnored private var activationObserver: Task<Void, Never>?
     @ObservationIgnored private var calendarStoreObserver: Task<Void, Never>?
     @ObservationIgnored private var memoryObserver: Task<Void, Never>?
-    /// The daily library backup (Mac): at launch and after each wake.
-    @ObservationIgnored private var backupObserver: Task<Void, Never>?
-    /// The daily library backup (Mac) of a Mac that stays awake: once an hour.
-    @ObservationIgnored private var backupClock: Task<Void, Never>?
+    /// The daily library backup (Mac): at launch, once an hour and after each wake.
+    @ObservationIgnored private var backupTask: Task<Void, Never>?
     /// ma: the full calendar sync after the student's calendars changed (coalesced, at most one a
     /// minute), and when the last one ran.
     @ObservationIgnored private var calendarEditSync: Task<Void, Never>?
@@ -458,31 +456,30 @@ final class AppModel {
         didStartBackgroundWork = true
         #if os(macOS)
         // Once, before sync starts and before anything replans: rows the Mac's first upload
-        // deleted come back from the copy made before it (`LibraryRestore`). Only over a built
-        // sync engine, whose triggers queue what the restore writes for upload; without one the
-        // next launch tries again.
-        if runsLibraryPasses, cloudSync?.hasEngine == true { await Self.restoreLostRowsOnce(services) }
+        // deleted come back from the copy made before it, and the courses they belong to are
+        // replanned (`LibraryRestore.runOnce`). Only over a built sync engine, whose triggers
+        // queue what the restore writes for upload; without one the next launch tries again.
+        if runsLibraryPasses, cloudSync?.hasEngine == true {
+            let schedule = CourseSchedule(services: services)
+            await LibraryRestore(services: services).runOnce { courseID in
+                let plan = try await schedule.replan(courseID: courseID)
+                return (plan.inserted.count, plan.updated.count, plan.deleted.count)
+            }
+        }
         #endif
         // M7: iCloud sync first (only in a build configured for it), so the other device's rows
         // come down before anything is created here.
         if let cloudSync { Task { await cloudSync.start() } }
         #if os(macOS)
-        // One copy of the library a day, in the background (also after a wake: the Mac app stays
-        // open for days).
+        // One copy of the library a day, in the background: at launch and once an hour
+        // (`runHourly`), and after each wake (the Mac app stays open for days).
         let backup = LibraryBackup(services: services)
-        backupObserver = Task(priority: .background) {
-            await backup.runDaily()
+        backupTask = Task(priority: .background) {
+            async let hourly: Void = backup.runHourly()
             for await _ in NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification) {
                 await backup.runDaily()
             }
-        }
-        // A Mac kept awake (overnight runs, a recording's sleep assertion) gets its day's copy
-        // too; a day that has its file costs one `stat`.
-        backupClock = Task(priority: .background) {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3_600))
-                await backup.runDaily()
-            }
+            await hourly
         }
         #endif
         observeClaudeAvailability()
@@ -611,60 +608,6 @@ final class AppModel {
             if outcome.busy == 0 { defaults.set(true, forKey: mergedDuplicateLecturesKey) }
         } catch {
             Log.app.error("Merging lectures filed twice failed: \(String(describing: type(of: error)), privacy: .public)")
-        }
-    }
-
-    /// Set once the rows the Mac's first iCloud upload deleted were restored, or once a launch
-    /// found no copy from before the first sync or only one made after parent references were
-    /// dropped (`LibraryRestore.hasSource`: a library that syncs for the first time later never
-    /// restores from that newer copy, which would bring back rows deleted since).
-    static let restoredRowsLostToFirstSyncKey = "Socrates.restoredRowsLostToFirstSync"
-
-    /// The courses the restore changed that still wait for their replan (ids).
-    static let replanAfterRestoreKey = "Socrates.replanAfterRestore"
-
-    /// `LibraryRestore` on the first launch with it, then the courses it changed are replanned
-    /// (Course Settings' call: numbers, and sessions held by slot and day; a plan already right
-    /// writes nothing). A failed restore (logged by it) leaves the key unset: the next launch
-    /// tries again, and rows already back are found present. The courses to replan are kept until
-    /// each replan succeeds, so a failed one is tried again at the next launch.
-    private static func restoreLostRowsOnce(_ services: StudyServices) async {
-        let defaults = UserDefaults.standard
-        if !defaults.bool(forKey: restoredRowsLostToFirstSyncKey) {
-            let restore = LibraryRestore(services: services)
-            if restore.hasSource {
-                guard let outcome = try? await restore.run() else { return }
-                if !outcome.courses.isEmpty {
-                    defaults.set(outcome.courses.map(\.uuidString), forKey: replanAfterRestoreKey)
-                }
-            }
-            defaults.set(true, forKey: restoredRowsLostToFirstSyncKey)
-        }
-        let pending = defaults.stringArray(forKey: replanAfterRestoreKey) ?? []
-        guard !pending.isEmpty else { return }
-        let schedule = CourseSchedule(services: services)
-        var failed: [String] = []
-        var inserted = 0, updated = 0, deleted = 0
-        for text in pending {
-            guard let course = UUID(uuidString: text) else { continue }
-            do {
-                let plan = try await schedule.replan(courseID: course)
-                inserted += plan.inserted.count
-                updated += plan.updated.count
-                deleted += plan.deleted.count
-            } catch {
-                failed.append(text)
-                Log.app.error("Replanning a restored course failed: \(String(describing: type(of: error)), privacy: .public)")
-            }
-        }
-        let retry = failed.isEmpty ? "" : ", \(failed.count) again at the next launch"
-        Log.app.notice(
-            "Replanned \(pending.count - failed.count, privacy: .public) restored course(s): +\(inserted, privacy: .public) ~\(updated, privacy: .public) -\(deleted, privacy: .public)\(retry, privacy: .public)"
-        )
-        if failed.isEmpty {
-            defaults.removeObject(forKey: replanAfterRestoreKey)
-        } else {
-            defaults.set(failed, forKey: replanAfterRestoreKey)
         }
     }
 
