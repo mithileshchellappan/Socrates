@@ -11,7 +11,8 @@ import StudyCore
 /// - `chat`: an exact span (≥ 3 words) of the student's message being answered;
 /// - `mail`: an exact span of that mail (`QuoteVerifier`, outside text that talks to a model);
 /// - `lecture`: an exact span of the lecture's transcript, with its first word's time;
-/// - `event`: the source of a triage event (an escalation task's).
+/// - `event`: the source of a triage event (an escalation task's; for slides, a page of the
+///   event's deck, and only course rules and dated items).
 /// Dates must be in the quote (`DateMentions`). All are `.verifiedWrite`, so they may sit beside
 /// the mail tools (`ToolSet` refuses plain `.write`). No send, no other calendars; the deletes are
 /// `remove_course` (never of a course with the student's recordings or notes) and
@@ -97,6 +98,11 @@ struct WriteTools: Sendable {
                 return .failure("The quote is not in the lecture's transcript.")
             }
             return .success(found)
+        case .slides:
+            guard let prepared = try await SlideEvents.prepared(event, services: services),
+                  let checked = try await applier.verify(quote, line: nil, material: prepared.material)
+            else { return .failure("The quote is not on the event's slides. Copy a page's words exactly.") }
+            return .success(checked)
         default:
             let kind: SourceRef.Kind = event.kind == .timetable ? .timetable : .calendar
             guard let detail = event.detail,

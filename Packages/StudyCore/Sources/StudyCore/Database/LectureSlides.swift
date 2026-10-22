@@ -69,6 +69,12 @@ public enum LectureSlides {
         }
     }
 
+    /// The first lecture (by when it was held) whose range of `deckID` shows `page`; nil when
+    /// none does (a slide source's lecture).
+    public static func lecture(showing page: Int, of deckID: Deck.ID, in db: Database) throws -> Lecture.ID? {
+        try lectures(usingDeck: deckID, in: db).first { $0.firstPage <= page && page <= $0.lastPage }?.lectureID
+    }
+
     /// The decks the student turned down for this lecture: unlinked (a `deck_unlink` change not
     /// undone) or a link they undid (a `deck_link` change undone). Continuation detection never
     /// links them to it again.

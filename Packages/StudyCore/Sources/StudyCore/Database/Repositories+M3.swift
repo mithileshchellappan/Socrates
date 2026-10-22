@@ -112,7 +112,8 @@ extension APICallRepository {
 /// moment), for a mail its sender and time. Raw facts; StudyUI's `SourceTrailText` words them.
 public struct SourceTrailEntry: Hashable, Sendable, Identifiable {
     public var source: TrackedItemSource
-    /// Transcript sources: the lecture the recording belongs to.
+    /// Transcript sources: the lecture the recording belongs to (slide sources: the lecture
+    /// showing the page, also set as `source.lectureID`).
     public var lectureNumber: Int?
     public var lectureTitle: String?
     public var lectureHeldAt: Date?
@@ -121,7 +122,8 @@ public struct SourceTrailEntry: Hashable, Sendable, Identifiable {
     public var sessionKind: SessionKind?
     /// The lecture's course lecturers ("Prof. Dr. Ada Example").
     public var professors: [String]
-    /// The slide on screen at `source.time` (from the aligned spans), when known.
+    /// The slide on screen at `source.time` (from the aligned spans), or the page a slide source
+    /// names, when known.
     public var page: Int?
     /// Mail sources: the sender and when the mail arrived.
     public var senderName: String?
@@ -176,7 +178,14 @@ extension TrackedItemRepository {
         var trails: [TrackedItem.ID: [SourceTrailEntry]] = [:]
         for source in sources {
             var entry = SourceTrailEntry(source: source)
-            if let lectureID = source.lectureID {
+            // A slide source names its deck page; its lecture is the one showing that page.
+            if source.kind == .slide, let slide = SlideReference(source.rfcMessageID) {
+                entry.page = slide.page
+                if entry.source.lectureID == nil {
+                    entry.source.lectureID = try LectureSlides.lecture(showing: slide.page, of: slide.deckID, in: db)
+                }
+            }
+            if let lectureID = entry.source.lectureID {
                 if lectures[lectureID] == nil { lectures[lectureID] = try Lecture.find(lectureID).fetchOne(db) }
                 if let lecture = lectures[lectureID] {
                     entry.lectureNumber = lecture.number

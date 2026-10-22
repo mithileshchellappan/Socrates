@@ -26,6 +26,9 @@ import StudyCore
 ///   change a newer one replaced only gets its row (and its item source) marked undone.
 /// - **The student's own edits**: a session the student edited by hand, an item or a rule they
 ///   wrote, is never changed by Haiku (`.conflict`, escalated to Opus).
+/// - **Rules from slides** are proposals (`confirmed_at` nil, Confirm in Course Settings): they
+///   fill a missing or empty rule or replace their own waiting proposal, never a rule that stands;
+///   against the student's own rule they are a `.conflict`.
 /// - **Session changes** settle at once: the session row is changed (`edited_at`, replanned and
 ///   renumbered), a tracked item of the change's kind is written `done` with its source.
 public struct ChangeLog: Sendable {
@@ -884,6 +887,8 @@ public struct ChangeLog: Sendable {
         guard var course = try Course.find(courseID).fetchOne(db) else { return .refused("Unknown course.") }
         let before = AgentChangeValues(exists: true, professors: course.professors, rules: course.rules)
         let summary: String
+        // A slide source's lecture (the change row names it, as a transcript's).
+        var slideLectureID: Lecture.ID?
         if let professors {
             let names = professors.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             guard !names.isEmpty else { return .refused("No lecturers given.") }
@@ -901,24 +906,39 @@ public struct ChangeLog: Sendable {
                 source.lectureID = lectureID
                 source.recordingID = recordingID
                 source.time = time
+            case .external(let sourceKind, let reference) where sourceKind == .slide:
+                // The rule's "S13" chip opens the page in the lecture that shows it.
+                if let slide = SlideReference(reference) {
+                    source.deckID = slide.deckID
+                    source.pageNumber = slide.page
+                    source.lectureID = try LectureSlides.lecture(showing: slide.page, of: slide.deckID, in: db)
+                    slideLectureID = source.lectureID
+                }
             default: break
             }
-            let rule = CourseRule(kind: kind, title: ruleTitle(kind), text: text, provenance: .ai, source: source, confirmedAt: now)
+            // A rule read from slides is a proposal: it counts once the student confirms it in
+            // Course Settings.
+            let fromSlides = origin.sourceKind == .slide
+            let confirmedAt: Date? = fromSlides ? nil : now
+            guard !course.rules.contains(where: { $0.kind == kind && TextFolding.fold($0.text) == TextFolding.fold(text) }) else {
+                return .unchanged("The course says that already.")
+            }
             if let index = course.rules.firstIndex(where: { $0.kind == kind && kind != .other }) {
-                if origin.isHaiku, course.rules[index].provenance == .user {
+                let existing = course.rules[index]
+                if origin.isHaiku || fromSlides, existing.provenance == .user {
                     return .conflict("The student wrote this course rule themselves.")
                 }
-                guard TextFolding.fold(course.rules[index].text) != TextFolding.fold(text) else {
-                    return .unchanged("The course says that already.")
+                // Slides never replace a rule that stands, only an empty one or their own waiting proposal.
+                if fromSlides, !existing.text.isEmpty, existing.isConfirmed || existing.source?.kind != .slide {
+                    return .unchanged("The course has a rule of this kind that stands; slides only propose one.")
                 }
                 course.rules[index] = CourseRule(
-                    id: course.rules[index].id, kind: kind, title: course.rules[index].title, text: text, provenance: .ai, source: source,
-                    confirmedAt: now
+                    id: existing.id, kind: kind, title: existing.title, text: text, provenance: .ai, source: source, confirmedAt: confirmedAt
                 )
             } else {
-                course.rules.append(rule)
+                course.rules.append(CourseRule(kind: kind, title: ruleTitle(kind), text: text, provenance: .ai, source: source, confirmedAt: confirmedAt))
             }
-            summary = "\(ruleTitle(kind)): \(text)"
+            summary = fromSlides ? "\(ruleTitle(kind)), to confirm: \(text)" : "\(ruleTitle(kind)): \(text)"
         }
         let stamped = store.stamp(course)
         try Course.upsert { stamped }.execute(db)
@@ -929,6 +949,7 @@ public struct ChangeLog: Sendable {
             apiCallID: origin.apiCallID, appliedAt: now, createdAt: now, updatedAt: now
         )
         ItemChangeRows.apply(origin.source, to: &change)
+        if let slideLectureID { change.lectureID = slideLectureID }
         change = finalize(change, origin: origin, store: store)
         try AgentChangeRepository.insert(change, db: db)
         return .applied(change)

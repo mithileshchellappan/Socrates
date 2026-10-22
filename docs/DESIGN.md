@@ -344,7 +344,7 @@ The first Today "felt a bit crowded": chips on every line, a sparkle on every AI
 3. **Resting rows are plain.** A medium or semibold title, at most one grey secondary line, and a right-aligned date/time (mono time). No chips at rest.
 4. **At most one chip per row, and only when it is the point of the row**: a jump-to-time on a transcript or review moment, a slide reference, an exam flag, a proposal in the mail list.
 5. **Every fact once per screen.** If the hero's aside names Lecture 3, Coming up does not list it.
-6. **Sources sit behind one faint glyph** (`waveform` = recording, `envelope` = mail, `calendar` = a timetable file), 14 pt tertiary, after the row's last line. The full trail opens in a hover popover.
+6. **Sources sit behind one faint glyph** (`waveform` = recording, `envelope` = mail, `calendar` = a timetable file, `display` = a slide), 14 pt tertiary, after the row's last line. The full trail opens in a hover popover.
 7. **One sparkle per AI block**, and one per screen when the screen has a single AI line (Today).
 8. **Status by shape and colour, not words.**
    - In a list that mixes classes and due items (Today's Coming up), a 4 pt course bar is a class or event and a 10 pt open ring (`DueRing`) is something due.
@@ -387,6 +387,7 @@ The first Today "felt a bit crowded": chips on every line, a sparkle on every AI
   - rows of [16 pt glyph or pin | name (12.5 medium) over one 11 pt secondary line | one trailing chip]
   - a recording row: the name says which lecture ("Lecture 2, Example", "Seminar intro"), the line is optional ("Mon 12 Oct · slide 25"), the chip is a `TimeChip` **without** prefix ("▶ 0:37", "57:18"), since the name already says the lecture
   - a mail row: the sender's name; then either the quote as the 11 pt line with the mail's mono time as the chip (mockup 01), or the time as the line and the quote on its own full-width 12 pt secondary line below (mockup 06, for a longer quote). Quotes at most about 15 words, in “”.
+  - a slide row: the professor's pin, the lecture that shows it ("Slides" when none does) over the quote, and a `SlideChip` ("S3") that opens the page there
   - a footer over a hairline: the green `calendar.badge.checkmark` glyph (no text) and a small Undo
 - **Away from its lecture, a resting chip says which lecture**: `TimeChip(t, prefix: "L2")` reads "L2 · 0:37" (Mail found rows, Course Settings rules, Today rows). Inside a popover whose row names the lecture, no prefix.
 

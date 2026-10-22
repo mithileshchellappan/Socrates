@@ -253,6 +253,7 @@ private struct AgentChangeRowView: View {
         case .chat: "bubble.left"
         case .timetable, .calendar: "calendar"
         case .transcript: "waveform"
+        case .slide: "display"
         default: "doc.text"
         }
     }

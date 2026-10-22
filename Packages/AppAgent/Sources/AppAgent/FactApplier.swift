@@ -19,11 +19,20 @@ enum FactMaterial: Sendable {
     case text(String, kind: SourceRef.Kind, reference: String, date: Date)
     /// The student's words in the app agent's conversation (≥ 3 words).
     case chat(AgentConversation.ID, words: String, date: Date)
+    /// A course deck's organisational pages (`SlideEvents`): an exact span (≥ 8 characters) of
+    /// one page, the page `line` names first; `date` is when the slides were shown (dates in them
+    /// are read against it); `trusted` false when a page of the deck talks to a model.
+    case slides(deckID: Deck.ID, pages: [SlidePage], date: Date, trusted: Bool)
 
     struct SaidQuote: Sendable, Hashable {
         var text: String
         var recordingID: Recording.ID?
         var time: Double?
+    }
+
+    struct SlidePage: Sendable, Hashable {
+        var number: Int
+        var text: String
     }
 }
 
@@ -34,6 +43,12 @@ struct VerifiedQuote: Sendable {
     /// When the words were written or said (relative dates are read against it).
     var reference: Date
     var trusted: Bool
+
+    /// Read from a deck's page (a `slides` event).
+    var isSlide: Bool {
+        if case .external(let kind, _) = source { return kind == .slide }
+        return false
+    }
 }
 
 /// Turns decided actions (`FactAction`, the triage's or the mail extraction's) into change-log
@@ -82,6 +97,16 @@ struct FactApplier: Sendable {
         case .chat(let conversationID, let words, let date):
             guard let span = AgentToolSupport.span(of: quote, in: words), TextFolding.words(span).count >= 3 || span.count >= 12 else { return nil }
             return VerifiedQuote(quote: span, source: .chat(conversationID), reference: date, trusted: true)
+        case .slides(let deckID, let pages, let date, let trusted):
+            let cleaned = TranscriptQuote.cleaned(quote)
+            guard cleaned.count >= 8 else { return nil }
+            let named = line.flatMap { Int($0.filter(\.isNumber)) }
+            for page in pages.filter({ $0.number == named }) + pages.filter({ $0.number != named }) {
+                guard let span = NormalizedText(page.text).originalSpan(of: cleaned) else { continue }
+                let slide = SlideReference(deckID: deckID, page: page.number)
+                return VerifiedQuote(quote: String(span), source: .external(.slide, reference: slide.reference), reference: date, trusted: trusted)
+            }
+            return nil
         }
     }
 
@@ -92,6 +117,11 @@ struct FactApplier: Sendable {
         let courses = try await CourseList.load(services.database)
         let courseID = course(action.course, courses: courses)
         let mentions = DateMentions.parse(verified.quote, reference: verified.reference, timeZone: timeZone)
+        // Slides state how a course works: its rules and dated items, never a change to a class
+        // or to an item that is there.
+        if verified.isSlide, action.changeKind != .courseFact, action.changeKind != .itemAdd {
+            return .failure(.invalid("Slides give only course rules and dated items."))
+        }
         switch action.changeKind {
         case .sessionRoom, .sessionCancel, .sessionRestore, .sessionTime:
             let restoring = action.changeKind == .sessionRestore
@@ -155,6 +185,7 @@ struct FactApplier: Sendable {
             } else if kind.isDue || kind == .event {
                 return .failure(.invalid("A \(kind.rawValue) needs a date; use task or announcement without one."))
             }
+            if verified.isSlide, !dateVerified { return .failure(.unverifiedDate("An item from slides needs its date in the quote.")) }
             return .success(.itemAdd(draft, dateVerified: dateVerified))
         case .itemMove:
             guard let item = try await item(action.item) else { return .failure(.invalid("Unknown item.")) }

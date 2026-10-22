@@ -238,7 +238,7 @@ public struct AgentChange: StudyRecord {
 // MARK: - Triage inbox
 
 /// One new fact waiting for triage: a mail, a finished transcript, a study pass's said-in-class
-/// rows, a timetable import, a calendar edit elsewhere. Producers write it without a model call;
+/// rows, a timetable import, a calendar edit elsewhere, a deck's organisational slides. Producers write it without a model call;
 /// AppAgent's triage reads pending events in batches. `source_key` keeps one row per source
 /// version (the repository skips a key it has).
 @Table("agent_event")
@@ -248,14 +248,15 @@ public struct AgentEvent: StudyRecord {
     public var state: AgentEventState
     /// One per source version: "mail:<Message-ID>:<parse version or flags hash>",
     /// "transcript:<recording id>:<newest line stamp>", "study_pass:<lecture id>:<input hash>",
-    /// "timetable:<file sha256>", "calendar:<event id>:<modified>".
+    /// "timetable:<file sha256>", "calendar:<event id>:<modified>", "slides:<deck id>:<blob sha256>".
     @Column("source_key") public var sourceKey: String
     @Column("course_id") public var courseID: Course.ID?
     @Column("mail_message_id") public var mailMessageID: MailMessage.ID?
     @Column("lecture_id") public var lectureID: Lecture.ID?
     @Column("recording_id") public var recordingID: Recording.ID?
     /// The fact itself when no other row holds it (a timetable diff, a calendar edit), ≤ 6,000
-    /// characters; nil when triage reads the source rows (mail, transcript, study pass).
+    /// characters; nil when triage reads the source rows (mail, transcript, study pass); for
+    /// slides, the page numbers triage reads.
     public var detail: String?
     public var attempts: Int
     public var error: String?
