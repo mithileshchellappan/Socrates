@@ -21,7 +21,7 @@ struct RecordingLockScreenView: View {
                 Spacer(minLength: 8)
                 RecordingElapsed(state: state, size: 24)
             }
-            RecordingButtons(recordingID: recordingID)
+            RecordingButtons(recordingID: recordingID, slide: state.slide)
         }
         .padding(.leading, 16)
         .padding(.trailing, 14)
@@ -74,14 +74,16 @@ struct RecordingElapsed: View {
     }
 }
 
-/// [Next Slide] (accent, the wide one) and [Stop Recording].
+/// [Next Slide] (accent, the wide one) and [Stop Recording]. Next Slide carries `slide`, the
+/// slide on show, so the recorder moves only from there.
 struct RecordingButtons: View {
     let recordingID: UUID
+    let slide: Int
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(intent: NextSlideIntent(recordingID: recordingID)) {
+            Button(intent: NextSlideIntent(recordingID: recordingID, slide: slide)) {
                 HStack(spacing: 7) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 14, weight: .bold))

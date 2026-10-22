@@ -242,7 +242,23 @@ public final class PhoneRecorder {
         // A button of an older activity never acts on this recording.
         guard let session, session.isRecording, session.package?.id == recordingID else { return }
         switch command {
-        case .nextSlide: next()
+        case .nextSlide(let shown):
+            // One tap can arrive twice: only the first moves on from the slide the button showed.
+            // An activity that missed an update gets the slide on screen again. The intent returns
+            // once the activity has the new state: an app the system suspends again right after
+            // (an interruption stopped the audio) would otherwise keep showing the old slide, and
+            // the next tap would be refused.
+            let current = session.currentPage
+            guard current == shown else {
+                RecorderLog.recorder.notice(
+                    "Next Slide ignored: button drawn for slide \(shown, privacy: .public), on slide \(current, privacy: .public)"
+                )
+                updateActivity(force: true)
+                await activityTask?.value
+                return
+            }
+            next()
+            await activityTask?.value
         case .stop: await stop()
         }
     }
@@ -352,10 +368,11 @@ public final class PhoneRecorder {
         )
     }
 
-    /// Updates the Live Activity when what it shows changed (a stamp, the course).
-    private func updateActivity() {
+    /// Updates the Live Activity when what it shows changed (a stamp, the course); `force` sends
+    /// it even when unchanged (a button acted on a slide the activity should no longer show).
+    private func updateActivity(force: Bool = false) {
         #if os(iOS)
-        guard let id = activityID, let state = activityState(), state != lastActivityState else { return }
+        guard let id = activityID, let state = activityState(), force || state != lastActivityState else { return }
         lastActivityState = state
         let previous = activityTask
         activityTask = Task {

@@ -8,7 +8,8 @@ import RecorderActivity
 // compiled into both the app (iOS) and the widget extension (Apple's requirement for Live
 // Activity buttons); in the app they reach the recorder through `RecorderControl`.
 
-/// Stamps the next slide of the recording the activity was drawn for.
+/// Stamps the slide after the one the activity showed, for the recording it was drawn for. The
+/// shown slide makes a repeated run of one tap harmless (`RecorderCommand.nextSlide(from:)`).
 struct NextSlideIntent: LiveActivityIntent {
     nonisolated static let title: LocalizedStringResource = "Next Slide"
     nonisolated static let isDiscoverable = false
@@ -16,15 +17,19 @@ struct NextSlideIntent: LiveActivityIntent {
     @Parameter(title: "Recording")
     var recordingID: String
 
+    @Parameter(title: "Slide")
+    var slide: Int
+
     init() {}
 
-    init(recordingID: UUID) {
+    init(recordingID: UUID, slide: Int) {
         self.recordingID = recordingID.uuidString
+        self.slide = slide
     }
 
     func perform() async throws -> some IntentResult {
         if let id = UUID(uuidString: recordingID) {
-            await RecorderControl.perform(.nextSlide, recordingID: id)
+            await RecorderControl.perform(.nextSlide(from: slide), recordingID: id)
         }
         return .result()
     }

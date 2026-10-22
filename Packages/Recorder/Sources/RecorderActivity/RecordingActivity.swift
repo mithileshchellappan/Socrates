@@ -82,11 +82,16 @@ public struct RecordingActivityAttributes: ActivityAttributes {
 }
 #endif
 
-/// What a Live Activity button asks the recorder to do.
-public enum RecorderCommand: String, Codable, Hashable, Sendable {
-    /// Stamps the next slide on the recording clock (→ on the Mac).
-    case nextSlide
+/// What a Live Activity button asks the recorder to do. The system may run one tap's intent more
+/// than once, so every command must be safe to repeat: a relative one (Next Slide, and any later
+/// Previous or Flag) carries what the activity showed when its button was drawn, and the recorder
+/// acts only while it still shows that.
+public enum RecorderCommand: Hashable, Sendable {
+    /// Stamps the slide after `from`, the slide the activity showed (→ on the Mac). Ignored once
+    /// the recorder is past it: a second run of the same tap never moves two slides.
+    case nextSlide(from: Int)
     /// Stops recording at once (a Lock Screen button cannot ask first; the package is final).
+    /// Repeating it does nothing.
     case stop
 }
 

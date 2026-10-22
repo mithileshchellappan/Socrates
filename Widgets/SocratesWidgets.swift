@@ -34,7 +34,7 @@ struct RecordingLiveActivity: Widget {
                         .padding(.trailing, 4)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    RecordingButtons(recordingID: context.attributes.recordingID)
+                    RecordingButtons(recordingID: context.attributes.recordingID, slide: context.state.slide)
                         .padding(.top, 6)
                 }
             } compactLeading: {
