@@ -2,56 +2,10 @@
 import StudyUI
 import SwiftUI
 
-/// The toggles at the toolbar's trailing end: one glass group, one button per offered pane in
-/// toolbar order (the agent last), lit (accent soft, accent glyph) while its pane is open; help
-/// "Notes ⌥⌘1". Reads only which panes are offered and open, so no drag re-renders the toolbar.
-/// The app puts it last among its trailing items.
-public struct PaneToolbarToggles: ToolbarContent {
-    private let model: PaneHostModel
-
-    public init(model: PaneHostModel) {
-        self.model = model
-    }
-
-    public var body: some ToolbarContent {
-        if !model.specs.isEmpty {
-            ToolbarSpacer(.fixed, placement: .primaryAction)
-            ToolbarItemGroup(placement: .primaryAction) {
-                ForEach(model.specs) { spec in
-                    PaneToggle(model: model, spec: spec)
-                }
-            }
-        }
-    }
-}
-
-/// One pane's toggle (contracts stub: workstream A draws the lit state as DESIGN 6.3's toggles).
-private struct PaneToggle: View {
-    let model: PaneHostModel
-    let spec: PaneSpec
-
-    var body: some View {
-        let isOpen = model.isOpen(spec.id)
-        Button {
-            model.toggle(spec.id)
-        } label: {
-            Label(spec.menuTitle, systemImage: spec.systemImage)
-                .labelStyle(.iconOnly)
-        }
-        .foregroundStyle(isOpen ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-        .help(help)
-        .accessibilityAddTraits(isOpen ? .isSelected : [])
-    }
-
-    private var help: String {
-        guard let number = model.shortcutNumber(of: spec.id) else { return spec.menuTitle }
-        return "\(spec.menuTitle) ⌥⌘\(number)"
-    }
-}
-
 /// View ▸ Show / Hide <pane> (⌥⌘1…⌥⌘9 in toolbar order) and Maximize Pane / Restore Pane (⇧⌘↩)
 /// for the key main window's panes (`.paneCommandsTarget(_:)`). ⌘ keys only: they attach only while
-/// a main window with panes is key, and work while the student types.
+/// a main window with panes is key, and work while the student types. Restore Pane is off while
+/// the maximized pane has no column to go back to.
 public struct PaneCommands: Commands {
     @FocusedValue(\.paneHost) private var host
 
@@ -70,7 +24,7 @@ public struct PaneCommands: Commands {
                     host.toggleMaximized()
                 }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
-                .disabled(host.openIDs.isEmpty)
+                .disabled(host.openIDs.isEmpty || (host.maximized != nil && !host.canRestore))
             }
         }
     }

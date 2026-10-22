@@ -15,7 +15,8 @@ extension View {
     /// window is untouched (clicks, scrolls, hovers and drops reach what is under it).
     ///
     /// The content gets this place's environment plus `\.floatingPanelMover`,
-    /// `\.floatingPanelFrame` and `\.isLiveResizing`.
+    /// `\.floatingPanelFrame` and `\.isLiveResizing`. Apply at the window's root, so the panel's
+    /// corner is the content area's.
     public func floatingPanel<Content: View>(
         isPresented: Bool,
         frame: Binding<FloatingPanelFrame>,
@@ -25,23 +26,33 @@ extension View {
     }
 }
 
-/// Contracts stub: the panel in a SwiftUI overlay at its stored place, not movable. Workstream A
-/// replaces it with the AppKit layer (docs/plan-panes.md, "Workstream A", the floating panel).
+/// Places the panel's AppKit view at the stored frame: its size (the content's height while it
+/// hugs) plus the resize band, inset from the bottom-trailing corner. It stays in place while
+/// hidden, so presenting it never moves anything.
 private struct FloatingPanelModifier<Panel: View>: ViewModifier {
     let isPresented: Bool
     @Binding var frame: FloatingPanelFrame
     let panel: () -> Panel
 
+    /// The content's height while the panel hugs it (kept across presentations).
+    @State private var hugged: CGFloat = 120
+
     func body(content: Content) -> some View {
+        let band = FloatingPanelView.band
+        let binding = $frame
+        let hugged = $hugged
         content
             .overlay(alignment: .bottomTrailing) {
-                if isPresented {
-                    panel()
-                        .environment(\.floatingPanelFrame, frame)
-                        .frame(width: CGFloat(frame.width), height: frame.height.map { CGFloat($0) })
-                        .padding(.trailing, frame.dx)
-                        .padding(.bottom, frame.dy)
-                }
+                FloatingPanelHost(
+                    isPresented: isPresented,
+                    frame: frame,
+                    write: { binding.wrappedValue = $0 },
+                    onHug: { height in if hugged.wrappedValue != height { hugged.wrappedValue = height } },
+                    panel: panel
+                )
+                .frame(width: CGFloat(frame.width) + 2 * band, height: CGFloat(frame.height ?? Double(self.hugged)) + 2 * band)
+                .padding(.trailing, max(0, CGFloat(frame.dx) - band))
+                .padding(.bottom, max(0, CGFloat(frame.dy) - band))
             }
     }
 }
