@@ -59,20 +59,28 @@ sync.stop()
   references were dropped, SQLiteData deleted some rows of one-foreign-key tables on the device
   when iCloud refused them, and ON DELETE CASCADE / SET NULL followed. On the first launch with
   sync (`AppModel.restoreLostRowsOnce`, key `Socrates.restoredRowsLostToFirstSync`, before
-  `start()`), weekly slots, generated future sessions, slide ink and mail attachments missing from
-  the library are inserted again from `Socrates-before-sync.sqlite` (read-only), and sessions get
-  their slot link back; a row comes back only when its parent exists and no live row replaced it
-  (same slot time, a session within a minute, ink on the page, the attachment's part) and, for a
-  slot, no `slot_remove` change names it. Restored sessions start without a calendar event (the
-  mirror adopts the one with their link or writes one), attachments without a file (fetched again
-  on open). The library is copied first to `Socrates-before-restore.sqlite` (kept). One
-  transaction through the syncing writer, so every row is queued for upload; changed courses are
-  replanned. A library without that copy sets the key and never restores. Logs only, category
-  `Restore`.
-- **One backup a day** (Mac, `LibraryBackup.runDaily`, at launch in the background and after each
-  wake): `Database/Backups/Socrates-<yyyy-MM-dd>.sqlite` through SQLite's backup API from a reader
-  snapshot (the writer never waits), written as `.partial` and renamed, rollback journal mode, main
-  schema only; the newest 7 kept, skipped when free disk is under twice the library plus 2 GB.
+  `start()`, only once `CloudSync.hasEngine`), weekly slots, generated future sessions, slide ink
+  and mail attachments missing from the library are inserted again from
+  `Socrates-before-sync.sqlite` (read-only), and sessions get their restored slot's link back; a
+  row comes back only when its parent exists and no live row replaced it (a session within a
+  minute, ink on the page, the attachment's part). Slots, their sessions and links come back only
+  for a course with no live slot and no slot change the agent logged after the copy was made
+  (undone or not), and a slot only when no `slot_remove` change names it: an old slot beside
+  re-entered class times would double every class. Restored sessions start without a calendar
+  event (the mirror adopts the one with their link or writes one), attachments without a file
+  (fetched again on open). The library is copied first to `Socrates-before-restore.sqlite` (kept).
+  One transaction through the syncing writer, so every row is queued for upload; changed courses
+  are replanned (kept in `Socrates.replanAfterRestore` until each replan succeeds). A library
+  without that copy, or whose copy was made after parent references were dropped
+  (`LibraryRestore.parentReferencesDroppedAt`, by the file's date), sets the key and never
+  restores. Logs only, category `Restore` (replans: `app`).
+- **One backup a day** (Mac, `LibraryBackup.runDaily`, at launch in the background, after each
+  wake and once an hour): `Database/Backups/Socrates-<yyyy-MM-dd>.sqlite` through SQLite's backup
+  API from a reader snapshot (the writer never waits), written as `.partial` and renamed, rollback
+  journal mode, main schema only; kept: the newest 7 and the newest of each of the 4 latest weeks
+  and 3 latest months (at most 14), so a loss noticed weeks later still has a copy from before it;
+  files are matched by their day whatever the name before it (a renamed library keeps pruning its
+  older copies); skipped when free disk is under twice the library plus 2 GB.
   After each new backup, a synced table with fewer rows than in the previous backup gets one
   `Backup` log line.
 - **Deletes made by sync are logged** (`SyncDeletionLog`, a GRDB transaction observer on the

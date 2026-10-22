@@ -53,6 +53,9 @@ public final class CloudSync {
     /// Built once (`prepare()`), kept for the app's life; stopped and started again as the account
     /// comes and goes. Its triggers note changes also while it is stopped (sent at the next start).
     @ObservationIgnored private var engine: SyncEngine?
+    /// True once the engine is built: its triggers note every write from then on, so rows written
+    /// now are queued for upload (`LibraryRestore` waits for it).
+    public var hasEngine: Bool { engine != nil }
     /// Logs the rows sync deletes on this device (`SyncDeletionLog`); on the library's writer
     /// from the first engine on, added once.
     private let deletionLog = SyncDeletionLog(tables: Set(SyncedTables.types.map { $0.tableName }))

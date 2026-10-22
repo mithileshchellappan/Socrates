@@ -11,10 +11,16 @@ import StudyCore
 ///
 /// Four tables are restored, each row only when nothing in the live library says it went on
 /// purpose or has been replaced:
-/// - `weekly_slot`: when its course exists, no `slot_remove` change (not undone) names it and no
-///   live slot of the course has the same kind, weekday and start;
-/// - `lecture_session.weekly_slot_id`: set again where the delete cleared it (same course, still
-///   NULL), without stamping `updated_at` (the calendar event does not show the slot);
+/// - `weekly_slot`: when its course exists and has no class times again, and no `slot_remove`
+///   change (not undone) names it. A course with any live slot, or with a slot change the agent
+///   logged after the copy was made (undone or not), has had its class times set since: none of
+///   its slots, sessions or links come back, since an old slot beside a re-entered one at another
+///   minute or of another kind would double every class (Course Settings logs no change, so only
+///   the live slots show its edits). A course that kept some slots gets none of the others back;
+///   both copies keep them;
+/// - `lecture_session.weekly_slot_id`: set again where the delete cleared it (a slot restored
+///   here, same course, still NULL), without stamping `updated_at` (the calendar event does not
+///   show the slot);
 /// - `lecture_session`: generated, unedited, not cancelled, in the future, with its slot back,
 ///   nothing filed to it, and no live session of the course within a minute of it. Its calendar
 ///   fields start empty, so the calendar mirror adopts the event that still carries the
@@ -28,9 +34,13 @@ import StudyCore
 /// upload. Before writing, the library is copied once to `<name>-before-restore.sqlite`
 /// (`LibraryBackup.copy`); an existing copy is kept, so a retry never replaces it.
 ///
+/// Only a copy made before parent references were dropped (`parentReferencesDroppedAt`) is a
+/// source: a library that first synced later lost nothing this way, and its copy would only bring
+/// back what the student deleted since.
+///
 /// `run()` has no once-logic (the app keeps that, `AppModel.restoreLostRowsOnce`) and is
-/// idempotent: a second run finds every row present. Logs table names and counts only
-/// (category "Restore").
+/// idempotent: a second run finds every row present, or its course with class times again. Logs
+/// table names and counts only (category "Restore").
 public struct LibraryRestore: Sendable {
     public struct Outcome: Sendable, Equatable {
         /// Rows inserted, by table.
@@ -75,8 +85,23 @@ public struct LibraryRestore: Sendable {
         )
     }
 
-    /// True when the copy to restore from exists.
-    public var hasSource: Bool { FileManager.default.fileExists(atPath: source.path(percentEncoded: false)) }
+    /// The build that made every synced table private (no parent references) dates from here
+    /// (2026-10-22 03:06:07 UTC); a copy made later comes from a library whose first upload
+    /// deleted nothing.
+    public static let parentReferencesDroppedAt = Date(timeIntervalSince1970: 1_792_638_367)
+
+    /// True when the copy to restore from exists and was made before parent references were
+    /// dropped (its file date; an unknown date counts as before).
+    public var hasSource: Bool {
+        guard FileManager.default.fileExists(atPath: source.path(percentEncoded: false)) else { return false }
+        return Self.fileDate(source).map { $0 < Self.parentReferencesDroppedAt } ?? true
+    }
+
+    /// A file's modification date: for the copy, when it was made (`VACUUM INTO`, never written
+    /// again).
+    static func fileDate(_ url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path(percentEncoded: false)))?[.modificationDate] as? Date
+    }
 
     @concurrent
     public func run() async throws -> Outcome {
@@ -132,6 +157,8 @@ public struct LibraryRestore: Sendable {
         var tables: [String: SourceTable] = [:]
         /// Session ids a lecture or a filing points to.
         var filedSessions: Set<String> = []
+        /// When the copy was made (nil: unknown, so every logged slot change counts as later).
+        var copiedAt: Date?
 
         /// Reads the source as a plain read-only queue: never migrated, no metadatabase.
         static func read(_ url: URL) throws -> Snapshot {
@@ -139,8 +166,9 @@ public struct LibraryRestore: Sendable {
             configuration.readonly = true
             let queue = try DatabaseQueue(path: url.path(percentEncoded: false), configuration: configuration)
             defer { try? queue.close() }
+            let copiedAt = LibraryRestore.fileDate(url)
             return try queue.read { db in
-                var snapshot = Snapshot()
+                var snapshot = Snapshot(copiedAt: copiedAt)
                 for table in LibraryRestore.restoredTables {
                     guard try db.tableExists(table) else { continue }
                     let columns = try db.columns(in: table).map(\.name)
@@ -168,11 +196,14 @@ public struct LibraryRestore: Sendable {
         var outcome = Outcome()
         func skip(_ reason: String) { outcome.skipped[reason, default: 0] += 1 }
         func restored(_ table: String) { outcome.restored[table, default: 0] += 1 }
+        func courseUUID(_ value: DatabaseValue) -> UUID? { String.fromDatabaseValue(value).flatMap(UUID.init(uuidString:)) }
         func course(_ value: DatabaseValue) {
-            if let text = String.fromDatabaseValue(value), let id = UUID(uuidString: text) { outcome.courses.insert(id) }
+            if let id = courseUUID(value) { outcome.courses.insert(id) }
         }
+        // Decided before anything is inserted: a course whose slots come back here has none yet.
+        let settled = try coursesWithClassTimesSince(snapshot.copiedAt, db)
 
-        // a) Weekly slots. slotMap: source slot id → the live slot that stands for it.
+        // a) Weekly slots. slotMap: source slot id → the slot restored for it.
         var slotMap: [String: String] = [:]
         var slotCourse: [String: DatabaseValue] = [:]
         if let slots = snapshot.tables["weekly_slot"] {
@@ -182,10 +213,8 @@ public struct LibraryRestore: Sendable {
                 guard let id = String.fromDatabaseValue(idValue) else { continue }
                 let courseID = slots.value(row, "course_id")
                 slotCourse[id] = courseID
-                if try exists("weekly_slot", id: idValue, db) {
-                    slotMap[id] = id
-                    continue
-                }
+                guard try !exists("weekly_slot", id: idValue, db) else { continue }
+                if let reason = courseUUID(courseID).flatMap({ settled[$0] }) { skip("weekly_slot: \(reason)"); continue }
                 guard try exists("course", id: courseID, db) else { skip("weekly_slot: course gone"); continue }
                 let removed = try Bool.fetchOne(
                     db,
@@ -196,20 +225,6 @@ public struct LibraryRestore: Sendable {
                     arguments: [idValue]
                 ) ?? false
                 guard !removed else { skip("weekly_slot: removed by the agent"); continue }
-                let same = try String.fetchOne(
-                    db,
-                    sql: """
-                        SELECT "id" FROM "weekly_slot"
-                        WHERE "course_id" = ? AND "kind" = ? AND "weekday" = ? AND "start_minute" = ?
-                        LIMIT 1
-                        """,
-                    arguments: [courseID, slots.value(row, "kind"), slots.value(row, "weekday"), slots.value(row, "start_minute")]
-                )
-                if let same {
-                    slotMap[id] = same
-                    skip("weekly_slot: same slot live")
-                    continue
-                }
                 try insert("weekly_slot", columns: columns, from: slots, row: row, db)
                 slotMap[id] = id
                 restored("weekly_slot")
@@ -244,7 +259,8 @@ public struct LibraryRestore: Sendable {
             let idValue = sessions.value(row, "id")
             guard let id = String.fromDatabaseValue(idValue), try !exists("lecture_session", id: idValue, db) else { continue }
             guard let slot = String.fromDatabaseValue(sessions.value(row, "weekly_slot_id")), let live = slotMap[slot] else {
-                skip("lecture_session: no slot")
+                let reason = courseUUID(sessions.value(row, "course_id")).flatMap { settled[$0] }
+                skip("lecture_session: \(reason ?? "no slot")")
                 continue
             }
             guard sessions.value(row, "edited_at").isNull, Int.fromDatabaseValue(sessions.value(row, "is_cancelled")) == 0 else {
@@ -322,6 +338,32 @@ public struct LibraryRestore: Sendable {
             }
         }
         return outcome
+    }
+
+    /// Courses whose class times were set since the copy, with the reason: any live slot, or a
+    /// slot the agent added, changed or removed after the copy was made (undone or not).
+    static func coursesWithClassTimesSince(_ copiedAt: Date?, _ db: Database) throws -> [UUID: String] {
+        var settled: [UUID: String] = [:]
+        let since = copiedAt ?? .distantPast
+        let changes = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT coalesce(
+                    CASE WHEN json_valid("after") THEN json_extract("after", '$.courseID') END,
+                    CASE WHEN json_valid("before") THEN json_extract("before", '$.courseID') END
+                ) AS "course", "created_at"
+                FROM "agent_change" WHERE "kind" IN ('slot_add', 'slot_change', 'slot_remove')
+                """
+        )
+        for change in changes {
+            guard let text: String = change["course"], let id = UUID(uuidString: text) else { continue }
+            let createdAt: Date? = change["created_at"]
+            if createdAt.map({ $0 > since }) ?? true { settled[id] = "class times changed since the copy" }
+        }
+        for text in try String.fetchAll(db, sql: #"SELECT DISTINCT "course_id" FROM "weekly_slot""#) {
+            if let id = UUID(uuidString: text) { settled[id] = "course has class times again" }
+        }
+        return settled
     }
 
     /// The source's columns the live table also has.

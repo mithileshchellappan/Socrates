@@ -3,8 +3,12 @@ import GRDB
 import StudyCore
 import Synchronization
 
-/// One copy of the library a day, on the Mac: `Database/Backups/Socrates-<yyyy-MM-dd>.sqlite`,
-/// the newest seven kept. The copy is SQLite's backup API reading from a pool reader in WAL
+/// One copy of the library a day, on the Mac: `Database/Backups/Socrates-<yyyy-MM-dd>.sqlite`.
+/// Kept: the newest seven, and the newest of each of the 4 latest weeks and of the 3 latest
+/// months that have one (at most 14, about 0.3 GB at 24 MB a copy), so a loss noticed weeks later
+/// still has a copy from before it. Files of the folder are matched by their day whatever the
+/// name before it (a library renamed by `LibraryMove` keeps pruning and comparing its older
+/// copies). The copy is SQLite's backup API reading from a pool reader in WAL
 /// snapshot isolation, so the writer and the screens never wait for it; it is written to
 /// `<file>.partial` and renamed when complete, so a backup is whole or absent. Only the main
 /// schema is copied: no SQLiteData metadatabase, no sync triggers (a library put back from such a
@@ -41,8 +45,8 @@ public struct LibraryBackup: Sendable {
         )
     }
 
-    /// Makes today's backup unless it exists, prunes to `keep`, then compares row counts with the
-    /// previous backup. Never throws: a failure is logged and the next launch or wake tries again.
+    /// Makes today's backup unless it exists, prunes (`prune()`), then compares row counts with
+    /// the previous backup. Never throws: a failure is logged and the next run tries again.
     @concurrent
     public func runDaily() async {
         let day = Self.day(now())
@@ -71,7 +75,7 @@ public struct LibraryBackup: Sendable {
                 "Backed up the library for \(day, privacy: .public): \(megabytes, privacy: .public) MB in \(seconds, format: .fixed(precision: 1), privacy: .public) s"
             )
             let kept = prune()
-            if let previous = kept.last(where: { $0.lastPathComponent < target.lastPathComponent }) {
+            if let previous = kept.last(where: { $0.day < day }) {
                 reportDrops(from: previous, to: target)
             }
         } catch {
@@ -141,47 +145,81 @@ public struct LibraryBackup: Sendable {
         }
     }
 
-    /// The backups in `directory`, oldest first (by name: the day).
-    private func backups() -> [URL] {
+    /// One backup file and its day (`yyyy-MM-dd`).
+    private struct Backup {
+        let url: URL
+        let day: String
+    }
+
+    /// Weeks and months whose newest backup `prune()` keeps besides the newest `keep`.
+    private static let weeksKept = 4
+    private static let monthsKept = 3
+
+    /// The backups in `directory` (any name before the day), oldest first.
+    private func backups() -> [Backup] {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        let pattern = /^(.+)-\d{4}-\d{2}-\d{2}\.sqlite$/
+        let pattern = /^.+-(\d{4}-\d{2}-\d{2})\.sqlite$/
         return files
-            .filter { url in
-                guard let match = url.lastPathComponent.wholeMatch(of: pattern) else { return false }
-                return match.1 == name
+            .compactMap { url in
+                url.lastPathComponent.wholeMatch(of: pattern).map { Backup(url: url, day: String($0.1)) }
             }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .sorted { ($0.day, $0.url.lastPathComponent) < ($1.day, $1.url.lastPathComponent) }
     }
 
     /// Partial copies an earlier crash left (this backup's own copy runs after this).
     private func removePartials() {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        for file in files where file.lastPathComponent.hasPrefix(name + "-") && file.lastPathComponent.hasSuffix(".sqlite.partial") {
+        for file in files where file.lastPathComponent.hasSuffix(".sqlite.partial") {
             Self.removeDatabaseFiles(at: file)
         }
     }
 
-    /// Removes all but the newest `keep` backups; returns the ones kept, oldest first.
-    private func prune() -> [URL] {
+    /// Keeps the newest `keep` backups and the newest of each of the `weeksKept` latest weeks and
+    /// `monthsKept` latest months that have one; removes the rest. Returns the ones kept, oldest
+    /// first.
+    private func prune() -> [Backup] {
         let all = backups()
-        let excess = max(0, all.count - max(1, keep))
-        for file in all.prefix(excess) {
-            Self.removeDatabaseFiles(at: file)
+        var kept = Set(all.suffix(max(1, keep)).map(\.url))
+        let calendar = Calendar.current
+        func keepNewest(of count: Int, by group: (Backup) -> String?) {
+            var seen: Set<String> = []
+            for backup in all.reversed() {
+                guard let key = group(backup), !seen.contains(key) else { continue }
+                guard seen.count < count else { break }
+                seen.insert(key)
+                kept.insert(backup.url)
+            }
         }
-        return Array(all.dropFirst(excess))
+        keepNewest(of: Self.weeksKept) { backup in
+            Self.date(of: backup.day).map { date in
+                let parts = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
+                return "\(parts.yearForWeekOfYear ?? 0)-W\(parts.weekOfYear ?? 0)"
+            }
+        }
+        keepNewest(of: Self.monthsKept) { String($0.day.prefix(7)) }
+        for backup in all where !kept.contains(backup.url) {
+            Self.removeDatabaseFiles(at: backup.url)
+        }
+        return all.filter { kept.contains($0.url) }
+    }
+
+    /// Noon of a `yyyy-MM-dd` day in the Mac's time zone.
+    private static func date(of day: String) -> Date? {
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return Calendar.current.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: 12))
     }
 
     /// One notice per synced table with fewer rows in `newer` than in `older` (both opened
     /// read-only; the live library is never read here). A table one of them lacks is left out.
-    private func reportDrops(from older: URL, to newer: URL) {
+    private func reportDrops(from older: Backup, to newer: URL) {
         do {
-            let before = try Self.rowCounts(in: older)
+            let before = try Self.rowCounts(in: older.url)
             let after = try Self.rowCounts(in: newer)
-            let day = older.lastPathComponent.dropFirst(name.count + 1).prefix(10)
             for table in SyncedTables.types.map({ $0.tableName }) {
                 guard let old = before[table], let new = after[table], new < old else { continue }
                 BackupLog.backup.notice(
-                    "Since the backup of \(String(day), privacy: .public): \(table, privacy: .public) −\(old - new, privacy: .public)"
+                    "Since the backup of \(older.day, privacy: .public): \(table, privacy: .public) −\(old - new, privacy: .public)"
                 )
             }
         } catch {
