@@ -72,6 +72,10 @@ break of one is a finding of its own, even when the code works.
 - Hand-written code over clever generic machinery. Read the surrounding code and write like it.
 
 ## Skills for agents
-Agents load the installed Swift skills when they apply: `swiftui-pro` for views, the Swift
-concurrency skill for isolation and tasks, the architecture skill and
-`improve-codebase-architecture` for structure.
+Agents load the installed Swift skills when they apply:
+- `swiftui-pro` for views;
+- `swift-concurrency-pro` for isolation, tasks, streams and cancellation;
+- `swiftui-performance-audit` for invalidation, identity and work in `body`;
+- `improve-codebase-architecture` for structure.
+
+The rules in this file and CLAUDE.md win over any skill's advice.
