@@ -83,6 +83,50 @@ public struct PaneLayout: Codable, Equatable, Sendable {
             maximized: maximized.flatMap { offered[$0] == nil ? nil : $0 }
         )
     }
+
+    /// The column holding `id`.
+    func columnIndex(of id: PaneID) -> Int? {
+        columns.firstIndex { $0.panes.contains(id) }
+    }
+
+    /// This layout with `id` dropped at `drop` (a header drag). The pane leaves its column (an
+    /// emptied column goes); in a column of its own it keeps the width it had alone, else
+    /// `width`. Stacked, it takes half of what the pane above it had of the column's height.
+    func moving(_ id: PaneID, to drop: PaneDrop, width: Double) -> PaneLayout {
+        var layout = self
+        guard let source = layout.columnIndex(of: id) else { return self }
+        let wasAlone = layout.columns[source].panes.count == 1
+        let aloneWidth = layout.columns[source].width
+        layout.columns[source].remove(id)
+        if layout.columns[source].panes.isEmpty { layout.columns.remove(at: source) }
+        switch drop {
+        case .column(let anchor, let after):
+            guard anchor != id, let target = layout.columnIndex(of: anchor) else { return self }
+            let column = Column(panes: [id], width: wasAlone ? aloneWidth : width)
+            layout.columns.insert(column, at: after ? target + 1 : target)
+        case .stack(let anchor):
+            guard anchor != id, let target = layout.columnIndex(of: anchor),
+                  let row = layout.columns[target].panes.firstIndex(of: anchor),
+                  row < layout.columns[target].heights.count
+            else { return self }
+            let half = layout.columns[target].heights[row] / 2
+            layout.columns[target].heights[row] = half
+            layout.columns[target].panes.insert(id, at: row + 1)
+            layout.columns[target].heights.insert(half, at: row + 1)
+        }
+        return layout
+    }
+}
+
+extension PaneLayout.Column {
+    /// Takes `id` out of the stack; the others share its height.
+    mutating func remove(_ id: PaneID) {
+        guard let row = panes.firstIndex(of: id) else { return }
+        panes.remove(at: row)
+        if row < heights.count { heights.remove(at: row) }
+        let total = heights.reduce(0, +)
+        heights = heights.map { total > 0 ? $0 / total : 1 / Double(heights.count) }
+    }
 }
 
 /// Reads and writes the layouts: `Socrates.panes.<kind>` (JSON), and the window-wide open panes
