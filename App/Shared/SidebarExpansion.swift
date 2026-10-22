@@ -7,54 +7,57 @@ import StudyCore
 /// lecture change it, never the screen on display.
 struct SidebarExpansion: Equatable, RawRepresentable {
     /// The courses that list their screens.
-    private(set) var courses: Set<Course.ID> = []
-    /// The courses whose Lectures row is open (it shows while its course is open too).
-    private(set) var lectures: Set<Course.ID> = []
+    private(set) var openCourses: Set<Course.ID> = []
+    /// The courses whose Lectures row is open (it lists its rows while its course is open too).
+    private(set) var openLectureRows: Set<Course.ID> = []
 
     init() {}
 
     /// Renders: a window that opens with these parts open.
-    init(courses: Set<Course.ID>, lectures: Set<Course.ID> = []) {
-        self.courses = courses
-        self.lectures = lectures
+    init(openCourses: Set<Course.ID>, openLectureRows: Set<Course.ID> = []) {
+        self.openCourses = openCourses
+        self.openLectureRows = openLectureRows
     }
 
     func showsScreens(of course: Course.ID) -> Bool {
-        courses.contains(course)
+        openCourses.contains(course)
     }
 
-    func showsLectures(of course: Course.ID) -> Bool {
-        courses.contains(course) && lectures.contains(course)
+    /// Whether a course's Lectures row is open and lists its rows: only while its course is open
+    /// and it has rows (without any it has no chevron, so it is never open). The one place this is
+    /// decided: the chevron, the rows under it, ← → and the row that marks a lecture use it.
+    func showsLectures(of course: Course.ID, hasRows: Bool) -> Bool {
+        hasRows && openCourses.contains(course) && openLectureRows.contains(course)
     }
 
     mutating func setScreens(of course: Course.ID, shown: Bool) {
-        if shown { courses.insert(course) } else { courses.remove(course) }
+        if shown { openCourses.insert(course) } else { openCourses.remove(course) }
     }
 
     mutating func setLectures(of course: Course.ID, shown: Bool) {
-        if shown { lectures.insert(course) } else { lectures.remove(course) }
+        if shown { openLectureRows.insert(course) } else { openLectureRows.remove(course) }
     }
 
     /// Opening a lecture opens its course and its Lectures row, so the lecture's row shows.
     mutating func reveal(lecturesOf course: Course.ID) {
-        courses.insert(course)
-        lectures.insert(course)
+        openCourses.insert(course)
+        openLectureRows.insert(course)
     }
 
     // MARK: - RawRepresentable
 
-    /// "<courses>|<lectures>", each a comma-separated list of IDs. Before the tree a window kept
-    /// only the courses that listed their lectures ("<courses>"): they open with their Lectures row
-    /// open, so the same lectures show.
+    /// "<open courses>|<open Lectures rows>", each a comma-separated list of IDs. Before the tree a
+    /// window kept only the courses that listed their lectures ("<courses>"): they open with their
+    /// Lectures row open, so the same lectures show.
     init?(rawValue: String) {
         let parts = rawValue.split(separator: "|", omittingEmptySubsequences: false)
         let courses = Self.ids(parts.first ?? "")
-        self.courses = courses
-        lectures = parts.count > 1 ? Self.ids(parts[1]) : courses
+        openCourses = courses
+        openLectureRows = parts.count > 1 ? Self.ids(parts[1]) : courses
     }
 
     var rawValue: String {
-        "\(Self.text(courses))|\(Self.text(lectures))"
+        "\(Self.text(openCourses))|\(Self.text(openLectureRows))"
     }
 
     private static func ids(_ text: Substring) -> Set<Course.ID> {

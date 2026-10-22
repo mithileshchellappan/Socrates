@@ -70,7 +70,7 @@ struct DetailView: View {
                 .modifier(CourseToolbarSpacer())
         case .search:
             SearchResultsView(query: query, submits: searchSubmits, context: searchContext)
-        case .course(let id), .courseSettings(let id):
+        case .courseSettings(let id):
             CourseSettingsView(
                 courseID: id,
                 changeDeck: changeDeck,
@@ -79,7 +79,8 @@ struct DetailView: View {
                 newCourse: { model.sheet = .newCourse }
             )
             .id(id)
-        case .courseLectures(let id):
+        // A course's own row stands for its Lectures (`SidebarItem.screen`).
+        case .course(let id), .courseLectures(let id):
             CourseLecturesView(courseID: id)
                 .modifier(CourseToolbarSpacer())
                 .id(id)

@@ -604,9 +604,9 @@ struct RootView: View {
             }
             let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
             return AgentContext(screen: .search, query: text.isEmpty ? nil : text)
-        case .course(let id), .courseSettings(let id):
+        case .courseSettings(let id):
             return AgentContext(screen: .course, courseID: id, courseScreen: "settings")
-        case .courseLectures(let id):
+        case .course(let id), .courseLectures(let id):
             return AgentContext(screen: .course, courseID: id, courseScreen: "lectures")
         case .courseSlides(let id):
             return AgentContext(screen: .course, courseID: id, courseScreen: "slides")
