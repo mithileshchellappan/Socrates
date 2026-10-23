@@ -22,5 +22,5 @@ BUNDLE_ID_PREFIX = com.yourname
 // Development identity above on the Mac. Build once with -allowProvisioningUpdates
 // -allowProvisioningDeviceRegistration: Xcode registers the App ID com.yourname.socrates, the
 // CloudKit container iCloud.com.yourname.socrates and Push Notifications, and makes the profiles.
-// Both devices use CloudKit's Development environment. See README ("iCloud sync").
+// Both devices use CloudKit's Development environment. See docs/modules.md (Build).
 // SOCRATES_ICLOUD = YES
