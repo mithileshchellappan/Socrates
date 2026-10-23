@@ -92,7 +92,8 @@ public actor CoachEngine: StudyCoaching {
         let tracked: [any DatabaseRegionConvertible] = [
             SQLRequest<Row>(sql: "SELECT id, credits, self_study_hours, rules FROM course"),
             // Not `review_position`: Review saves it every 10 s while playing (no replan for that).
-            SQLRequest<Row>(sql: "SELECT id, held_at, reviewed_at FROM lecture"),
+            // The number and title name plan blocks ("Lecture 3"): an edit_lecture renames them.
+            SQLRequest<Row>(sql: "SELECT id, held_at, reviewed_at, number, title FROM lecture"),
             SQLRequest<Row>(sql: "SELECT id, starts_at, ends_at, is_cancelled FROM lecture_session"),
             SQLRequest<Row>(sql: "SELECT id, status, due_at, relevance, kind FROM tracked_item"),
             SQLRequest<Row>(sql: "SELECT id, plan_rule, forgotten_at FROM agent_memory"),

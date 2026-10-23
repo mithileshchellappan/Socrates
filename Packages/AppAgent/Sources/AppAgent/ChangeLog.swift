@@ -235,6 +235,8 @@ public struct ChangeLog: Sendable {
         let date = now()
         if let change = try await store.fetch(AgentChange.self, id: id) {
             if change.kind == .lectureMerge { return try await undoLectureMerge(change) }
+            // A lecture's class, date, number or title, or an empty lecture deleted.
+            if change.kind == .lectureEdit || change.kind == .lectureDelete { return try await undoLecturePlan(change) }
             if change.targetTable == .filing { return try await undoFiling(change, at: date) }
             if change.targetTable == .deckSpan { return try await undoDeckLink(id, at: date) }
             if change.kind == .courseRemove { return try await undoCourseRemoval(change, at: date) }

@@ -192,11 +192,13 @@ struct ToolLoopPrompts: Sendable {
 
     /// The student's words and the agent's text answers in order, as one text block; the context
     /// blocks (a `<mail>` envelope, before the words) only of the latest user turn that had any.
+    /// The clock blocks are left out (an old time is no context, and the newest turn carries its
+    /// own).
     static func history(_ turns: ArraySlice<MessageParam>) -> JSONValue {
         func texts(_ turn: MessageParam) -> [String] {
             turn.content.blocks.compactMap(\.textValue)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
+                .filter { !$0.isEmpty && !$0.hasPrefix(ClaudeCodeConfiguration.clockTag) }
         }
         let withContext = turns.lastIndex { $0.role == .user && texts($0).count > 1 }
         var parts: [String] = []

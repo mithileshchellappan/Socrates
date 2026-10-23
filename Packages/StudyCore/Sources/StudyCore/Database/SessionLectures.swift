@@ -104,11 +104,15 @@ public enum SessionLectures {
     // MARK: - Inside a transaction
 
     /// The number a new lecture of `session` takes: the session's, unless that is not a lecture
-    /// number (an exercise beside lectures: `numbersLectures`).
+    /// number (an exercise beside lectures: `numbersLectures`) or another lecture of the course
+    /// has it (2026-10-23: a lecture's number is its label, which stays with it when the student
+    /// moves lectures to other classes; "DC 3" names one lecture).
     public static func lectureNumber(for session: LectureSession, in db: Database) throws -> Int? {
         let courseID = session.courseID
         let sessions = try LectureSession.where { $0.courseID.eq(courseID) }.fetchAll(db)
-        return numbersLectures(session, among: sessions) ? session.number : nil
+        guard numbersLectures(session, among: sessions), let number = session.number else { return nil }
+        let taken = try Lecture.where { $0.courseID.eq(courseID) && $0.number.eq(Int?.some(number)) }.fetchCount(db)
+        return taken == 0 ? number : nil
     }
 
     /// The lecture filed to `sessionID`, else the one it adopts (`isLinked` false; not written).

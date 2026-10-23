@@ -238,35 +238,49 @@ public struct MaterialRepository: Sendable {
     ) async throws -> (before: MaterialCoverage?, after: MaterialCoverage)? {
         let stamp = store.currentDate
         return try await store.database.write { db in
-            guard let section = try MaterialSection.find(sectionID).fetchOne(db) else { return nil }
-            let rows = try MaterialCoverage
-                .where { $0.lectureID.eq(lectureID) && $0.sectionID.eq(sectionID) && $0.source.eq(CoverageSource.student) }
-                .order { $0.updatedAt.desc() }
-                .fetchAll(db)
-            let before = rows.first
-            if rows.count > 1 { try MaterialCoverage.where { $0.id.in(rows.dropFirst().map(\.id)) }.delete().execute(db) }
-            let after = MaterialCoverage(
-                id: before?.id ?? UUID(), lectureID: lectureID, materialID: section.materialID, sectionID: sectionID,
-                score: 1, strength: .core, source: .student, covers: covers, quote: quote, createdBy: .user,
-                createdAt: before?.createdAt ?? stamp, updatedAt: stamp
-            )
-            try MaterialCoverage.upsert { after }.execute(db)
-            return (before, after)
+            try Self.setStudentCoverage(lectureID: lectureID, sectionID: sectionID, covers: covers, quote: quote, in: db, stamp: stamp)
         }
+    }
+
+    /// `setStudentCoverage` inside the caller's transaction (several sections with one change row).
+    public static func setStudentCoverage(
+        lectureID: Lecture.ID, sectionID: MaterialSection.ID, covers: Bool, quote: String?, in db: Database, stamp: Date
+    ) throws -> (before: MaterialCoverage?, after: MaterialCoverage)? {
+        guard let section = try MaterialSection.find(sectionID).fetchOne(db) else { return nil }
+        let rows = try MaterialCoverage
+            .where { $0.lectureID.eq(lectureID) && $0.sectionID.eq(sectionID) && $0.source.eq(CoverageSource.student) }
+            .order { $0.updatedAt.desc() }
+            .fetchAll(db)
+        let before = rows.first
+        if rows.count > 1 { try MaterialCoverage.where { $0.id.in(rows.dropFirst().map(\.id)) }.delete().execute(db) }
+        let after = MaterialCoverage(
+            id: before?.id ?? UUID(), lectureID: lectureID, materialID: section.materialID, sectionID: sectionID,
+            score: 1, strength: .core, source: .student, covers: covers, quote: quote, createdBy: .user,
+            createdAt: before?.createdAt ?? stamp, updatedAt: stamp
+        )
+        try MaterialCoverage.upsert { after }.execute(db)
+        return (before, after)
     }
 
     /// Undo of `setStudentCoverage`: the student's row as it was, or none.
     public func restoreStudentCoverage(lectureID: Lecture.ID, sectionID: MaterialSection.ID, to before: MaterialCoverageValues?) async throws {
         let stamp = store.currentDate
         try await store.database.write { db in
-            try MaterialCoverage
-                .where { $0.lectureID.eq(lectureID) && $0.sectionID.eq(sectionID) && $0.source.eq(CoverageSource.student) }
-                .delete()
-                .execute(db)
-            if let before, try MaterialSection.find(before.sectionID).fetchCount(db) > 0 {
-                let row = before.row(updatedAt: stamp)
-                try MaterialCoverage.upsert { row }.execute(db)
-            }
+            try Self.restoreStudentCoverage(lectureID: lectureID, sectionID: sectionID, to: before, in: db, stamp: stamp)
+        }
+    }
+
+    /// `restoreStudentCoverage` inside the caller's transaction.
+    public static func restoreStudentCoverage(
+        lectureID: Lecture.ID, sectionID: MaterialSection.ID, to before: MaterialCoverageValues?, in db: Database, stamp: Date
+    ) throws {
+        try MaterialCoverage
+            .where { $0.lectureID.eq(lectureID) && $0.sectionID.eq(sectionID) && $0.source.eq(CoverageSource.student) }
+            .delete()
+            .execute(db)
+        if let before, try MaterialSection.find(before.sectionID).fetchCount(db) > 0 {
+            let row = before.row(updatedAt: stamp)
+            try MaterialCoverage.upsert { row }.execute(db)
         }
     }
 

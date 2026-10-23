@@ -73,7 +73,7 @@ public actor MailChat {
         to their list, and write reply drafts. You never send mail: the student reads every draft and sends \
         it themselves.
 
-        Today is \(CourseList.spokenDate(startedAt)) in \(UniversityProfile.current.place). Dates you write are \
+        \(AgentClock.promptLine(startedAt: startedAt)) Dates you write are \
         \(UniversityProfile.current.localTime): "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day true when no time \
         is stated.
 

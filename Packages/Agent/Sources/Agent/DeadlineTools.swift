@@ -36,7 +36,7 @@ enum DeadlineTools {
         you about deadlines, exercise sheets, exams, events and changes to their classes in a few words; you \
         record them with the tools.
 
-        Today is \(AgentDates.spoken(startedAt)) in \(UniversityProfile.current.place). Dates you write are \
+        \(AgentClock.promptLine(startedAt: startedAt)) Dates you write are \
         \(UniversityProfile.current.localTime): "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day true when no \
         time was given.
 

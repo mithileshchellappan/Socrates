@@ -144,7 +144,7 @@ struct QueryTools: Sendable {
         AgentTool(
             tool: .custom(
                 name: "query_sessions",
-                description: "The class sessions (lectures, exercises, tutorials, seminars) between two days, with ids, rooms, cancellations, their weekly slot's key and the changes applied to them.",
+                description: "The class sessions (lectures, exercises, tutorials, seminars) between two days, with ids, rooms, cancellations, their weekly slot's key, the lecture filed to each (L3 and its key) and the changes applied to them.",
                 inputSchema: Schema.object([
                     "from": Schema.string("First day, YYYY-MM-DD."),
                     "to": Schema.string("Last day, YYYY-MM-DD (at most 62 days after from)."),
@@ -167,9 +167,11 @@ struct QueryTools: Sendable {
                     sessions: try LectureSession.where { $0.startsAt.gte(from) && $0.startsAt.lt(until) }.order(by: \.startsAt).fetchAll(db),
                     changes: try AgentChange
                         .where { $0.targetTable.eq(AgentChangeTarget.session) && $0.undoneAt.is(nil) && $0.supersededBy.is(nil) }
-                        .fetchAll(db)
+                        .fetchAll(db),
+                    lectures: try Lecture.where { $0.lectureSessionID.isNot(nil) }.fetchAll(db)
                 )
             }
+            let filed = Dictionary(rows.lectures.compactMap { lecture in lecture.lectureSessionID.map { ($0, lecture) } }, uniquingKeysWith: { first, _ in first })
             let changes = Dictionary(grouping: rows.changes.compactMap { change in change.targetID.map { ($0, change) } }, by: \.0)
             let listed = rows.sessions.filter { courseID == nil || $0.courseID == courseID }.prefix(80)
             return ToolJSON.fitted([:], key: "sessions", rows: listed.map { session in
@@ -184,6 +186,9 @@ struct QueryTools: Sendable {
                 ]
                 if let number = session.number { object["number"] = .int(number) }
                 if let slot = session.weeklySlotID { object["slot"] = .string(ChatCitation.key(slot)) }
+                if let lecture = filed[session.id] {
+                    object["lecture"] = .string((lecture.number.map { "L\($0) " } ?? "") + ChatCitation.key(lecture.id))
+                }
                 if let applied = changes[session.id]?.map(\.1), !applied.isEmpty {
                     object["changes"] = .array(applied.map { .string("\($0.summary) \($0.citation.marker)") })
                 }

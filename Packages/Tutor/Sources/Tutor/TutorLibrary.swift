@@ -17,10 +17,12 @@ struct TutorLibrary: Sendable {
     /// mr: the lecture's slides, a page range of a deck that other lectures may share
     /// (`LectureSlides.current`, as Review shows them; deck page numbers kept).
     let slides: [Lecture.ID: LectureSlideRange]
+    /// The class sessions, by course (where each lecture is held: `heldIn`).
+    let sessions: [Course.ID: [LectureSession]]
 
     static func load(_ database: any DatabaseReader) async throws -> TutorLibrary {
         let courses = try await CourseList.load(database)
-        typealias Rows = (lectures: [Lecture], recordings: [Recording], slides: [Lecture.ID: LectureSlideRange])
+        typealias Rows = (lectures: [Lecture], recordings: [Recording], slides: [Lecture.ID: LectureSlideRange], sessions: [LectureSession])
         let rows: Rows = try await database.read { db -> Rows in
             let lectures = try Lecture.all.fetchAll(db)
             var slides: [Lecture.ID: LectureSlideRange] = [:]
@@ -28,7 +30,8 @@ struct TutorLibrary: Sendable {
                 if let range = try LectureSlides.current(lectureID: lecture.id, in: db) { slides[lecture.id] = range }
             }
             let recordings = try Recording.where { $0.lectureID.isNot(nil) }.order(by: \.startedAt).fetchAll(db)
-            return (lectures: lectures, recordings: recordings, slides: slides)
+            let sessions = try LectureSession.order(by: \.startsAt).fetchAll(db)
+            return (lectures: lectures, recordings: recordings, slides: slides, sessions: sessions)
         }
         let order = Dictionary(courses.courses.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let lectures = rows.lectures.sorted { lhs, rhs in
@@ -42,7 +45,23 @@ struct TutorLibrary: Sendable {
         for recording in rows.recordings {
             if let lectureID = recording.lectureID { recordings[lectureID, default: []].append(recording) }
         }
-        return TutorLibrary(courses: courses, lectures: lectures, recordings: recordings, slides: rows.slides)
+        return TutorLibrary(
+            courses: courses, lectures: lectures, recordings: recordings, slides: rows.slides,
+            sessions: Dictionary(grouping: rows.sessions, by: \.courseID)
+        )
+    }
+
+    /// Where a lecture is held: its own class ("Thu 22 Oct, 14:00"), or, for a lecture joined to
+    /// another lecture's class meeting, "with DC L2"; nil without a class.
+    func heldIn(_ lecture: Lecture) -> String? {
+        let own = sessions[lecture.courseID] ?? []
+        if let id = lecture.lectureSessionID, let session = own.first(where: { $0.id == id }) {
+            return ChangeSummary.dayTime(session.startsAt) + (session.isCancelled ? " (cancelled)" : "")
+        }
+        guard lecture.heldAt != nil, let session = SessionLectures.session(for: lecture, in: own, zone: DeadlinesModule.timeZone),
+              let holder = lectures.first(where: { $0.lectureSessionID == session.id && $0.id != lecture.id })
+        else { return nil }
+        return "with \(name(holder))"
     }
 
     func lecture(id: Lecture.ID?) -> Lecture? {

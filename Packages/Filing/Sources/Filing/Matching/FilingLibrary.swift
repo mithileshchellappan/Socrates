@@ -53,6 +53,42 @@ struct FilingLibrary: Sendable {
 
     func day(_ date: Date) -> CalendarDay { CalendarDay(date, in: zone) }
 
+    /// Where lecture `number` of a course is (2026-10-23: a lecture's number is its label, which
+    /// moves with it when the plan changes).
+    enum NumberedPlace {
+        case lecture(LectureInfo)
+        case session(LectureSession)
+    }
+
+    /// Where a file numbered `number` goes in a course: the lecture with that number (its class,
+    /// when it was held there before it was linked: the import links it); else, when the numbers
+    /// drifted from the classes' (lecture N−1 is held in a class numbered otherwise, after the
+    /// student moved lectures), the first free numbered class after lecture N−1's; else the
+    /// numbered class with that number. Nil: none (a new lecture).
+    func place(forNumber number: Int, courseID: Course.ID) -> NumberedPlace? {
+        let numbered = numberedSessions(courseID: courseID)
+        let lectures = lectures(courseID: courseID)
+        if let info = lectures.first(where: { $0.lecture.number == number }) {
+            if info.lecture.lectureSessionID == nil, let session = numbered.first(where: { $0.number == number }),
+               lecture(sessionID: session.id)?.lecture.id == info.lecture.id {
+                return .session(session)
+            }
+            return .lecture(info)
+        }
+        if let previous = lectures.first(where: { $0.lecture.number == number - 1 }), let held = heldIn(previous.lecture),
+           numbered.contains(where: { $0.id == held.id }), held.number != number - 1 {
+            return numbered.first { $0.startsAt > held.startsAt && lecture(sessionID: $0.id) == nil }.map(NumberedPlace.session)
+        }
+        return numbered.first { $0.number == number }.map(NumberedPlace.session)
+    }
+
+    /// The class a lecture was held in: its own, else (joined to a class, or held in it before it
+    /// was linked) the one it was held in.
+    func heldIn(_ lecture: Lecture) -> LectureSession? {
+        if let id = lecture.lectureSessionID { return session(id) }
+        return SessionLectures.session(for: lecture, in: sessions(courseID: lecture.courseID), zone: zone)
+    }
+
     /// Sessions that carry lecture numbers: lectures, or seminars for a course without lectures.
     func numberedSessions(courseID: Course.ID) -> [LectureSession] {
         let all = sessions(courseID: courseID)

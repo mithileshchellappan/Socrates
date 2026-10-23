@@ -229,8 +229,9 @@ public struct ActionRegistry: Sendable {
 extension ActionRegistry {
     /// The `app` conversation's actions (docs/plan-actions.md §4 "Registered"): 27, 26 without the
     /// document bank (`keep_document`); oss adds set_profile; ln adds write_lecture_notes,
-    /// set_notes_length and keep_notes_answer; merge_lectures (2026-10-21). Their tools are the instances `AppAgentChat.spec` builds
-    /// for its direct writes (the student's words and mail are sources).
+    /// set_notes_length and keep_notes_answer; merge_lectures (2026-10-21); move_lecture,
+    /// edit_lecture, move_recording and delete_lecture (2026-10-23). Their tools are the instances
+    /// `AppAgentChat.spec` builds for its direct writes (the student's words and mail are sources).
     public static func app(_ deps: AppAgentChat.Services) throws -> ActionRegistry {
         let writes = WriteTools(services: deps.services, changeLog: deps.changeLog, chatSource: true, mailSource: true)
         let plan = PlanTools(services: deps.services, changeLog: deps.changeLog, coach: deps.coach, writes: writes)
@@ -404,6 +405,38 @@ extension ActionRegistry {
                 ],
                 sources: chat, studentOnly: true
             ),
+            // 2026-10-23: the lecture plan (a lecture's class, number and title; a recording's
+            // lecture; an empty lecture).
+            AgentAction(
+                writes.moveLecture,
+                summary: "Moves a lecture to another class or day (a chapter done earlier or later than planned; the rest can follow).",
+                keywords: [
+                    "move", "lecture", "chapter", "already", "done", "covered", "earlier", "later", "plan", "continues", "today",
+                    "class", "day", "wrong", "shift", "Vorlesung", "Kapitel", "schon", "bereits", "verschieben", "fortgesetzt", "Termin",
+                ],
+                sources: chat, studentOnly: true
+            ),
+            AgentAction(
+                writes.editLecture, summary: "Renames or renumbers a lecture (its title, its number in the course; later numbers can follow).",
+                keywords: [
+                    "rename", "renumber", "number", "title", "name", "call", "lecture", "really", "actually", "Vorlesung", "umbenennen",
+                    "Nummer", "Titel", "heißt", "eigentlich",
+                ],
+                sources: chat, studentOnly: true
+            ),
+            AgentAction(
+                writes.moveRecording, summary: "Moves a recording to another lecture (it belongs to another class or day).",
+                keywords: [
+                    "recording", "recordings", "audio", "belongs", "wrong", "lecture", "move", "Aufnahme", "Aufzeichnung", "gehört",
+                    "falsch", "verschieben",
+                ],
+                sources: chat, studentOnly: true
+            ),
+            AgentAction(
+                writes.deleteLecture, summary: "Deletes an empty lecture (no recording, slides or notes).",
+                keywords: ["delete", "remove", "empty", "lecture", "löschen", "entfernen", "leer", "leere", "Vorlesung", "drop"],
+                sources: chat, studentOnly: true
+            ),
             // ln: lecture notes.
             AgentAction(
                 notes.writeLectureNotes, summary: "Writes a lecture's summary (its notes) again as a new version (optionally with what to change).",
@@ -444,10 +477,10 @@ extension ActionRegistry {
                 sources: chat, studentOnly: true
             ),
             AgentAction(
-                materials.setLectureCoverage, summary: "Records whether a lecture covers a chapter or section of a course's book.",
+                materials.setLectureCoverage, summary: "Records which chapters or sections of a course's book a lecture covers (one or more).",
                 keywords: [
-                    "cover", "covers", "covered", "chapter", "Kapitel", "section", "Abschnitt", "behandelt", "lecture", "Vorlesung",
-                    "book", "Buch", "doesn't", "nicht",
+                    "cover", "covers", "covered", "chapter", "chapters", "Kapitel", "section", "Abschnitt", "behandelt", "lecture",
+                    "Vorlesung", "book", "Buch", "doesn't", "nicht", "did", "today",
                 ],
                 sources: chat, studentOnly: true
             ),
@@ -456,6 +489,7 @@ extension ActionRegistry {
     }
 
     /// How many actions `app` registers (the catalog's "actions" line); ln added three,
-    /// merge_lectures one (2026-10-21), mt three (the materials').
-    static func appCount(documents: Bool) -> Int { documents ? 30 : 29 }
+    /// merge_lectures one (2026-10-21), mt three (the materials'), the lecture plan four
+    /// (2026-10-23).
+    static func appCount(documents: Bool) -> Int { documents ? 34 : 33 }
 }
