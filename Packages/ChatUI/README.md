@@ -208,7 +208,10 @@ compact overlay, the expanded `.inspector` and the iPhone's sheet as before.
   screen takes once (`composerRequest`), so a hidden small chat never takes the caret from the
   pane, and opening a pane by its toggle never moves focus. Each composer reports its own focus
   (`focusedComposer`, by style), so the one fading out (the pane's, the small chat's) never clears
-  the caret the other just took.
+  the caret the other just took. On the Mac the composer keeps no caret in SwiftUI state (a kept
+  `TextSelection` is put back on a later update, and the caret jumped to the draft's start while
+  the student typed): the focus and ⇧↩ read and place the field editor's caret once
+  (`FieldEditor.selection(in:)`, `placeCaret(at:in:)`).
 - **The small chat** (`AgentMiniChat`): the 38 pt title row whose free part drags the floating
   panel (`\.floatingPanelMover`, grab pointer), the thread, the task line and the composer. It hugs
   its content (the panel caps it at half the window; the thread honours the height offered) until

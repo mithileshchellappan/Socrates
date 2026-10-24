@@ -15,8 +15,9 @@ extension View {
     /// window is untouched (clicks, scrolls, hovers and drops reach what is under it).
     ///
     /// The content gets this place's environment plus `\.floatingPanelMover`,
-    /// `\.floatingPanelFrame` and `\.isLiveResizing`. Apply at the window's root, so the panel's
-    /// corner is the content area's.
+    /// `\.floatingPanelFrame` and `\.isLiveResizing`. It is installed when the panel is presented,
+    /// never again while it shows (it follows its own observed state). Apply at the window's root,
+    /// so the panel's corner is the content area's.
     public func floatingPanel<Content: View>(
         isPresented: Bool,
         frame: Binding<FloatingPanelFrame>,

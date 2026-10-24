@@ -84,7 +84,7 @@ final class FloatingPanelView: NSView {
     // MARK: From SwiftUI
 
     /// The update of `FloatingPanelHost`: the environment, the stored frame, the content (nil:
-    /// not presented).
+    /// not presented; installed when the panel is presented, never again while it shows).
     func update(frame: FloatingPanelFrame, environment: EnvironmentValues, content: AnyView?) {
         state.environment = environment
         let previous = state.frame
@@ -108,8 +108,11 @@ final class FloatingPanelView: NSView {
     private func present(_ content: AnyView?) {
         let reducesMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if let content {
-            state.content = content
+            // Installed when the panel is presented only (as a pane's offer, README rule 2): an
+            // update while it shows (its height following the content, a move, the window's
+            // environment) never hands its content a new view.
             guard isHidden || fading != nil else { return }
+            state.content = content
             fading?.cancel()
             fading = nil
             isHidden = false

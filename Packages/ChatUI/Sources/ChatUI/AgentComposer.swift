@@ -27,9 +27,14 @@ struct AgentComposer: View {
     @Environment(\.undoManager) private var undoManager
     @FocusState private var isFocused: Bool
     @State private var showsImporter = false
+    #if !os(macOS)
     /// The caret: put at the end of the kept draft when the panel puts it in the field (a focused
-    /// field otherwise selects all of its text, and the next key would replace the draft).
+    /// field otherwise selects all of its text, and the next key would replace the draft). The
+    /// Mac keeps none: SwiftUI would put a kept caret back on a later update of the panel (the
+    /// caret jumped to the draft's start as the student typed); it places the field editor's
+    /// caret once instead (`FieldEditor`).
     @State private var selection: TextSelection?
+    #endif
 
     /// The field's greatest height in lines (8 × 16 pt): a long message scrolls inside it and the
     /// thread keeps the rest of the panel.
@@ -75,11 +80,7 @@ struct AgentComposer: View {
                 .fixedSize()
                 .disabled(!model.canAttach)
                 .help(Text("Attach"))
-                // An edit clears the notice line (why the last message or file did not go).
-                TextField("", text: Binding(get: { model.draft }, set: { text in
-                    model.draft = text
-                    if model.notice != nil { model.notice = nil }
-                }), selection: $selection, prompt: prompt.foregroundStyle(.tertiary), axis: .vertical)
+                field
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .lineLimit(1...Self.maxLines)
@@ -165,6 +166,19 @@ struct AgentComposer: View {
         #endif
     }
 
+    /// The field; an edit clears the notice line (why the last message or file did not go).
+    @ViewBuilder private var field: some View {
+        let text = Binding(get: { model.draft }, set: { text in
+            model.draft = text
+            if model.notice != nil { model.notice = nil }
+        })
+        #if os(macOS)
+        TextField("", text: text, prompt: prompt.foregroundStyle(.tertiary), axis: .vertical)
+        #else
+        TextField("", text: text, selection: $selection, prompt: prompt.foregroundStyle(.tertiary), axis: .vertical)
+        #endif
+    }
+
     /// A caret request, taken by the composer of the chat on screen only (on the Mac the small
     /// chat's stays alive while the Agent pane has the conversation), once (a later click
     /// elsewhere keeps its caret).
@@ -184,7 +198,15 @@ struct AgentComposer: View {
             await Task.yield()
             if !isFocused { isFocused = true }
             await Task.yield()
+            #if os(macOS)
+            // Once the field editor holds the draft (a turn or two after the focus).
+            for _ in 0..<3 {
+                if FieldEditor.placeCaret(at: model.draft.endIndex, in: model.draft) { break }
+                await Task.yield()
+            }
+            #else
             selection = TextSelection(insertionPoint: model.draft.endIndex)
+            #endif
         }
     }
 
@@ -208,13 +230,27 @@ struct AgentComposer: View {
         guard !FieldEditor.isComposing else { return }
         let text = model.draft
         var range = text.endIndex..<text.endIndex
+        #if os(macOS)
+        if let selected = FieldEditor.selection(in: text) { range = selected }
+        #else
         // A selection from before the text last changed may point past its end: the end then.
         if case .selection(let selected)? = selection?.indices, selected.upperBound <= text.endIndex { range = selected }
+        #endif
         let edit = ComposerLines.newLine(in: text, replacing: range)
         model.draft = edit.text
         if model.notice != nil { model.notice = nil }
         let caret = edit.text.index(edit.text.startIndex, offsetBy: min(edit.caret, edit.text.count))
+        #if os(macOS)
+        // Once the field editor holds the new text (SwiftUI puts its caret at the end).
+        Task { @MainActor in
+            for _ in 0..<3 {
+                await Task.yield()
+                if FieldEditor.placeCaret(at: caret, in: edit.text) { return }
+            }
+        }
+        #else
         selection = TextSelection(insertionPoint: caret)
+        #endif
     }
 
     /// Esc: clears the text and files (Edit ▸ Undo brings them back), then closes the small chat;
