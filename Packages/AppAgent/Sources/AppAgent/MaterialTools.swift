@@ -635,11 +635,7 @@ extension MaterialTools {
     }
 
     func origin(_ context: ToolContext) async throws -> ChangeLog.Origin {
-        let taskID = try await AgentTaskRepository(store: services.records).taskID(conversation: context.conversationID)
-        return ChangeLog.Origin(
-            source: .chat(context.conversationID), sourceDate: context.now, model: ClaudeModel.opus55.rawValue, taskID: taskID,
-            conversationID: context.conversationID
-        )
+        try await ChangeLog.Origin.asked(.chat(context.conversationID), context: context, records: services.records)
     }
 }
 

@@ -165,9 +165,11 @@ public actor AppAgent {
     /// carried yet (`<task_result>`, then `reported_at`), and (mc) the reminders shown since the
     /// student last wrote to the newest `app` conversation (`<reminder>`, when this message goes
     /// there or starts a new one). `agent_turn.context` keeps the context,
-    /// the thread's context line (when the screen changed) and the attachments.
+    /// the thread's context line (when the screen changed) and the attachments. `writtenAt`: when
+    /// the student asked, when that was earlier (an iPhone question the Mac picks up later): the
+    /// clock says so and relative days in the words are read against it.
     public func send(
-        _ text: String, context: AgentContext, attachments: [AgentAttachment], to conversation: AgentConversation.ID?
+        _ text: String, context: AgentContext, attachments: [AgentAttachment], writtenAt: Date? = nil, to conversation: AgentConversation.ID?
     ) async throws -> AgentConversation.ID {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { throw AgentRuntime.RuntimeError.emptyText }
@@ -216,13 +218,15 @@ public actor AppAgent {
         )
         let id: AgentConversation.ID
         if let conversation {
-            try await runtime.send(trimmed, context: blocks, turnContext: turnContext, readUntrustedContent: untrusted, to: conversation)
+            try await runtime.send(
+                trimmed, context: blocks, turnContext: turnContext, readUntrustedContent: untrusted, writtenAt: writtenAt, to: conversation
+            )
             id = conversation
         } else {
             let title = Self.title(words: trimmed, attachments: attachments)
             id = try await runtime.start(
                 .app, text: trimmed, context: blocks, courseID: context.courseID, turnContext: turnContext, title: title,
-                readUntrustedContent: untrusted
+                readUntrustedContent: untrusted, writtenAt: writtenAt
             )
         }
         // The message is with the runtime: nothing may bounce it now (a result carried twice is
@@ -409,9 +413,9 @@ public actor AppAgent {
         }
         #if os(macOS)
         // M7: the iPhone's questions, through the panel's own `send` (never on the phone).
-        let pickup = AgentRequestPickup(services: services, client: client, runtime: runtime, now: now) { [weak self] text, context, files, id in
+        let pickup = AgentRequestPickup(services: services, client: client, runtime: runtime, now: now) { [weak self] text, context, files, askedAt, id in
             guard let self else { throw CancellationError() }
-            return try await self.send(text, context: context, attachments: files, to: id)
+            return try await self.send(text, context: context, attachments: files, writtenAt: askedAt, to: id)
         }
         self.pickup = pickup
         await pickup.start()

@@ -15,9 +15,10 @@ import StudyCore
 ///   (a class whose lecture stays joins its meeting); `later: follow` moves the course's planned
 ///   lectures numbered after it to the free classes after it, in order. The quote must state the
 ///   day of the class it goes to or the class it leaves (a date, a weekday, today, yesterday,
-///   "next week"), read against the time now.
+///   "next week"), read against when the student wrote them.
 /// - `edit_lecture {lecture, title?, number?, later_numbers, quote}`: rename and renumber.
-/// - `move_recording {recording, to, other_course, quote}`: a recording to another lecture.
+/// - `move_recording {recording, to, quote}`: a recording to another lecture (another course's only
+///   when the quote names that course).
 /// - `delete_lecture {lecture, quote}`: a lecture that holds nothing.
 extension WriteTools {
     // MARK: move_lecture
@@ -71,7 +72,7 @@ extension WriteTools {
             let outcome = try await changeLog.editLecturePlan(
                 .place(lectureID, session: session.id, followers: follow), quote: checked.quote, origin: try await askedOrigin(checked, context: context)
             )
-            guard case .applied(let change) = outcome else { return Self.output(outcome) }
+            guard case .applied(let change) = outcome else { return outcome.toolOutput }
             return try await placedResult(change, lectureID: lectureID, session: session)
         }
     }
@@ -122,7 +123,7 @@ extension WriteTools {
             let token = courses.token(for: courseID) ?? ""
             return value.number.map { "\(token) L\($0)" } ?? "\(token) \(ChatCitation.key(value.id))"
         }
-        guard let lecture = try await services.records.fetch(Lecture.self, id: lectureID) else { return Self.output(.applied(change)) }
+        guard let lecture = try await services.records.fetch(Lecture.self, id: lectureID) else { return ChangeLog.Outcome.applied(change).toolOutput }
         var result: JSONObject = [
             "moved": true, "lecture": .string(name(LecturePlacementValues(lecture, filings: []), courseID: lecture.courseID)),
             "class": ToolJSON.string(lecture.heldAt.map { AgentText.dayTime($0) }), "cite": .string(change.citation.marker),
@@ -137,7 +138,17 @@ extension WriteTools {
             }
             if let holder { result["with"] = .string(name(LecturePlacementValues(holder, filings: []), courseID: holder.courseID)) }
         }
-        let others = values.filter { $0.id != lectureID }
+        // The later lectures that moved: a new date, or none left (a joined lecture that only took
+        // the link of the class it shares keeps its date and is not one of them).
+        let was = Dictionary((change.before?.lectures ?? []).map { ($0.id, $0.heldAt) }, uniquingKeysWith: { first, _ in first })
+        let others = values.filter { value in
+            guard value.id != lectureID, let old = was[value.id] else { return false }
+            switch (old, value.heldAt) {
+            case (let old?, let new?): return abs(old.timeIntervalSince(new)) >= 1
+            case (nil, nil): return false
+            default: return true
+            }
+        }
         let moved = others.filter { $0.heldAt != nil }.map { value in
             JSONValue.string("\(name(value, courseID: lecture.courseID)) → \(value.heldAt.map { AgentText.dayTime($0) } ?? "")")
         }
@@ -188,7 +199,7 @@ extension WriteTools {
                 .label(lectureID, title: title, number: number, shiftLater: call.flag("later_numbers") ?? false), quote: checked.quote,
                 origin: try await askedOrigin(checked, context: context)
             )
-            return Self.output(outcome)
+            return outcome.toolOutput
         }
     }
 
@@ -201,13 +212,13 @@ extension WriteTools {
                 description: """
                     Moves a recording to another lecture, ONLY when the student says it belongs there ("that recording is \
                     Tuesday's"). Its transcript, slide stamps, notes and flags go along; both lectures' study passes are \
-                    built again. recording: a key from list_lectures' recordings, or a lecture that has exactly one. \
-                    other_course: true only when the student's words name the other course. Undo moves it back.
+                    built again; the lecture it leaves stays (delete_lecture when the student asks). recording: a key \
+                    from list_lectures' recordings, or a lecture that has exactly one. Into another course only when the \
+                    quote names that course. Undo moves it back.
                     """,
                 inputSchema: Schema.object([
                     "recording": Schema.string("The recording's key (list_lectures' recordings), or a lecture with exactly one recording."),
                     "to": Schema.string("The lecture it goes to: its key, course token and number (\"DC 3\") or id."),
-                    "other_course": Schema.nullable(["type": "boolean", "description": "True only when the student's words name the other course."]),
                     "quote": quoteProperty,
                 ])
             ),
@@ -221,18 +232,31 @@ extension WriteTools {
             guard let recordingID = try await recordingID(call.text("recording") ?? "") else {
                 return .error("No single recording is that: use a recording key from list_lectures (or a lecture with exactly one recording).")
             }
-            guard let reference = call.text("to"), let lectureID = try await WriteToolsLookup.lectureID(reference, services: services) else {
+            guard let reference = call.text("to"), let lectureID = try await WriteToolsLookup.lectureID(reference, services: services),
+                  let target = try await services.records.fetch(Lecture.self, id: lectureID)
+            else {
                 return .error("to must name one lecture: its key from list_lectures, or course token and number.")
             }
+            // Never across courses unasked: the student's own words (the quote) name the target's course.
+            let across = try await recordingCourse(recordingID).map { $0 != target.courseID } ?? false
+            if across {
+                let courses = try await CourseList.load(services.database)
+                guard courses.names(target.courseID, in: checked.quote) else {
+                    return .error(
+                        "That lecture is another course's than the recording's. Ask the student which course it belongs to; it moves across only when their words name that course (quote them)."
+                    )
+                }
+            }
             let outcome = try await changeLog.moveRecording(
-                recordingID, to: lectureID, acrossCourses: call.flag("other_course") ?? false, quote: checked.quote,
-                origin: try await askedOrigin(checked, context: context)
+                recordingID, to: lectureID, acrossCourses: across, quote: checked.quote, origin: try await askedOrigin(checked, context: context)
             )
-            return Self.output(outcome)
+            return outcome.toolOutput
         }
     }
 
     /// A recording by its id, its key ("b680d175", "9a7d94d1/b680d175"), or a lecture with one.
+    /// A "lecture/recording" key whose recording part matches none is nobody (never the lecture's
+    /// only recording: that may be another one than the agent named).
     func recordingID(_ reference: String) async throws -> Recording.ID? {
         let text = reference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
@@ -244,11 +268,18 @@ extension WriteTools {
             }
             if found.count == 1, let id = found.first.flatMap(UUID.init(uuidString:)) { return id }
         }
-        let lecture = text.split(separator: "/").first.map(String.init) ?? text
-        guard let lectureID = try await WriteToolsLookup.lectureID(lecture, services: services) else { return nil }
+        guard parts.count == 1 else { return nil }
+        guard let lectureID = try await WriteToolsLookup.lectureID(text, services: services) else { return nil }
         let reference: Lecture.ID? = lectureID
         let recordings = try await services.database.read { db in try Recording.where { $0.lectureID.eq(reference) }.fetchAll(db) }
         return recordings.count == 1 ? recordings.first?.id : nil
+    }
+
+    /// The course a recording is in now: its lecture's, else its own.
+    func recordingCourse(_ recordingID: Recording.ID) async throws -> Course.ID? {
+        guard let recording = try await services.records.fetch(Recording.self, id: recordingID) else { return nil }
+        if let id = recording.lectureID, let lecture = try await services.records.fetch(Lecture.self, id: id) { return lecture.courseID }
+        return recording.courseID
     }
 
     // MARK: delete_lecture
@@ -258,8 +289,9 @@ extension WriteTools {
             tool: .custom(
                 name: "delete_lecture",
                 description: """
-                    Deletes an empty lecture (no recording, slides, notes, flags or practice answers), ONLY when the \
-                    student asks ("delete the empty L7"). A lecture that holds something is refused. Undo brings it back.
+                    Deletes an empty lecture (no recording, slides, notes, flags, practice answers or sections the student \
+                    said it covered), ONLY when the student asks ("delete the empty L7"). A lecture that holds something is \
+                    refused. Undo brings it back.
                     """,
                 inputSchema: Schema.object([
                     "lecture": Schema.string("The lecture: its key from list_lectures, course token and number (\"DC 7\") or id."),
@@ -279,31 +311,11 @@ extension WriteTools {
             let outcome = try await changeLog.editLecturePlan(
                 .deleteEmpty(lectureID), quote: checked.quote, origin: try await askedOrigin(checked, context: context)
             )
-            return Self.output(outcome)
+            return outcome.toolOutput
         }
     }
 
     // MARK: - Shared
-
-    /// The origin of a change the student asked for in this conversation.
-    func askedOrigin(_ checked: VerifiedQuote, context: ToolContext) async throws -> ChangeLog.Origin {
-        let taskID = try await AgentTaskRepository(store: services.records).taskID(conversation: context.conversationID)
-        return ChangeLog.Origin(
-            source: checked.source, sourceDate: context.now, model: ClaudeModel.opus55.rawValue, taskID: taskID,
-            conversationID: context.conversationID
-        )
-    }
-
-    static func output(_ outcome: ChangeLog.Outcome) -> ToolOutput {
-        switch outcome {
-        case .applied(let change):
-            return .json(["applied": true, "cite": .string(change.citation.marker), "title": .string(change.title), "summary": .string(change.summary)])
-        case .unchanged(let text):
-            return .json(["applied": false, "note": .string(text)])
-        case .conflict(let text), .refused(let text):
-            return .error(text)
-        }
-    }
 
     /// Whether `quote` states `day`, read at `reference`: a date, today or tomorrow, a coming
     /// weekday, a week named without a day ("next week"), or, for a day of the past six,

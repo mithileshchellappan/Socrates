@@ -22,7 +22,8 @@ public enum LecturePlanEdit: Sendable, Hashable {
     /// A new title and/or number. With `shiftLater`, every lecture numbered after the old number
     /// moves by the same step (an unnumbered lecture taking a number pushes those from it on).
     case label(Lecture.ID, title: String?, number: Int?, shiftLater: Bool)
-    /// A lecture that holds nothing (no recording, slides, notes, flags or answered practice).
+    /// A lecture that holds nothing (no recording, slides, notes, flags, answered practice or
+    /// book sections the student said it covered).
     case deleteEmpty(Lecture.ID)
 }
 
@@ -111,8 +112,9 @@ extension FilingService {
     /// Undo of a `lecture_edit` (every touched lecture back where it was, all or none) or a
     /// `lecture_delete` (the lecture and what went with it back), with the row marked undone, in
     /// one transaction. False when it was undone already; `FilingError.changedSince` when a
-    /// touched lecture no longer holds what the change wrote, or a class it goes back to holds
-    /// another lecture now.
+    /// touched lecture no longer holds what the change wrote or gained a filing since, a recorded
+    /// lecture would go back to a class that has not happened, or a class or number it goes back
+    /// to belongs to another lecture now (Undo never makes what the forward path refuses).
     public func undoLecturePlan(_ change: AgentChange) async throws -> Bool {
         let now = now()
         let id = change.id
@@ -125,8 +127,10 @@ extension FilingService {
             case .lectureDelete:
                 guard let kept = current.before?.deletion else { throw FilingError.missing }
                 let deletion = try Deletion(encoded: kept)
-                if case .lecture(let lectureID) = deletion.item, try Lecture.find(lectureID).fetchCount(db) > 0 {
-                    throw FilingError.changedSince
+                if case .lecture(let lectureID) = deletion.item {
+                    guard try Lecture.find(lectureID).fetchCount(db) == 0 else { throw FilingError.changedSince }
+                    // Its class or number taken since (a deck "07_…" made a new L7): never two.
+                    try Self.checkFree(Self.keptPlacement(of: lectureID, in: deletion.rows), in: db)
                 }
                 try deletion.rows.restore(in: db)
             default:
@@ -141,18 +145,22 @@ extension FilingService {
 
     /// Moves a recording (with its transcript, slide stamps, notes, flags, jobs and timed spans)
     /// into another lecture through `move`, as the student's own Change… does: the old lecture's
-    /// study pass is dropped and alignment or transcription queued, and a lecture its filing
-    /// created goes when nothing is left in it. Its `agent_change` row (`filing`, target
-    /// `filing`: Undo puts the filing back through `undoAdvice`) is written in the move's
-    /// transaction, which also refuses (and rolls back) while a job of the recording runs. Into
-    /// another course only with `acrossCourses`. A recording without a filing (imported before
-    /// smart import) gets one first.
+    /// study pass is dropped and alignment or transcription queued. The lecture it leaves stays,
+    /// even when its filing created it and nothing is left in it (Undo moves the recording back
+    /// into it; the student removes it with `delete_lecture`, which has an Undo of its own). Its
+    /// `agent_change` row (`filing`, target `filing`: Undo puts the filing back through
+    /// `undoAdvice`) is written in the move's transaction, which also refuses (and rolls back)
+    /// while a job of the recording runs, when the recording is in that lecture already, or when
+    /// the lecture is another course's without `acrossCourses` (checked on the filing as the
+    /// transaction reads it). A recording without a filing (imported before smart import) gets
+    /// one first.
     public func moveRecording(
         _ recordingID: Recording.ID, to lectureID: Lecture.ID, acrossCourses: Bool, source: LecturePlanSource
     ) async throws -> AgentChange {
         guard let recording = try await store.fetch(Recording.self, id: recordingID),
               let target = try await store.fetch(Lecture.self, id: lectureID)
         else { throw LecturePlanRefusal.missing }
+        // Early answers; the hook checks both again inside the move's transaction.
         guard recording.lectureID != lectureID else { throw LecturePlanRefusal.unchanged }
         var fromCourse = recording.courseID
         if let id = recording.lectureID, let old = try await store.fetch(Lecture.self, id: id) { fromCourse = old.courseID }
@@ -168,6 +176,9 @@ extension FilingService {
         let now = now()
         let started = Self.spoken(recording.startedAt, zone: library.zone)
         let hook: MoveHook = { db, before, after, lecture in
+            // The filing as the transaction found it: where the recording is now.
+            if before.lectureID == lecture.id { throw LecturePlanRefusal.unchanged }
+            if let from = before.courseID, from != lecture.courseID, !acrossCourses { throw LecturePlanRefusal.otherCourse }
             let running = try Job.where { $0.recordingID.eq(recordingID) && $0.state.eq(JobState.running) }.fetchCount(db)
             if running > 0 { throw LecturePlanRefusal.busy }
             let course = try Course.find(lecture.courseID).fetchOne(db)
@@ -185,7 +196,7 @@ extension FilingService {
             )
             try AgentChangeRepository.insert(change, db: db)
         }
-        _ = try await move(filing, to: .lecture(lectureID), courseID: target.courseID, reason: .user, hook: hook)
+        _ = try await move(filing, to: .lecture(lectureID), courseID: target.courseID, reason: .user, keepsEmptiedLecture: true, hook: hook)
         guard let change = try await store.fetch(AgentChange.self, id: changeID) else { throw FilingError.missing }
         Log.importer.notice("Moved a recording to another lecture as asked")
         return change
@@ -306,8 +317,9 @@ extension FilingService {
         if movedItself, placed.lectureSessionID == nil, let holder = lectures.first(where: { $0.lectureSessionID == session.id && $0.id != lectureID }) {
             summary += holder.number.map { " with L\($0)" } ?? " with its lecture"
         }
-        let others = changed.filter { $0.id != lectureID }.count
-        if others > 0 { summary += others == 1 ? "; 1 later lecture moved" : "; \(others) later lectures moved" }
+        // Only the followers moved; a joined lecture that took the class it left stays where it was.
+        let followed = changed.filter { moving.contains($0.id) }.count
+        if followed > 0 { summary += followed == 1 ? "; 1 later lecture moved" : "; \(followed) later lectures moved" }
         let change = try Self.record(
             .lectureEdit, lecture: lecture, course: course, summary: summary, before: before, after: written, source: source,
             in: db, store: store, now: now
@@ -395,7 +407,7 @@ extension FilingService {
         var slides = 0
         /// The student's notes and the marks they kept on its summary.
         var notes = 0
-        /// The student's own flags and practice answers.
+        /// The student's own flags, practice answers and the book sections they said it covered.
         var work = 0
 
         var isEmpty: Bool { recordings + slides + notes + work == 0 }
@@ -413,7 +425,9 @@ extension FilingService {
             SELECT count(*) FROM "study_question" q
             WHERE q."lecture_id" = ? AND EXISTS (SELECT 1 FROM "study_answer" a WHERE a."question_id" = q."id")
             """, arguments: [lectureID.uuidString.lowercased()]) ?? 0
-        contents.work = flags + answered
+        // What the student said it covered (set_lecture_coverage from their words).
+        let covered = try MaterialCoverage.where { $0.lectureID.eq(lectureID) && $0.source.eq(CoverageSource.student) }.fetchCount(db)
+        contents.work = flags + answered + covered
         return contents
     }
 
@@ -475,18 +489,32 @@ extension FilingService {
         return (before, after)
     }
 
-    /// Undo of a `lecture_edit` inside the transaction: all or none.
+    /// Undo of a `lecture_edit` inside the transaction: all or none. Refused
+    /// (`FilingError.changedSince`) when a touched lecture no longer holds what the change wrote,
+    /// was filed into since (a recording of a class it moved to), would go back to a class that
+    /// has not happened with a recording in it, or goes back to a class or number another lecture
+    /// holds now.
     static func restore(_ before: [LecturePlacementValues], after: [LecturePlacementValues], in db: Database, now: Date) throws {
+        var courses: [Lecture.ID: Course.ID] = [:]
         for value in after {
             guard let lecture = try Lecture.find(value.id).fetchOne(db), value.matches(lecture) else { throw FilingError.changedSince }
+            courses[value.id] = lecture.courseID
+            // Filed into since the change (a recording of the class it moved to).
+            let reference: Lecture.ID? = value.id
+            let filings = try Filing.where { $0.lectureID.eq(reference) }.fetchAll(db).map(\.id)
+            if !Set(value.filings.map(\.id)).isSuperset(of: filings) { throw FilingError.changedSince }
         }
         let touched = Set(before.map(\.id))
         for value in before {
-            guard let sessionID = value.lectureSessionID else { continue }
-            // The class is gone, or holds a lecture the change did not touch.
-            guard try LectureSession.find(sessionID).fetchCount(db) > 0 else { throw FilingError.changedSince }
-            let holders = try Lecture.where { $0.lectureSessionID.eq(LectureSession.ID?.some(sessionID)) }.fetchAll(db)
-            if holders.contains(where: { !touched.contains($0.id) }) { throw FilingError.changedSince }
+            guard let courseID = courses[value.id] else { throw FilingError.changedSince }
+            // A recorded lecture never goes back to a class that has not happened (`recordedToFuture`).
+            let reference: Lecture.ID? = value.id
+            if try Recording.where({ $0.lectureID.eq(reference) }).fetchCount(db) > 0 {
+                var startsAt = value.heldAt
+                if let sessionID = value.lectureSessionID { startsAt = try LectureSession.find(sessionID).fetchOne(db)?.startsAt ?? startsAt }
+                if let startsAt, startsAt > now { throw FilingError.changedSince }
+            }
+            try Self.checkFree(KeptPlacement(courseID: courseID, sessionID: value.lectureSessionID, number: value.number), except: touched, in: db)
         }
         for value in before {
             let title = value.title
@@ -503,6 +531,45 @@ extension FilingService {
                     .update { $0.lectureSessionID = place; $0.updatedAt = now }
                     .execute(db)
             }
+        }
+    }
+
+    /// Where Undo puts a lecture back: its course, class and number.
+    struct KeptPlacement {
+        var courseID: Course.ID
+        var sessionID: LectureSession.ID?
+        var number: Int?
+    }
+
+    /// The deleted lecture's course, class and number, as its kept row has them.
+    static func keptPlacement(of lectureID: Lecture.ID, in rows: DeletedRows) throws -> KeptPlacement {
+        func uuid(_ value: DatabaseValue) -> UUID? { String.fromDatabaseValue(value).flatMap(UUID.init(uuidString:)) }
+        let ids = rows.values(of: "lecture", column: "id")
+        guard let index = ids.firstIndex(where: { uuid($0) == lectureID }) else { throw FilingError.missing }
+        func value(_ column: String) -> DatabaseValue? {
+            let values = rows.values(of: "lecture", column: column)
+            return values.indices.contains(index) ? values[index] : nil
+        }
+        guard let courseID = value("course_id").flatMap(uuid) else { throw FilingError.missing }
+        return KeptPlacement(
+            courseID: courseID, sessionID: value("lecture_session_id").flatMap(uuid), number: value("number").flatMap { Int.fromDatabaseValue($0) }
+        )
+    }
+
+    /// Undo puts a lecture back only where nothing else is now: its course and class still exist,
+    /// no lecture outside `except` is linked to the class (one linked lecture per class) or has
+    /// its number in the course ("DC 3" names one lecture). Throws `FilingError.changedSince`.
+    static func checkFree(_ placement: KeptPlacement, except: Set<Lecture.ID> = [], in db: Database) throws {
+        guard try Course.find(placement.courseID).fetchCount(db) > 0 else { throw FilingError.changedSince }
+        if let sessionID = placement.sessionID {
+            guard try LectureSession.find(sessionID).fetchCount(db) > 0 else { throw FilingError.changedSince }
+            let holders = try Lecture.where { $0.lectureSessionID.eq(LectureSession.ID?.some(sessionID)) }.fetchAll(db)
+            if holders.contains(where: { !except.contains($0.id) }) { throw FilingError.changedSince }
+        }
+        if let number = placement.number {
+            let courseID = placement.courseID
+            let numbered = try Lecture.where { $0.courseID.eq(courseID) && $0.number.eq(Int?.some(number)) }.fetchAll(db)
+            if numbered.contains(where: { !except.contains($0.id) }) { throw FilingError.changedSince }
         }
     }
 

@@ -141,7 +141,7 @@ struct LectureNotesTools: Sendable {
             }
             let request = call.text("request").map { String($0.prefix(LectureNotes.requestLimit)) }
             let outcome = try await changeLog.queueNotes(lectureID: lectureID, request: request, quote: checked.quote, origin: try await origin(checked, context: context))
-            return Self.output(outcome)
+            return outcome.toolOutput
         }
     }
 
@@ -183,7 +183,7 @@ struct LectureNotesTools: Sendable {
                 .notesRule(NotesRule(length: length, courseID: course?.id), text: text), quote: checked.quote,
                 origin: try await origin(checked, context: context)
             )
-            return Self.output(outcome)
+            return outcome.toolOutput
         }
     }
 
@@ -240,7 +240,7 @@ struct LectureNotesTools: Sendable {
                 suffix: anchor.suffix, question: asked, answer: answer, model: ClaudeModel.opus55.rawValue, createdBy: .agent
             )
             let outcome = try await changeLog.apply(.notesAnswer(mark), quote: checked.quote, origin: try await origin(checked, context: context))
-            return Self.output(outcome)
+            return outcome.toolOutput
         }
     }
 
@@ -265,20 +265,6 @@ struct LectureNotesTools: Sendable {
     }
 
     func origin(_ checked: VerifiedQuote, context: ToolContext) async throws -> ChangeLog.Origin {
-        let taskID = try await AgentTaskRepository(store: services.records).taskID(conversation: context.conversationID)
-        return ChangeLog.Origin(
-            source: checked.source, sourceDate: context.now, model: ClaudeModel.opus55.rawValue, taskID: taskID, conversationID: context.conversationID
-        )
-    }
-
-    static func output(_ outcome: ChangeLog.Outcome) -> ToolOutput {
-        switch outcome {
-        case .applied(let change):
-            return .json(["applied": true, "cite": .string(change.citation.marker), "title": .string(change.title), "summary": .string(change.summary)])
-        case .unchanged(let text):
-            return .json(["applied": false, "note": .string(text)])
-        case .conflict(let text), .refused(let text):
-            return .error(text)
-        }
+        try await ChangeLog.Origin.asked(checked.source, context: context, records: services.records)
     }
 }

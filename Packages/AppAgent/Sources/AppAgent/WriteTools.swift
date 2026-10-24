@@ -58,7 +58,7 @@ struct WriteTools: Sendable {
         let source = call.text("source") ?? (chatSource ? "chat" : "")
         switch source {
         case "chat" where chatSource:
-            guard let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.now)) else {
+            guard let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.wordsWrittenAt)) else {
                 return .failure("For source chat, quote must be at least 3 words of the student's message you are answering, copied exactly.")
             }
             return .success(checked)
@@ -375,7 +375,7 @@ struct WriteTools: Sendable {
         ) { call, context in
             guard chatSource else { return .error("Only the student can ask for notes.") }
             guard let quote = call.text("quote"),
-                  let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.now))
+                  let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.wordsWrittenAt))
             else { return .error("quote must be the student's words asking for the note (at least 3 words), copied exactly.") }
             guard let text = call.text("text") else { return .error("text is empty.") }
             let blocks: [NoteBlock] = text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.map { line in
@@ -419,7 +419,7 @@ struct WriteTools: Sendable {
         ) { call, context in
             guard chatSource else { return .error("Only the student can remove a course.") }
             guard let quote = call.text("quote"),
-                  let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.now))
+                  let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.wordsWrittenAt))
             else { return .error("quote must be the student's words asking for it (at least 3 words), copied exactly.") }
             guard let course = try await CourseList.load(services.database).course(call.text("course")) else {
                 return .error("No course has that token.")
@@ -469,7 +469,7 @@ struct WriteTools: Sendable {
         ) { call, context in
             guard chatSource else { return .error("Only the student can undo changes.") }
             guard let quote = call.text("quote"),
-                  try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.now)) != nil
+                  try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.wordsWrittenAt)) != nil
             else { return .error("quote must be the student's words asking for it (at least 3 words), copied exactly.") }
             let key = (call.text("change") ?? "").replacingOccurrences(of: "[[change ", with: "").replacingOccurrences(of: "]]", with: "")
             guard let change = try await AgentChangeRepository(store: services.records).change(key: key) else {

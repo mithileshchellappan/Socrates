@@ -1,4 +1,5 @@
 import ClaudeKit
+import Deadlines
 import Foundation
 import StudyCore
 import Synchronization
@@ -49,19 +50,25 @@ public final class RunTrace: Sendable {
 public struct ToolContext: Sendable {
     public var conversationID: AgentConversation.ID
     public var studentText: String
+    /// The time now: what has happened yet, what lies ahead.
     public var now: Date
+    /// When the student wrote `studentText`: relative days in it ("today", "yesterday", a
+    /// weekday) are read against this. `now` for a message answered at once; earlier on Try
+    /// again, for a question asked on the iPhone and for a sub-agent task that waited.
+    public var wordsWrittenAt: Date
     /// ma: the run's trace (mail read so far).
     public var trace: RunTrace
     /// ma: what the student's turn carried besides the words (an `app` conversation's screen).
     public var turnContext: AgentTurnContext?
 
     public init(
-        conversationID: AgentConversation.ID, studentText: String, now: Date, trace: RunTrace = RunTrace(),
+        conversationID: AgentConversation.ID, studentText: String, now: Date, wordsWrittenAt: Date? = nil, trace: RunTrace = RunTrace(),
         turnContext: AgentTurnContext? = nil
     ) {
         self.conversationID = conversationID
         self.studentText = studentText
         self.now = now
+        self.wordsWrittenAt = wordsWrittenAt ?? now
         self.trace = trace
         self.turnContext = turnContext
     }
@@ -236,6 +243,13 @@ public struct CourseList: Sendable {
 
     /// The course a token, name, short name or id names.
     public func course(_ reference: String?) -> Course? { tokens.course(reference) }
+
+    /// Whether `text` (the student's words) names the course with `courseID`: its name, short
+    /// name or token, as the deadline parser finds a course in a message.
+    public func names(_ courseID: Course.ID, in text: String) -> Bool {
+        guard let course = courses.first(where: { $0.id == courseID }) else { return false }
+        return DeadlineParser.course(in: text, courses: [course]) != nil
+    }
 
     /// "Fri 16 Oct 2026, 15:02" in the university's time zone: how a system prompt states when the conversation
     /// started (M3.5: the mail chat's prompt is built in MailIntelligence).

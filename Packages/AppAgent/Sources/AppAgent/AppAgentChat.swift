@@ -135,7 +135,7 @@ public enum AppAgentChat {
         The student's courses (token: name; lecturers):
         \(courses.promptLines)
 
-        Before the student's words a message may carry: <now> (the current date and time), <memory> (what you keep \
+        Before the student's words a message may carry: <now> (when it was written; the latest is the time now), <memory> (what you keep \
         about them), <catalog> (what exists and can be queried: courses with their weekly classes, slide decks, lectures \
         with their state, notes, the sessions from today, mail folders, open items), <context> (the screen they are on: "this" and "here" mean what it names), \
         <task_result> (a sub-agent's answer), <reminder> (a notification the app showed since their last message: \
@@ -177,7 +177,7 @@ public enum AppAgentChat {
         ("we already did chapter 3 today", "chapter 3 continues next week", "that recording is Tuesday's", "L4 is really \
         L3", "delete the empty L7"): find_actions, then move_lecture (later: follow when the rest of the plan moves with \
         it), set_lecture_coverage for the course book's sections (several at once), edit_lecture, move_recording or \
-        delete_lecture. Whether a class has happened goes by <now>. Never say you cannot change lectures. If an action \
+        delete_lecture. Whether a class has happened goes by the latest <now>; their "today" by their own message's. Never say you cannot change lectures. If an action \
         refuses, tell the student why in one sentence and what would do it. If it is unclear whether a chapter is a \
         lecture of its own or a book section, ask once.
         - "What did you change?": list_changes, then only the markers, one per line ([[change 1a2b3c4d]], copied \

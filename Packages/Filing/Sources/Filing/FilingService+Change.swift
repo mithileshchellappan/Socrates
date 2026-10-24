@@ -74,9 +74,12 @@ extension FilingService {
 
     /// Moves `filing` (as the caller read it). The move itself works on the filing as it is when
     /// the transaction runs: a move by evidence gives way (`Superseded`) to any change made since
-    /// it was read, and never touches a filing the user made.
+    /// it was read, and never touches a filing the user made. The lecture this filing created goes
+    /// when the move leaves it unused, unless `keepsEmptiedLecture` (the agent's `move_recording`:
+    /// its Undo needs the lecture, and the student's marks and coverage on it stay).
     func move(
-        _ filing: Filing, to target: LectureTarget, courseID: Course.ID, reason: MoveReason = .user, hook: MoveHook? = nil
+        _ filing: Filing, to target: LectureTarget, courseID: Course.ID, reason: MoveReason = .user, keepsEmptiedLecture: Bool = false,
+        hook: MoveHook? = nil
     ) async throws -> Filing {
         guard let course = try await store.fetch(Course.self, id: courseID) else { throw FilingError.missing }
         let now = now()
@@ -153,7 +156,8 @@ extension FilingService {
                         )
                     }
                 }
-                if current.createdLecture, let oldLectureID, try Self.lectureIsUnused(oldLectureID, except: current.id, in: db) {
+                if !keepsEmptiedLecture, current.createdLecture, let oldLectureID,
+                   try Self.lectureIsUnused(oldLectureID, except: current.id, in: db) {
                     try Lecture.find(oldLectureID).delete().execute(db)
                 }
                 updated.createdLecture = created

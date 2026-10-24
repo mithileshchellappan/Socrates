@@ -186,7 +186,14 @@ struct ToolLoopPrompts: Sendable {
         guard let last = pending.last else { throw ClaudeError.invalidArgument("a tool loop needs a user turn") }
         let unsent = try ClaudeCodeCall.promptBlocks(pending, droppingToolResults: true)
         self.unsent = unsent
-        newest = (try? ClaudeCodeCall.promptBlocks([last], droppingToolResults: true)) ?? unsent
+        // A Try again whose turn is only the clock (the words are still unanswered): the session
+        // gets the words again with both clocks, never a bare clock.
+        let clockOnly = last.content.blocks.allSatisfy { block in
+            if let text = block.textValue { return text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(ClaudeCodeConfiguration.clockTag) }
+            if case .toolResult = block { return true }
+            return false
+        }
+        newest = clockOnly ? unsent : (try? ClaudeCodeCall.promptBlocks([last], droppingToolResults: true)) ?? unsent
         replay = answered.map { [Self.history(messages[...$0])] + unsent } ?? unsent
     }
 

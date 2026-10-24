@@ -21,8 +21,9 @@ extension ChangeLog {
     }
 
     /// `move_recording`: a recording into another lecture (its transcript, stamps, notes and flags
-    /// along; the study pass is built again). The processor wakes for the alignment or
-    /// transcription the move queued.
+    /// along; the study pass is built again; the lecture it leaves stays). The processor wakes
+    /// for the alignment or transcription the move queued. `acrossCourses`: the student's words
+    /// name the lecture's course (the tool checks it in code).
     public func moveRecording(
         _ recordingID: Recording.ID, to lectureID: Lecture.ID, acrossCourses: Bool, quote: String, origin: Origin
     ) async throws -> Outcome {
@@ -37,7 +38,9 @@ extension ChangeLog {
             return .applied(change)
         } catch let refusal as LecturePlanRefusal {
             if refusal == .otherCourse {
-                return .refused("That lecture is another course's. Set other_course only when the student's words name that course.")
+                return .refused(
+                    "That lecture is another course's than the recording's. Ask the student which course it belongs to; it moves across only when their words name that course."
+                )
             }
             return try await answer(refusal)
         }
@@ -93,7 +96,7 @@ extension ChangeLog {
             return .refused("title is empty.")
         case .notEmpty(let recordings, let slides, let notes):
             return .refused(
-                "It is not empty (\(recordings) recording(s), \(slides) slide link(s), \(notes) note(s), flags or practice answers); only empty lectures are deleted. merge_lectures or move_recording moves what it holds."
+                "It is not empty (\(recordings) recording(s), \(slides) slide link(s), \(notes) note(s), flags, practice answers or sections the student said it covered); only empty lectures are deleted. merge_lectures or move_recording moves what it holds."
             )
         case .unchanged:
             return .unchanged("It is so already.")
