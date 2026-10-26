@@ -20,4 +20,30 @@ public enum FieldEditor {
         return false
         #endif
     }
+
+    #if os(macOS)
+    /// The key window's field editor while it holds exactly `text` (the same UTF-16, so a range of
+    /// one is a range of the other) and composes nothing.
+    private static func editor(holding text: String) -> NSTextView? {
+        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView, !textView.hasMarkedText(),
+              textView.string.utf16.elementsEqual(text.utf16) else { return nil }
+        return textView
+    }
+
+    /// The caret or selection of the field editor holding `text`, as a range of `text`.
+    public static func selection(in text: String) -> Range<String.Index>? {
+        guard let textView = editor(holding: text) else { return nil }
+        return Range(textView.selectedRange(), in: text)
+    }
+
+    /// Puts the caret of the field editor holding `text` at `index`, once (a field that keeps a
+    /// caret of its own in SwiftUI state would have it put back on a later update). False until a
+    /// field editor holds `text`.
+    @discardableResult
+    public static func placeCaret(at index: String.Index, in text: String) -> Bool {
+        guard let textView = editor(holding: text) else { return false }
+        textView.setSelectedRange(NSRange(index..<index, in: text))
+        return true
+    }
+    #endif
 }
