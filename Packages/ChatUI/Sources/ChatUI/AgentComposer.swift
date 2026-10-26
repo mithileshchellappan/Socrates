@@ -93,7 +93,7 @@ struct AgentComposer: View {
                         guard modifiers.contains(.shift) || modifiers.contains(.option),
                               !modifiers.contains(.command), !modifiers.contains(.control), !FieldEditor.isComposing
                         else { return .ignored }
-                        Task { @MainActor in insertLine() }
+                        Task { @MainActor in await insertLine() }
                         return .handled
                     }
                     .onKeyPress(.escape) {
@@ -146,11 +146,13 @@ struct AgentComposer: View {
             .frame(minHeight: Self.button + 8)
         }
         .background {
-            // A click on the composer around the field puts the caret in it; a click in the field
-            // is the field's own (focus is never set again under the field editor).
+            // A click on the composer around the field puts the caret in it, at the end of the
+            // kept draft (a field focused this way selects all of its text, and the next key would
+            // replace the draft); a click in the field is the field's own (focus is never set
+            // again under the field editor).
             shape
                 .fill(Color.contentBackground)
-                .onTapGesture { if !isFocused { isFocused = true } }
+                .onTapGesture { if !isFocused { focusSoon() } }
         }
         .overlay { shape.strokeBorder(.separator, lineWidth: 0.5).allowsHitTesting(false) }
         .onChange(of: isFocused) { _, focused in model.composer(style, isFocused: focused) }
@@ -225,7 +227,7 @@ struct AgentComposer: View {
 
     /// ⇧↩ and ⌥↩: a line break at the caret (replacing a selection); on a list's line the next
     /// item's number or bullet, on an empty item the list's end (`ComposerLines`).
-    private func insertLine() {
+    private func insertLine() async {
         // A composition that began after the key: the input method's range stays as it is.
         guard !FieldEditor.isComposing else { return }
         let text = model.draft
@@ -241,12 +243,11 @@ struct AgentComposer: View {
         if model.notice != nil { model.notice = nil }
         let caret = edit.text.index(edit.text.startIndex, offsetBy: min(edit.caret, edit.text.count))
         #if os(macOS)
-        // Once the field editor holds the new text (SwiftUI puts its caret at the end).
-        Task { @MainActor in
-            for _ in 0..<3 {
-                await Task.yield()
-                if FieldEditor.placeCaret(at: caret, in: edit.text) { return }
-            }
+        // Once the field editor holds the new text (SwiftUI puts its caret at the end), inside the
+        // key's own task.
+        for _ in 0..<3 {
+            await Task.yield()
+            if FieldEditor.placeCaret(at: caret, in: edit.text) { break }
         }
         #else
         selection = TextSelection(insertionPoint: caret)
