@@ -61,13 +61,16 @@ extension FocusedValues {
 ///     WindowGroup { … }.commands { LiveLectureCommands() }
 ///
 /// ln: the app puts the lecture notes' Ask… and Highlight at the menu's top (`leading`), so the
-/// Lecture menu stays one menu.
-public struct LiveLectureCommands<Leading: View>: Commands {
+/// Lecture menu stays one menu. link: the iPhone's recording follows Record (`trailing`; the items
+/// bring their own divider and show only while there is something to control).
+public struct LiveLectureCommands<Leading: View, Trailing: View>: Commands {
     @FocusedValue(\.liveLecture) private var live
     private let leading: Leading
+    private let trailing: Trailing
 
-    public init(@ViewBuilder leading: () -> Leading) {
+    public init(@ViewBuilder leading: () -> Leading, @ViewBuilder trailing: () -> Trailing) {
         self.leading = leading()
+        self.trailing = trailing()
     }
 
     public var body: some Commands {
@@ -95,11 +98,18 @@ public struct LiveLectureCommands<Leading: View>: Commands {
             Button(live?.isRecording == true ? "Stop Recording" : "Record") { live?.toggleRecording() }
                 .keyboardShortcut(live != nil ? KeyboardShortcut("r", modifiers: [.command, .shift]) : nil)
                 .disabled(live == nil || (live?.isRecording != true && live?.canRecord != true))
+            trailing
         }
     }
 }
 
-extension LiveLectureCommands where Leading == EmptyView {
+extension LiveLectureCommands where Trailing == EmptyView {
+    public init(@ViewBuilder leading: () -> Leading) {
+        self.init(leading: leading) { EmptyView() }
+    }
+}
+
+extension LiveLectureCommands where Leading == EmptyView, Trailing == EmptyView {
     public init() {
         self.init { EmptyView() }
     }
