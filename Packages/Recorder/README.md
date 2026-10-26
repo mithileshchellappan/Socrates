@@ -9,8 +9,8 @@ shared to the Mac as capture bundles (`.lecturebundle`) that the Mac's smart imp
 |---|---|---|
 | `RecorderContract` | `RecorderCommand`, `RecorderSnapshot`, `RecordingTiming`, `RecorderOutcome`, `RecorderFailure`, `RecordingID`, `RecorderContractVersion`, `RecorderEndpoint` (see "Recorder contract") | Foundation only: no UI, no transport. The app, the widget extension, Phone (the Record slot) and the Mac remote link it |
 | `RecorderActivity` | `RecordingActivityState` (a projection of the snapshot: + `init(snapshot:)`, `slideText`, `detailLine`, `shortSlide`, `timerRange`, `showsSame(as:)`; reads states of earlier builds), `RecordingActivityAttributes` (iOS), `RecorderControl` | Foundation, RecorderContract, ActivityKit (iOS). Linked by the app and the widget extension, each with RecorderContract |
-| `Recorder` | `PhoneRecorder` (+ `perform(_:)`, `submit(_:)`, `record()`, `select(_:)`, `snapshot`, `problem`), `RecorderProblem`, `PhoneCapture`, `RecorderText`; internal `RecorderMachine` (the rules), `RecordingActivityController` | RecorderContract, RecorderActivity, StudyCore, Capture, Courses (ActivityKit on iOS) |
-| `RecorderUI` | `RecorderScreen` (+ internal `OutboxView`, `RecorderWaveform`, the problem's words) | Recorder, RecorderContract, StudyUI, Capture, CaptureUI, SwiftUI |
+| `Recorder` | `PhoneRecorder` (+ `perform(_:)`, `submit(_:)`, `record()`, `select(_:)`, `snapshot`, `problem`; a `RecorderEndpoint` with `snapshots()`), `RecorderProblem`, `PhoneCapture`, `RecorderText`; internal `RecorderMachine` (the rules), `RecordingActivityController` | RecorderContract, RecorderActivity, StudyCore, Capture, Courses (ActivityKit on iOS) |
+| `RecorderUI` | `RecorderScreen` (+ its outbox rows' delivery slot; internal `OutboxView`, `RecorderWaveform`, the problem's words) | Recorder, RecorderContract, StudyUI, Capture, CaptureUI, SwiftUI |
 
 The Live Activity's widget is in `Widgets/SocratesWidgets.swift` (the `SocratesWidgets`
 extension, RecorderActivity only); its views (`RecordingLockScreenView`, `RecordingTitle`,
@@ -88,8 +88,12 @@ short name, colour), `sessionName`, `accepts` (the command kinds the recorder ta
 `failure?` (with `stopped`: why the recording stopped by itself, a `RecorderFailure`),
 `closedSegments` (the highest closed audio segment of the recording this snapshot is of, 0: none;
 a closed file never changes again, so the link copies segments up to it while recording; earlier
-builds' snapshots read 0) and `phaseSince` (the sequence at which the phase began; earlier builds'
-snapshots read `sequence`). A command whose `basis` is below `phaseSince` is
+builds' snapshots read 0; it is `LiveLectureSession.closedThrough`, read from the session's own
+segment list, never from the manifest on disk, which lags behind: while recording the newest
+segment once its frame count is known, else the one before it; paused, stopped or failed, every
+segment, because a missing frame count after a stop or a crash never means "still open") and
+`phaseSince` (the sequence at which the phase began; earlier builds' snapshots read `sequence`).
+A command whose `basis` is below `phaseSince` is
 `.rejected(.stalePhase(basis:since:))`: a remote Pause that crossed a resume made on the phone
 never pauses it again.
 
@@ -113,8 +117,13 @@ never pauses it again.
   lost). It is idempotent: an unchanged state does not count the sequence up.
 
 **Endpoint** (`RecorderEndpoint`, `@MainActor`): `snapshots()` (the current snapshot first,
-then every change; nil while nothing records) and `perform(_:)`. The Mac remote's link reaches
-the recorder only through it; the Live Activity keeps `RecorderControl`.
+then every change, newest only, so a reader that falls behind skips to the latest complete
+state; nil while nothing records; it ends when the recorder goes, and its observation stops when
+the reader stops iterating) and `perform(_:)`. The Mac remote's link reaches the recorder only
+through it; the Live Activity keeps `RecorderControl`. A remote command runs on the same serial
+queue as every other command, with the same rules. Its failure is the Mac's to show: the
+phone's `problem` is set only for the screen's and the Live Activity's commands (origin
+`remote` is left out), so the student never meets an alert for a button pressed on the Mac.
 
 **Live Activity** (`RecordingActivityController`): requested at start from the snapshot, updated
 only when its projection changes (the sequence alone does not count), one request after another,
@@ -145,8 +154,9 @@ recordings the app no longer has end.
 
 **What the screen sees besides the snapshot** (read-only): `level` (the input level, a live
 signal), `stampTimes`, `deck` and `deckPageCount` (before recording), and `problem`
-(`RecorderProblem`: Record failed, the recording stopped by itself, or a command from any surface
-failed; the screen shows it until `showsProblem` is set false, and picks the words).
+(`RecorderProblem`: Record failed, the recording stopped by itself, or a command from the
+screen or the Live Activity failed, never a remote one; the screen shows it until
+`showsProblem` is set false, and picks the words).
 
 ## Entry points
 
@@ -161,6 +171,13 @@ recorder.activate()
 // `prepare()` itself (courses with consent, the class on now or the last course used, the
 // class's deck when its file is on the phone, the outbox).
 .fullScreenCover(isPresented: $recording) { RecorderScreen(recorder: recorder) }
+
+// With the recording link (the iCloud build): each outbox row gets one more line, what the Mac
+// holds of that capture (LinkUI's `CaptureDeliveryLabel`; nil draws nothing).
+RecorderScreen(recorder: recorder) { id in CaptureDeliveryLabel(delivery: macLink.delivery(of: id)) }
+
+// The Mac remote's link (Link's `MacLink`) reaches the recorder only as a `RecorderEndpoint`.
+MacLink.phone(services: services, recorder: recorder, beginBackgroundTime: …)
 
 recorder.snapshot?.phase        // the shell's Record slot: Record, Recording, Paused
 recorder.liveActivityState      // what the Live Activity shows (parity: the Lock Screen view)
@@ -223,7 +240,10 @@ recorder.liveActivityState      // what the Live Activity shows (parity: the Loc
 - **Outbox**: the phone's packages newest first (title = the manifest's session name, else the
   course's short name and the day; day; length; stamp count). Share writes the bundle when the
   destination is picked (`CaptureBundleItem`, a temporary folder; nothing is kept). Delete… asks,
-  naming the recording, and removes the package.
+  naming the recording, and removes the package. With the recording link, each row has one more
+  line under the day and stamps from `RecorderScreen`'s delivery slot (the bytes on the Mac while
+  it copies, then "On Mac"; nothing when nothing is known). Share and Delete… stay on every row:
+  the phone keeps its copy until the student deletes it.
 
 ## The capture bundle
 
