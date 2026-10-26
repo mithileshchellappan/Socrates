@@ -80,7 +80,7 @@ public enum DeadlineParser {
     /// The course named by its name, short name or token ("DC", "CL", "SN"; a subtitled name
     /// also by its main title's initials). Tokens are matched as written in capitals at word boundaries (a token
     /// that is also a word, "IS", counts only in capitals).
-    static func course(in text: String, courses: [Course]) -> Course? {
+    public static func course(in text: String, courses: [Course]) -> Course? {
         let folded = " " + TextFolding.words(text).joined(separator: " ") + " "
         let originalWords = Set(Self.originalWords(text))
         for course in courses {

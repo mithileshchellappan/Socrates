@@ -20,23 +20,24 @@ extension WriteTools {
         Schema.string("The student's words in the message you are answering that ask for it (at least 3 words).")
     }
 
-    /// The student's words asking for a change (chat only), or why not.
+    /// The student's words asking for a change (chat only), or why not. Relative days in them are
+    /// read against when the student wrote them (`ToolContext.wordsWrittenAt`).
     func studentAsked(_ call: ToolUseBlock, context: ToolContext) async throws -> Result<VerifiedQuote, Refusal> {
         guard chatSource else { return .failure("Only the student can ask for that.") }
         guard let quote = call.text("quote"),
-              let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.now))
+              let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.wordsWrittenAt))
         else { return .failure("quote must be the student's words asking for it (at least 3 words), copied exactly.") }
         return .success(checked)
     }
 
     /// Applies a course or slot change the student asked for.
     func applyAsked(_ request: ChangeLog.Request, checked: VerifiedQuote, context: ToolContext) async throws -> ChangeLog.Outcome {
-        let taskID = try await AgentTaskRepository(store: services.records).taskID(conversation: context.conversationID)
-        let origin = ChangeLog.Origin(
-            source: checked.source, sourceDate: context.now, model: ClaudeModel.opus55.rawValue, taskID: taskID,
-            conversationID: context.conversationID
-        )
-        return try await changeLog.apply(request, quote: checked.quote, origin: origin)
+        try await changeLog.apply(request, quote: checked.quote, origin: askedOrigin(checked, context: context))
+    }
+
+    /// The origin of a change the student asked for in this conversation.
+    func askedOrigin(_ checked: VerifiedQuote, context: ToolContext) async throws -> ChangeLog.Origin {
+        try await ChangeLog.Origin.asked(checked.source, context: context, records: services.records)
     }
 
     // MARK: add_course
@@ -655,6 +656,34 @@ extension ChangeLog {
             try CourseSchedule.saveSlot(restored, now: now, store: store, db: db)
         default:
             break
+        }
+    }
+}
+
+extension ChangeLog.Origin {
+    /// The origin of a change made from the student's words in the agent's conversation (`source`:
+    /// the verified quote's, or the chat): when they wrote them, Opus, the conversation and its
+    /// sub-agent task.
+    static func asked(_ source: ItemFinding.Source, context: ToolContext, records: RecordStore) async throws -> ChangeLog.Origin {
+        let taskID = try await AgentTaskRepository(store: records).taskID(conversation: context.conversationID)
+        return ChangeLog.Origin(
+            source: source, sourceDate: context.wordsWrittenAt, model: ClaudeModel.opus55.rawValue, taskID: taskID,
+            conversationID: context.conversationID
+        )
+    }
+}
+
+extension ChangeLog.Outcome {
+    /// What a write tool answers: applied with its cite marker, unchanged with why, or the
+    /// refusal as an error.
+    var toolOutput: ToolOutput {
+        switch self {
+        case .applied(let change):
+            .json(["applied": true, "cite": .string(change.citation.marker), "title": .string(change.title), "summary": .string(change.summary)])
+        case .unchanged(let text):
+            .json(["applied": false, "note": .string(text)])
+        case .conflict(let text), .refused(let text):
+            .error(text)
         }
     }
 }

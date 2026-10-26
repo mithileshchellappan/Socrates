@@ -1,5 +1,6 @@
 import Agent
 import ClaudeKit
+import Deadlines
 import Foundation
 import Search
 import StudyCore
@@ -28,7 +29,7 @@ struct LectureTools: Sendable {
         AgentTool(
             tool: .custom(
                 name: "list_lectures",
-                description: "The student's lectures with their keys, titles, days, slide counts and durations.",
+                description: "The student's lectures with their keys, titles, days, classes (or the lecture whose class they joined), slide counts, durations and recordings (keys).",
                 inputSchema: TutorJSON.schema([
                     "course": TutorJSON.nullable(["type": "string", "description": "Course token; null for all courses."]),
                 ])
@@ -55,7 +56,7 @@ struct LectureTools: Sendable {
                 if let range {
                     slides = range.isWholeDeck ? .int(range.pageCount) : .string("\(range.pagesText) of \(range.pageCount)")
                 }
-                return [
+                var row: JSONObject = [
                     "lecture": .string(library.name(lecture)),
                     "key": .string(ChatCitation.key(lecture.id)),
                     "title": .string(lecture.title),
@@ -64,6 +65,15 @@ struct LectureTools: Sendable {
                     "duration": recording.map { .string(ChatCitation.clock(Int($0.duration))) } ?? .null,
                     "cite": TutorJSON.string(cite),
                 ]
+                if let held = library.heldIn(lecture) { row["class"] = .string(held) }
+                // Each recording's key, start and length ("b680d175 · Thu 22 Oct, 14:02 · 1:28:10").
+                let recordings = library.recordings[lecture.id] ?? []
+                if !recordings.isEmpty {
+                    row["recordings"] = .array(recordings.map { recording in
+                        .string("\(ChatCitation.key(recording.id)) · \(ChangeSummary.dayTime(recording.startedAt)) · \(ChatCitation.clock(Int(recording.duration)))")
+                    })
+                }
+                return .object(row)
             }
             return TutorJSON.fitted([:], key: "lectures", rows: rows)
         }

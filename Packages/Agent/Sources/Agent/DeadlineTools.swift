@@ -36,7 +36,7 @@ enum DeadlineTools {
         you about deadlines, exercise sheets, exams, events and changes to their classes in a few words; you \
         record them with the tools.
 
-        Today is \(AgentDates.spoken(startedAt)) in \(UniversityProfile.current.place). Dates you write are \
+        \(AgentClock.promptLine(startedAt: startedAt)) Dates you write are \
         \(UniversityProfile.current.localTime): "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" with all_day true when no \
         time was given.
 
@@ -205,7 +205,7 @@ enum DeadlineTools {
                     guard let due = AgentDates.parse(text, allDay: call.bool("all_day") ?? false) else {
                         return .error("due must be YYYY-MM-DDTHH:MM or YYYY-MM-DD.")
                     }
-                    let checked = AgentDates.verify(due, in: context.studentText, reference: context.now)
+                    let checked = AgentDates.verify(due, in: context.studentText, reference: context.wordsWrittenAt)
                     draft.dueAt = checked.date
                     draft.isAllDay = checked.allDay
                     verified = checked.verified
@@ -248,7 +248,7 @@ enum DeadlineTools {
                     guard let due = AgentDates.parse(text, allDay: call.bool("all_day") ?? false) else {
                         return .error("due must be YYYY-MM-DDTHH:MM or YYYY-MM-DD.")
                     }
-                    let checked = AgentDates.verify(due, in: context.studentText, reference: context.now)
+                    let checked = AgentDates.verify(due, in: context.studentText, reference: context.wordsWrittenAt)
                     draft.dueAt = checked.date
                     draft.isAllDay = checked.allDay
                     verified = checked.verified
@@ -258,7 +258,7 @@ enum DeadlineTools {
                     draft.isAllDay = true
                     // The same day without its time: it stays where it is, and goes into the
                     // calendar only when the student's words state that day.
-                    verified = item.inCalendar || AgentDates.verify((day, true), in: context.studentText, reference: context.now).verified
+                    verified = item.inCalendar || AgentDates.verify((day, true), in: context.studentText, reference: context.wordsWrittenAt).verified
                 }
                 guard let updated = try await memory.update(id, to: draft, by: Self.finding(draft, context: context, verified: verified)) else {
                     return .error("Unknown item.")

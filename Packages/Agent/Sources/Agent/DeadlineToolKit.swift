@@ -121,7 +121,7 @@ extension DeadlineTools.Tools {
             }
             source = .chat(context.conversationID)
             span = words
-            reference = context.now
+            reference = context.wordsWrittenAt
             trusted = true
         }
 

@@ -219,6 +219,56 @@ extension AgentChangeKind {
     /// recordings or notes), merged into one; `before.deletion` holds Filing's `LectureMerges`
     /// (the lecture that went and what moved) for Undo, which splits them again.
     public static let lectureMerge: Self = "lecture_merge"
+    /// Where a lecture sits or what it is called, at the student's request (`move_lecture`,
+    /// `edit_lecture`): its class, date, number or title, with the later lectures that moved with
+    /// it. `before` / `after.lectures` hold every touched lecture; Undo puts all of them back.
+    public static let lectureEdit: Self = "lecture_edit"
+    /// An empty lecture deleted at the student's request (`delete_lecture`); `before.deletion`
+    /// holds Filing's `Deletion` for Undo.
+    public static let lectureDelete: Self = "lecture_delete"
+}
+
+/// Where a lecture sits, as a `lecture_edit` change keeps it (`before` / `after.lectures`): its
+/// title, number, date and class, and the class each of its filings points to.
+public struct LecturePlacementValues: Hashable, Sendable, Codable {
+    /// A filing of the lecture and the class it names.
+    public struct FilingPlace: Hashable, Sendable, Codable {
+        public var id: Filing.ID
+        public var lectureSessionID: LectureSession.ID?
+
+        public init(id: Filing.ID, lectureSessionID: LectureSession.ID?) {
+            self.id = id
+            self.lectureSessionID = lectureSessionID
+        }
+    }
+
+    public var id: Lecture.ID
+    public var title: String
+    public var number: Int?
+    public var heldAt: Date?
+    public var lectureSessionID: LectureSession.ID?
+    public var filings: [FilingPlace]
+
+    public init(_ lecture: Lecture, filings: [FilingPlace]) {
+        id = lecture.id
+        title = lecture.title
+        number = lecture.number
+        heldAt = lecture.heldAt
+        lectureSessionID = lecture.lectureSessionID
+        self.filings = filings
+    }
+
+    /// Whether `lecture` holds these values (a date within a second).
+    public func matches(_ lecture: Lecture) -> Bool {
+        let sameDate: Bool
+        switch (heldAt, lecture.heldAt) {
+        case (nil, nil): sameDate = true
+        case (let left?, let right?): sameDate = abs(left.timeIntervalSince(right)) < 1
+        default: sameDate = false
+        }
+        return lecture.id == id && lecture.title == title && lecture.number == number && sameDate
+            && lecture.lectureSessionID == lectureSessionID
+    }
 }
 
 /// A weekly slot's columns as an `agent_change` keeps them (`before.slot`, `after.slot`), so Undo
@@ -329,6 +379,11 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
     public var materialID: CourseMaterial.ID?
     /// `material_coverage`: the student's row (nil with `exists` false: there was none).
     public var coverage: MaterialCoverageValues?
+    /// `material_coverage` of several sections at once: the student's rows (`before`: those that
+    /// were there; a section missing from it had none).
+    public var coverages: [MaterialCoverageValues]?
+    // lecture (`lecture_edit`): every lecture the change touched, as it was or is
+    public var lectures: [LecturePlacementValues]?
 
     public init(
         exists: Bool? = nil,
@@ -370,12 +425,16 @@ public struct AgentChangeValues: Hashable, Sendable, Codable {
         materialKind: MaterialKind? = nil,
         materialKindSource: MaterialKindSource? = nil,
         materialID: CourseMaterial.ID? = nil,
-        coverage: MaterialCoverageValues? = nil
+        coverage: MaterialCoverageValues? = nil,
+        coverages: [MaterialCoverageValues]? = nil,
+        lectures: [LecturePlacementValues]? = nil
     ) {
         self.materialKind = materialKind
         self.materialKindSource = materialKindSource
         self.materialID = materialID
         self.coverage = coverage
+        self.coverages = coverages
+        self.lectures = lectures
         self.exists = exists
         self.startsAt = startsAt
         self.endsAt = endsAt

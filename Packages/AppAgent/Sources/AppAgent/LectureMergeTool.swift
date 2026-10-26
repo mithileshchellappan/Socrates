@@ -72,11 +72,7 @@ extension WriteTools {
                 }
                 keep = id
             }
-            let taskID = try await AgentTaskRepository(store: services.records).taskID(conversation: context.conversationID)
-            let origin = ChangeLog.Origin(
-                source: checked.source, sourceDate: context.now, model: ClaudeModel.opus55.rawValue, taskID: taskID,
-                conversationID: context.conversationID
-            )
+            let origin = try await askedOrigin(checked, context: context)
             let outcome = try await changeLog.mergeLectures(
                 ids[0], ids[1], keep: keep, bothRecorded: call.flag("both_recorded") ?? false, quote: checked.quote, origin: origin
             )

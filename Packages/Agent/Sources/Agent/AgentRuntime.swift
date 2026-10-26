@@ -129,8 +129,9 @@ public actor AgentRuntime {
 
     /// Starts a conversation of `kind` with the student's `text`; returns at once while the agent
     /// works in the background. `context` blocks go before the student's words in the same user
-    /// turn (M3.5: the open mail as a `<mail>` envelope, data never instructions); the tools'
-    /// `ToolContext.studentText` is the student's words only. M5: `lectureID` is a tutor
+    /// turn (M3.5: the open mail as a `<mail>` envelope, data never instructions), then the clock
+    /// (`AgentClock`, in every user turn the runtime writes); the tools' `ToolContext.studentText`
+    /// is the student's words only. M5: `lectureID` is a tutor
     /// conversation's lecture (its subject, with the lecture's `courseID`); a `mail_chat` or
     /// `tutor` conversation's first turn starts with the `<memory>` block.
     ///
@@ -142,11 +143,13 @@ public actor AgentRuntime {
     /// conversation's spec comes from its `agent_task` row, which cannot be found by
     /// `conversation_id` before the conversation exists (later `send`s find it that way).
     /// `readUntrustedContent` (md): the context blocks carry untrusted text (a document's), so a
-    /// web task this run spawns gets no input summary.
+    /// web task this run spawns gets no input summary. `writtenAt`: when the words were written,
+    /// when that was earlier than now (an iPhone question, a queued task's goal): the clock says
+    /// so, and the tools read relative days in them against it.
     public func start(
         _ kind: ConversationKind, text: String, context: [ContentBlock] = [], courseID: Course.ID? = nil, lectureID: Lecture.ID? = nil,
         turnContext: AgentTurnContext? = nil, id: AgentConversation.ID? = nil, title: String? = nil, spec given: ConversationSpec? = nil,
-        readUntrustedContent: Bool = false
+        readUntrustedContent: Bool = false, writtenAt: Date? = nil
     ) async throws -> AgentConversation.ID {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !context.isEmpty else { throw RuntimeError.emptyText }
@@ -164,9 +167,14 @@ public actor AgentRuntime {
             id: conversationID, kind: kind, courseID: courseID, lectureID: lectureID, title: String(name.prefix(60)),
             model: spec.model.rawValue, state: .running, createdAt: startedAt, updatedAt: startedAt
         ))
-        let turn = Self.userTurn(memory + context, text: trimmed)
+        // The clock goes last before the words (the system prompt keeps the start time only).
+        let written = min(writtenAt ?? startedAt, startedAt)
+        let turn = Self.userTurn(memory + context + [AgentClock.block(startedAt, writtenAt: written)], text: trimmed)
         try await conversations.append(to: conversation.id, role: .user, message: try Self.encode(turn), context: turnContext)
-        launch(conversation, spec: spec, history: [turn], studentText: trimmed, turnContext: turnContext, readUntrusted: readUntrustedContent)
+        launch(
+            conversation, spec: spec, history: [turn], studentText: trimmed, writtenAt: written, turnContext: turnContext,
+            readUntrusted: readUntrustedContent
+        )
         return conversation.id
     }
 
@@ -182,10 +190,11 @@ public actor AgentRuntime {
     /// ma: the run's trace starts as "read untrusted content" when the conversation has read any
     /// before (a turn whose context carried an open mail, a call of a tool that reads untrusted
     /// content) or the caller says so (`readUntrustedContent`: a mail task's result it carries):
-    /// that text stays in the history, so a web task it spawns never gets it.
+    /// that text stays in the history, so a web task it spawns never gets it. `writtenAt`: as
+    /// `start`'s.
     public func send(
         _ text: String, context: [ContentBlock] = [], turnContext: AgentTurnContext? = nil, readUntrustedContent: Bool = false,
-        to id: AgentConversation.ID
+        writtenAt: Date? = nil, to id: AgentConversation.ID
     ) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !context.isEmpty else { throw RuntimeError.emptyText }
@@ -214,11 +223,17 @@ public actor AgentRuntime {
         // M5: the memory when it changed since the block this conversation last carried.
         blocks += try await memoryBlock(for: conversation.kind, history: history)
         blocks += context
+        let sentAt = now()
+        let written = min(writtenAt ?? sentAt, sentAt)
+        blocks.append(AgentClock.block(sentAt, writtenAt: written))
         let turn = Self.userTurn(blocks, text: trimmed)
         try await conversations.append(to: id, role: .user, message: try Self.encode(turn), context: turnContext)
         history.append(turn)
         try await conversations.setState(id, .running)
-        launch(conversation, spec: spec, history: history, studentText: trimmed, turnContext: turnContext, readUntrusted: readUntrusted)
+        launch(
+            conversation, spec: spec, history: history, studentText: trimmed, writtenAt: written, turnContext: turnContext,
+            readUntrusted: readUntrusted
+        )
     }
 
     /// ma: whether untrusted content reached the conversation in an earlier turn: a user turn
@@ -234,11 +249,14 @@ public actor AgentRuntime {
     }
 
     /// ma: answers a conversation's last message again after its run failed (the panel's Try
-    /// again). Calls the failed run left open get "interrupted" results first. When nothing after
-    /// the last answer turn is text, an image or a document (a run that failed after a tool call,
-    /// an answer that stopped early), the same user turn carries a `<retry>` block that restates
-    /// the student's last words: Claude Code takes only those as a prompt, and the thread never
-    /// shows the block. A finished conversation has nothing to retry.
+    /// again). Calls the failed run left open get "interrupted" results first, then the clock
+    /// (always: a Try again after a usage pause comes later). When nothing after the last answer
+    /// turn is text, an image or a document (a run that failed after a tool call, an answer that
+    /// stopped early), the same user turn carries a `<retry>` block that restates the student's
+    /// last words and when they were written: Claude Code takes only those as a prompt, and the
+    /// thread never shows the block or the clock. The tools read relative days in the words
+    /// against when they were written (their turn's time), not the time of the Try again. A
+    /// finished conversation has nothing to retry.
     ///
     /// `readUntrustedContent`: as `send`'s (the caller's own knowledge of untrusted text in the
     /// history: files sent as text, task results), OR'd with what the stored turns show.
@@ -262,26 +280,33 @@ public actor AgentRuntime {
                 .toolResult(ToolResultBlock(toolUseID: call.id, content: .text("interrupted"), isError: true))
             }
         }
-        if !Self.hasPrompt(afterLastAnswer: history) {
-            blocks.append(.text(TextBlock(text: Self.retryBlock(words: message.text))))
+        // Always the time now: a Try again after a usage pause may come hours later.
+        let prompted = Self.hasPrompt(afterLastAnswer: history)
+        let retriedAt = now()
+        let written = min(message.writtenAt ?? retriedAt, retriedAt)
+        blocks.append(AgentClock.block(retriedAt))
+        if !prompted {
+            blocks.append(.text(TextBlock(text: Self.retryBlock(words: message.text, writtenAt: written))))
         }
-        if !blocks.isEmpty {
-            let turn = MessageParam.user(blocks)
-            try await conversations.append(to: id, role: .user, message: try Self.encode(turn), context: nil)
-            history.append(turn)
-        }
+        let turn = MessageParam.user(blocks)
+        try await conversations.append(to: id, role: .user, message: try Self.encode(turn), context: nil)
+        history.append(turn)
         try await conversations.setState(id, .running)
-        launch(conversation, spec: spec, history: history, studentText: message.text, turnContext: message.context, readUntrusted: readUntrusted)
+        launch(
+            conversation, spec: spec, history: history, studentText: message.text, writtenAt: written, turnContext: message.context,
+            readUntrusted: readUntrusted
+        )
     }
 
     /// The tag of Try again's block (`retryBlock`).
     static let retryTag = "<retry>"
 
     /// Try again's block when the turns since the last answer have nothing Claude Code can take as
-    /// a prompt: the instruction to answer the student's last message again, with its words.
-    static func retryBlock(words: String) -> String {
+    /// a prompt: the instruction to answer the student's last message again, with its words and
+    /// when they were written.
+    static func retryBlock(words: String, writtenAt: Date) -> String {
         var lines = [retryTag, "The last answer did not finish. Answer the student's last message again."]
-        if !words.isEmpty { lines.append("The student's last message: \(words)") }
+        if !words.isEmpty { lines.append("The student's last message (written \(AgentClock.text(writtenAt))): \(words)") }
         lines.append("</retry>")
         return lines.joined(separator: "\n")
     }
@@ -299,19 +324,20 @@ public actor AgentRuntime {
     }
 
     /// The student's words in the conversation's last message (its last text block, after the
-    /// context blocks; empty for files alone) and the context stored with it. Try again's own
-    /// turns are not messages.
-    static func lastStudentMessage(_ stored: [AgentTurn]) throws -> (text: String, context: AgentTurnContext?) {
+    /// context blocks and the clock; empty for files alone), the context stored with it and when
+    /// it was stored. Try again's own turns (a clock, a `<retry>` block, results of interrupted
+    /// calls) are not messages.
+    static func lastStudentMessage(_ stored: [AgentTurn]) throws -> (text: String, context: AgentTurnContext?, writtenAt: Date?) {
         for turn in stored.reversed() where turn.role == .user {
             let message = try MessageParam(json: JSONValue.parse(turn.message))
             let texts = message.content.blocks.compactMap(\.textValue)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.hasPrefix(retryTag) }
+                .filter { !$0.hasPrefix(retryTag) && !AgentClock.isClock($0) }
             // A turn of tool results only is not a message.
             guard let words = texts.last else { continue }
-            return (words.hasPrefix("<") ? "" : words, turn.context)
+            return (words.hasPrefix("<") ? "" : words, turn.context, turn.createdAt)
         }
-        return ("", nil)
+        return ("", nil, nil)
     }
 
     /// Stops a running conversation (it ends `failed`).
@@ -323,7 +349,7 @@ public actor AgentRuntime {
 
     /// At launch: conversations a quit left `running` end `failed`. A `deadlines` conversation
     /// that wrote nothing gets the composer's parse of the student's last words (relative to when
-    /// it started), as a failed run does.
+    /// they were written), as a failed run does.
     public func recoverInterrupted() async {
         let interrupted: [AgentConversation]
         do {
@@ -335,24 +361,25 @@ public actor AgentRuntime {
         for conversation in interrupted {
             do {
                 try await conversations.setState(conversation.id, .failed, error: "The app quit while the agent was working.")
-                guard conversation.kind == .deadlines, let text = try await lastStudentText(conversation.id) else { continue }
+                guard conversation.kind == .deadlines, let last = try await lastStudentText(conversation.id) else { continue }
                 let courses = try await services.database.read { db in try Course.order(by: \.sortOrder).fetchAll(db) }
-                guard let draft = DeadlineParser.parse(text, now: conversation.createdAt, courses: courses) else { continue }
-                await DeadlineComposer.addUnlessWritten(draft, text: text, conversationID: conversation.id, services: services, memory: memory)
+                guard let draft = DeadlineParser.parse(last.text, now: last.writtenAt, courses: courses) else { continue }
+                await DeadlineComposer.addUnlessWritten(draft, text: last.text, conversationID: conversation.id, services: services, memory: memory)
             } catch {
                 AgentModule.log.error("Recovering a conversation failed: \(String(describing: error), privacy: .public)")
             }
         }
     }
 
-    /// The text of the conversation's last user turn that has some (tool results have none).
-    private func lastStudentText(_ id: AgentConversation.ID) async throws -> String? {
+    /// The text of the conversation's last user turn that has some (tool results and the clock
+    /// are none), and when it was written.
+    private func lastStudentText(_ id: AgentConversation.ID) async throws -> (text: String, writtenAt: Date)? {
         let turns = try await conversations.turns(id).filter { $0.role == .user }
         for turn in turns.reversed() {
             let message = try MessageParam(json: JSONValue.parse(turn.message))
-            let text = message.content.blocks.compactMap(\.textValue).joined(separator: "\n")
+            let text = message.content.blocks.compactMap(\.textValue).filter { !AgentClock.isClock($0) }.joined(separator: "\n")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { return text }
+            if !text.isEmpty { return (text, turn.createdAt) }
         }
         return nil
     }
@@ -378,7 +405,7 @@ public actor AgentRuntime {
     // MARK: - Running
 
     private func launch(
-        _ conversation: AgentConversation, spec: ConversationSpec, history: [MessageParam], studentText: String,
+        _ conversation: AgentConversation, spec: ConversationSpec, history: [MessageParam], studentText: String, writtenAt: Date,
         turnContext: AgentTurnContext? = nil, readUntrusted: Bool = false
     ) {
         // ma: an open mail in the turn's context is untrusted content this run has read, as is
@@ -387,7 +414,8 @@ public actor AgentRuntime {
         // The last run's unsaved text is not handed to panels opened from now on.
         live.clear(conversation.id)
         let context = ToolContext(
-            conversationID: conversation.id, studentText: studentText, now: now(), trace: trace, turnContext: turnContext
+            conversationID: conversation.id, studentText: studentText, now: now(), wordsWrittenAt: writtenAt, trace: trace,
+            turnContext: turnContext
         )
         serviceTrouble.remove(conversation.id)
         tasks[conversation.id] = Task {
@@ -426,18 +454,18 @@ public actor AgentRuntime {
             if let failure = await recorder.failure { throw failure }
             switch result.stop {
             case .endTurn:
-                try await conversations.setState(id, .finished)
+                await end(id, .finished)
             case .refusal:
-                try await conversations.setState(id, .failed, error: "The model declined to answer.")
+                await end(id, .failed, error: "The model declined to answer.")
             case .truncated:
-                try await conversations.setState(id, .failed, error: "The answer was cut off.")
+                await end(id, .failed, error: "The answer was cut off.")
             case .iterationLimit:
                 AgentModule.log.notice("Run stopped after \(spec.maxIterations, privacy: .public) calls")
-                try await conversations.setState(id, .failed, error: String(localized: "Stopped after too many steps."))
+                await end(id, .failed, error: String(localized: "Stopped after too many steps."))
             case .other(let reason):
                 // The raw stop reason goes to the log only.
                 AgentModule.log.notice("Run stopped early: \(reason?.rawValue ?? "unknown", privacy: .public)")
-                try await conversations.setState(id, .failed, error: String(localized: "The answer stopped early."))
+                await end(id, .failed, error: String(localized: "The answer stopped early."))
             }
         } catch {
             // One readable sentence is stored and shown; the error itself goes to the log only.
@@ -449,11 +477,30 @@ public actor AgentRuntime {
             AgentModule.log.error(
                 "Conversation failed: \(ReadableError.kind(of: error), privacy: .public): \(String(describing: error), privacy: .private)"
             )
-            _ = try? await conversations.setState(id, .failed, error: message)
+            await end(id, .failed, error: message)
         }
         // What the call in flight wrote and no stored turn holds (a stop, a failure, a cut-off
         // answer) stays under the message it answered.
         await recorder.publishUnsaved()
+    }
+
+    /// Stores how a run ended. A Stop cancels the run's task, and GRDB's async write throws
+    /// `CancellationError` in a cancelled task, so the state is written from a task of its own
+    /// (an unstructured task does not inherit the cancellation): the conversation never stays
+    /// `running` after a Stop.
+    private func end(_ id: AgentConversation.ID, _ state: ConversationState, error: String? = nil) async {
+        let conversations = conversations
+        let failure = await Task { () -> (any Error)? in
+            do {
+                _ = try await conversations.setState(id, state, error: error)
+                return nil
+            } catch let failure {
+                return failure
+            }
+        }.value
+        if let failure {
+            AgentModule.log.error("Storing how a run ended failed: \(ReadableError.kind(of: failure), privacy: .public)")
+        }
     }
 
     /// Whether the conversation's last run in this process ended on trouble with the service

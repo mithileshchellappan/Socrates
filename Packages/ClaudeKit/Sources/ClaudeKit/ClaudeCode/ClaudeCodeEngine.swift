@@ -72,6 +72,11 @@ public struct ClaudeCodeConfiguration: Sendable, Hashable {
     /// `.toolStarted` and `.toolFinished` see the bare name.
     public static let toolNamePrefix = "mcp__studyportal__"
 
+    /// The opening of the clock block the agent runtime puts into every user turn
+    /// (`<now>Thu 22 Oct 2026, 23:30 · …</now>`). Readers of the student's words skip it, and a
+    /// replayed history leaves it out.
+    public static let clockTag = "<now>"
+
     public var workspace: URL { directory.appending(path: "Workspace", directoryHint: .isDirectory) }
     public var stateFile: URL { directory.appending(path: "state.json") }
     public var runs: URL { directory.appending(path: "Runs", directoryHint: .isDirectory) }

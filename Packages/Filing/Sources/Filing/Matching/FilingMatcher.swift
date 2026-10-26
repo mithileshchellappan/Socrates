@@ -260,11 +260,19 @@ public struct FilingMatcher: Sendable {
                 return library.day(when) == date.day
             }
             let fit = timed ? 0.85 : 1
-            if let session = numbered.first(where: { $0.number == number.value }) {
-                choices.append(sessionChoice(session, course: course, fit: dayOK(session.startsAt) ? fit : 0.85, signals: [number.signal]))
-            } else if let info = lectures.first(where: { $0.lecture.number == number.value }) {
+            // The lecture with the number first (it moves when the plan does), then the class.
+            switch library.place(forNumber: number.value, courseID: course.id) {
+            case .lecture(let info)?:
                 choices.append(lectureChoice(info, course: course, fit: dayOK(info.lecture.heldAt) ? fit : 0.85, signals: [number.signal]))
-            } else {
+            case .session(let session)?:
+                var choice = sessionChoice(session, course: course, fit: dayOK(session.startsAt) ? fit : 0.85, signals: [number.signal])
+                if library.lecture(sessionID: session.id) == nil {
+                    // A new lecture there takes the file's number (after a drift the class's differs).
+                    choice.target = .newLecture(number: number.value, heldAt: session.startsAt, sessionID: session.id)
+                    choice.place.number = number.value
+                }
+                choices.append(choice)
+            case nil:
                 let session = date.flatMap { day in sessions.first { library.day($0.startsAt) == day.day } }.map(library.meeting)
                 if let session, library.lecture(sessionID: session.id) == nil {
                     var choice = sessionChoice(session, course: course, fit: 0.95, signals: [number.signal])

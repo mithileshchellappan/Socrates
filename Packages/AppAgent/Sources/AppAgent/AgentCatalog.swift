@@ -14,7 +14,7 @@ import StudyPass
 /// just made shows here from its next turn), each course's weekly slots with their keys
 /// ("lecture Mon 12:15–13:45 · Room 101 [slot 1a2b3c4d]"), each course's
 /// lectures ("L2 · Virtualization Basics · Tue 13 Oct · transcribed · study pass done (3 exam
-/// hints, 5 said in class) · notes · 2,140 words"), notes per course (count + 3 newest titles), the next sessions (this
+/// hints, 5 said in class) · notes · 2,140 words"), notes per course (count + 3 newest titles), the sessions from today (this
 /// and next week), mail folders with unread counts, open items (next 6 weeks, nearest 12, then
 /// counts), the calendar range; (mc) the study coach: one line per course (credits · budget · Ready
 /// · this week · exam) and today's plan in one line (`CoachCatalog.lines`). Never whole lectures,
@@ -226,7 +226,8 @@ public struct AgentCatalog: Sendable, Hashable {
         // mc: the study coach (measured at the start of today, so it changes only with the data).
         lines += try CoachCatalog.lines(db: db, now: now) { tokens.token($0) }
 
-        // Sessions this week and next (from the start of today).
+        // Sessions this week and next (from the start of today; whether one has happened goes by the
+        // turn's <now>, so the catalog stays the same all day).
         let monday = today.adding(days: 1 - today.weekday)
         let from = dayStart
         let until = monday.adding(days: 14).start(in: zone)
@@ -238,7 +239,7 @@ public struct AgentCatalog: Sendable, Hashable {
                 if session.isCancelled { text += " (cancelled)" }
                 return text
             }
-            lines.append("next sessions: " + shown.joined(separator: "; ") + (sessions.count > 24 ? "; … query_sessions" : ""))
+            lines.append("sessions from today: " + shown.joined(separator: "; ") + (sessions.count > 24 ? "; … query_sessions" : ""))
         }
 
         // Mail folders and unread counts.

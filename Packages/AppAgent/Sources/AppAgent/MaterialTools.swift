@@ -581,14 +581,18 @@ extension MaterialTools {
             tool: .custom(
                 name: "set_lecture_coverage",
                 description: """
-                    Records whether a lecture covers a section of a course material, ONLY when the student says so ("Lecture 4 \
-                    doesn't cover chapter 6"). Their word wins over the study pass's.
+                    Records whether a lecture covers one or more sections of a course material, ONLY when the student says \
+                    so ("Lecture 4 doesn't cover chapter 6", "today we did chapters 2 and 3 of the book"). Their word wins \
+                    over the study pass's. Undo puts every section back.
                     """,
                 inputSchema: Schema.object([
                     "lecture": Schema.string("The lecture's key, \"DC 2\" or id."),
                     "material": Schema.string("The material's key (mat 3f2a9c1e)."),
-                    "section": Schema.string("The section's number (\"6\", \"6.2\") or title."),
-                    "covers": ["type": "boolean", "description": "False: the lecture does not cover it; true: it does."],
+                    "sections": [
+                        "type": "array", "items": ["type": "string"],
+                        "description": "The sections' numbers (\"6\", \"6.2\") or titles, one or more.",
+                    ],
+                    "covers": ["type": "boolean", "description": "False: the lecture does not cover them; true: it does."],
                     "quote": Schema.string("The student's words saying so (at least 3 words)."),
                 ])
             ),
@@ -601,14 +605,23 @@ extension MaterialTools {
             guard let reference = call.text("material"), let material = try await Self.material(reference, services: services) else {
                 return .error("Unknown material. Use a mat key from the catalog or search_materials.")
             }
-            guard let section = Self.section(call.text("section") ?? "", in: try await repository.sections(of: material.id)) else {
-                return .error("No section of that number or title. read_material shows its chapters.")
+            let all = try await repository.sections(of: material.id)
+            let wanted = call.strings("sections") + (call.text("section").map { [$0] } ?? [])
+            guard !wanted.isEmpty else { return .error("sections must name at least one section.") }
+            var sections: [MaterialSection] = []
+            for name in wanted {
+                guard let section = Self.section(name, in: all) else {
+                    return .error("No section \"\(name)\" of that material. read_material shows its chapters.")
+                }
+                if !sections.contains(where: { $0.id == section.id }) { sections.append(section) }
             }
             guard let covers = call.flag("covers") else { return .error("covers must be true or false.") }
             guard let change = try await changeLog.setLectureCoverage(
-                lectureID: lectureID, section: section, covers: covers, quote: span, origin: try await origin(context)
-            ) else { return .error("That section is gone.") }
-            return .json(["covers": .bool(covers), "section": .string(section.citeLabel), "cite": .string(change.citation.marker)])
+                lectureID: lectureID, sections: sections, covers: covers, quote: span, origin: try await origin(context)
+            ) else { return .error("Those sections are gone.") }
+            return .json([
+                "covers": .bool(covers), "sections": .array(sections.map { .string($0.citeLabel) }), "cite": .string(change.citation.marker),
+            ])
         }
     }
 
@@ -622,11 +635,7 @@ extension MaterialTools {
     }
 
     func origin(_ context: ToolContext) async throws -> ChangeLog.Origin {
-        let taskID = try await AgentTaskRepository(store: services.records).taskID(conversation: context.conversationID)
-        return ChangeLog.Origin(
-            source: .chat(context.conversationID), sourceDate: context.now, model: ClaudeModel.opus55.rawValue, taskID: taskID,
-            conversationID: context.conversationID
-        )
+        try await ChangeLog.Origin.asked(.chat(context.conversationID), context: context, records: services.records)
     }
 }
 
@@ -704,32 +713,46 @@ extension ChangeLog {
         return change
     }
 
-    /// `set_lecture_coverage`: the student's coverage row and its change row (`before`/`after`
-    /// `.coverage`: the student's row before, nil with `exists` false). Nil when the section is gone.
+    /// `set_lecture_coverage`: the student's coverage rows of one or more sections and ONE change
+    /// row, in one transaction (`before` / `after.coverages`: the student's rows before, a section
+    /// without one missing; `coverage` too for a single section). Nil when every section is gone.
     func setLectureCoverage(
-        lectureID: Lecture.ID, section: MaterialSection, covers: Bool, quote: String, origin: Origin
+        lectureID: Lecture.ID, sections: [MaterialSection], covers: Bool, quote: String, origin: Origin
     ) async throws -> AgentChange? {
-        let repository = MaterialRepository(store: services.records)
-        guard let written = try await repository.setStudentCoverage(lectureID: lectureID, sectionID: section.id, covers: covers, quote: quote) else {
-            return nil
-        }
         let date = now()
         let lecture = try await services.records.fetch(Lecture.self, id: lectureID)
         let name = lecture?.number.map { "Lecture \($0)" } ?? "Lecture"
-        var change = AgentChange(
-            kind: .materialCoverage, targetTable: .materialCoverage, targetID: written.after.id,
-            title: String("\(name) · \(section.citeLabel)".prefix(AgentChange.titleLimit)),
-            summary: covers ? "Covers \(section.citeLabel)" : "Doesn’t cover \(section.citeLabel)",
-            before: AgentChangeValues(exists: written.before != nil, coverage: written.before.map(MaterialCoverageValues.init)),
-            after: AgentChangeValues(exists: true, coverage: MaterialCoverageValues(written.after)),
-            sourceKind: origin.sourceKind, taskID: origin.taskID, quote: String(quote.prefix(500)), confidence: 1, model: origin.model,
-            appliedAt: date, createdAt: date, updatedAt: date
-        )
-        ItemChangeRows.apply(origin.source, to: &change)
-        change = Self.finalize(change, origin: origin, store: services.records)
-        let row = change
-        try await services.database.write { db in try AgentChangeRepository.insert(row, db: db) }
-        return change
+        let labels = sections.map(\.citeLabel).joined(separator: ", ")
+        let quote = String(quote.prefix(500))
+        let store = services.records
+        return try await services.database.write { db -> AgentChange? in
+            var before: [MaterialCoverageValues] = []
+            var after: [MaterialCoverageValues] = []
+            for section in sections {
+                guard let written = try MaterialRepository.setStudentCoverage(
+                    lectureID: lectureID, sectionID: section.id, covers: covers, quote: quote, in: db, stamp: date
+                ) else { continue }
+                if let old = written.before { before.append(MaterialCoverageValues(old)) }
+                after.append(MaterialCoverageValues(written.after))
+            }
+            guard let first = after.first else { return nil }
+            let single = after.count == 1
+            var change = AgentChange(
+                kind: .materialCoverage, targetTable: .materialCoverage, targetID: first.id,
+                title: String("\(name) · \(labels)".prefix(AgentChange.titleLimit)),
+                summary: covers ? "Covers \(labels)" : "Doesn’t cover \(labels)",
+                before: AgentChangeValues(
+                    exists: single ? !before.isEmpty : true, coverage: single ? before.first : nil, coverages: before
+                ),
+                after: AgentChangeValues(exists: true, coverage: single ? first : nil, coverages: after),
+                sourceKind: origin.sourceKind, taskID: origin.taskID, quote: quote, confidence: 1, model: origin.model,
+                appliedAt: date, createdAt: date, updatedAt: date
+            )
+            ItemChangeRows.apply(origin.source, to: &change)
+            change = Self.finalize(change, origin: origin, store: store)
+            try AgentChangeRepository.insert(change, db: db)
+            return change
+        }
     }
 
     /// Undo of the materials' changes: an added material deleted (as a delete on the shelf), a
@@ -766,13 +789,21 @@ extension ChangeLog {
                 }
             }
         case .materialCoverage:
-            if let after = change.after?.coverage {
-                let current = try await services.database.read { db in
-                    try MaterialCoverage.where { $0.lectureID.eq(after.lectureID) && $0.sectionID.eq(after.sectionID) && $0.source.eq(CoverageSource.student) }
+            // Every section back, or none (one section: `coverage` alone in rows before 2026-10-23).
+            let after = change.after?.coverages ?? change.after?.coverage.map { [$0] } ?? []
+            let before = change.before?.coverages ?? change.before?.coverage.map { [$0] } ?? []
+            try await services.database.write { db in
+                for value in after {
+                    let current = try MaterialCoverage
+                        .where { $0.lectureID.eq(value.lectureID) && $0.sectionID.eq(value.sectionID) && $0.source.eq(CoverageSource.student) }
                         .fetchOne(db)
+                    if let current, current.covers != value.covers { throw UndoRefused.changedSince }
                 }
-                if let current, current.covers != after.covers { throw UndoRefused.changedSince }
-                try await repository.restoreStudentCoverage(lectureID: after.lectureID, sectionID: after.sectionID, to: change.before?.coverage)
+                for value in after {
+                    try MaterialRepository.restoreStudentCoverage(
+                        lectureID: value.lectureID, sectionID: value.sectionID, to: before.first { $0.sectionID == value.sectionID }, in: db, stamp: date
+                    )
+                }
             }
         default:
             return false

@@ -107,7 +107,7 @@ struct PlanTools: Sendable {
             effect: .verifiedWrite
         ) { call, context in
             guard let quote = call.text("quote"),
-                  let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.now))
+                  let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.wordsWrittenAt))
             else { return .error("quote must be the student's words asking for it (at least 3 words), copied exactly.") }
             let action = call.text("action") ?? ""
             if action == "move" { return try await move(call, checked: checked, context: context) }
@@ -313,7 +313,7 @@ struct PlanTools: Sendable {
             effect: .verifiedWrite
         ) { call, context in
             guard let quote = call.text("quote"),
-                  let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.now))
+                  let checked = try await applier.verify(quote, line: nil, material: .chat(context.conversationID, words: context.studentText, date: context.wordsWrittenAt))
             else { return .error("quote must be the student's words saying it (at least 3 words), copied exactly.") }
             let days = weekdays(call)
             let first = day(call.text("first"))

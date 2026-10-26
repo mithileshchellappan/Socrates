@@ -26,7 +26,9 @@ import UniformTypeIdentifiers
 /// twice, as for a sub-agent task). Woken by the database observation of `agent_request`; no
 /// polling. Mac only (`AppAgent.start` starts it on macOS).
 actor AgentRequestPickup {
-    typealias Send = @Sendable (String, AgentContext, [AgentAttachment], AgentConversation.ID?) async throws -> AgentConversation.ID
+    /// The panel's `send`: the words, the screen, the files, when the student asked on the
+    /// iPhone (the clock and the quote checks read "today" against it), the conversation.
+    typealias Send = @Sendable (String, AgentContext, [AgentAttachment], Date, AgentConversation.ID?) async throws -> AgentConversation.ID
 
     let services: StudyServices
     let client: ClaudeClient
@@ -163,7 +165,7 @@ actor AgentRequestPickup {
         }
         let conversationID: AgentConversation.ID
         do {
-            conversationID = try await send(request.text, request.context ?? .today, attachments, request.conversationID)
+            conversationID = try await send(request.text, request.context ?? .today, attachments, request.createdAt, request.conversationID)
         } catch AgentRuntime.RuntimeError.busy {
             // The Mac's panel is answering in that conversation: after its run.
             await release(request)

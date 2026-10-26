@@ -327,9 +327,11 @@ actor AgentTaskQueue {
                 // start writes the conversation, then the link follows (later sends find the
                 // spec by the link).
                 let spec = try await taskSpec(task)
+                // The goal was written when the task was spawned: a task that waited in the queue
+                // reads "today" in it against that time (its clock says when it was asked).
                 _ = try await runtime.start(
                     .task, text: Self.prompt(task), courseID: task.courseID, lectureID: task.lectureID, id: conversation, title: task.title,
-                    spec: spec
+                    spec: spec, writtenAt: task.createdAt
                 )
                 try await tasks.setConversation(task.id, conversation)
             } else {

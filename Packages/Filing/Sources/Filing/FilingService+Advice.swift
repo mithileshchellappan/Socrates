@@ -107,21 +107,24 @@ extension FilingService {
     // MARK: - Applying advice
 
     /// Where the advice files a deck already in the library: its session (or the session's
-    /// lecture), the course's lecture or session with its number, a new lecture with the number;
-    /// without either, the lecture it is in (same course) or the matcher's pick in the course.
+    /// lecture), the course's lecture with its number, else the class for that number
+    /// (`FilingLibrary.place(forNumber:)`), else a new lecture with the number; without either,
+    /// the lecture it is in (same course) or the matcher's pick in the course.
     func adviceTarget(_ advice: FilingAdvice, filing: Filing, library: FilingLibrary) async throws -> LectureTarget {
         func sessionTarget(_ id: LectureSession.ID) -> LectureTarget {
             library.lecture(sessionID: id).flatMap { $0.lecture.lectureSessionID == id ? .lecture($0.lecture.id) : nil } ?? .session(id)
         }
         if let sessionID = advice.sessionID { return sessionTarget(sessionID) }
         if let number = advice.lectureNumber {
-            if let session = library.numberedSessions(courseID: advice.courseID).first(where: { $0.number == number }) {
-                return sessionTarget(session.id)
-            }
-            if let info = library.lectures(courseID: advice.courseID).first(where: { $0.lecture.number == number }) {
+            switch library.place(forNumber: number, courseID: advice.courseID) {
+            case .lecture(let info)?:
                 return .lecture(info.lecture.id)
+            case .session(let session)?:
+                guard library.lecture(sessionID: session.id) == nil else { return sessionTarget(session.id) }
+                return .newLecture(number: number, heldAt: session.startsAt, sessionID: session.id)
+            case nil:
+                return .newLecture(number: number)
             }
-            return .newLecture(number: number)
         }
         if filing.courseID == advice.courseID, let lectureID = filing.lectureID { return .lecture(lectureID) }
         let evidence = try await storedEvidence(of: filing)
@@ -191,16 +194,16 @@ extension FilingService {
         }
     }
 
-    /// The drop destination for advice on a new file: its session, the lecture or session with
-    /// its number, else the course (the matcher picks the lecture; a new one takes the number).
+    /// The drop destination for advice on a new file: its session, the lecture with its number,
+    /// else the class for that number (`FilingLibrary.place(forNumber:)`), else the course (the
+    /// matcher picks the lecture; a new one takes the number).
     static func adviceDestination(_ advice: FilingAdvice, library: FilingLibrary) -> FilingDestination {
         if let sessionID = advice.sessionID { return .session(sessionID) }
         if let number = advice.lectureNumber {
-            if let session = library.numberedSessions(courseID: advice.courseID).first(where: { $0.number == number }) {
-                return .session(session.id)
-            }
-            if let info = library.lectures(courseID: advice.courseID).first(where: { $0.lecture.number == number }) {
-                return .lecture(info.lecture.id)
+            switch library.place(forNumber: number, courseID: advice.courseID) {
+            case .lecture(let info)?: return .lecture(info.lecture.id)
+            case .session(let session)?: return .session(session.id)
+            case nil: break
             }
         }
         return .course(advice.courseID)

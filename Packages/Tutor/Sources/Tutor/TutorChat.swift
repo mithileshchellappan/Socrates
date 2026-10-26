@@ -53,7 +53,7 @@ public struct TutorChat: Sendable {
         their questions about their lectures: the slides, what was said in class (transcripts) and the study \
         notes made from them.
 
-        Today is \(CourseList.spokenDate(startedAt)) in \(UniversityProfile.current.place).
+        \(AgentClock.promptLine(startedAt: startedAt))
 
         The student's courses (token: name; lecturers):
         \(courses.promptLines)

@@ -116,13 +116,17 @@ struct ChatTranscript: Equatable {
 
     /// A block the app put before the student's words (`<context …>`, `<catalog …>`,
     /// `<task_result …>`, `<memory>`, `<mail …>`, `<filed …>` for slides filed from the message,
-    /// `<attached_file …>` for a long PDF's first pages, mc's `<reminder …>`), or Try again's
-    /// `<retry>` turn: never shown as the student's message (a message of files alone shows only
-    /// its tiles; a turn of tool results and `<retry>` belongs to the answer).
+    /// `<attached_file …>` for a long PDF's first pages, mc's `<reminder …>`, the runtime's clock
+    /// `<now>`), or Try again's `<retry>` turn: never shown as the student's message (a message of
+    /// files alone shows only its tiles; a turn of tool results, the clock and `<retry>` belongs to
+    /// the answer).
     static func isContextBlock(_ text: String) -> Bool {
         let head = text.prefix(16).trimmingCharacters(in: .whitespacesAndNewlines)
-        return ["<context", "<catalog", "<task_result", "<memory", "<mail", "<filed", "<reminder", "<attached_file", "<retry"]
-            .contains { head.hasPrefix($0) }
+        return [
+            "<context", "<catalog", "<task_result", "<memory", "<mail", "<filed", "<reminder", "<attached_file", "<retry",
+            ClaudeCodeConfiguration.clockTag,
+        ]
+        .contains { head.hasPrefix($0) }
     }
 
     /// The student's last message has no answer yet.
