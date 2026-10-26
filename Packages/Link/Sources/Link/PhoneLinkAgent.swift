@@ -504,8 +504,8 @@ actor PhoneLinkAgent {
                     + listing.entries.filter(\.isLive)
                 for entry in ordered {
                     guard let offer = await offer(for: entry) else {
+                        // Deleted meanwhile, or unreadable: read again at the next change, never in a loop.
                         relistNeeded = true
-                        syncAgain = true
                         continue
                     }
                     guard session?.id == id, session?.toldOffers[entry.id] != offer else { continue }
@@ -517,7 +517,9 @@ actor PhoneLinkAgent {
                 }
                 update(id) { $0.toldListing = version }
             }
-            guard current.controlOn, let told = session, told.id == id else { return }
+            // A change during this pass runs another one, which lists and offers first: a Stop
+            // that came in meanwhile so never reaches the Mac before the recording's final offer.
+            guard current.controlOn, !syncAgain, let told = session, told.id == id else { return }
             if !told.hasToldSnapshot || told.toldSnapshot != snapshot {
                 let now = snapshot
                 try await channel.send(.snapshot(SnapshotMessage(snapshot: now, at: Date())), lane: .control)
