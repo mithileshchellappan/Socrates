@@ -189,6 +189,8 @@ final class AppModel {
     @ObservationIgnored private var lastCalendarEditSync = Date.distantPast
     /// The one calendar sync after deadline writes settle (`deadlinesChanged`).
     @ObservationIgnored private var deadlineSync: Task<Void, Never>?
+    /// Retry on a lecture's Summary while it runs (one per lecture: `retryLecture`).
+    @ObservationIgnored private var lectureRetries: [Lecture.ID: Task<Void, Never>] = [:]
     /// Lets the services made in `init` call back into the model once it exists.
     @ObservationIgnored private let owner: ModelReference
 
@@ -882,6 +884,31 @@ final class AppModel {
         Task { _ = try? await processor?.retry(lectureID: lectureID) }
     }
 
+    /// Retry on a lecture's Summary (its recording's line, and Write Again while something can be
+    /// re-run): the lecture's failed transcriptions are queued again and the study pass's failed
+    /// units run again with a fresh budget; each does nothing when nothing of it failed. One at a
+    /// time per lecture, owned by the model.
+    func retryLecture(_ lectureID: Lecture.ID) {
+        guard lectureRetries[lectureID] == nil else { return }
+        let processor = processor
+        let studyPass = studyPass
+        lectureRetries[lectureID] = Task { [weak self] in
+            do {
+                let queued = try await processor?.retryTranscriptions(lectureID: lectureID) ?? 0
+                if queued > 0 { Log.jobs.notice("Retry: \(queued) transcription(s) queued again") }
+            } catch {
+                Log.jobs.error("Retrying a lecture's transcriptions failed: \(error.localizedDescription, privacy: .public)")
+            }
+            do {
+                let units = try await studyPass?.retryFailed(lectureID: lectureID) ?? 0
+                if units > 0 { Log.app.notice("Retry: \(units) study pass unit(s) run again") }
+            } catch {
+                Log.app.error("Retrying a lecture's study pass failed: \(error.localizedDescription, privacy: .public)")
+            }
+            self?.lectureRetries[lectureID] = nil
+        }
+    }
+
     /// Re-aligns one recording at once (a manual "slide starts here"); the study pass then looks
     /// at the lecture again (it waits for the realign burst to settle).
     nonisolated static func realign(services: StudyServices, studyPass: StudyPassPipeline?) -> @Sendable (Lecture.ID, Recording.ID) async throws -> Void {
@@ -987,6 +1014,13 @@ final class AppModel {
     var lectureNotesAsker: (any LectureNotesAsking)? {
         guard claudeAvailability?.isReady == true else { return nil }
         return notesAsker
+    }
+
+    /// ln: Retry of a lecture's recording on its way into the Summary (`\.lectureNotesRetry`); nil
+    /// where nothing runs in the background (renders).
+    var lectureNotesRetry: LectureNotesRetryAction? {
+        guard runsBackgroundWork, processor != nil || studyPass != nil else { return nil }
+        return LectureNotesRetryAction { [weak self] lectureID in self?.retryLecture(lectureID) }
     }
 
     /// ln: why a lecture's notes cannot be written on this Mac (`\.lectureNotesUnavailable`, the
