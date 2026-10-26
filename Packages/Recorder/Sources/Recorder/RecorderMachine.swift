@@ -15,6 +15,9 @@ import RecorderContract
 ///                        shown slide)
 ///     flag               apply             rejected          rejected
 ///     stop               apply → stopped   apply → stopped   unchanged
+///
+/// Checked in this order: the recording, a decided id, already in that state, accepted now, the
+/// shown slide, the basis (a command drawn before the current phase began is stale).
 struct RecorderMachine: Sendable {
     enum Decision: Hashable, Sendable {
         /// Run the command.
@@ -72,6 +75,9 @@ struct RecorderMachine: Sendable {
         }
         if let shown = command.action.shownSlide, shown != current.slide {
             return .answer(.rejected(.staleSlide(shown: shown, current: current.slide)))
+        }
+        if let basis = command.basis, basis < current.phaseSince {
+            return .answer(.rejected(.stalePhase(basis: basis, since: current.phaseSince)))
         }
         return .apply
     }

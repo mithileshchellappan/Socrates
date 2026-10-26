@@ -7,7 +7,7 @@ shared to the Mac as capture bundles (`.lecturebundle`) that the Mac's smart imp
 
 | Product | Contents | Imports |
 |---|---|---|
-| `RecorderContract` | `RecorderCommand`, `RecorderSnapshot`, `RecordingTiming`, `RecorderOutcome`, `RecorderFailure`, `RecordingID`, `RecorderContractVersion` (see "Recorder contract") | Foundation only: no UI, no transport. The app, the widget extension, Phone (the Record slot) and the Mac remote link it |
+| `RecorderContract` | `RecorderCommand`, `RecorderSnapshot`, `RecordingTiming`, `RecorderOutcome`, `RecorderFailure`, `RecordingID`, `RecorderContractVersion`, `RecorderEndpoint` (see "Recorder contract") | Foundation only: no UI, no transport. The app, the widget extension, Phone (the Record slot) and the Mac remote link it |
 | `RecorderActivity` | `RecordingActivityState` (a projection of the snapshot: + `init(snapshot:)`, `slideText`, `detailLine`, `shortSlide`, `timerRange`, `showsSame(as:)`; reads states of earlier builds), `RecordingActivityAttributes` (iOS), `RecorderControl` | Foundation, RecorderContract, ActivityKit (iOS). Linked by the app and the widget extension, each with RecorderContract |
 | `Recorder` | `PhoneRecorder` (+ `perform(_:)`, `submit(_:)`, `record()`, `select(_:)`, `snapshot`, `problem`), `RecorderProblem`, `PhoneCapture`, `RecorderText`; internal `RecorderMachine` (the rules), `RecordingActivityController` | RecorderContract, RecorderActivity, StudyCore, Capture, Courses (ActivityKit on iOS) |
 | `RecorderUI` | `RecorderScreen` (+ internal `OutboxView`, `RecorderWaveform`, the problem's words) | Recorder, RecorderContract, StudyUI, Capture, CaptureUI, SwiftUI |
@@ -35,7 +35,8 @@ recording; `RecorderCommand.ID` is a command's idempotency key. Both are typed, 
 addresses the recorder by mistake.
 
 **Commands** (`RecorderCommand`): `id`, `recordingID`, `action`, `origin` (`screen`,
-`liveActivity`, `remote`). Actions: `pause`, `resume`, `nextSlide(from:)`, `previousSlide(from:)`,
+`liveActivity`, `remote`), `basis` (the snapshot sequence a remote's Pause or Resume was drawn
+from; nil: not checked; the screen, the Live Activity and Stop send nil). Actions: `pause`, `resume`, `nextSlide(from:)`, `previousSlide(from:)`,
 `flag`, `stop`. `from` is the slide the surface showed; the recorder moves only while it is still
 on it (nil: the in-process screen, which moves from wherever it is). `origin` is logged and
 changes one thing: a Live Activity command returns only once the activity shows its outcome (the
@@ -59,8 +60,8 @@ interleave across their suspension points. The rules are the internal `RecorderM
 command is checked against the current snapshot, in this order: the recording id
 (`.rejected(.noRecording)`, `.rejected(.otherRecording)`), a decided id (`.duplicate`), already
 in that state (`.unchanged`), not accepted now (`.rejected(.notAccepted(phase))`, or `.atEnd`
-for a slide move past the deck), the shown slide (`.rejected(.staleSlide(shown:current:))`);
-otherwise it runs. One that ran is `.applied` only when the recorder reached the phase the table
+for a slide move past the deck), the shown slide (`.rejected(.staleSlide(shown:current:))`),
+the basis (`.rejected(.stalePhase(basis:since:))`); otherwise it runs. One that ran is `.applied` only when the recorder reached the phase the table
 says (a failure can stop the recording while a command waits on the capture:
 `.failed(.stoppedMeanwhile)`); one that threw is `.failed(RecorderFailure)` with the state
 unchanged. Capture's errors become `RecorderFailure` in one place (`inputBusy` for a call or
@@ -84,7 +85,13 @@ calls `record()`, queued like a command.
 (`RecordingTiming`: `startedAt`, `pauses` [{`start`, `end?`}], `stoppedAt?`), `slide`,
 `slideCount?` (nil: counted without a deck), `flagCount`, `isInputAvailable`, `course` (name,
 short name, colour), `sessionName`, `accepts` (the command kinds the recorder takes now),
-`failure?` (with `stopped`: why the recording stopped by itself, a `RecorderFailure`).
+`failure?` (with `stopped`: why the recording stopped by itself, a `RecorderFailure`),
+`closedSegments` (the highest closed audio segment of the recording this snapshot is of, 0: none;
+a closed file never changes again, so the link copies segments up to it while recording; earlier
+builds' snapshots read 0) and `phaseSince` (the sequence at which the phase began; earlier builds'
+snapshots read `sequence`). A command whose `basis` is below `phaseSince` is
+`.rejected(.stalePhase(basis:since:))`: a remote Pause that crossed a resume made on the phone
+never pauses it again.
 
 - It is the single source of truth for every surface: the screen, the Live Activity
   (`RecordingActivityState(snapshot:)`), the shell's Record slot (its phase) and the remote render
@@ -104,6 +111,10 @@ short name, colour), `sessionName`, `accepts` (the command kinds the recorder ta
 - `PhoneRecorder.publish()` rebuilds it from the session and the course after every command and,
   through an `Observations` of everything it reads, after any other change (a failure, the input
   lost). It is idempotent: an unchanged state does not count the sequence up.
+
+**Endpoint** (`RecorderEndpoint`, `@MainActor`): `snapshots()` (the current snapshot first,
+then every change; nil while nothing records) and `perform(_:)`. The Mac remote's link reaches
+the recorder only through it; the Live Activity keeps `RecorderControl`.
 
 **Live Activity** (`RecordingActivityController`): requested at start from the snapshot, updated
 only when its projection changes (the sequence alone does not count), one request after another,

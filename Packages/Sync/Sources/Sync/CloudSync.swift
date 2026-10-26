@@ -47,6 +47,12 @@ public final class CloudSync {
     /// Sync is on: the agent sheet may relay questions to the Mac.
     public var isRunning: Bool { status == .running }
 
+    /// True once iCloud reported a switch to another account in this run; the next launch reports
+    /// it again while the library's sync state belongs to the other account. Never cleared in
+    /// process. The recording link stops on it: its trust came from that account's rows. A typed
+    /// flag, so nothing reads the localized `status` reason.
+    public private(set) var accountSwitched = false
+
     /// Sending or fetching changes right now (observable through SQLiteData's engine).
     public var isSynchronizing: Bool { isRunning && (engine?.isSynchronizing ?? false) }
 
@@ -178,6 +184,7 @@ public final class CloudSync {
         case .signOut:
             halt(String(localized: "Not signed in to iCloud"))
         case .switchAccounts:
+            accountSwitched = true
             halt(String(localized: "Another iCloud account"))
         case .signIn:
             break

@@ -11,6 +11,7 @@ import Foundation
 ///       Models/                       WhisperKit and other models (excluded from backup)
 ///       Recordings/                   in-progress capture files before they enter Blobs
 ///       PhoneCaptures/                iPhone (M7): its recordings as `.lecture` packages until shared
+///       Incoming/                     Mac: recordings arriving from the iPhone's link, staged per device until whole
 ///       Agent/                        the Claude Code backend (M3.5): Workspace/, state.json, Runs/
 ///
 /// Before the app was renamed the folder was `StudyPortal` with `Database/StudyPortal.sqlite`.
@@ -146,6 +147,11 @@ public struct AppPaths: Hashable, Sendable {
     /// until the student shares them to the Mac (a capture bundle) and deletes them; never imported
     /// into the phone's library. Created by the phone's recorder when it first records, not here.
     public var phoneCaptures: URL { root.appending(path: "PhoneCaptures", directoryHint: .isDirectory) }
+    /// The Mac: recordings arriving from the iPhone over the recording link, staged per device
+    /// (`Incoming/<device>/<uuid>.lecture.partial/`) until every file is whole and checked, then
+    /// moved into `recordings`. Outside `recordings`, so the launch filing pass never takes half a
+    /// package. Created by the link on first use, not here.
+    public var linkInbox: URL { root.appending(path: "Incoming", directoryHint: .isDirectory) }
     /// M3.5: the Claude Code backend's folder (`ClaudeCodeConfiguration.directory`): its empty
     /// working directory, its state (usage pause) and each run's MCP config. Created by the backend.
     public var agent: URL { root.appending(path: "Agent", directoryHint: .isDirectory) }

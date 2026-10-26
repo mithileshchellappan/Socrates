@@ -151,10 +151,18 @@ extension PhoneRecorder {
     /// Rebuilds `snapshot` and, when its content changed, counts its sequence up and brings the
     /// Live Activity along (ended once stopped). Idempotent.
     func publish() {
-        guard let built = makeSnapshot(sequence: snapshot?.sequence ?? 0), built != snapshot else { return }
+        guard let built = makeSnapshot(sequence: snapshot?.sequence ?? 0, phaseSince: snapshot?.phaseSince),
+              built != snapshot else { return }
         var next = built
         lastSequence += 1
         next.sequence = lastSequence
+        // The phase's start stays while the recording and its phase do (so an unchanged state
+        // still compares equal above); a new phase or recording starts at this sequence.
+        if let snapshot, snapshot.recordingID == next.recordingID, snapshot.phase == next.phase {
+            next.phaseSince = snapshot.phaseSince
+        } else {
+            next.phaseSince = next.sequence
+        }
         snapshot = next
         let state = RecordingActivityState(snapshot: next)
         if next.phase == .stopped {
@@ -177,8 +185,8 @@ extension PhoneRecorder {
         }
     }
 
-    /// The state now, or nil before the recording's first audio.
-    private func makeSnapshot(sequence: Int) -> RecorderSnapshot? {
+    /// The state now, or nil before the recording's first audio. `phaseSince` nil: `sequence`.
+    private func makeSnapshot(sequence: Int, phaseSince: Int? = nil) -> RecorderSnapshot? {
         guard let session, let course, let recordingID, let startedAt = session.startedAt else { return nil }
         let phase: RecorderSnapshot.Phase
         var failure: RecorderFailure?
@@ -208,7 +216,8 @@ extension PhoneRecorder {
             course: RecorderSnapshot.Course(name: course.name, shortName: course.shortName, colorHex: course.colorHex),
             sessionName: sessionName,
             accepts: RecorderMachine.accepts(phase: phase, canGoNext: session.canGoNext, canGoPrevious: session.canGoPrevious),
-            failure: failure
+            failure: failure,
+            phaseSince: phaseSince
         )
     }
 

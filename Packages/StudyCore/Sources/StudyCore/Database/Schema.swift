@@ -9,7 +9,7 @@ import SQLiteData
 /// `NOT NULL ON CONFLICT REPLACE DEFAULT …`, no CloudKit-reserved column names, and no foreign-key
 /// cycle or self-reference among synced tables (a back-reference is a plain id column, v17).
 public enum Schema {
-    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18"]
+    public static let migrationIDs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19"]
 
     public static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -96,6 +96,10 @@ public enum Schema {
         migrator.registerMigration("v18") { db in
             try db.execute(sql: v18)
         }
+        // link, additive only (a new table): the recording link's device keys.
+        migrator.registerMigration("v19") { db in
+            try db.execute(sql: v19)
+        }
         return migrator
     }
 
@@ -119,6 +123,7 @@ public enum Schema {
         "university_profile",
         "lecture_notes", "lecture_notes_mark",
         "course_material", "material_section", "material_coverage",
+        "link_device",
     ]
 
     /// md: library tables that stay on the Mac and never sync (PRD "Document bank": documents never
@@ -1524,6 +1529,21 @@ public enum Schema {
         ALTER TABLE "study_reading" ADD COLUMN "material_section_id" TEXT REFERENCES "material_section"("id") ON DELETE SET NULL;
         CREATE INDEX "study_reading_material" ON "study_reading"("material_id");
         CREATE INDEX "study_reading_material_section" ON "study_reading"("material_section_id");
+        """
+
+    /// v19 (link, docs/decisions.md 2026-10-26): `link_device` (synced), one row per key of the
+    /// student's devices on the recording link: `platform` (`mac`, `iphone`), `public_key` (base64
+    /// of the SPKI DER: TEXT, since sync makes a BLOB column a CloudKit asset), `retired_at` (a
+    /// replaced key). No foreign key, no unique index, no index (CloudKit rules; a handful of rows).
+    static let v19 = """
+        CREATE TABLE "link_device" (
+          "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+          "platform" TEXT NOT NULL DEFAULT '',
+          "public_key" TEXT NOT NULL DEFAULT '',
+          "created_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+          "retired_at" TEXT,
+          "updated_at" TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+        ) STRICT;
         """
 
     /// v17 (sync): the foreign keys that made cycles among synced tables become plain id columns

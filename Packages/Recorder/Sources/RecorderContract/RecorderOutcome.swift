@@ -27,6 +27,9 @@ public struct RecorderOutcome: Codable, Hashable, Sendable {
         case staleSlide(shown: Int, current: Int)
         /// Past the deck's last slide, or before the first.
         case atEnd
+        /// The command's `basis` is older than the phase now on (`since`, the snapshot sequence
+        /// at which it began): a Pause or Resume drawn before a pause or resume made elsewhere.
+        case stalePhase(basis: Int, since: Int)
     }
 
     public var commandID: RecorderCommand.ID

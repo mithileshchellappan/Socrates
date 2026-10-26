@@ -8,7 +8,8 @@ import StudyCore
 /// syncs. Blobs (decks, audio, images) are files, not rows, and do not sync in M7. The university
 /// profile (`university_profile`, oss) syncs like any row; a device installs a synced profile
 /// the next time it opens the library (`StudyDatabase.open`). Course materials (mt) sync their
-/// rows; their files and text stay in the Mac-only document bank.
+/// rows; their files and text stay in the Mac-only document bank. The recording link's device
+/// keys (`link_device`, link) sync so the student's devices trust each other (public keys only).
 ///
 /// The record types appear twice, as a list (checked against the schema) and in the engine's
 /// parameter pack; a new table goes into both.
@@ -32,6 +33,7 @@ enum SyncedTables {
         UniversityProfileRecord.self,
         LectureNotes.self, LectureNotesMark.self,
         CourseMaterial.self, MaterialSection.self, MaterialCoverage.self,
+        LinkDevice.self,
     ] }
 
     /// The synced tables' names.
@@ -132,6 +134,7 @@ enum SyncedTables {
                 UniversityProfileRecord.self,
                 LectureNotes.self, LectureNotesMark.self,
                 CourseMaterial.self, MaterialSection.self, MaterialCoverage.self,
+                LinkDevice.self,
             containerIdentifier: container,
             startImmediately: false,
             delegate: delegate
