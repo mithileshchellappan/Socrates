@@ -191,14 +191,18 @@ public struct ChangeLog: Sendable {
     /// mr: wakes the lecture processor after a change or its Undo queued `align` jobs (a deck
     /// linked, unlinked or put back).
     let wakeProcessing: @Sendable () async -> Void
+    /// ln: Write Again of a lecture's Summary as the app runs it (write_lecture_notes).
+    let writeNotesAgain: NotesWriteAgain
     let now: @Sendable () -> Date
 
     /// `memory`: the app's deadline memory, whose `onChange` syncs the calendar after each write.
     /// `filing`: the app's smart import (its Undo wakes the processor for re-alignment).
     /// `documents` (md): the app's document bank. `wakeProcessing` (mr): the processor's `wake()`.
+    /// `writeNotesAgain` (ln): the app's Write Again (Retry of a blocked recording first); nil:
+    /// `LectureNotesRepository.writeAgain` alone.
     public init(
         services: StudyServices, memory: DeadlineMemory? = nil, filing: FilingService? = nil, documents: DocumentBank? = nil,
-        materials: MaterialLibrary? = nil, wakeProcessing: @escaping @Sendable () async -> Void = {},
+        materials: MaterialLibrary? = nil, wakeProcessing: @escaping @Sendable () async -> Void = {}, writeNotesAgain: NotesWriteAgain? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
@@ -208,6 +212,10 @@ public struct ChangeLog: Sendable {
         self.documents = documents
         self.materials = materials
         self.wakeProcessing = wakeProcessing
+        let repository = LectureNotesRepository(store: services.records)
+        self.writeNotesAgain = writeNotesAgain ?? { lectureID, instruction, createdBy in
+            try await repository.writeAgain(lectureID: lectureID, instruction: instruction, createdBy: createdBy)
+        }
         self.now = now
     }
 

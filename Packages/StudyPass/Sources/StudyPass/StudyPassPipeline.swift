@@ -15,7 +15,8 @@ public enum StudyPass {
 
     /// Notional dollars one generation of a lecture's units may cost (`api_call.cost_usd`, purpose
     /// `study.*`, the calls since its units last went pending); over it, its remaining units are
-    /// failed "Over budget" (they run again once their inputs change).
+    /// failed "Over budget" (`StudyUnit.overBudget`; they run again once their inputs change, or
+    /// when the student retries: `retryFailed`).
     public static let lectureBudgetUSD = 1.50
 
     /// A lecture whose lines, spans, deck pages or prompt header (title, number, language,
@@ -106,9 +107,6 @@ public actor StudyPassPipeline {
     /// Units (lecture/stage/key) that reached `done` since launch, and how often.
     private var completedRuns: [String: Int] = [:]
     static let maximumRunsPerLaunch = 5
-    /// ln: lectures whose study pass the student re-ran (`rerun`): their next synthesis queues a
-    /// new version of their notes (`queueAfterStudyPass(rerun: true)`).
-    private var rerunNotes: Set<Lecture.ID> = []
     /// mt: the course materials' passages (Search's retriever; nil: no cover units).
     private var passages: (any MaterialPassages)?
     /// mt: lectures whose notes wait for their cover unit (queued when it settles).
@@ -195,15 +193,23 @@ public actor StudyPassPipeline {
     /// pass (model calls included) before it returns, or returns at once when one is running (it
     /// then runs once more); call it from a task.
     public func wake() async {
-        guard client != nil, !stopped else { return }
+        guard let task = startPass() else { return }
+        await task.value
+    }
+
+    /// Starts a pass in the background, owned by `passTask` (`stop()` cancels it), unless one
+    /// runs: that one then runs once more. Returns the new pass, nil when none started.
+    @discardableResult
+    private func startPass() -> Task<Void, Never>? {
+        guard client != nil, !stopped else { return nil }
         if passTask != nil {
             again = true
-            return
+            return nil
         }
         // Background work: nobody waits for it (the calls themselves queue behind the chat).
         let task = Task(priority: .utility) { await self.runPasses() }
         passTask = task
-        await task.value
+        return task
     }
 
     /// Puts this lecture's units first (the lecture open in Review); nil clears it.
@@ -239,14 +245,55 @@ public actor StudyPassPipeline {
             }
             return units.count
         }
+        reopen(lectureID, at: stamp)
+        Task { await self.wake() }
+        return reset
+    }
+
+    /// Retry on the lecture's Summary (and its Write Again), the student's own act: the pass's
+    /// `failed` units of the lecture (a read, the synthesis, the cover unit, a research pick; never
+    /// a done or skipped one) go back to `pending` (attempts 0), with a fresh budget window (the
+    /// student's override of the automatic budget: after a relaunch the window starts at their
+    /// `updated_at`). The lecture is no longer settled and goes first, its units' runs since
+    /// launch count from zero (`reopen`, as `rerun`), and a pass starts. Writes no
+    /// notes itself: the replace-once rules do when the synthesis lands
+    /// (`LectureNotesRepository.queueAfterStudyPass`). Returns the number of units reset (0:
+    /// nothing failed, nothing changes).
+    @discardableResult
+    public func retryFailed(lectureID: Lecture.ID) async throws -> Int {
+        let store = services.records
+        let stamp = now()
+        let stages = StudyPlanner.stages
+        let reset = try await services.database.write { db -> Int in
+            let units = try StudyUnit
+                .where { $0.lectureID.eq(lectureID) && $0.stage.in(stages) && $0.state.eq(ExtractionState.failed) }
+                .fetchAll(db)
+            for var unit in units {
+                unit.state = .pending
+                unit.attempts = 0
+                unit.error = nil
+                unit.finishedAt = nil
+                let stamped = store.stamp(unit)
+                try StudyUnit.upsert { stamped }.execute(db)
+            }
+            return units.count
+        }
+        guard reset > 0 else { return 0 }
+        StudyPass.log.notice("Study pass retried: \(reset) failed units pending again")
+        reopen(lectureID, at: stamp)
+        startPass()
+        return reset
+    }
+
+    /// The student asked for the lecture's pass again (`rerun`, `retryFailed`): it is no longer
+    /// settled and goes first, its budget window starts now, and its units' runs since launch
+    /// count from zero (a unit held by `maximumRunsPerLaunch` runs again).
+    private func reopen(_ lectureID: Lecture.ID, at stamp: Date) {
         settled[lectureID] = nil
         transient.remove(lectureID)
         generationStart[lectureID] = stamp
         completedRuns = completedRuns.filter { !$0.key.hasPrefix(lectureID.uuidString) }
-        rerunNotes.insert(lectureID)
         preferred = lectureID
-        Task { await self.wake() }
-        return reset
     }
 
     /// Stops following and ends the loop; a unit in flight stays `pending` (nothing half-written).
@@ -436,8 +483,10 @@ public actor StudyPassPipeline {
             do {
                 let spent = try await writer.spent(lectureID: lectureID, since: since)
                 if spent >= StudyPass.lectureBudgetUSD {
-                    let failed = try await writer.failPending(lectureID: lectureID, error: "Over budget")
+                    let failed = try await writer.failPending(lectureID: lectureID, error: StudyUnit.overBudget)
                     StudyPass.log.notice("Lecture over its study budget (\(spent, format: .fixed(precision: 2)) USD): \(failed) units failed")
+                    // The generation ended: a later one (new inputs, Retry) counts from its own start.
+                    generationStart[lectureID] = nil
                     return .finished
                 }
             } catch {
@@ -574,7 +623,8 @@ public actor StudyPassPipeline {
                     return .discarded
                 }
                 // ln: the lecture's notes are written after its synthesis (the first time, once more
-                // when they came from the slides alone, or after the student re-ran the pass).
+                // when they came from the slides alone or without the topics, or after the student
+                // re-ran the pass).
                 // mt: when the lecture gets a cover unit, its notes wait for it (their book passages).
                 if case .synthesize = spec.work {
                     if await coverFollows(material.lecture) {
@@ -706,11 +756,11 @@ public actor StudyPassPipeline {
         return .input(input)
     }
 
-    /// ln: `LectureNotesRepository.queueAfterStudyPass` once a synthesis unit is written.
+    /// ln: `LectureNotesRepository.queueAfterStudyPass` once a synthesis unit is written (a re-run
+    /// the student asked for is read from its `study_pass` task there).
     private func queueNotes(_ lectureID: Lecture.ID) async {
-        let rerun = rerunNotes.remove(lectureID) != nil
         do {
-            if try await LectureNotesRepository(store: services.records).queueAfterStudyPass(lectureID: lectureID, rerun: rerun) != nil {
+            if try await LectureNotesRepository(store: services.records).queueAfterStudyPass(lectureID: lectureID) != nil {
                 StudyPass.log.info("Lecture notes queued after the study pass")
             }
         } catch {

@@ -5,8 +5,8 @@ import StudyCore
 import StudyPass
 
 // ln (docs/plan-lecture-notes.md §5.1, "Build plan"): the task queue's `lecture_notes` runner. A
-// `lecture_notes` task (queued only by `LectureNotesRepository.queue` / `queueIfNeeded` /
-// `queueAfterStudyPass`) runs in code: `NotesWriter.run`, one streamed Opus call, at most one such
+// `lecture_notes` task (queued only by `LectureNotesRepository.writeAgain` / `queueIfNeeded` /
+// `queueAfterStudyPass` / `queueDueReplacement` / `requeueWaiting`) runs in code: `NotesWriter.run`, one streamed Opus call, at most one such
 // task at once (`claim(…, oneAtATime: [.document, .lectureNotes])`), only with Claude Code (not
 // claimed without it), quiet (never reported into the thread unless the agent queued it from the
 // chat: `write_lecture_notes` gives it a parent conversation). A usage limit pauses it until the
@@ -14,8 +14,10 @@ import StudyPass
 // writes nothing (the version stays `generating` and is resumed at the next launch). A version with
 // nothing to write from waits for its material: its task ends (failed, with that sentence: only a
 // task the agent queued from the chat shows it), and `watchNotesMaterial` queues a new version when
-// a deck's pages or a lecture's range are written. Every task that does not write its version
-// says why in the log (`lecture-notes`; the writer logs its own reasons).
+// a deck's pages or a lecture's range are written. Once a version settles (done, failed, waiting
+// for its material), the replace-once rules are caught up (`queueDueReplacement`: the recording's
+// synthesis landed while it was written). Every task that does not write its version says why in
+// the log (`lecture-notes`; the writer logs its own reasons).
 extension AgentTaskQueue {
     func runLectureNotes(_ task: AgentTask) async {
         let key = ChatCitation.key(task.id)
@@ -44,6 +46,12 @@ extension AgentTaskQueue {
             if await stillOpen(task) { await Self.closeNotes(of: task, services: services) }
             return
         }
+        // Settled (not paused): a synthesis that landed while this version was written is caught
+        // up now (its new version waits for this task's slot).
+        switch outcome {
+        case .waiting: break
+        case .done, .failed, .waitingForMaterial: await catchUpNotes(lectureID: notes.lectureID)
+        }
         switch outcome {
         case .done:
             guard await stillOpen(task) else { return }
@@ -60,6 +68,16 @@ extension AgentTaskQueue {
         case .waitingForMaterial:
             guard await stillOpen(task) else { return }
             await finishRow(task.id, .failed, error: LectureNotes.nothingToWriteFrom)
+        }
+    }
+
+    /// The replace-once rules caught up after a version settled
+    /// (`LectureNotesRepository.queueDueReplacement`).
+    private func catchUpNotes(lectureID: Lecture.ID) async {
+        do {
+            try await LectureNotesRepository(store: services.records).queueDueReplacement(lectureID: lectureID)
+        } catch {
+            Log.lectureNotes.error("Catching up a lecture's notes failed: \(ReadableError.kind(of: error), privacy: .public)")
         }
     }
 

@@ -13,8 +13,13 @@ import StudyUI
 /// a lecture without notes queues them (`queueIfNeeded`), except where `\.lectureNotesQueuesOnOpen`
 /// is off (renders). Write Again… (the ⋯ menu, the failure line) opens its popover hung off a
 /// plain view behind the ⋯ (a popover on the `Menu` itself does not show reliably), after the
-/// click; a version without text is queued again at once. It is off while a version is open or
-/// nothing could be written (no slides with pages, no transcript).
+/// click, filled with the student's standing instruction; a version without text is queued again
+/// at once with it; both through the app's action (`\.lectureNotesWriteAgain`). It is off while a
+/// version is open or nothing could be written (no slides with pages, no transcript). While the
+/// recording's way into the Summary is blocked, the notes show its line (Retry:
+/// `\.lectureNotesRetry`), and the page asks for a version again when it becomes blocked (written
+/// from what there is, a Write Again that waited for the recording too). The recording's study
+/// pass landing is the pipeline's (after the course book's cover unit), never the page's.
 ///
 /// nl: the page grows with the window (`NotesPageLayout`): the text at most 780 pt, code, tables,
 /// diagrams, charts and slides breaking out to at most 1120, the header and Keep in mind at the
@@ -40,6 +45,7 @@ public struct LectureNotesPage: View {
     @Environment(\.studyCoach) private var studyCoach
     @Environment(\.undoManager) private var undoManager
     @Environment(\.lectureNotesQueuesOnOpen) private var queuesOnOpen
+    @Environment(\.lectureNotesWriteAgain) private var writeAgainAction
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
     @Environment(\.isLiveResizing) private var isLiveResizing
     @Environment(\.locale) private var locale
@@ -57,8 +63,10 @@ public struct LectureNotesPage: View {
             content(zoom: zoom)
         }
         // Again when the material arrives while the page is open (`canWrite`: slides with pages
-        // or a transcript); it queues nothing once a version is current.
-        .task(id: NotesQueueTrigger(lectureID: lectureID, canWrite: page.canWrite)) {
+        // or a transcript) or the recording's way becomes blocked (written from what there is).
+        // Not when its study pass lands: the pipeline queues that version itself, after the
+        // course book's cover unit, which the page would race.
+        .task(id: NotesQueueTrigger(lectureID: lectureID, canWrite: page.canWrite, blocked: page.recording.isBlocked ? page.recording : nil)) {
             guard queuesOnOpen, let services else { return }
             do {
                 try await LectureNotesRepository(store: services.records).queueIfNeeded(lectureID: lectureID)
@@ -237,7 +245,7 @@ public struct LectureNotesPage: View {
                 .popover(isPresented: $writeAgainShown, arrowEdge: .bottom) {
                     LectureNotesWriteAgainPopover(request: $request) { sentence in
                         writeAgainShown = false
-                        writeAgain(sentence)
+                        writeAgain(.new(sentence))
                     }
                 }
         }
@@ -258,21 +266,21 @@ public struct LectureNotesPage: View {
         }
     }
 
-    /// Write Again… from the ⋯ menu or the failure line: the popover, once the click (or the menu)
-    /// is done; a version without text has nothing to refine, so it is queued again at once.
+    /// Write Again… from the ⋯ menu or the failure line: the popover with the student's standing
+    /// instruction, once the click (or the menu) is done; a version without text has nothing to
+    /// refine, so it is queued again at once with that instruction.
     private func showWriteAgain() {
         guard page.current?.hasText == true else {
-            writeAgain("")
+            writeAgain(.standing)
             return
         }
+        request = page.instruction ?? ""
         Task { @MainActor in writeAgainShown = true }
     }
 
-    /// Write Again…: a new version with the student's sentence (Previous Version undoes it).
-    private func writeAgain(_ sentence: String) {
-        guard let services else { return }
-        request = ""
-        LectureNotesWriteAgain.queue(lectureID: lectureID, request: sentence, services: services, undoManager: undoManager)
+    /// Write Again…: the app's action with the student's instruction (Edit ▸ Undo takes it back).
+    private func writeAgain(_ instruction: NotesInstruction) {
+        LectureNotesWriteAgain.run(lectureID: lectureID, instruction: instruction, action: writeAgainAction, services: services, undoManager: undoManager)
     }
 
     /// Previous Version (Edit ▸ Undo "Undo Write Again"; Redo brings the newer one back).
@@ -414,11 +422,13 @@ private struct ZoomReader<Content: View>: View {
     }
 }
 
-/// When the page asks for its first version (`queueIfNeeded`): on open, and when what it could be
-/// written from arrives while it is open.
+/// When the page asks for a version (`queueIfNeeded`): on open, and when what it could be written
+/// from arrives, or the recording's way becomes blocked, while it is open.
 struct NotesQueueTrigger: Hashable {
     var lectureID: Lecture.ID
     var canWrite: Bool
+    /// The recording's state while blocked; nil otherwise (its way on its way or written).
+    var blocked: RecordingNotesState?
 }
 
 /// The page's rows in one observed read.
@@ -429,9 +439,14 @@ struct LectureNotesPageData: Equatable, Sendable {
     var range: LectureSlideRange?
     var current: LectureNotes?
     var hasPreviousVersion = false
-    /// A new version could be written now (`LectureNotesRepository.source`): Write Again… is off
+    /// A new version could be written now (`LectureNotesInputs.available`): Write Again… is off
     /// without it.
     var canWrite = false
+    /// The student's standing instruction (`LectureNotes.instruction(of:)`): Write Again…'s
+    /// popover opens with it.
+    var instruction: String?
+    /// How the recording is getting into the Summary.
+    var recording: RecordingNotesState = .none
     var hasQuestions = false
     var items: [TrackedItem] = []
     var trails: [TrackedItem.ID: [SourceTrailEntry]] = [:]
@@ -462,7 +477,10 @@ struct LectureNotesPageRequest: FetchKeyRequest {
         let current = LectureNotes.current(of: versions)
         data.current = current
         data.hasPreviousVersion = current.map { current in versions.contains { $0.isCandidate && $0.version < current.version } } ?? false
-        data.canWrite = try LectureNotesRepository.source(lectureID: id, in: db) != nil
+        let inputs = try LectureNotesRepository.inputs(lectureID: id, in: db)
+        data.canWrite = inputs.available != nil
+        data.recording = inputs.recording
+        data.instruction = LectureNotes.instruction(of: versions)
         data.hasQuestions = try StudyQuestion.where { $0.lectureID.eq(reference) && $0.retiredAt.is(nil) }.fetchCount(db) > 0
             || current?.sections.contains { !$0.questionIDs.isEmpty } == true
         // Keep in mind: what was said in this lecture and tracked (deadlines, room changes, tasks).

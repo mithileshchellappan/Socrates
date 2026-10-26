@@ -14,8 +14,9 @@ import StudyCore
 enum NotesPrompt {
     /// Part of every version's `input_hash`: bump it when the prompt changes. The hash is only
     /// stored with a version; nothing queues notes again when it changes (nl: 3, no `note` fences;
-    /// 4: the transcript of every recording, a moment chip per recording).
-    static let promptVersion = 4
+    /// 4: the transcript of every recording, a moment chip per recording; 5: the request is the
+    /// student's standing instruction, and a slides version may sit beside a recording).
+    static let promptVersion = 5
 
     static func system(german: Bool) -> String {
         """
@@ -208,7 +209,7 @@ enum NotesPrompt {
 
         var ask = ""
         if let request = m.request, !request.isEmpty {
-            ask += "The student asked for this version (their words): <request>\(PromptText.escape(request))</request>\n\n"
+            ask += "The student's instruction for this summary (their words): <request>\(PromptText.escape(request))</request>\n\n"
         }
         if let kept, !kept.isEmpty {
             ask += "<written>\n\(PromptText.escape(kept))\n</written>\n\n"
@@ -219,7 +220,7 @@ enum NotesPrompt {
             ask += "Write the notes of this lecture: the overview, then every section in order."
         }
         if m.source == .slides {
-            ask += " There is no recording: write from the slides alone, without moment chips or quote blocks."
+            ask += " Write from the slides alone, without moment chips or quote blocks."
             // The groups' titles are their first slide's first words (often a slide's whole text
             // when its PDF has no line breaks): the model names each section.
             ask += " Each section's given title is only the first words of its first slide: as its ## heading write a "

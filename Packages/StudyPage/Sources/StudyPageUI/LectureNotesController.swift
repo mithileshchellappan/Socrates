@@ -44,6 +44,10 @@ final class LectureNotesController {
     @ObservationIgnored var openAgentPanel = OpenAgentPanelAction { _ in }
     @ObservationIgnored var onChip: ((NotesChipTarget) -> Bool)?
     @ObservationIgnored var onWriteAgain: (() -> Void)?
+    /// Retry of the recording's way into the Summary (`\.lectureNotesRetry`; nil in renders).
+    @ObservationIgnored var retry: LectureNotesRetryAction?
+    /// Write Again (`\.lectureNotesWriteAgain`; nil in renders).
+    @ObservationIgnored var writeAgainAction: LectureNotesWriteAgainAction?
     /// Review's Summary: the passage taken to the chat goes up to the review, which sends it
     /// with its own context (a preference from the inspector column may not reach the panel, and
     /// would replace the review's). Nil: the view publishes `chatPassage` itself (the page).
@@ -113,15 +117,23 @@ final class LectureNotesController {
         }
     }
 
+    /// Write Again… on the failure line: the host's (the page's popover), else at once with the
+    /// student's standing instruction (Review's Summary).
     func writeAgain() {
         if let onWriteAgain {
             onWriteAgain()
             return
         }
-        guard let services else { return }
-        LectureNotesWriteAgain.queue(
-            lectureID: lectureID, request: "", services: services, undoManager: undoManager ?? coordinator?.textView?.undoManager
+        LectureNotesWriteAgain.run(
+            lectureID: lectureID, instruction: .standing, action: writeAgainAction, services: services,
+            undoManager: undoManager ?? coordinator?.textView?.undoManager
         )
+    }
+
+    /// Retry on the recording's line: its failed transcriptions and the study pass's failed units
+    /// run again.
+    func retryRecording() {
+        retry?(lectureID)
     }
 
     // MARK: Highlights
