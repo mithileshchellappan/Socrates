@@ -124,6 +124,17 @@ lectureID:assignment:)` changes the course and class the manifest names, also wh
 - No format change: the manifest keeps version 1 and its segment reasons (an older Mac decodes a
   new package and ignores the two event kinds). The importer makes no rows for them.
 
+### Closed segments (the recording link)
+
+`LiveLectureSession.segments` is the capture's segment list as last reported, kept in memory and
+set before each manifest write (the manifest on disk lags behind, and a crash can leave it
+without the newest segment). `closedThrough` is the highest segment whose file is closed, so it
+can be copied while recording (a closed file never changes; the next segment is a new file,
+opened only after the one before it closed): paused, finished or failed, every segment; otherwise
+the newest once its frame count is known, else the one before it. A missing frame count alone
+never means "still open" (a crash and a failed write both leave one). The iPhone recorder
+publishes it as `RecorderSnapshot.closedSegments`.
+
 ## Using it from the app
 
 ```swift
@@ -154,7 +165,8 @@ LiveLectureView(
 )
 
 // 4. Menu commands (→ next, ← previous, F flag, ⇧⌘R record/stop; ⌃⌘I inspector). Space is
-//    handled by the view.
+//    handled by the view. `leading` items go before Next Slide, `trailing` ones after Record
+//    (the iPhone's recording on the Mac; they bring their own divider).
 WindowGroup { … }.commands { LiveLectureCommands(); InspectorCommands() }
 
 // 5. At launch, before any recording starts: import packages left behind by a crash.
