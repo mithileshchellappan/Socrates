@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import LinkCore
 import Network
 import RecorderContract
@@ -37,6 +38,9 @@ actor MacLinkService {
     private var infrastructure: Task<Void, Never>?
     private var peerToPeer: Task<Void, Never>?
     private var window: Task<Void, Never>?
+    /// The `filing` table, followed while the link runs (`filingsChanged`).
+    private var filingObservation: AnyDatabaseCancellable?
+    private var filingWatcher: Task<Void, Never>?
     /// Filing, one recording after the other.
     private var filing: Task<Void, Never>?
 
@@ -111,6 +115,7 @@ actor MacLinkService {
         await directory.follow { [weak self] peers in
             await self?.trustChanged(peers)
         }
+        followFilings()
         window = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.evaluateWindow()
@@ -129,6 +134,10 @@ actor MacLinkService {
         started = false
         window?.cancel()
         window = nil
+        filingObservation?.cancel()
+        filingObservation = nil
+        filingWatcher?.cancel()
+        filingWatcher = nil
         let open = sessions.values.map(\.channel)
         await withTaskGroup(of: Void.self) { group in
             for channel in open {
@@ -419,6 +428,46 @@ actor MacLinkService {
             await previous?.value
             await file(url)
         }
+    }
+
+    // MARK: - Filed another way
+
+    /// Follows `filing`: a phone recording the Mac shows frozen ends when its recording is filed
+    /// here another way (Share or AirDrop while the phone was out of reach; DESIGN 8.11).
+    private func followFilings() {
+        guard filingObservation == nil else { return }
+        let (changes, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        filingObservation = DatabaseRegionObservation(tracking: SQLRequest<Row>(sql: "SELECT recording_id FROM filing"))
+            .start(
+                in: services.database,
+                onError: { error in
+                    LinkLog.link.error("Following the filings failed: \(String(describing: error), privacy: .public)")
+                },
+                onChange: { _ in continuation.yield() }
+            )
+        filingWatcher = Task { [weak self] in
+            for await _ in changes {
+                await self?.filingsChanged()
+            }
+        }
+    }
+
+    /// The phone's last recording, while no session of it runs, has a `filing` row: the Mac has it,
+    /// so it is no longer shown or known (the peer-to-peer window may close).
+    private func filingsChanged() async {
+        guard started, let last = lastRecording else { return }
+        let recording = last.snapshot.recordingID
+        guard !sessions.values.contains(where: { $0.recording == recording }) else { return }
+        do {
+            guard try await FilingRepository(store: services.records).latest(recordingID: recording.rawValue) != nil else { return }
+        } catch {
+            LinkLog.link.error("Reading a recording's filing failed: \(String(describing: error), privacy: .public)")
+            return
+        }
+        guard started, lastRecording?.snapshot.recordingID == recording else { return }
+        lastRecording = nil
+        events?.yield(.filed(recording))
+        await evaluateWindow()
     }
 
     // MARK: - Peer-to-peer window

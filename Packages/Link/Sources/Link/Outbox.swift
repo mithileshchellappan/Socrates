@@ -42,6 +42,8 @@ enum Outbox {
         var id: RecordingID
         /// "DC Lecture 2".
         var title: String
+        /// The manifest's course (nil for the recording going on, whose manifest is not read).
+        var courseID: UUID?
         /// Every file is listed and none will change.
         var isFinal: Bool
         var isLive: Bool
@@ -85,7 +87,7 @@ enum Outbox {
             guard !skipping.contains(id) else { continue }
             if let live, live.id == id {
                 let audio = audioFiles(in: package).filter { $0.sequence <= live.closedSegments }.map(\.file)
-                listing.entries.append(Entry(id: id, title: live.title, isFinal: false, isLive: true, files: audio))
+                listing.entries.append(Entry(id: id, title: live.title, courseID: nil, isFinal: false, isLive: true, files: audio))
                 continue
             }
             if let entry = entry(for: package, id: id, isSettled: id == settled, now: now) {
@@ -115,6 +117,7 @@ enum Outbox {
         return Entry(
             id: id,
             title: title(of: manifest, startedAt: manifest.startedAt ?? contents.events.first?.wallClock),
+            courseID: manifest.courseID,
             isFinal: isFinal,
             isLive: false,
             files: isFinal ? audio + json : audio
@@ -180,7 +183,7 @@ enum Outbox {
             hashes[file.url] = hash
             files.append(OfferedFile(path: file.path, size: file.size, sha256: hash.sha256))
         }
-        return (Offer(recording: entry.id, title: entry.title, isFinal: entry.isFinal, files: files), hashes)
+        return (Offer(recording: entry.id, title: entry.title, courseID: entry.courseID, isFinal: entry.isFinal, files: files), hashes)
     }
 
     /// Lowercase hex of the SHA-256 of the first `size` bytes of `url` (the whole file, which must

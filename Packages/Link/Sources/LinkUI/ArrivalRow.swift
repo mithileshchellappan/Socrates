@@ -2,7 +2,8 @@ import Link
 import StudyUI
 import SwiftUI
 
-/// One recording arriving on the Mac: the course dot (when its colour is known) and the title,
+/// One recording arriving on the Mac: the course dot (when its colour is known: the arrival's
+/// course in the Mac's library, else the link's snapshot of it) and the title,
 /// a determinate bar, then "212 of 520 MB" in SF Mono 11 secondary.
 struct ArrivalRow: View {
     let arrival: Arrival

@@ -33,7 +33,7 @@ phoneLink.start()          // after cloudSync.start(), unless cloudSync.accountS
 phoneLink.stop()           // willTerminate, or when cloudSync.accountSwitched turns true
 phoneLink.showsItem        // MenuBarExtra(isInserted:), the toolbar capsule
 phoneLink.recording        // RemoteRecording?: snapshot, freshness (.live / .lastSeen), elapsed(at:)
-phoneLink.arrivals         // [Arrival]: title, stored of total bytes
+phoneLink.arrivals         // [Arrival]: title, course colour, stored of total bytes
 phoneLink.canSend(.pause)  // live, control on, the snapshot accepts it, nothing pending
 phoneLink.send(.nextSlide)
 
@@ -44,7 +44,7 @@ macLink.setActive(scenePhase == .active)
 RecorderScreen(recorder: recorder) { id in CaptureDeliveryLabel(delivery: macLink.delivery(of: id)) }
 ```
 
-DEBUG: `PhoneLink.preview(recording:arrivals:problem:now:)` and `MacLink.preview(deliveries:)` for
+DEBUG: `PhoneLink.preview(recording:arrivals:problem:pending:now:)` and `MacLink.preview(deliveries:)` for
 parity renders; they never connect.
 
 ## Inside `Link`
@@ -55,7 +55,7 @@ dials, sessions and timers, and cancel them in `stop()`.
 | Type | Owns |
 |---|---|
 | `PhoneLink` (Mac, main actor) | `MacLinkService`; applies its events (`MacLinkEvent`) to the recording, arrivals and pending buttons; the second tick and the frozen lifetime |
-| `MacLinkService` (actor) | the infrastructure and peer-to-peer listeners, admission, one `MacSession` per phone, the commands waiting for results, the filing queue, App Nap's activity |
+| `MacLinkService` (actor) | the infrastructure and peer-to-peer listeners, admission, one `MacSession` per phone, the commands waiting for results, the filing queue, App Nap's activity; a frozen recording whose `filing` row appears (filed another way) is no longer known |
 | `MacSession` | one phone's messages in order: snapshots and results to the service, holdings, offers and chunks to the inbox, one want at a time, `received` then filing |
 | `RecordingInbox` (actor) | `Incoming/<device>/<uuid>.lecture.partial/`: `.part` files, their hashes, syncs and acknowledgements, the package checks and the move into `Recordings/` |
 | `MacLink` (iPhone, main actor) | `PhoneLinkAgent`; bridges the recorder's snapshots to it, shows its deliveries, begins and ends background time |
@@ -91,6 +91,8 @@ folder. Neither keeps anything else.
   is final; the Mac asks for one file at a time from the length it holds, acknowledges durable
   bytes (`stored`), checks each file's SHA-256, moves the whole package into `Recordings/`, says
   `received`, then files it. The phone keeps one receipt per capture and never offers it again.
+  An offer names its manifest's course (`courseID`, optional): the arrival row's dot takes the
+  Mac's own colour for it.
 
 ## Rules
 

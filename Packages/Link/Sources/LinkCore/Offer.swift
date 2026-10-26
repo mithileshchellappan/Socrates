@@ -1,3 +1,4 @@
+import Foundation
 import RecorderContract
 
 /// One file of an offered recording, by its path in the package.
@@ -23,14 +24,19 @@ public struct Offer: Codable, Hashable, Sendable {
     public var recording: RecordingID
     /// "DC Lecture 2": the Mac's arrival row.
     public var title: String
+    /// The course in the package's manifest: the arrival row's dot, in the Mac's own colour for
+    /// it. Optional and later than the first fields (absent from older phones, nil for the
+    /// recording going on).
+    public var courseID: UUID?
     /// Every file of the package is listed and none will change: the Mac files it once all are
     /// stored and checked.
     public var isFinal: Bool
     public var files: [OfferedFile]
 
-    public init(recording: RecordingID, title: String, isFinal: Bool, files: [OfferedFile]) {
+    public init(recording: RecordingID, title: String, courseID: UUID? = nil, isFinal: Bool, files: [OfferedFile]) {
         self.recording = recording
         self.title = title
+        self.courseID = courseID
         self.isFinal = isFinal
         self.files = files
     }

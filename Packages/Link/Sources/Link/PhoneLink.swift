@@ -178,6 +178,10 @@ public final class PhoneLink {
             }
         case .arrived(let id):
             arrivals.removeAll { $0.id == id }
+        case .filed(let id):
+            if let recording, recording.snapshot.recordingID == id, !recording.isLive {
+                clearRecording()
+            }
         }
     }
 
@@ -254,14 +258,15 @@ public final class PhoneLink {
 
     #if DEBUG
     /// A link that shows `recording` and `arrivals` with control on and never connects (parity
-    /// renders).
+    /// renders); `pending`: buttons held in, waiting for the phone's answer.
     public static func preview(
-        recording: RemoteRecording?, arrivals: [Arrival], problem: RemoteProblem?, now: Date
+        recording: RemoteRecording?, arrivals: [Arrival], problem: RemoteProblem?, pending: Set<RemoteAction> = [], now: Date
     ) -> PhoneLink {
         let link = PhoneLink(service: nil, now: now)
         link.recording = recording
         link.arrivals = arrivals
         link.problem = problem
+        link.pending = pending
         link.isControlOn = true
         return link
     }

@@ -84,6 +84,8 @@ actor RecordingInbox {
     /// One recording being received from one phone.
     private struct Incoming {
         var offer: Offer
+        /// The offer's course colour in this library (the arrival's dot).
+        var colorHex: String?
         /// Bytes on disk per offered path (the whole size once checked).
         var held: [String: Int64] = [:]
         /// Paths whose file is whole and checked.
@@ -95,7 +97,7 @@ actor RecordingInbox {
 
         var arrival: Arrival {
             let stored = offer.files.reduce(Int64(0)) { $0 + min(held[$1.path] ?? 0, $1.size) }
-            return Arrival(id: offer.recording, title: offer.title, stored: stored, total: offer.totalBytes)
+            return Arrival(id: offer.recording, title: offer.title, colorHex: colorHex, stored: stored, total: offer.totalBytes)
         }
     }
 
@@ -208,8 +210,10 @@ actor RecordingInbox {
             discard(offer.recording, of: device)
             return .known
         }
+        let colorHex = await courseColor(offer.isFinal ? offer.courseID : nil)
         guard owners[device] == sender.session else { return .accepted(nil, held: []) }
         var state = incoming[device]?[offer.recording] ?? Incoming(offer: offer)
+        state.colorHex = colorHex ?? state.colorHex
         let previous = state.offer
         state.offer = offer
         let folder = staging(offer.recording, of: device)
@@ -248,6 +252,18 @@ actor RecordingInbox {
             return Stored(recording: offer.recording, path: file.path, bytes: bytes, isVerified: verified.contains(file.path))
         }
         return .accepted(offer.isFinal ? state.arrival : nil, held: acknowledged)
+    }
+
+    /// The colour of `courseID` in this library; nil without one, or for a course the Mac does not
+    /// have (yet).
+    private func courseColor(_ courseID: UUID?) async -> String? {
+        guard let courseID else { return nil }
+        do {
+            return try await services.records.fetch(Course.self, id: courseID)?.colorHex
+        } catch {
+            LinkLog.inbox.error("Reading an arrival's course failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     /// What is on disk for one file: its whole size when the checked file is there with the size

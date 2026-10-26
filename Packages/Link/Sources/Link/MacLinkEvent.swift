@@ -16,4 +16,7 @@ enum MacLinkEvent: Sendable {
     case arrival(Arrival)
     /// The Mac took the recording (or will not): its row goes.
     case arrived(RecordingID)
+    /// The recording the phone was last heard recording is filed on the Mac (another way, while
+    /// the phone was out of reach): a frozen item of it goes.
+    case filed(RecordingID)
 }

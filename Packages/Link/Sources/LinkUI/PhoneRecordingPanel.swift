@@ -28,7 +28,7 @@ public struct PhoneRecordingPanel: View {
             }
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(shown.arrivals) { arrival in
-                    ArrivalRow(arrival: arrival, colorHex: shown.colorHex(of: arrival))
+                    ArrivalRow(arrival: arrival, colorHex: arrival.colorHex ?? shown.colorHex(of: arrival))
                 }
             }
         }
