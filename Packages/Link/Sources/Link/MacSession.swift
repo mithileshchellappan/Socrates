@@ -101,6 +101,28 @@ struct MacSession {
     /// Completes what is whole, then asks for the next missing file, unless a want is out.
     private mutating func askNext() async throws {
         guard want == nil else { return }
+        while try await completeWhole() {
+            switch await inbox.nextWant(from: sender) {
+            case .want(let next):
+                nextWantID &+= 1
+                let want = Want(id: nextWantID, recording: next.recording, path: next.path, from: next.from)
+                self.want = want
+                try await channel.send(.want(want), lane: .control)
+                return
+            case .refused(let recording):
+                await service.arrived(recording, at: nil)
+                try await channel.send(.received(Received(recording: recording, outcome: .refused)), lane: .control)
+            case .checked:
+                continue
+            case .nothing:
+                return
+            }
+        }
+    }
+
+    /// Moves every complete recording into `Recordings/`, says `received` for each, and has the
+    /// service file it. False when one could not be moved (it stays staged until a later session).
+    private func completeWhole() async throws -> Bool {
         while let recording = await inbox.completeRecording(of: sender) {
             let outcome: Received.Outcome
             var kept: URL?
@@ -113,15 +135,11 @@ struct MacSession {
             case .refused:
                 outcome = .refused
             case .failed:
-                return
+                return false
             }
             try await channel.send(.received(Received(recording: recording, outcome: outcome)), lane: .control)
             await service.arrived(recording, at: kept)
         }
-        guard let next = await inbox.nextWant(from: sender) else { return }
-        nextWantID &+= 1
-        let want = Want(id: nextWantID, recording: next.recording, path: next.path, from: next.from)
-        self.want = want
-        try await channel.send(.want(want), lane: .control)
+        return true
     }
 }

@@ -36,6 +36,19 @@ actor RecordingInbox {
         var from: Int64
     }
 
+    /// What `nextWant` found.
+    enum WantDecision: Sendable, Hashable {
+        /// Ask the phone for this file.
+        case want(Next)
+        /// A file found whole failed its hash twice: the recording's staging is gone (the phone is
+        /// told `refused`).
+        case refused(RecordingID)
+        /// Files found whole were checked and completed a recording: complete it, then look again.
+        case checked
+        /// Nothing to ask for now (all here, no room, or a file that cannot be kept).
+        case nothing
+    }
+
     enum WriteResult: Sendable {
         /// Written; an acknowledgement (and the arrival's progress) when one is due.
         case written(Stored?, Arrival?)
@@ -300,55 +313,56 @@ actor RecordingInbox {
     // MARK: - Wants
 
     /// The next file `device`'s phone should send: final recordings first (in the order offered),
-    /// then the others' closed segments; files already whole are checked on the way. Nil when
-    /// nothing is missing, or when the disk would keep less than `LinkPolicy.diskReserve`.
-    func nextWant(from sender: Sender) -> Next? {
+    /// then the others' closed segments. A file found whole already (an empty one, or a quit
+    /// before its rename) is checked on the way and the next one looked at. Nothing is asked for
+    /// when the disk would keep less than `LinkPolicy.diskReserve`.
+    func nextWant(from sender: Sender) -> WantDecision {
         let device = sender.device
-        guard owners[device] == sender.session, open[device] == nil else { return nil }
+        guard owners[device] == sender.session, open[device] == nil else { return .nothing }
         let ids = order[device] ?? []
         let finals = ids.filter { incoming[device]?[$0]?.offer.isFinal == true }
         let others = ids.filter { incoming[device]?[$0]?.offer.isFinal != true }
         for recording in finals + others {
-            // Each pass opens one missing file; one found whole already is checked and the next
-            // looked at. A file that cannot be kept waits for a later want.
-            var checked = 0
-            while checked <= InboxRules.maximumFiles, let state = incoming[device]?[recording],
+            // A file is looked at twice at most: once found whole (and failing its hash), once
+            // more from the start; one that cannot be kept waits for a later want.
+            var visits: [String: Int] = [:]
+            while let state = incoming[device]?[recording],
                   let file = state.offer.files.first(where: { !state.verified.contains($0.path) }) {
-                checked += 1
+                let visit = (visits[file.path] ?? 0) + 1
+                visits[file.path] = visit
+                guard visit <= 2 else { return .nothing }
                 let from = state.held[file.path] ?? 0
                 guard hasRoom(for: file.size - from) else {
                     if lowDiskLogged.insert(recording).inserted {
                         LinkLog.inbox.error("Not enough free space for \(recording.uuidString, privacy: .public); it waits")
                     }
-                    return nil
+                    return .nothing
                 }
                 let opened: OpenFile
                 do {
                     opened = try openFile(file, of: recording, device: device)
                 } catch {
                     LinkLog.inbox.error("Opening \(file.path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-                    return nil
+                    return .nothing
                 }
                 open[device] = opened
                 if opened.length < file.size {
-                    return Next(recording: recording, path: file.path, from: opened.length)
+                    return .want(Next(recording: recording, path: file.path, from: opened.length))
                 }
-                // Whole already (an empty file, or a quit before the rename): checked now.
                 switch finish(device: device) {
                 case .verified:
+                    if incoming[device]?[recording]?.isComplete == true { return .checked }
+                case .refused(let refused):
+                    return .refused(refused)
+                case .again:
+                    // Its hash failed (asked for from the start next) or it could not be kept.
                     continue
-                case .again where incoming[device]?[recording]?.held[file.path] == 0 && file.size > 0:
-                    // Its hash failed: the next pass asks for it from the start.
-                    continue
-                case .refused:
-                    break
-                case .again, .written, .ignored:
-                    return nil
+                case .written, .ignored:
+                    return .nothing
                 }
-                break
             }
         }
-        return nil
+        return .nothing
     }
 
     private func openFile(_ file: OfferedFile, of recording: RecordingID, device: LinkDeviceID) throws -> OpenFile {
