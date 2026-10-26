@@ -73,7 +73,9 @@ extension TranscriptionAudio {
         self.init(parts: segments
             .sorted { $0.sequence < $1.sequence }
             .compactMap { segment in
-                files(segment).map { Part(url: $0, startTime: Double(segment.startSample) / rate) }
+                files(segment).map {
+                    Part(url: $0, startTime: Double(segment.startSample) / rate, duration: Double(segment.frameCount) / rate)
+                }
             })
     }
 }

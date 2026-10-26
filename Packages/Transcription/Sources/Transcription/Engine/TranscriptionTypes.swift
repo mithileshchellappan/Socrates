@@ -12,10 +12,14 @@ public struct TranscriptionAudio: Hashable, Sendable {
         public var url: URL
         /// Seconds on the recording clock where the file's first sample sits.
         public var startTime: Double
+        /// The file's length in seconds when known (a recording's segment), so its run of the
+        /// timeline reserves its room before loading (`AudioTimeline.runs`); nil for a lone file.
+        public var duration: Double?
 
-        public init(url: URL, startTime: Double = 0) {
+        public init(url: URL, startTime: Double = 0, duration: Double? = nil) {
             self.url = url
             self.startTime = startTime
+            self.duration = duration
         }
     }
 

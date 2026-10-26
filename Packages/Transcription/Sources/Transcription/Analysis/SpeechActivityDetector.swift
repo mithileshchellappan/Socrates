@@ -55,7 +55,7 @@ public struct SpeechActivityDetector: Hashable, Sendable {
         self.padding = padding
     }
 
-    /// Level of digital silence (exact zeros, e.g. between recording parts).
+    /// Level of digital silence (exact zeros, e.g. between recording parts or in a pause).
     static let silenceLevel: Float = -120
     /// dB the local floor may sit above the whole recording's floor.
     static let maximumFloorRise: Float = 10
@@ -81,10 +81,42 @@ public struct SpeechActivityDetector: Hashable, Sendable {
         return levels
     }
 
+    /// RMS level of each frame of a timeline in dBFS: the values its zero-padded array gives. A
+    /// frame wholly inside a gap is digital silence and is never read; every other frame is
+    /// copied into one scratch frame (zeros where it reaches into a gap) and measured there, at the
+    /// alignment a dense array's frame has.
+    public func frameLevels(_ timeline: SampleTimeline) -> [Float] {
+        let length = frameLength
+        let total = timeline.count
+        let count = (total + length - 1) / length
+        guard count > 0 else { return [] }
+        var levels = [Float](repeating: Self.silenceLevel, count: count)
+        var scratch = [Float](repeating: 0, count: length)
+        scratch.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            for frame in 0..<count {
+                let start = frame * length
+                let range = start..<min(start + length, total)
+                guard timeline.intersects(range) else { continue }
+                timeline.copy(range, into: buffer)
+                var rms: Float = 0
+                vDSP_rmsqv(base, 1, &rms, vDSP_Length(range.count))
+                levels[frame] = rms > 0 ? max(20 * log10(rms), Self.silenceLevel) : Self.silenceLevel
+            }
+        }
+        return levels
+    }
+
     /// Speech regions in seconds, sorted and non-overlapping.
     public func speechRegions(in samples: [Float]) -> [TimeRange] {
         let total = Double(samples.count) / sampleRate
         return speechRegions(levels: frameLevels(samples), duration: total)
+    }
+
+    /// Speech regions of a timeline in seconds from its sample 0 (gaps are silence).
+    public func speechRegions(in timeline: SampleTimeline) -> [TimeRange] {
+        let total = Double(timeline.count) / sampleRate
+        return speechRegions(levels: frameLevels(timeline), duration: total)
     }
 
     /// Speech regions from precomputed frame levels.
