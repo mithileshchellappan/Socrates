@@ -47,6 +47,31 @@ RecorderScreen(recorder: recorder) { id in CaptureDeliveryLabel(delivery: macLin
 DEBUG: `PhoneLink.preview(recording:arrivals:problem:now:)` and `MacLink.preview(deliveries:)` for
 parity renders; they never connect.
 
+## Inside `Link`
+
+Each model owns its actor and every task it starts; the actors own their listeners, browsers,
+dials, sessions and timers, and cancel them in `stop()`.
+
+| Type | Owns |
+|---|---|
+| `PhoneLink` (Mac, main actor) | `MacLinkService`; applies its events (`MacLinkEvent`) to the recording, arrivals and pending buttons; the second tick and the frozen lifetime |
+| `MacLinkService` (actor) | the infrastructure and peer-to-peer listeners, admission, one `MacSession` per phone, the commands waiting for results, the filing queue, App Nap's activity |
+| `MacSession` | one phone's messages in order: snapshots and results to the service, holdings, offers and chunks to the inbox, one want at a time, `received` then filing |
+| `RecordingInbox` (actor) | `Incoming/<device>/<uuid>.lecture.partial/`: `.part` files, their hashes, syncs and acknowledgements, the package checks and the move into `Recordings/` |
+| `MacLink` (iPhone, main actor) | `PhoneLinkAgent`; bridges the recorder's snapshots to it, shows its deliveries, begins and ends background time |
+| `PhoneLinkAgent` (actor) | when to link, browsing and dialing, the session with the Mac, what the Mac has been told (`sync`), commands to the recorder, receipts |
+| `Outbox`, `OutboxReceipts` | the outbox as the link sees it (what may be offered, hashes, bytes) and `PhoneCaptures/.link/<uuid>.json` |
+| `LinkChannel` / `DirectChannel` (actor) | the transport seam and its TCP + TLS route: framing, hello and its checks, the two lanes, pings and loss |
+| `LinkIdentityStore`, `LinkIdentity`, `PeerCertificate` | the Keychain key, the certificate made from it, the peer's key fingerprint and ALPN |
+| `LinkDirectory` (actor), `TrustedPeers` | this device's `link_device` row and the trusted rows of the other platform, followed as they sync |
+
+What the phone may offer (`Outbox`): the recording going on offers its audio segments up to the
+snapshot's `closedSegments`, never its JSON files; any other capture offers all its audio, and
+its JSON files once it is final (it ended, or its last event is not a pause); a capture without
+an end whose files changed in the last minute is left out until the recorder says what it is.
+The phone keeps one persistent fact per capture, its receipt; what the Mac holds is its staging
+folder. Neither keeps anything else.
+
 ## Protocol (generation 1)
 
 - **Frames**: `[kind UInt8][length UInt32 big-endian][body]`. The header is read first and the
@@ -70,8 +95,9 @@ parity renders; they never connect.
 ## Rules
 
 - **Trust**: the peer's TLS leaf key, hashed (`LinkFingerprint`), must equal the hash of an
-  unretired `link_device` row of the other platform, and its hello must name that row. The chain
-  is never evaluated; a stored fingerprint is never trusted.
+  unretired `link_device` row of the other platform, and its hello must name a row with that key
+  (a reinstalled phone may stand in two until it sees its earlier row). The chain is never
+  evaluated; a stored fingerprint is never trusted.
 - **Keys**: one P-256 key per install in the data-protection Keychain (this device only, after
   first unlock, never synced, never through `KeychainSecretStore`), made only when the Keychain
   answers "not found"; any other answer leaves the link off for that launch.
