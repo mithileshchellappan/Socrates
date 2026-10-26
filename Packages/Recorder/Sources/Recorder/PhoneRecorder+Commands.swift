@@ -6,11 +6,11 @@ import RecorderContract
 
 // The recorder's command executor and its published state (README "Recorder contract").
 //
-// - Every surface sends a `RecorderCommand`: the Live Activity and later the remote through
-//   `perform(_:)`, the screen through `submit(_:)`. Commands run one at a time on the model's
-//   serial queue on the main actor (the session's actor, where stamps take their host time),
-//   each checked by `RecorderMachine` against the snapshot before it acts and against the phase
-//   it should reach after, and each id is applied once.
+// - Every surface sends a `RecorderCommand`: the Live Activity and the Mac remote
+//   (`RecorderEndpoint`) through `perform(_:)`, the screen through `submit(_:)`. Commands run
+//   one at a time on the model's serial queue on the main actor (the session's actor, where
+//   stamps take their host time), each checked by `RecorderMachine` against the snapshot before
+//   it acts and against the phase it should reach after, and each id is applied once.
 // - `snapshot` is the only state a surface renders. `publish()` rebuilds it from the session and
 //   the course and counts `sequence` up when its content changed; it runs after every command,
 //   and on any other change of what it reads (a failure, the input lost), through an
@@ -76,8 +76,9 @@ extension PhoneRecorder {
                 "\(command.action.kind.rawValue, privacy: .public) from \(command.origin.rawValue, privacy: .public): \(String(describing: result), privacy: .public)"
             )
         }
-        // A recording that stopped meanwhile says so itself (`didFinish`).
-        if case .failed(let failure) = result, failure != .stoppedMeanwhile {
+        // A recording that stopped meanwhile says so itself (`didFinish`); a remote command's
+        // failure is the remote's to show (the Mac draws it under its controls).
+        if case .failed(let failure) = result, failure != .stoppedMeanwhile, command.origin != .remote {
             problem = RecorderProblem(moment: .command(command.action.kind), failure: failure)
         }
         if command.origin == .liveActivity {
@@ -217,6 +218,7 @@ extension PhoneRecorder {
             sessionName: sessionName,
             accepts: RecorderMachine.accepts(phase: phase, canGoNext: session.canGoNext, canGoPrevious: session.canGoPrevious),
             failure: failure,
+            closedSegments: session.closedThrough,
             phaseSince: phaseSince
         )
     }

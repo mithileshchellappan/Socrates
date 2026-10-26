@@ -5,11 +5,13 @@ import SwiftUI
 
 /// After Stop (and from the recorder's tray button): the finished capture with Share, the one
 /// thing to do next, then the other recordings still on the phone, newest first. Each row
-/// shares its bundle; Delete… asks first and names the recording.
-struct OutboxView: View {
+/// shares its bundle; Delete… asks first and names the recording. Each row also shows its
+/// `delivery` line (what the Mac holds of it), under the day and stamps.
+struct OutboxView<Delivery: View>: View {
     let recorder: PhoneRecorder
     /// The capture Stop just finished (nil: opened from the tray).
     let finished: PhoneCapture?
+    let delivery: @MainActor (PhoneCapture.ID) -> Delivery
     let close: () -> Void
 
     @State private var deleting: PhoneCapture?
@@ -36,8 +38,11 @@ struct OutboxView: View {
             List {
                 if let finished {
                     Section {
-                        CaptureRow(capture: finished, colorHex: recorder.colorHex(of: finished.courseID), isProminent: true)
-                            .contextMenu { deleteButton(finished) }
+                        CaptureRow(
+                            capture: finished, colorHex: recorder.colorHex(of: finished.courseID), isProminent: true,
+                            delivery: delivery(finished.id)
+                        )
+                        .contextMenu { deleteButton(finished) }
                         ShareLink(item: finished.bundleItem, preview: SharePreview(finished.title)) {
                             Label("Share", systemImage: "square.and.arrow.up")
                                 .font(.system(size: 17, weight: .semibold))
@@ -54,7 +59,10 @@ struct OutboxView: View {
                     Section {
                         ForEach(others) { capture in
                             HStack(spacing: 4) {
-                                CaptureRow(capture: capture, colorHex: recorder.colorHex(of: capture.courseID), isProminent: false)
+                                CaptureRow(
+                                    capture: capture, colorHex: recorder.colorHex(of: capture.courseID), isProminent: false,
+                                    delivery: delivery(capture.id)
+                                )
                                 ShareLink(item: capture.bundleItem, preview: SharePreview(capture.title)) {
                                     Image(systemName: "square.and.arrow.up")
                                         .font(.system(size: 17))
@@ -94,11 +102,13 @@ struct OutboxView: View {
     }
 }
 
-/// A capture: course dot, title, then the day and the stamp count; the length in SF Mono.
-struct CaptureRow: View {
+/// A capture: course dot, title, then the day and the stamp count, then its delivery line (when
+/// the slot draws one); the length in SF Mono.
+struct CaptureRow<Delivery: View>: View {
     let capture: PhoneCapture
     let colorHex: String?
     let isProminent: Bool
+    let delivery: Delivery
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -112,6 +122,7 @@ struct CaptureRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                delivery
             }
             Spacer(minLength: 8)
             Text(ClockText.string(capture.duration))

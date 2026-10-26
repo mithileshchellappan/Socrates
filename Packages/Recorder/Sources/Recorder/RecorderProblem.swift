@@ -2,9 +2,10 @@ import Foundation
 import RecorderContract
 
 /// Something the student should see on the recorder screen (`PhoneRecorder.problem`): Record
-/// that could not start, a recording that stopped by itself, or a command that failed from any
-/// surface (a Resume tapped on the Lock Screen during a call shows when the app opens). The
-/// model keeps it until the screen dismisses it; the screen picks the words.
+/// that could not start, a recording that stopped by itself, or a command from the screen or the
+/// Live Activity that failed (a Resume tapped on the Lock Screen during a call shows when the app
+/// opens). A remote command's failure is not one: the Mac shows it. The model keeps it until the
+/// screen dismisses it; the screen picks the words.
 public struct RecorderProblem: Identifiable, Hashable, Sendable {
     /// When it happened.
     public enum Moment: Hashable, Sendable {

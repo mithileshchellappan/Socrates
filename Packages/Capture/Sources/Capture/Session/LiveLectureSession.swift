@@ -135,6 +135,11 @@ public final class LiveLectureSession {
     public private(set) var startedAt: Date?
     public private(set) var endedAt: Date?
     public private(set) var package: LecturePackage?
+    /// The recording's audio segments as the capture last reported them, set before the
+    /// manifest is written: the manifest on disk lags behind (it is written asynchronously, and a
+    /// crash can leave it without the newest segment), so a reader of the live recording asks
+    /// this list (`closedThrough`), never the file.
+    public private(set) var segments: [AudioSegmentInfo] = []
 
     /// Called once the package is final: after Stop, or after a recording failure stopped it.
     /// The owner (not the view) sets it to file the capture, so filing never depends on a screen
@@ -278,6 +283,23 @@ public final class LiveLectureSession {
     /// The pauses so far (iPhone); the last one is open while paused.
     public var pauses: RecordingPauses { RecordingPauses(events: events) }
 
+    /// The highest segment sequence whose file is closed (0: none). A closed file never changes
+    /// again (every new segment is a new file, opened only after the one before it closed), so
+    /// the files up to this one can be copied while the recording goes on. A bound, not a list:
+    /// - paused, finished or failed: every segment (a pause closes the open file; after a stop
+    ///   every file is closed, also one whose frame count a write failure cleared);
+    /// - otherwise the newest when its frame count is known (set only once its file closed),
+    ///   else the one before it. A missing frame count never means "still open" on its own.
+    public var closedThrough: Int {
+        guard let newest = segments.max(by: { $0.sequence < $1.sequence }) else { return 0 }
+        switch phase {
+        case .paused, .finished, .failed:
+            return newest.sequence
+        case .ready, .starting, .recording, .stopping:
+            return newest.frameCount != nil ? newest.sequence : newest.sequence - 1
+        }
+    }
+
     /// Seconds recorded at `date`: wall time since the start without the pauses, frozen once
     /// recording stopped.
     public func elapsed(at date: Date) -> TimeInterval {
@@ -335,6 +357,7 @@ public final class LiveLectureSession {
 
         self.package = package
         self.writer = writer
+        self.segments = []
         self.clock = start.clock
         self.startedAt = start.startedAt
         self.inputName = start.device?.name
@@ -372,9 +395,10 @@ public final class LiveLectureSession {
         guard phase == .recording else { throw CaptureError.notRecording }
         phase = .paused
         level = 0
+        let segments = mark.segments
+        if !segments.isEmpty { self.segments = segments }
         record(.pause, page: tracksSlides ? currentPage : nil, hostTime: hostTime, sampleTime: mark.sampleTime, wallClock: wallClock)
         guard let writer else { return }
-        let segments = mark.segments
         eventsRevision += 1
         do {
             try await writer.writeEvents(events, revision: eventsRevision)
@@ -422,6 +446,7 @@ public final class LiveLectureSession {
         } catch {
             CaptureLog.capture.error("Stopping capture failed: \(String(describing: error), privacy: .public)")
         }
+        if !stoppedSegments.isEmpty { segments = stoppedSegments }
         if let writer {
             let endedAt = endedAt
             let segments = stoppedSegments
@@ -473,6 +498,7 @@ public final class LiveLectureSession {
         self.writer = writer
         self.clock = clock
         self.startedAt = startedAt
+        segments = contents.segments
         events = contents.events
         notes = Dictionary(contents.notes.map { ($0.page, $0) }, uniquingKeysWith: { _, last in last })
         if let page = contents.events.last?.page {
@@ -653,6 +679,7 @@ public final class LiveLectureSession {
                 guard let self else { return }
                 switch status {
                 case .segmentsChanged(let segments) where !segments.isEmpty:
+                    self.segments = segments
                     do {
                         try await writer.updateManifest { $0.segments = segments }
                     } catch {
