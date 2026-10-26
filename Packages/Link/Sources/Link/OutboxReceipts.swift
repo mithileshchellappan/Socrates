@@ -19,10 +19,10 @@ struct OutboxReceipts: Sendable {
         folder = outbox.appending(path: ".link", directoryHint: .isDirectory)
     }
 
-    /// Every receipt, by recording. Receipts of captures no longer in `existing` are deleted (the
-    /// student deleted the capture).
+    /// Every receipt, by recording. Receipts of captures not in `existing` are deleted (the student
+    /// deleted the capture); nil: the outbox could not be read, nothing is deleted.
     @concurrent
-    func load(existing: Set<RecordingID>) async -> [RecordingID: Received.Outcome] {
+    func load(existing: Set<RecordingID>?) async -> [RecordingID: Received.Outcome] {
         let fileManager = FileManager.default
         let urls = (try? fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
         var receipts: [RecordingID: Received.Outcome] = [:]
@@ -32,10 +32,10 @@ struct OutboxReceipts: Sendable {
                 LinkLog.outbox.notice("Unreadable receipt \(url.lastPathComponent, privacy: .public)")
                 continue
             }
-            if existing.contains(receipt.recording) {
-                receipts[receipt.recording] = receipt.outcome
-            } else {
+            if let existing, !existing.contains(receipt.recording) {
                 try? fileManager.removeItem(at: url)
+            } else {
+                receipts[receipt.recording] = receipt.outcome
             }
         }
         return receipts

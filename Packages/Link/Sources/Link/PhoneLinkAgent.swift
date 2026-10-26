@@ -118,8 +118,8 @@ actor PhoneLinkAgent {
             secIdentity = nil
             return
         }
-        let packages = (try? LecturePackage.all(in: services.paths.phoneCaptures)) ?? []
-        let existing = Set(packages.compactMap { package in package.id.map { RecordingID($0) } })
+        let packages = try? LecturePackage.all(in: services.paths.phoneCaptures)
+        let existing = packages.map { Set($0.compactMap { package in package.id.map { RecordingID($0) } }) }
         receipts = await receiptStore.load(existing: existing)
         guard started else { return }
         await directory.follow { [weak self] peers in
