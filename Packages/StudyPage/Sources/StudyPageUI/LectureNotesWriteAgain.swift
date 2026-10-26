@@ -5,41 +5,48 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// Write Again… (the notes page's ⋯ and failure line, Review's Summary): the student's act. A new
-/// version from whatever there is to write from (`LectureNotesRepository.writeAgain`, which logs
-/// why when it queues nothing: a version is open, or there is nothing at all), with the
-/// popover's instruction or the standing one, and Edit ▸ Undo "Undo Write Again" (Previous
-/// Version; Redo brings the new one back). While the recording's way into the Summary can be
-/// re-run (a failed transcription, the study pass's failed units), it is re-run too (`retry`):
-/// when it lands, the Summary is written once more from the recording, with the same instruction.
+/// Write Again… (the notes page's ⋯ and failure line, Review's Summary): the student's act,
+/// through the app's action (`\.lectureNotesWriteAgain`: Retry of a blocked recording first, then
+/// a new version from whatever there is, or, on a finished Summary whose recording's study pass is
+/// on its way, the instruction kept until the pass writes the version from it), with the
+/// popover's instruction or the standing one. Edit ▸ Undo "Undo Write Again": Previous Version
+/// for a version queued, the instruction taken back for one that waits; Redo brings either back.
 /// The task queue writes the version on the one background notes slot once Claude Code is ready.
 @MainActor
 public enum LectureNotesWriteAgain {
-    public static func queue(
-        lectureID: Lecture.ID, instruction: NotesInstruction, retry: LectureNotesRetryAction?, services: StudyServices, undoManager: UndoManager?
+    public static func run(
+        lectureID: Lecture.ID, instruction: NotesInstruction, action: LectureNotesWriteAgainAction?, services: StudyServices?,
+        undoManager: UndoManager?
     ) {
-        let repository = LectureNotesRepository(store: services.records)
-        let database = services.database
-        Task {
-            do {
-                if let queued = try await repository.writeAgain(lectureID: lectureID, instruction: instruction, createdBy: .user) {
-                    registerUndo(repository: repository, lectureID: lectureID, version: queued.id, undoManager: undoManager)
-                }
-                let recording = try await database.read { db in try LectureNotesRepository.inputs(lectureID: lectureID, in: db).recording }
-                if recording.canRetry { retry?(lectureID) }
-            } catch {
-                StudyPageLog.logger.error("Queueing the lecture's notes failed: \(String(describing: error), privacy: .public)")
-            }
+        guard let action else {
+            StudyPageLog.logger.notice("Write Again: no app action here (renders)")
+            return
+        }
+        action(lectureID, instruction) { outcome in
+            guard let services else { return }
+            registerUndo(outcome, repository: LectureNotesRepository(store: services.records), lectureID: lectureID, undoManager: undoManager)
         }
     }
 
-    private static func registerUndo(repository: LectureNotesRepository, lectureID: Lecture.ID, version: LectureNotes.ID, undoManager: UndoManager?) {
+    private static func registerUndo(_ outcome: WriteAgainOutcome, repository: LectureNotesRepository, lectureID: Lecture.ID, undoManager: UndoManager?) {
         guard let undoManager else { return }
+        let undo: @Sendable () async throws -> Void
+        let redo: @Sendable () async throws -> Void
+        switch outcome {
+        case .queued(let notes):
+            undo = { _ = try await repository.previousVersion(lectureID: lectureID) }
+            redo = { try await repository.restore(notes.id) }
+        case .waiting(let notes):
+            undo = { try await repository.discard(notes.id) }
+            redo = { try await repository.restore(notes.id) }
+        case .writing, .nothingToWriteFrom:
+            return
+        }
         let target = NotesUndoTarget()
         undoManager.registerUndo(withTarget: target) { target in
-            Task { _ = try? await repository.previousVersion(lectureID: lectureID) }
+            Task { try? await undo() }
             undoManager.registerUndo(withTarget: target) { _ in
-                Task { try? await repository.restore(version) }
+                Task { try? await redo() }
             }
             undoManager.setActionName(String(localized: "Write Again"))
         }
@@ -91,6 +98,7 @@ public struct LectureNotesFailureBar: View {
     @Environment(\.studyServices) private var services
     @Environment(\.undoManager) private var undoManager
     @Environment(\.lectureNotesRetry) private var retry
+    @Environment(\.lectureNotesWriteAgain) private var writeAgain
 
     public init(lectureID: Lecture.ID) {
         self.lectureID = lectureID
@@ -121,8 +129,7 @@ public struct LectureNotesFailureBar: View {
     }
 
     private func write(_ instruction: NotesInstruction) {
-        guard let services else { return }
-        LectureNotesWriteAgain.queue(lectureID: lectureID, instruction: instruction, retry: retry, services: services, undoManager: undoManager)
+        LectureNotesWriteAgain.run(lectureID: lectureID, instruction: instruction, action: writeAgain, services: services, undoManager: undoManager)
     }
 }
 

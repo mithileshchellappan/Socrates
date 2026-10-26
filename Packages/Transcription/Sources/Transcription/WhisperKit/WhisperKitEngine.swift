@@ -68,9 +68,10 @@ public enum AudioTimeline {
     static let reserveMargin = sampleRate / 10
 
     /// The parts as runs on the recording clock. Each part's first sample sits at its start time
-    /// rounded to a sample; a later part overwrites what overlaps it. With every part's length
-    /// known (`Part.duration`), each run reserves its room before it loads.
-    public static func runs(_ audio: TranscriptionAudio) throws -> SampleTimeline {
+    /// rounded to a sample; a later part overwrites what overlaps it. A part no later part joins
+    /// is its run as loaded (an imported file, the part before a pause: never copied); a run that
+    /// later parts join reserves its room from their lengths (`Part.duration`) before it loads.
+    static func runs(_ audio: TranscriptionAudio) throws -> SampleTimeline {
         guard !audio.parts.isEmpty else { throw TranscriptionError.emptyAudio }
         let parts = audio.parts.sorted { $0.startTime < $1.startTime }
         let offsets = parts.map { max(Int(($0.startTime * Double(sampleRate)).rounded()), 0) }
@@ -81,6 +82,8 @@ public enum AudioTimeline {
             let samples = try samples(of: part)
             if let last = runs.indices.last, offset <= runs[last].end + joinTolerance {
                 place(samples, at: offset - runs[last].start, in: &runs[last].samples)
+            } else if index + 1 == parts.count || offsets[index + 1] > offset + samples.count + joinTolerance {
+                runs.append(SampleTimeline.Run(start: offset, samples: samples))
             } else {
                 var run = SampleTimeline.Run(start: offset, samples: [])
                 run.samples.reserveCapacity(expectedLength(from: index, parts: parts, offsets: offsets))

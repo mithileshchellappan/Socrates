@@ -46,6 +46,8 @@ final class LectureNotesController {
     @ObservationIgnored var onWriteAgain: (() -> Void)?
     /// Retry of the recording's way into the Summary (`\.lectureNotesRetry`; nil in renders).
     @ObservationIgnored var retry: LectureNotesRetryAction?
+    /// Write Again (`\.lectureNotesWriteAgain`; nil in renders).
+    @ObservationIgnored var writeAgainAction: LectureNotesWriteAgainAction?
     /// Review's Summary: the passage taken to the chat goes up to the review, which sends it
     /// with its own context (a preference from the inspector column may not reach the panel, and
     /// would replace the review's). Nil: the view publishes `chatPassage` itself (the page).
@@ -122,9 +124,8 @@ final class LectureNotesController {
             onWriteAgain()
             return
         }
-        guard let services else { return }
-        LectureNotesWriteAgain.queue(
-            lectureID: lectureID, instruction: .standing, retry: retry, services: services,
+        LectureNotesWriteAgain.run(
+            lectureID: lectureID, instruction: .standing, action: writeAgainAction, services: services,
             undoManager: undoManager ?? coordinator?.textView?.undoManager
         )
     }

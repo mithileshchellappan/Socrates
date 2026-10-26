@@ -96,6 +96,8 @@ struct NotesDocumentInput: Equatable {
     /// How the lecture's recording is getting into the Summary: a blocked way is the document's
     /// first line ("Not transcribed", Retry).
     var recording: RecordingNotesState = .none
+    /// A Write Again waits for the recording's study pass: the document's first line, plain.
+    var writeAgainWaits = false
 
     var outline: [LectureNotesSection] { notes?.sections ?? [] }
 

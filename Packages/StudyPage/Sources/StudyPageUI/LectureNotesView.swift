@@ -14,7 +14,8 @@ import SwiftUI
 ///   height until their fence closes, and nothing being read moves. Queued: the skeleton;
 ///   paused: "Paused until 17:20"; failed: what came, a triangle with the reason, Write Again….
 ///   While the recording's way into the Summary is blocked, one line above it all ("Not
-///   transcribed", Retry through `\.lectureNotesRetry`).
+///   transcribed", Retry through `\.lectureNotesRetry`); while a Write Again waits for the
+///   recording's study pass, "Waiting for the recording" there (plain, secondary).
 /// - Sections fold by a chevron in the margin (kept per lecture).
 /// - A settled selection floats the capsule [highlighter] [Ask]; its menu starts with Ask… and
 ///   Highlight / Remove Highlight. Ask (through `\.lectureNotesAsker`; nil: Highlight only) opens
@@ -55,6 +56,7 @@ public struct LectureNotesView: View {
     @Environment(\.lectureNotesAsker) private var asker
     @Environment(\.lectureNotesUnavailable) private var unavailable
     @Environment(\.lectureNotesRetry) private var retry
+    @Environment(\.lectureNotesWriteAgain) private var writeAgainAction
     @Environment(\.lectureNotesPreview) private var preview
     @Environment(\.contentZoom) private var zoom
     @Environment(\.colorScheme) private var colorScheme
@@ -106,6 +108,7 @@ public struct LectureNotesView: View {
         controller.onChip = onChip
         controller.onWriteAgain = writeAgain
         controller.retry = retry
+        controller.writeAgainAction = writeAgainAction
         controller.onChatPassage = onChatPassage
         controller.undoManager = undoManager
         controller.notes = input.notes
@@ -147,7 +150,8 @@ public struct LectureNotesView: View {
             marks: rows.marks.filter { $0.removedAt == nil }, quotes: rows.quotes, lectures: lectures,
             recordings: recordings, materials: rows.materials, hasRecording: !rows.recordings.isEmpty, deck: rows.deck,
             pages: rows.range.map { $0.firstPage...$0.lastPage }, professor: professor, folded: controller.folded,
-            answersOpen: controller.answersOpen, unavailable: unavailable, canWriteAgain: rows.canWrite, recording: rows.recording
+            answersOpen: controller.answersOpen, unavailable: unavailable, canWriteAgain: rows.canWrite, recording: rows.recording,
+            writeAgainWaits: rows.writeAgainWaits
         )
     }
 
@@ -213,6 +217,9 @@ struct LectureNotesRows: Equatable, Sendable {
     var canWrite = false
     /// How the recording is getting into the Summary (the document's first line while blocked).
     var recording: RecordingNotesState = .none
+    /// A Write Again waits for the recording's study pass (`LectureNotes.pendingWriteAgain`, while
+    /// `LectureNotesInputs.studyPassComing`): the document's first line says so.
+    var writeAgainWaits = false
 
     static let empty = LectureNotesRows()
 }
@@ -244,6 +251,7 @@ struct LectureNotesRequest: FetchKeyRequest {
         let inputs = try LectureNotesRepository.inputs(lectureID: id, in: db)
         rows.canWrite = inputs.available != nil
         rows.recording = inputs.recording
+        rows.writeAgainWaits = inputs.studyPassComing && LectureNotes.pendingWriteAgain(of: rows.versions) != nil
         return rows
     }
 }

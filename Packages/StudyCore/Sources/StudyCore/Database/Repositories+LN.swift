@@ -25,9 +25,27 @@ extension LectureNotes {
         state == .failed && error.map(Self.nothingToWriteFromSentences.contains) == true && !hasText
     }
 
-    /// A version that can be the current notes: neither discarded, cancelled nor waiting for its
-    /// material.
-    public var isCandidate: Bool { discardedAt == nil && state != .cancelled && !isWaitingForMaterial }
+    /// Write Again on a finished Summary while its recording's study pass is on its way
+    /// (`WriteAgainOutcome.waiting`): the row holds the student's instruction until the pass
+    /// writes the version from the recording with it. Never shown, never current.
+    static let waitingToWrite = "This summary is written again when its recording is ready."
+
+    /// A Write Again that waits for its recording (a `failed` row with `waitingToWrite`, no text,
+    /// no task).
+    public var isWaitingToWrite: Bool { state == .failed && error == Self.waitingToWrite && !hasText }
+
+    /// A version that can be the current notes: neither discarded, cancelled nor waiting (for its
+    /// material or, a Write Again, for its recording).
+    public var isCandidate: Bool { discardedAt == nil && state != .cancelled && !isWaitingForMaterial && !isWaitingToWrite }
+
+    /// The student's Write Again that waits for its recording: the newest version neither
+    /// discarded nor cancelled, when it is such a row (a version queued after it took it up).
+    public static func pendingWriteAgain(of versions: [LectureNotes]) -> LectureNotes? {
+        guard let newest = versions.filter({ $0.discardedAt == nil && $0.state != .cancelled }).max(by: { $0.version < $1.version }),
+              newest.isWaitingToWrite
+        else { return nil }
+        return newest
+    }
 
     /// The current notes among a lecture's versions: the newest candidate.
     public static func current(of versions: [LectureNotes]) -> LectureNotes? {
@@ -47,6 +65,11 @@ extension LectureNotes {
         versions.filter { $0.discardedAt == nil && $0.state != .cancelled }.max { $0.version < $1.version }?.request
     }
 }
+
+/// Write Again of a lecture's Summary as the app runs it: Retry of a blocked recording first, then
+/// `LectureNotesRepository.writeAgain` (the app's `NotesWriteAgain`, one action behind the
+/// Summary's Write Again and the agent's write_lecture_notes).
+public typealias NotesWriteAgain = @Sendable (_ lectureID: Lecture.ID, _ instruction: NotesInstruction, _ createdBy: Author) async throws -> WriteAgainOutcome
 
 /// Lecture notes (`lecture_notes`) and the student's marks on them (`lecture_notes_mark`).
 public struct LectureNotesRepository: Sendable {
@@ -95,27 +118,102 @@ public struct LectureNotesRepository: Sendable {
     // MARK: Queueing (the only way a version starts)
 
     /// Write Again (the page's ⋯, the failure line, Review's Summary) and the agent's
-    /// write_lecture_notes: the student's own act. Queues a new version (an `agent_task` of kind
-    /// `lecture_notes` and a `queued` row with the outline, in one transaction) from whatever there
-    /// is to write from now (`LectureNotesInputs.available`), with `instruction`. Refused (nil, the
-    /// log says why) only while a version is open, when the lecture is gone, or with nothing at all
-    /// to write from. A recording still on its way (or re-run by Retry) replaces this version once
-    /// its study pass lands (`queueAfterStudyPass`), with the same instruction.
-    @discardableResult
-    public func writeAgain(lectureID: Lecture.ID, instruction: NotesInstruction, createdBy: Author) async throws -> LectureNotes? {
+    /// write_lecture_notes: the student's own act, with `instruction`. In one transaction:
+    /// - a version open with the same instruction: nothing (`.writing`); with another, it is
+    ///   cancelled (the student's act wins) and theirs follows;
+    /// - a finished Summary (or nothing to write from) while the recording's study pass is on its
+    ///   way (`LectureNotesInputs.studyPassComing`): the instruction waits on a row
+    ///   (`isWaitingToWrite`) and the pass writes the one version from the recording with it
+    ///   (`queueAfterStudyPass`; from what there is when the way ends blocked,
+    ///   `queueDueReplacement`), no call now (`.waiting`);
+    /// - else a new version (an `agent_task` of kind `lecture_notes` and a `queued` row with the
+    ///   outline) from whatever there is to write from now (`LectureNotesInputs.available`).
+    /// `.nothingToWriteFrom` (the log says why) with nothing at all, or when the lecture is gone.
+    /// The app retries a blocked recording first (`NotesWriteAgain`), so its way is on its way
+    /// again here.
+    public func writeAgain(lectureID: Lecture.ID, instruction: NotesInstruction, createdBy: Author) async throws -> WriteAgainOutcome {
         let stamp = store.currentDate
         return try await store.database.write { db in
-            let inputs = try Self.inputs(lectureID: lectureID, in: db)
-            guard let source = inputs.available else {
-                Log.lectureNotes.notice(
-                    "Notes for lecture \(ChatCitation.key(lectureID), privacy: .public) not written again: nothing to write from (\(inputs.summary, privacy: .public))"
-                )
-                return nil
+            let key = ChatCitation.key(lectureID)
+            guard let lecture = try Lecture.find(lectureID).fetchOne(db) else {
+                Log.lectureNotes.notice("Notes for lecture \(key, privacy: .public) not written again: the lecture is gone")
+                return .nothingToWriteFrom
             }
-            return try Self.queue(
-                lectureID: lectureID, source: source, instruction: instruction, createdBy: createdBy, inputs: inputs, in: db, now: stamp
-            )
+            var versions = try Self.versions(lectureID: lectureID, in: db)
+            let request = instruction.request(after: versions)
+            if let open = versions.first(where: { $0.state.isOpen }) {
+                guard open.request != request else {
+                    Log.lectureNotes.notice(
+                        "Notes for lecture \(key, privacy: .public) not written again: v\(open.version, privacy: .public) with the same instruction is \(open.state.rawValue, privacy: .public)"
+                    )
+                    return .writing(open)
+                }
+                _ = try Self.cancel(open.id, in: db, now: stamp)
+                versions = try Self.versions(lectureID: lectureID, in: db)
+            }
+            let inputs = try Self.inputs(lectureID: lectureID, in: db)
+            if inputs.studyPassComing, LectureNotes.current(of: versions)?.state == .done || inputs.available == nil {
+                let row = try Self.waitingRow(
+                    courseID: lecture.courseID, lectureID: lectureID, request: request, error: LectureNotes.waitingToWrite, createdBy: createdBy,
+                    versions: versions, in: db, now: stamp
+                )
+                Log.lectureNotes.notice(
+                    "Notes for lecture \(key, privacy: .public) written again once the recording is ready: v\(row.version, privacy: .public) waits (\(inputs.summary, privacy: .public)), \(request == nil ? "no instruction" : "with the instruction", privacy: .public), by \(createdBy.rawValue, privacy: .public)"
+                )
+                return .waiting(row)
+            }
+            // The instruction as it stood before a cancel (a cancelled version's is no longer read).
+            guard let source = inputs.available,
+                  let notes = try Self.queue(
+                      lectureID: lectureID, source: source, instruction: .new(request ?? ""), createdBy: createdBy, inputs: inputs, in: db, now: stamp
+                  )
+            else {
+                Log.lectureNotes.notice(
+                    "Notes for lecture \(key, privacy: .public) not written again: nothing to write from (\(inputs.summary, privacy: .public))"
+                )
+                return .nothingToWriteFrom
+            }
+            return .queued(notes)
         }
+    }
+
+    /// How the lecture's recording is getting into its Summary now (the app's Write Again retries
+    /// a blocked way before it writes).
+    public func recording(lectureID: Lecture.ID) async throws -> RecordingNotesState {
+        try await store.database.read { db in try Self.inputs(lectureID: lectureID, in: db).recording }
+    }
+
+    /// A row that only holds an instruction (`request`): a `failed` version without text or task
+    /// whose `error` says what it waits for (`waitingToWrite`: a Write Again waiting for the
+    /// recording; `nothingToWriteFrom`: an instruction kept for later versions). Never current;
+    /// `LectureNotes.instruction(of:)` counts it.
+    static func waitingRow(
+        courseID: Course.ID, lectureID: Lecture.ID, request: String?, error: String, createdBy: Author, versions: [LectureNotes], in db: Database,
+        now: Date
+    ) throws -> LectureNotes {
+        let row = LectureNotes(
+            courseID: courseID, lectureID: lectureID, version: (versions.map(\.version).max() ?? 0) + 1, state: .failed, source: .recording,
+            request: request, error: error, createdBy: createdBy, createdAt: now, updatedAt: now
+        )
+        try LectureNotes.upsert { row }.execute(db)
+        return row
+    }
+
+    /// A lecture merge (Filing): the instruction of the lecture that went is kept on the survivor
+    /// (a row `isWaitingForMaterial`, never current, no task) when the survivor has none of its
+    /// own. Returns the row (the merge's Undo deletes it), nil when nothing was kept.
+    public static func keepInstruction(of loser: [LectureNotes], on survivor: Lecture, in db: Database, now: Date) throws -> LectureNotes? {
+        guard let request = LectureNotes.instruction(of: loser) else { return nil }
+        let versions = try versions(lectureID: survivor.id, in: db)
+        guard LectureNotes.instruction(of: versions) == nil else { return nil }
+        let row = try waitingRow(
+            courseID: survivor.courseID, lectureID: survivor.id, request: request, error: LectureNotes.nothingToWriteFrom, createdBy: .user,
+            versions: versions, in: db, now: now
+        )
+        Log.lectureNotes.notice(
+            "Notes for lecture \(ChatCitation.key(survivor.id), privacy: .public) keep the instruction of a merged lecture (v\(row.version, privacy: .public))"
+        )
+        return row
     }
 
     /// First open of a lecture's notes page or Review's Summary tab (`user`): queues the first
@@ -149,14 +247,18 @@ public struct LectureNotesRepository: Sendable {
     /// detection; the pass ran again with them) or before one of its recordings
     /// (`predatesRecording`: another recording of the class whose transcript came later), or
     /// without the study pass's topics (`predatesTopics`: Write Again while the synthesis was on
-    /// its way or had failed), or the student re-ran the study pass (`rerunAsked`). Each holds
-    /// once. Always with the student's standing instruction.
+    /// its way or had failed), or the student re-ran the study pass (`rerunAsked`), or a Write
+    /// Again waits for it (`asked`, `pendingWriteAgain`). Each holds once. Always with the
+    /// student's standing instruction.
     @discardableResult
     public func queueAfterStudyPass(lectureID: Lecture.ID) async throws -> LectureNotes? {
         let stamp = store.currentDate
         return try await store.database.write { db in
             let versions = try Self.versions(lectureID: lectureID, in: db)
-            guard let reason = try Self.replacement(of: LectureNotes.current(of: versions), includingStale: true, in: db) else { return nil }
+            let asked = LectureNotes.pendingWriteAgain(of: versions)
+            let reason = try asked.map { _ in Replacement.asked }
+                ?? Self.replacement(of: LectureNotes.current(of: versions), includingStale: true, in: db)
+            guard let reason else { return nil }
             let inputs = try Self.inputs(lectureID: lectureID, in: db)
             guard inputs.recordingReady else {
                 Log.lectureNotes.notice(
@@ -168,7 +270,7 @@ public struct LectureNotesRepository: Sendable {
                 "Notes for lecture \(ChatCitation.key(lectureID), privacy: .public) written again after the study pass: \(reason.rawValue, privacy: .public)"
             )
             return try Self.queue(
-                lectureID: lectureID, source: .recording, instruction: .standing, createdBy: .agent, inputs: inputs, in: db, now: stamp
+                lectureID: lectureID, source: .recording, instruction: .standing, createdBy: asked?.createdBy ?? .agent, inputs: inputs, in: db, now: stamp
             )
         }
     }
@@ -184,28 +286,47 @@ public struct LectureNotesRepository: Sendable {
         }
     }
 
-    /// The catch-up, inside the caller's transaction: only once the recording is ready, with no
-    /// version open and no synthesis or cover unit pending (the pass queues them itself then), and
-    /// only over the lecture's newest version (it never undoes Previous Version or a cancel); for
-    /// a current version from the slides, one written without the topics, or a re-run the student
-    /// asked for. New slides and a new recording stay the pass's (it plans again first).
+    /// The catch-up, inside the caller's transaction, with no version open:
+    /// - a Write Again that waits for its recording (`pendingWriteAgain`), once nothing is on its
+    ///   way any more: from the recording when it is ready (no synthesis or cover unit pending),
+    ///   else from what there is (its way ended blocked, or the recording went);
+    /// - the replace-once rules, only once the recording is ready, with no synthesis or cover unit
+    ///   pending (the pass queues them itself then), and only over the lecture's newest version
+    ///   (it never undoes Previous Version or a cancel; a row only waiting for material does not
+    ///   count): for a current version from the slides, one written without the topics, or a
+    ///   re-run the student asked for. New slides and a new recording stay the pass's (it plans
+    ///   again first).
     static func queueDueReplacement(lectureID: Lecture.ID, versions: [LectureNotes], in db: Database, now: Date) throws -> LectureNotes? {
-        guard let current = LectureNotes.current(of: versions), current.id == versions.last?.id,
-              !versions.contains(where: { $0.state.isOpen }),
+        guard !versions.contains(where: { $0.state.isOpen }) else { return nil }
+        let key = ChatCitation.key(lectureID)
+        if let asked = LectureNotes.pendingWriteAgain(of: versions) {
+            let inputs = try inputs(lectureID: lectureID, in: db)
+            guard !inputs.studyPassComing, !(try inputs.recordingReady && passPending(lectureID: lectureID, in: db)),
+                  let source = inputs.available
+            else { return nil }
+            Log.lectureNotes.notice(
+                "Notes for lecture \(key, privacy: .public) written again (asked, caught up): the recording is \(inputs.recording.logDescription, privacy: .public)"
+            )
+            return try queue(lectureID: lectureID, source: source, instruction: .standing, createdBy: asked.createdBy, inputs: inputs, in: db, now: now)
+        }
+        guard let current = LectureNotes.current(of: versions), current.id == versions.last(where: { !$0.isWaitingForMaterial })?.id,
               let reason = try replacement(of: current, includingStale: false, in: db)
         else { return nil }
         let inputs = try inputs(lectureID: lectureID, in: db)
-        guard inputs.recordingReady else { return nil }
-        let stages = [StudyStage.synthesize, StudyStage.cover]
-        let pending = try StudyUnit
-            .where { $0.lectureID.eq(lectureID) && $0.stage.in(stages) && $0.state.eq(ExtractionState.pending) }
-            .select(\.id)
-            .fetchAll(db)
-        guard pending.isEmpty else { return nil }
+        guard inputs.recordingReady, try !passPending(lectureID: lectureID, in: db) else { return nil }
         Log.lectureNotes.notice(
-            "Notes for lecture \(ChatCitation.key(lectureID), privacy: .public) written again (caught up): \(reason.rawValue, privacy: .public)"
+            "Notes for lecture \(key, privacy: .public) written again (caught up): \(reason.rawValue, privacy: .public)"
         )
         return try queue(lectureID: lectureID, source: .recording, instruction: .standing, createdBy: .agent, inputs: inputs, in: db, now: now)
+    }
+
+    /// The lecture's synthesis or cover unit is pending: the pass queues the notes itself once it
+    /// lands (`queueAfterStudyPass`).
+    static func passPending(lectureID: Lecture.ID, in db: Database) throws -> Bool {
+        let stages = [StudyStage.synthesize, StudyStage.cover]
+        return try StudyUnit
+            .where { $0.lectureID.eq(lectureID) && $0.stage.in(stages) && $0.state.eq(ExtractionState.pending) }
+            .fetchCount(db) > 0
     }
 
     /// Why a lecture's current notes are written again from the recording.
@@ -216,6 +337,7 @@ public struct LectureNotesRepository: Sendable {
         case predatesRecording = "written before one of its recordings"
         case predatesTopics = "written without the study pass's topics"
         case rerun = "the study pass was run again"
+        case asked = "a Write Again waited for it"
     }
 
     /// The reason to replace `current` once the recording's study pass is written (nil: none);
@@ -316,7 +438,10 @@ public struct LectureNotesRepository: Sendable {
 
     /// The student re-ran the lecture's study pass after the version was queued (a succeeded
     /// `study_pass` task: the agent's rerun_study_pass, which only resets the pass's units): they
-    /// asked for the lecture's AI again, so its next synthesis writes the notes again, once.
+    /// asked for the lecture's AI again, so its next synthesis writes the notes again, once. Not
+    /// when the version was written from the re-run's topics already (it began after that
+    /// synthesis landed: one of its sections names a topic row there is now, and a synthesis
+    /// writes its topic rows anew).
     static func rerunAsked(after notes: LectureNotes, in db: Database) throws -> Bool {
         let reference = Lecture.ID?.some(notes.lectureID)
         let queued = notes.createdAt
@@ -327,7 +452,14 @@ public struct LectureNotesRepository: Sendable {
             }
             .select(\.id)
             .fetchAll(db)
-        return !tasks.isEmpty
+        guard !tasks.isEmpty else { return false }
+        let used = Set(notes.sections.compactMap(\.topicID))
+        guard !used.isEmpty else { return true }
+        let topics = try Annotation
+            .where { $0.lectureID.eq(reference) && $0.kind.eq(AnnotationKind.topic) }
+            .select(\.id)
+            .fetchAll(db)
+        return used.isDisjoint(with: topics)
     }
 
     /// What the notes writer could read about the lecture now, counted (the writer's
@@ -353,10 +485,15 @@ public struct LectureNotesRepository: Sendable {
             let last = range.lastPage
             pages = try DeckPage.where { $0.deckID.eq(deckID) && $0.pageNumber.gte(first) && $0.pageNumber.lte(last) }.fetchCount(db)
         }
+        let recording = RecordingNotesState(transcriptions: transcriptions, busy: busy, synthesis: synthesis?.0, synthesisError: synthesis?.1)
+        // The pass will write a synthesis: a recording is being transcribed (or waits for its
+        // first transcription), or its lines wait for the synthesis (not planned yet, or pending).
+        let transcribing = transcriptions.contains { $0.lines == 0 && !$0.hasFailed && $0.latest != .succeeded }
+        let synthesisComing = lines > 0 && (synthesis == nil || synthesis?.0 == .pending)
         return LectureNotesInputs(
             synthesized: syntheses.contains { $0.0 == .done }, topics: topics, transcriptLines: lines, recordings: transcriptions.count,
-            range: range, rangePages: pages, synthesisSkipped: synthesis?.0 == .skipped,
-            recording: RecordingNotesState(transcriptions: transcriptions, busy: busy, synthesis: synthesis?.0, synthesisError: synthesis?.1)
+            range: range, rangePages: pages, synthesisSkipped: synthesis?.0 == .skipped, recording: recording,
+            studyPassComing: recording == .coming && (transcribing || synthesisComing)
         )
     }
 
@@ -630,6 +767,17 @@ public struct LectureNotesRepository: Sendable {
         }
     }
 
+    /// Undo of a Write Again that waits for its recording (`WriteAgainOutcome.waiting`): its row is
+    /// discarded, so the instruction before it stands again (Redo: `restore`).
+    public func discard(_ id: LectureNotes.ID) async throws {
+        let stamp = store.currentDate
+        try await store.database.write { db in
+            try LectureNotes.where { $0.id.eq(id) && $0.discardedAt.is(nil) }
+                .update { $0.discardedAt = Date?.some(stamp); $0.updatedAt = stamp }
+                .execute(db)
+        }
+    }
+
     /// Redo of Previous Version: a discarded version is a candidate again (a cancelled one stays
     /// cancelled: Write Again writes it anew).
     public func restore(_ id: LectureNotes.ID) async throws {
@@ -704,10 +852,15 @@ public struct LectureNotesInputs: Sendable, Hashable {
     public var synthesisSkipped: Bool
     /// How the recording is getting into the Summary.
     public var recording: RecordingNotesState
+    /// On its way (`recording` is `.coming`) and the study pass will write a synthesis: a
+    /// recording is being transcribed, or its lines wait for the synthesis. Its landing writes the
+    /// Summary (`queueAfterStudyPass`), so a Write Again on a finished Summary waits for it.
+    /// False while only another job of the lecture runs.
+    public var studyPassComing: Bool
 
     public init(
         synthesized: Bool, topics: Int, transcriptLines: Int, recordings: Int, range: LectureSlideRange?, rangePages: Int,
-        synthesisSkipped: Bool = false, recording: RecordingNotesState = .none
+        synthesisSkipped: Bool = false, recording: RecordingNotesState = .none, studyPassComing: Bool = false
     ) {
         self.synthesized = synthesized
         self.topics = topics
@@ -717,6 +870,7 @@ public struct LectureNotesInputs: Sendable, Hashable {
         self.rangePages = rangePages
         self.synthesisSkipped = synthesisSkipped
         self.recording = recording
+        self.studyPassComing = studyPassComing
     }
 
     /// The study pass has written its synthesis (its unit done, or topic rows: a library whose
@@ -738,13 +892,16 @@ public struct LectureNotesInputs: Sendable, Hashable {
 
     /// What a version queued automatically (the first open, material that arrived) is written
     /// from: the recording once its pass is written; the slides of a lecture without a recording;
-    /// while the recording's way is blocked (`RecordingNotesState.isBlocked`), what there is
-    /// (`available`). nil while a recording is still on its way: its pass writes the notes.
+    /// while the recording's way is blocked (`RecordingNotesState.isBlocked`), the slides, else
+    /// the transcript of a failed transcription or study pass (`available`), never a transcript
+    /// under the synthesis's minimum (only the student's Write Again writes from that). nil while
+    /// a recording is still on its way: its pass writes the notes.
     public var source: LectureNotesSource? {
         if recordingReady { return .recording }
         if recordings == 0, rangePages > 0 { return .slides }
-        if recording.isBlocked { return available }
-        return nil
+        guard recording.isBlocked else { return nil }
+        if rangePages > 0 { return .slides }
+        return recording == .tooLittleSpeech ? nil : available
     }
 
     /// "transcript 0 lines, 0 recordings, synthesis no, 5 topics, slides 1–50: 0 pages, recording

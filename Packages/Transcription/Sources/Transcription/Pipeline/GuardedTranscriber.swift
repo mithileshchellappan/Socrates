@@ -45,7 +45,7 @@ public struct GuardedTranscriber: Sendable {
     /// Transcribes a recording's runs of 16 kHz mono audio. Times in the result are seconds from
     /// the clock's sample 0; a gap between runs reads as silence (nothing is decoded there), and
     /// only the windows being decoded are copied out.
-    public func transcribe(
+    func transcribe(
         timeline: SampleTimeline,
         options: TranscriptionOptions,
         progress: @escaping TranscriptionProgressHandler = { _ in }

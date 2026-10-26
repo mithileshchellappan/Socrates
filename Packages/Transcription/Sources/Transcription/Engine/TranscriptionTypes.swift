@@ -337,7 +337,9 @@ public enum TranscriptionError: Error, Hashable, Sendable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .audioUnreadable(let name): String(localized: "“\(name)” can’t be read as audio.")
+        // The name is a file of the library's store (a content hash): the log keeps it, the
+        // student reads the fact.
+        case .audioUnreadable: String(localized: "The recording’s audio can’t be read.")
         case .emptyAudio: String(localized: "The recording has no audio.")
         case .modelUnavailable(let detail): String(localized: "The transcription model can’t be loaded: \(detail)")
         case .decodingFailed(let detail): String(localized: "Transcription failed: \(detail)")

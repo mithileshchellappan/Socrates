@@ -764,9 +764,13 @@ final class NotesDocumentBuilder {
     }
 
     /// The recording's way into the Summary is blocked: one line in the failure line's
-    /// typography ("Not transcribed", Retry), at the top of the document. Nil otherwise.
+    /// typography ("Not transcribed", Retry), at the top of the document. A Write Again that
+    /// waits for the recording's study pass: "Waiting for the recording", plain. Nil otherwise.
     private func recordingUnit() -> NotesUnit? {
-        guard let line = NotesRecordingLine(input.recording) else { return nil }
+        guard let line = NotesRecordingLine(input.recording) else {
+            guard input.writeAgainWaits else { return nil }
+            return lineUnit(String(localized: "Waiting for the recording"), sectionKey: Self.recordingKey)
+        }
         let actions = actions
         let attachment = HostedBlockAttachment(
             NotesFailureLine(label: line.label, help: line.help, action: line.retries ? .retry : nil, zoom: metrics.zoom) {

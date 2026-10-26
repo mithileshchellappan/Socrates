@@ -91,6 +91,7 @@ public actor AppAgent {
         materials: MaterialLibrary? = nil,
         notesWriter: NotesWriter? = nil,
         wakeProcessing: @escaping @Sendable () async -> Void = {},
+        writeNotesAgain: NotesWriteAgain? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.services = services
@@ -107,7 +108,7 @@ public actor AppAgent {
         self.now = now
         let changeLog = ChangeLog(
             services: services, memory: memory, filing: filing, documents: documents, materials: materials, wakeProcessing: wakeProcessing,
-            now: now
+            writeNotesAgain: writeNotesAgain, now: now
         )
         self.changeLog = changeLog
         let quit = QuitSignal()
@@ -138,15 +139,16 @@ public actor AppAgent {
     /// the study coach the plan tools replan through. `documents` (md): the app's document bank
     /// (`keep_document`; nil: the panel cannot keep files, the read tools still work).
     /// `wakeProcessing` (mr): the lecture processor's `wake()`, after link_deck_pages / unlink_deck
-    /// or their Undo queued alignment.
+    /// or their Undo queued alignment. `writeNotesAgain` (ln): the app's Write Again, for
+    /// write_lecture_notes (nil: the repository's alone).
     public static func specs(
         services: StudyServices, search: SearchEngine, drafter: ReplyDrafter?, memory: DeadlineMemory, coach: CoachEngine? = nil,
         documents: DocumentBank? = nil, materials: MaterialLibrary? = nil, wakeProcessing: @escaping @Sendable () async -> Void = {},
-        now: @escaping @Sendable () -> Date = { Date() }
+        writeNotesAgain: NotesWriteAgain? = nil, now: @escaping @Sendable () -> Date = { Date() }
     ) -> Specs {
         let deps = AppAgentChat.Services(
             services: services, search: search, drafter: drafter, memory: memory, coach: coach, documents: documents,
-            materials: materials, wakeProcessing: wakeProcessing, now: now
+            materials: materials, wakeProcessing: wakeProcessing, writeNotesAgain: writeNotesAgain, now: now
         )
         return Specs(
             additional: [.app: { try AppAgentChat.spec(deps) }],

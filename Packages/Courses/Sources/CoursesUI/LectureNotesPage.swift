@@ -14,10 +14,12 @@ import StudyUI
 /// is off (renders). Write Again… (the ⋯ menu, the failure line) opens its popover hung off a
 /// plain view behind the ⋯ (a popover on the `Menu` itself does not show reliably), after the
 /// click, filled with the student's standing instruction; a version without text is queued again
-/// at once with it. It is off while a version is open or nothing could be written (no slides with
-/// pages, no transcript). While the recording's way into the Summary is blocked, the notes show
-/// its line (Retry: `\.lectureNotesRetry`), and the page asks for a version again when that state
-/// changes (it writes from what there is, or catches up once the recording is ready).
+/// at once with it; both through the app's action (`\.lectureNotesWriteAgain`). It is off while a
+/// version is open or nothing could be written (no slides with pages, no transcript). While the
+/// recording's way into the Summary is blocked, the notes show its line (Retry:
+/// `\.lectureNotesRetry`), and the page asks for a version again when it becomes blocked (written
+/// from what there is, a Write Again that waited for the recording too). The recording's study
+/// pass landing is the pipeline's (after the course book's cover unit), never the page's.
 ///
 /// nl: the page grows with the window (`NotesPageLayout`): the text at most 780 pt, code, tables,
 /// diagrams, charts and slides breaking out to at most 1120, the header and Keep in mind at the
@@ -43,7 +45,7 @@ public struct LectureNotesPage: View {
     @Environment(\.studyCoach) private var studyCoach
     @Environment(\.undoManager) private var undoManager
     @Environment(\.lectureNotesQueuesOnOpen) private var queuesOnOpen
-    @Environment(\.lectureNotesRetry) private var retry
+    @Environment(\.lectureNotesWriteAgain) private var writeAgainAction
     @Environment(\.isSearchFieldFocused) private var isSearchFieldFocused
     @Environment(\.isLiveResizing) private var isLiveResizing
     @Environment(\.locale) private var locale
@@ -61,9 +63,10 @@ public struct LectureNotesPage: View {
             content(zoom: zoom)
         }
         // Again when the material arrives while the page is open (`canWrite`: slides with pages
-        // or a transcript) or the recording's state changes (blocked: written from what there is;
-        // ready: the replace-once rules caught up); nothing once a version is current and due.
-        .task(id: NotesQueueTrigger(lectureID: lectureID, canWrite: page.canWrite, recording: page.recording)) {
+        // or a transcript) or the recording's way becomes blocked (written from what there is).
+        // Not when its study pass lands: the pipeline queues that version itself, after the
+        // course book's cover unit, which the page would race.
+        .task(id: NotesQueueTrigger(lectureID: lectureID, canWrite: page.canWrite, blocked: page.recording.isBlocked ? page.recording : nil)) {
             guard queuesOnOpen, let services else { return }
             do {
                 try await LectureNotesRepository(store: services.records).queueIfNeeded(lectureID: lectureID)
@@ -275,11 +278,9 @@ public struct LectureNotesPage: View {
         Task { @MainActor in writeAgainShown = true }
     }
 
-    /// Write Again…: a new version with the student's instruction (Previous Version undoes it),
-    /// and what can be re-run of the recording, re-run.
+    /// Write Again…: the app's action with the student's instruction (Edit ▸ Undo takes it back).
     private func writeAgain(_ instruction: NotesInstruction) {
-        guard let services else { return }
-        LectureNotesWriteAgain.queue(lectureID: lectureID, instruction: instruction, retry: retry, services: services, undoManager: undoManager)
+        LectureNotesWriteAgain.run(lectureID: lectureID, instruction: instruction, action: writeAgainAction, services: services, undoManager: undoManager)
     }
 
     /// Previous Version (Edit ▸ Undo "Undo Write Again"; Redo brings the newer one back).
@@ -422,11 +423,12 @@ private struct ZoomReader<Content: View>: View {
 }
 
 /// When the page asks for a version (`queueIfNeeded`): on open, and when what it could be written
-/// from arrives, or the recording's state changes, while it is open.
+/// from arrives, or the recording's way becomes blocked, while it is open.
 struct NotesQueueTrigger: Hashable {
     var lectureID: Lecture.ID
     var canWrite: Bool
-    var recording: RecordingNotesState
+    /// The recording's state while blocked; nil otherwise (its way on its way or written).
+    var blocked: RecordingNotesState?
 }
 
 /// The page's rows in one observed read.

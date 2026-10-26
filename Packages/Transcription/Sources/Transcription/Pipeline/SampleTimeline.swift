@@ -5,27 +5,27 @@ import Foundation
 /// read gives zeros where no run lies, exactly what a zero-padded array gave, so the speech
 /// detection, the chunk plan and the decoded windows (and with them the transcript and its times)
 /// are the same as before, sample for sample.
-public struct SampleTimeline: Sendable {
+struct SampleTimeline: Sendable {
     /// Continuous samples from `start` (a sample index on the recording clock).
-    public struct Run: Sendable {
-        public var start: Int
-        public var samples: [Float]
+    struct Run: Sendable {
+        var start: Int
+        var samples: [Float]
 
-        public init(start: Int, samples: [Float]) {
+        init(start: Int, samples: [Float]) {
             self.start = start
             self.samples = samples
         }
 
-        public var end: Int { start + samples.count }
+        var end: Int { start + samples.count }
     }
 
     /// Sorted by `start`, never overlapping, none empty.
-    public let runs: [Run]
+    let runs: [Run]
     /// The end of the clock: one past the last sample (a zero-padded array's length).
-    public let count: Int
+    let count: Int
 
     /// Dense samples from sample 0 (one run).
-    public init(_ samples: [Float]) {
+    init(_ samples: [Float]) {
         runs = samples.isEmpty ? [] : [Run(start: 0, samples: samples)]
         count = samples.count
     }
@@ -37,10 +37,10 @@ public struct SampleTimeline: Sendable {
         self.count = max(count, kept.last?.end ?? 0)
     }
 
-    public var isEmpty: Bool { count == 0 }
+    var isEmpty: Bool { count == 0 }
 
     /// The samples of `range` as one array (zeros where no run lies).
-    public func samples(in range: Range<Int>) -> [Float] {
+    func samples(in range: Range<Int>) -> [Float] {
         var buffer = [Float](repeating: 0, count: range.count)
         buffer.withUnsafeMutableBufferPointer { copy(range, into: $0) }
         return buffer
@@ -48,7 +48,7 @@ public struct SampleTimeline: Sendable {
 
     /// Writes the samples of `range` to the start of `buffer` (at least `range.count` long): zeros
     /// where no run lies.
-    public func copy(_ range: Range<Int>, into buffer: UnsafeMutableBufferPointer<Float>) {
+    func copy(_ range: Range<Int>, into buffer: UnsafeMutableBufferPointer<Float>) {
         guard !range.isEmpty, let base = buffer.baseAddress else { return }
         base.update(repeating: 0, count: range.count)
         var index = firstRun(endingAfter: range.lowerBound)
@@ -68,14 +68,14 @@ public struct SampleTimeline: Sendable {
 
     /// Whether any run holds a sample of `range` (false: the range lies wholly in a gap or past
     /// the last run).
-    public func intersects(_ range: Range<Int>) -> Bool {
+    func intersects(_ range: Range<Int>) -> Bool {
         let index = firstRun(endingAfter: range.lowerBound)
         return index < runs.count && runs[index].start < range.upperBound
     }
 
     /// All samples from 0 as one array, gaps as zeros (the bench's single files: their one run as
     /// it is).
-    public var contiguous: [Float] {
+    var contiguous: [Float] {
         if runs.count == 1, let run = runs.first, run.start == 0, run.samples.count == count { return run.samples }
         return samples(in: 0..<count)
     }

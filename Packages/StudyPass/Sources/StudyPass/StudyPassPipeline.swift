@@ -245,11 +245,7 @@ public actor StudyPassPipeline {
             }
             return units.count
         }
-        settled[lectureID] = nil
-        transient.remove(lectureID)
-        generationStart[lectureID] = stamp
-        completedRuns = completedRuns.filter { !$0.key.hasPrefix(lectureID.uuidString) }
-        preferred = lectureID
+        reopen(lectureID, at: stamp)
         Task { await self.wake() }
         return reset
     }
@@ -258,7 +254,8 @@ public actor StudyPassPipeline {
     /// `failed` units of the lecture (a read, the synthesis, the cover unit, a research pick; never
     /// a done or skipped one) go back to `pending` (attempts 0), with a fresh budget window (the
     /// student's override of the automatic budget: after a relaunch the window starts at their
-    /// `updated_at`). The lecture is no longer settled and goes first, and a pass starts. Writes no
+    /// `updated_at`). The lecture is no longer settled and goes first, its units' runs since
+    /// launch count from zero (`reopen`, as `rerun`), and a pass starts. Writes no
     /// notes itself: the replace-once rules do when the synthesis lands
     /// (`LectureNotesRepository.queueAfterStudyPass`). Returns the number of units reset (0:
     /// nothing failed, nothing changes).
@@ -283,12 +280,20 @@ public actor StudyPassPipeline {
         }
         guard reset > 0 else { return 0 }
         StudyPass.log.notice("Study pass retried: \(reset) failed units pending again")
+        reopen(lectureID, at: stamp)
+        startPass()
+        return reset
+    }
+
+    /// The student asked for the lecture's pass again (`rerun`, `retryFailed`): it is no longer
+    /// settled and goes first, its budget window starts now, and its units' runs since launch
+    /// count from zero (a unit held by `maximumRunsPerLaunch` runs again).
+    private func reopen(_ lectureID: Lecture.ID, at stamp: Date) {
         settled[lectureID] = nil
         transient.remove(lectureID)
         generationStart[lectureID] = stamp
+        completedRuns = completedRuns.filter { !$0.key.hasPrefix(lectureID.uuidString) }
         preferred = lectureID
-        startPass()
-        return reset
     }
 
     /// Stops following and ends the loop; a unit in flight stays `pending` (nothing half-written).

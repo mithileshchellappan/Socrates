@@ -78,6 +78,29 @@ public enum NotesInstruction: Sendable, Hashable {
     }
 }
 
+/// What Write Again did (`LectureNotesRepository.writeAgain`).
+public enum WriteAgainOutcome: Sendable, Hashable {
+    /// A new version is queued (an open version with another instruction was cancelled for it).
+    case queued(LectureNotes)
+    /// The Summary is finished and its recording's study pass is on its way: the instruction waits
+    /// on this row (`LectureNotes.isWaitingToWrite`) and the pass writes the one version from the
+    /// recording with it, no call now.
+    case waiting(LectureNotes)
+    /// A version with the same instruction is being written already: nothing changes.
+    case writing(LectureNotes)
+    /// Nothing to write from (no slides with pages, no transcript, no recording on its way), or
+    /// the lecture is gone.
+    case nothingToWriteFrom
+
+    /// The version queued or the row that waits (nil: nothing changed).
+    public var changed: LectureNotes? {
+        switch self {
+        case .queued(let notes), .waiting(let notes): notes
+        case .writing, .nothingToWriteFrom: nil
+        }
+    }
+}
+
 /// A mark the student keeps on the notes (`lecture_notes_mark.kind`).
 public enum LectureNotesMarkKind: String, Hashable, Sendable, Codable, CaseIterable, QueryBindable {
     /// The student's yellow highlight under a passage.
@@ -431,7 +454,7 @@ extension AgentTaskKind {
     /// Write a version of a lecture's notes (`lecture_notes.task_id` points back; `lecture_id`
     /// set): run in code by the task queue, one at a time, queued only by `LectureNotesRepository`
     /// (`writeAgain`, `queueIfNeeded`, `queueAfterStudyPass`, `queueDueReplacement`,
-    /// `requeueWaiting`).
+    /// `requeueWaiting`). A Write Again that waits for the recording has no task until then.
     public static let lectureNotes: Self = "lecture_notes"
 }
 

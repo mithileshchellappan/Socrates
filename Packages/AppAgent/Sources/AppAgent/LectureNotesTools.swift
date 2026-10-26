@@ -122,7 +122,9 @@ struct LectureNotesTools: Sendable {
                     message asks you to (quote: their words asking). request: what they want different, in their words \
                     ("more on the merge rule, fewer formulas"), at most 300 characters; it becomes their standing instruction \
                     for that summary, kept for every later version. null keeps the standing instruction they gave before. \
-                    Undo cancels it while it is written, else goes back to the version before.
+                    A recording that failed is retried first; while the recording's study pass is still on its way, the \
+                    summary is written once, from it, when it lands. Undo cancels it while it is written, else goes back to \
+                    the version before.
                     """,
                 inputSchema: Schema.object([
                     "lecture": Schema.string("The lecture's key, \"DC 2\" or id."),

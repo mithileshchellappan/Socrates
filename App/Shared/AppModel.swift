@@ -191,6 +191,8 @@ final class AppModel {
     @ObservationIgnored private var deadlineSync: Task<Void, Never>?
     /// Retry on a lecture's Summary while it runs (one per lecture: `retryLecture`).
     @ObservationIgnored private var lectureRetries: [Lecture.ID: Task<Void, Never>] = [:]
+    /// Write Again on a lecture's Summary while it is queued (one per lecture: `writeAgain`).
+    @ObservationIgnored private var lectureWrites: [Lecture.ID: Task<Void, Never>] = [:]
     /// Lets the services made in `init` call back into the model once it exists.
     @ObservationIgnored private let owner: ModelReference
 
@@ -293,9 +295,11 @@ final class AppModel {
                 await studyPass?.queueCoverBackfill(courseID: material.courseID)
             }
             self.materialLibrary = materialLibrary
+            // ln: write_lecture_notes is the Summary's Write Again (Retry of a blocked recording first).
+            let writeNotesAgain = Self.writeAgain(services: services, processor: processor, studyPass: studyPass)
             let specs = AppAgent.specs(
                 services: services, search: engine, drafter: drafter, memory: memory, coach: coach, documents: documentBank,
-                materials: materialLibrary, wakeProcessing: wakeProcessing
+                materials: materialLibrary, wakeProcessing: wakeProcessing, writeNotesAgain: writeNotesAgain
             )
             #else
             let specs = AppAgent.specs(
@@ -325,7 +329,7 @@ final class AppModel {
                 services: services, client: claude, runtime: agent, memory: memory,
                 schedule: CourseSchedule(services: services), studyPass: studyPass, coach: coach, specs: specs,
                 filing: service, advisor: advisor, documents: documentBank, materials: materialLibrary, notesWriter: notesWriter,
-                wakeProcessing: wakeProcessing
+                wakeProcessing: wakeProcessing, writeNotesAgain: writeNotesAgain
             ) : nil
             self.appAgent = appAgent
             calendarMirror = startsProcessing ? CalendarMirror(services: services) : nil
@@ -884,28 +888,68 @@ final class AppModel {
         Task { _ = try? await processor?.retry(lectureID: lectureID) }
     }
 
-    /// Retry on a lecture's Summary (its recording's line, and Write Again while something can be
-    /// re-run): the lecture's failed transcriptions are queued again and the study pass's failed
-    /// units run again with a fresh budget; each does nothing when nothing of it failed. One at a
-    /// time per lecture, owned by the model.
+    /// Retry on a lecture's Summary (its recording's line): `retryRecording` in a task the model
+    /// owns, one at a time per lecture.
     func retryLecture(_ lectureID: Lecture.ID) {
         guard lectureRetries[lectureID] == nil else { return }
         let processor = processor
         let studyPass = studyPass
         lectureRetries[lectureID] = Task { [weak self] in
-            do {
-                let queued = try await processor?.retryTranscriptions(lectureID: lectureID) ?? 0
-                if queued > 0 { Log.jobs.notice("Retry: \(queued) transcription(s) queued again") }
-            } catch {
-                Log.jobs.error("Retrying a lecture's transcriptions failed: \(error.localizedDescription, privacy: .public)")
-            }
-            do {
-                let units = try await studyPass?.retryFailed(lectureID: lectureID) ?? 0
-                if units > 0 { Log.app.notice("Retry: \(units) study pass unit(s) run again") }
-            } catch {
-                Log.app.error("Retrying a lecture's study pass failed: \(error.localizedDescription, privacy: .public)")
-            }
+            await Self.retryRecording(lectureID: lectureID, processor: processor, studyPass: studyPass)
             self?.lectureRetries[lectureID] = nil
+        }
+    }
+
+    /// The lecture's failed transcriptions are queued again and the study pass's failed units run
+    /// again with a fresh budget; each does nothing when nothing of it failed.
+    nonisolated static func retryRecording(lectureID: Lecture.ID, processor: LectureProcessor?, studyPass: StudyPassPipeline?) async {
+        do {
+            let queued = try await processor?.retryTranscriptions(lectureID: lectureID) ?? 0
+            if queued > 0 { Log.jobs.notice("Retry: \(queued) transcription(s) queued again") }
+        } catch {
+            Log.jobs.error("Retrying a lecture's transcriptions failed: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
+            let units = try await studyPass?.retryFailed(lectureID: lectureID) ?? 0
+            if units > 0 { Log.app.notice("Retry: \(units) study pass unit(s) run again") }
+        } catch {
+            Log.app.error("Retrying a lecture's study pass failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Write Again on a lecture's Summary (the page's ⋯, the failure line, Review's Summary):
+    /// `writeAgain(services:processor:studyPass:)` in a task the model owns, one at a time per
+    /// lecture; `done` gets what it did (the screen's Undo).
+    func writeAgain(_ lectureID: Lecture.ID, instruction: NotesInstruction, done: @escaping @MainActor @Sendable (WriteAgainOutcome) -> Void) {
+        guard let services else { return }
+        guard lectureWrites[lectureID] == nil else {
+            Log.app.notice("Write Again: one is being queued for this lecture already")
+            return
+        }
+        let write = Self.writeAgain(services: services, processor: processor, studyPass: studyPass)
+        lectureWrites[lectureID] = Task { [weak self] in
+            do {
+                done(try await write(lectureID, instruction, .user))
+            } catch {
+                Log.app.error("Write Again failed: \(error.localizedDescription, privacy: .public)")
+            }
+            self?.lectureWrites[lectureID] = nil
+        }
+    }
+
+    /// Write Again as one act, for the Summary and the agent's write_lecture_notes: a recording
+    /// whose way into the Summary is blocked and can be re-run (`RecordingNotesState.canRetry`)
+    /// is retried first (`retryRecording`), so the notes then wait for it instead of being written
+    /// twice; then `LectureNotesRepository.writeAgain`. Without a processor or a study pass (the
+    /// phone, renders) only the latter.
+    nonisolated static func writeAgain(services: StudyServices, processor: LectureProcessor?, studyPass: StudyPassPipeline?) -> NotesWriteAgain {
+        let repository = LectureNotesRepository(store: services.records)
+        let retries = processor != nil || studyPass != nil
+        return { lectureID, instruction, createdBy in
+            if retries, try await repository.recording(lectureID: lectureID).canRetry {
+                await retryRecording(lectureID: lectureID, processor: processor, studyPass: studyPass)
+            }
+            return try await repository.writeAgain(lectureID: lectureID, instruction: instruction, createdBy: createdBy)
         }
     }
 
@@ -1021,6 +1065,14 @@ final class AppModel {
     var lectureNotesRetry: LectureNotesRetryAction? {
         guard runsBackgroundWork, processor != nil || studyPass != nil else { return nil }
         return LectureNotesRetryAction { [weak self] lectureID in self?.retryLecture(lectureID) }
+    }
+
+    /// ln: Write Again of a lecture's Summary (`\.lectureNotesWriteAgain`); nil without a library.
+    var lectureNotesWriteAgain: LectureNotesWriteAgainAction? {
+        guard services != nil else { return nil }
+        return LectureNotesWriteAgainAction { [weak self] lectureID, instruction, done in
+            self?.writeAgain(lectureID, instruction: instruction, done: done)
+        }
     }
 
     /// ln: why a lecture's notes cannot be written on this Mac (`\.lectureNotesUnavailable`, the

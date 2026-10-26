@@ -67,14 +67,19 @@ extension TranscriptionOptions {
 
 extension TranscriptionAudio {
     /// Audio for a recording's segment files. `files` maps each segment to its local file URL
-    /// (from `BlobStore.url(for:)`); segments without a file are skipped.
+    /// (from `BlobStore.url(for:)`); segments without a file are skipped. A segment of unknown
+    /// length (`frameCount` 0: a bundle that did not say) has no duration, so its run reserves
+    /// nothing rather than too little.
     public init(recording: Recording, segments: [RecordingSegment], files: (RecordingSegment) -> URL?) {
         let rate = recording.sampleRate > 0 ? recording.sampleRate : 48_000
         self.init(parts: segments
             .sorted { $0.sequence < $1.sequence }
             .compactMap { segment in
                 files(segment).map {
-                    Part(url: $0, startTime: Double(segment.startSample) / rate, duration: Double(segment.frameCount) / rate)
+                    Part(
+                        url: $0, startTime: Double(segment.startSample) / rate,
+                        duration: segment.frameCount > 0 ? Double(segment.frameCount) / rate : nil
+                    )
                 }
             })
     }
