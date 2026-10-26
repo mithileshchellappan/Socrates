@@ -301,7 +301,7 @@ actor PhoneLinkAgent {
         guard let secIdentity, let device else { return .unreachable }
         let directory = directory
         let parameters = DirectChannel.parameters(identity: secIdentity, peerToPeer: true) { fingerprint in
-            await directory.device(for: fingerprint) != nil
+            await directory.isTrusted(fingerprint)
         }
         let hello = Hello.local(role: .iPhone, device: device, instance: instance)
         var linked = false
@@ -309,7 +309,7 @@ actor PhoneLinkAgent {
         do {
             try await withNetworkConnection(to: endpoint, using: parameters) { connection in
                 let peer = try await DirectChannel.open(connection, hello: hello) { fingerprint in
-                    await directory.device(for: fingerprint)
+                    await directory.devices(for: fingerprint)
                 }
                 linked = true
                 lastEndpoint = connection.remoteEndpoint ?? endpoint

@@ -171,39 +171,48 @@ actor MacLinkService {
 
     // MARK: - Listening
 
-    /// A listener advertised under a new random name (nothing personal is broadcast), running
-    /// until its task is cancelled.
-    private func listen(peerToPeer: Bool) -> Task<Void, Never>? {
-        guard let secIdentity else { return nil }
-        let directory = directory
-        let parameters = DirectChannel.parameters(identity: secIdentity, peerToPeer: peerToPeer) { fingerprint in
-            await directory.device(for: fingerprint) != nil
-        }
-        let name = Self.serviceName()
-        let listener: NetworkListener<TLS>
-        do {
-            listener = try NetworkListener(for: BonjourListenerProvider(name: name, type: LinkProtocol.serviceType), using: parameters)
-        } catch {
-            LinkLog.direct.error("No listener: \(String(describing: error), privacy: .public)")
-            return nil
-        }
-        listener.onStateUpdate { _, state in
-            switch state {
-            case .ready: LinkLog.direct.info("Listening\(peerToPeer ? " peer-to-peer" : "", privacy: .public)")
-            case .waiting(let error), .failed(let error):
-                LinkLog.direct.notice("Listener\(peerToPeer ? " (peer-to-peer)" : "", privacy: .public): \(String(describing: error), privacy: .public)")
-            default: break
+    /// Keeps a listener up until the returned task is cancelled (the window closes, the link
+    /// stops). Owned by the service.
+    private func listen(peerToPeer: Bool) -> Task<Void, Never> {
+        Task { await self.keepListening(peerToPeer: peerToPeer) }
+    }
+
+    /// A listener advertised under a new random name each time (nothing personal is broadcast).
+    /// One that fails (Local Network access granted only later, an interface that went away) is
+    /// made again after 5, 10, 20, then every 30 s; one that ran for a while starts that count over.
+    private func keepListening(peerToPeer: Bool) async {
+        var failures = 0
+        while !Task.isCancelled, started, let secIdentity {
+            let directory = directory
+            let parameters = DirectChannel.parameters(identity: secIdentity, peerToPeer: peerToPeer) { fingerprint in
+                await directory.isTrusted(fingerprint)
             }
-        }
-        // Owned by the service and cancelled when the window closes or the link stops.
-        return Task {
+            let began = ContinuousClock.now
             do {
+                let listener = try NetworkListener(
+                    for: BonjourListenerProvider(name: Self.serviceName(), type: LinkProtocol.serviceType), using: parameters
+                )
+                listener.onStateUpdate { _, state in
+                    switch state {
+                    case .ready: LinkLog.direct.info("Listening\(peerToPeer ? " peer-to-peer" : "", privacy: .public)")
+                    case .waiting(let error), .failed(let error):
+                        LinkLog.direct.notice("Listener\(peerToPeer ? " (peer-to-peer)" : "", privacy: .public): \(String(describing: error), privacy: .public)")
+                    default: break
+                    }
+                }
                 try await listener.run { connection in
                     await self.serve(connection, peerToPeer: peerToPeer)
                 }
-            } catch where !(error is CancellationError) {
+            } catch {
+                guard !Task.isCancelled, !(error is CancellationError) else { return }
                 LinkLog.direct.error("Listener stopped: \(String(describing: error), privacy: .public)")
-            } catch {}
+            }
+            failures = ContinuousClock.now - began > LinkPolicy.listenerSettled ? 1 : failures + 1
+            do {
+                try await Task.sleep(for: LinkPolicy.dialDelay(failedPasses: failures))
+            } catch {
+                return
+            }
         }
     }
 
@@ -228,7 +237,7 @@ actor MacLinkService {
         let peer: LinkPeer
         do {
             peer = try await DirectChannel.open(connection, hello: hello) { fingerprint in
-                await directory.device(for: fingerprint)
+                await directory.devices(for: fingerprint)
             }
         } catch {
             await release(host)

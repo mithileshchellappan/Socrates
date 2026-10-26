@@ -35,7 +35,10 @@ actor LinkDirectory {
         let rows = try await services.records.fetchAll(LinkDevice.self)
         let defaults = UserDefaults.standard
         let remembered = defaults.string(forKey: Self.deviceIDKey).flatMap(UUID.init(uuidString:))
-        if let own = rows.first(where: { $0.platform == role.rawValue && $0.publicKey == key && $0.retiredAt == nil }) {
+        // The remembered row when the key has more than one (a reinstall inserts its row before
+        // iCloud brings the earlier one back; the other side trusts both).
+        let own = rows.filter { $0.platform == role.rawValue && $0.publicKey == key && $0.retiredAt == nil }
+        if let own = own.first(where: { $0.id == remembered }) ?? own.first {
             if own.id != remembered { defaults.set(own.id.uuidString, forKey: Self.deviceIDKey) }
             return LinkDeviceID(rawValue: own.id)
         }
@@ -96,9 +99,14 @@ actor LinkDirectory {
         trusted = TrustedPeers()
     }
 
-    /// The trusted device whose key has `fingerprint`.
-    func device(for fingerprint: LinkFingerprint) -> LinkDeviceID? {
-        trusted.device(for: fingerprint)
+    /// The trusted devices whose key has `fingerprint` (empty: a stranger).
+    func devices(for fingerprint: LinkFingerprint) -> Set<LinkDeviceID> {
+        trusted.devices(for: fingerprint)
+    }
+
+    /// Whether `fingerprint` is a trusted device's key (the TLS certificate check).
+    func isTrusted(_ fingerprint: LinkFingerprint) -> Bool {
+        !trusted.devices(for: fingerprint).isEmpty
     }
 
     private func reload() async -> TrustedPeers? {

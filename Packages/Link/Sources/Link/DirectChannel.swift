@@ -82,12 +82,12 @@ actor DirectChannel: LinkChannel {
     /// Sends `hello` and reads the peer's (TLS finishes on the way), both within
     /// `LinkPolicy.helloTimeout`, then checks the session, failing closed: the agreed ALPN must be
     /// this generation's, a peer certificate must be there (a resumed session has none), its key
-    /// must be a trusted device of the other platform (`peerFor`), the hello must name that device
-    /// and platform, and the two hellos must share a feature. Anything else is answered with a
-    /// goodbye and thrown.
+    /// must be a trusted device of the other platform (`peersFor`: the rows with that key), the
+    /// hello must name one of those devices and that platform, and the two hellos must share a
+    /// feature. Anything else is answered with a goodbye and thrown.
     static func open(
         _ connection: NetworkConnection<TLS>, hello: Hello,
-        peerFor: @escaping @Sendable (LinkFingerprint) async -> LinkDeviceID?
+        peersFor: @escaping @Sendable (LinkFingerprint) async -> Set<LinkDeviceID>
     ) async throws -> LinkPeer {
         let expected: LinkRole = hello.role == .mac ? .iPhone : .mac
         let theirs: Hello
@@ -123,7 +123,8 @@ actor DirectChannel: LinkChannel {
             await refuse(connection, .untrusted)
             throw LinkChannelError.untrusted
         }
-        guard let device = await peerFor(fingerprint), theirs.device == device, theirs.role == expected else {
+        let device = theirs.device
+        guard await peersFor(fingerprint).contains(device), theirs.role == expected else {
             LinkLog.direct.notice("Refused \(fingerprint.description, privacy: .public): not a trusted \(expected.rawValue, privacy: .public)")
             await refuse(connection, .untrusted)
             throw LinkChannelError.untrusted

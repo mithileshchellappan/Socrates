@@ -95,8 +95,9 @@ folder. Neither keeps anything else.
 ## Rules
 
 - **Trust**: the peer's TLS leaf key, hashed (`LinkFingerprint`), must equal the hash of an
-  unretired `link_device` row of the other platform, and its hello must name that row. The chain
-  is never evaluated; a stored fingerprint is never trusted.
+  unretired `link_device` row of the other platform, and its hello must name a row with that key
+  (a reinstalled phone may stand in two until it sees its earlier row). The chain is never
+  evaluated; a stored fingerprint is never trusted.
 - **Keys**: one P-256 key per install in the data-protection Keychain (this device only, after
   first unlock, never synced, never through `KeychainSecretStore`), made only when the Keychain
   answers "not found"; any other answer leaves the link off for that launch.

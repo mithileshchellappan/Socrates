@@ -44,6 +44,9 @@ public enum LinkPolicy {
     public static let classMargin: TimeInterval = 600
     /// How often the Mac looks at the peer-to-peer window again without a change of its own.
     public static let windowRecheck: Duration = .seconds(5 * 60)
+    /// A Mac listener that ran this long before it failed is made again after the first delay of
+    /// `dialDelay`, not a longer one.
+    public static let listenerSettled: Duration = .seconds(60)
     /// The Mac deletes a device's staging folder left untouched this long.
     public static let stagingLifetime: TimeInterval = 14 * 24 * 60 * 60
     /// The free disk space the Mac keeps beyond a file before asking for it.
