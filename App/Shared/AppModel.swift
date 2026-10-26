@@ -11,6 +11,7 @@ import Deadlines
 import Filing
 import FilingUI
 import Foundation
+import Link
 import Mail
 import MailIntelligence
 import MailUI
@@ -129,6 +130,18 @@ final class AppModel {
     /// scene, so a Live Activity button that launched the app finds its handler. Its captures stay
     /// in the outbox (never imported on the phone) until shared to the Mac.
     let phoneRecorder: PhoneRecorder?
+    /// link (docs/plan-recording-link.md): copies the phone's recordings to the Mac by themselves
+    /// and runs the Mac's Pause, Resume, Next Slide and Stop through the recorder; the outbox rows
+    /// show what the Mac holds. Only on the iPhone of a build that syncs (trust comes from the
+    /// synced `link_device` rows); started after sync, stopped for good on another iCloud account.
+    let macLink: MacLink?
+    #endif
+    #if os(macOS)
+    /// link (docs/plan-recording-link.md, DESIGN 8.11): the iPhone's recording on the Mac (the menu
+    /// bar extra, the toolbar capsule, the Lecture menu's iPhone section) and the recordings it
+    /// copies here, filed like the Mac's own Stop. Only in a build that syncs; started after sync,
+    /// stopped for good when iCloud reports another account.
+    let phoneLink: PhoneLink?
     #endif
     #if DEBUG
     /// Renders and parity shots (mc): a coach that is never started, so the coach's screens offer
@@ -189,6 +202,8 @@ final class AppModel {
     @ObservationIgnored private var lastCalendarEditSync = Date.distantPast
     /// The one calendar sync after deadline writes settle (`deadlinesChanged`).
     @ObservationIgnored private var deadlineSync: Task<Void, Never>?
+    /// link: stops the recording link when iCloud reports another account.
+    @ObservationIgnored private var accountObserver: Task<Void, Never>?
     /// Lets the services made in `init` call back into the model once it exists.
     @ObservationIgnored private let owner: ModelReference
 
@@ -197,7 +212,8 @@ final class AppModel {
         self.launchError = launchError
         // M7: the sync engine first (real library of a build signed for iCloud only), so
         // SQLiteData's change triggers note every write from here on.
-        cloudSync = startsProcessing ? services.flatMap { CloudSync(services: $0) } : nil
+        let cloudSync = startsProcessing ? services.flatMap { CloudSync(services: $0) } : nil
+        self.cloudSync = cloudSync
         let (transcribed, finishedTranscription) = AsyncStream.makeStream(of: Recording.ID.self)
         self.transcribed = transcribed
         let (processed, finishedProcessing) = AsyncStream.makeStream(of: Lecture.ID.self)
@@ -241,7 +257,8 @@ final class AppModel {
                 afterAdvice: { @MainActor filing in await owner.model?.filingCenter?.refresh(filing) }
             )
             filing = service
-            filingCenter = FilingCenter(service: service)
+            let filingCenter = FilingCenter(service: service)
+            self.filingCenter = filingCenter
             searchIndexer = SearchIndexer(services: services)
             let pipeline = MailPipeline(services: services, client: claude)
             mailPipeline = pipeline
@@ -308,7 +325,16 @@ final class AppModel {
             transcriptItems = TranscriptItemPipeline(services: services, client: claude, memory: memory)
             self.owner = owner
             #if os(iOS)
-            phoneRecorder = Self.isPhone ? PhoneRecorder(services: services) : nil
+            let phoneRecorder = Self.isPhone ? PhoneRecorder(services: services) : nil
+            self.phoneRecorder = phoneRecorder
+            // link: the phone's side, over its recorder (only with sync: no rows, no trust).
+            macLink = cloudSync != nil ? phoneRecorder.map {
+                MacLink.phone(services: services, recorder: $0, beginBackgroundTime: BackgroundTime.begin)
+            } : nil
+            #else
+            // link: a recording that arrives in Recordings/ is filed like the Mac's own Stop (smart
+            // import, the usual toast).
+            phoneLink = cloudSync != nil ? PhoneLink.mac(services: services) { url in await filingCenter.file([url]) } : nil
             #endif
             #if os(macOS)
             // ln: the lecture notes are written in the agent's task queue (one at a time, background
@@ -361,8 +387,10 @@ final class AppModel {
             documentBank = nil
             materialLibrary = nil
             notesAsker = nil
+            phoneLink = nil
             #else
             phoneRecorder = nil
+            macLink = nil
             #endif
         }
         filingCenter?.didFile = { [weak self] outcomes in
@@ -468,8 +496,14 @@ final class AppModel {
         }
         #endif
         // M7: iCloud sync first (only in a build configured for it), so the other device's rows
-        // come down before anything is created here.
-        if let cloudSync { Task { await cloudSync.start() } }
+        // come down before anything is created here. link: the recording link after it (the other
+        // device's `link_device` row comes with sync).
+        if let cloudSync {
+            Task {
+                await cloudSync.start()
+                startRecordingLink(cloudSync)
+            }
+        }
         #if os(macOS)
         // One copy of the library a day, in the background: at launch and once an hour
         // (`runHourly`), and after each wake (the Mac app stays open for days).
@@ -590,6 +624,30 @@ final class AppModel {
         #if os(macOS)
         await coach?.start()
         #endif
+    }
+
+    /// link: starts the recording link (this device's `link_device` row, trust in the other
+    /// platform's rows) unless iCloud already reported another account, and stops it for good when
+    /// it does: trust learned through the old account's rows goes with it. The Mac also stops it
+    /// when the app quits (goodbyes to the phone; its actor outlives a model that merely goes).
+    private func startRecordingLink(_ cloudSync: CloudSync) {
+        guard !cloudSync.accountSwitched else { return }
+        #if os(macOS)
+        guard let link = phoneLink else { return }
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+            MainActor.assumeIsolated { link.stop() }
+        }
+        #else
+        guard let link = macLink else { return }
+        #endif
+        link.start()
+        accountObserver = Task {
+            for await switched in Observations({ @MainActor in cloudSync.accountSwitched }) where switched {
+                Log.app.notice("Recording link stopped: another iCloud account")
+                link.stop()
+                return
+            }
+        }
     }
 
     /// M7: the launch passes that rewrite the library's rows (recovering the agent's interrupted

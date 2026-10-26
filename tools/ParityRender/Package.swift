@@ -41,7 +41,9 @@ let package = Package(
         // ln: the lecture notes (the notes page, the Lecture menu's Ask… and Highlight).
         .package(path: "../../Packages/StudyPage"),
         // panes: the main window's side panes and the small chat's floating panel.
-        .package(path: "../../Packages/Panes")
+        .package(path: "../../Packages/Panes"),
+        // link: AppModel owns the (gated) recording link; the Mac's menu bar, toolbar and menu items.
+        .package(path: "../../Packages/Link")
     ],
     targets: [
         .executableTarget(
@@ -86,7 +88,9 @@ let package = Package(
                 .product(name: "MaterialsUI", package: "Documents"),
                 .product(name: "StudyPageFormat", package: "StudyPage"),
                 .product(name: "StudyPageUI", package: "StudyPage"),
-                .product(name: "Panes", package: "Panes")
+                .product(name: "Panes", package: "Panes"),
+                .product(name: "Link", package: "Link"),
+                .product(name: "LinkUI", package: "Link")
             ],
             exclude: [
                 "App/Info.plist",

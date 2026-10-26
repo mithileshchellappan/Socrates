@@ -8,6 +8,9 @@ import DocumentsUI
 #endif
 import Filing
 import FilingUI
+#if os(macOS)
+import LinkUI
+#endif
 import MailUI
 import MaterialsUI
 #if os(macOS)
@@ -589,6 +592,14 @@ struct RootView: View {
         }
         // mt (mockup 37): the reader's own field is the reader's toolbar item (`DetailView`), after
         // the course screens' flexible spacer, so it sits at the trailing end as the shelf's Import.
+        // link (DESIGN 8.11, mockup 62c): the iPhone's recording, its own group before Record or
+        // the Mac's own recording (two recordings, two items), on every screen while it shows.
+        if let link = model.phoneLink, link.showsItem {
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+            ToolbarItem(placement: .primaryAction) {
+                PhoneRecordingCapsule(link: link)
+            }
+        }
         #endif
         if let session = model.live?.session, session.isCapturing, session.startedAt != nil {
             ToolbarSpacer(.fixed, placement: .primaryAction)

@@ -100,6 +100,10 @@ packages:
   # host). Linked by the Mac app only; feature screens use StudyUI's pane vocabulary.
   Panes:
     path: Packages/Panes
+  # link (docs/plan-recording-link.md): the iPhone's recordings reach the Mac by themselves and the
+  # Mac controls the phone's recording, over a direct pinned TLS link (only in a build that syncs).
+  Link:
+    path: Packages/Link
 
 targets:
   Socrates:
@@ -128,6 +132,10 @@ targets:
         NSCameraUsageDescription: Takes a photo to ask about.
         NSSpeechRecognitionUsageDescription: Shows live captions while a lecture is recorded.
         NSCalendarsFullAccessUsageDescription: Shows your classes and deadlines and keeps the Socrates calendar up to date.
+        # link: the iPhone finds the Mac over Bonjour (Wi-Fi, Ethernet, the USB cable, peer-to-peer
+        # Wi-Fi during classes that record) and the Mac listens; both ask for Local Network once.
+        NSLocalNetworkUsageDescription: Sends recordings from your iPhone to your Mac.
+        NSBonjourServices: [_socrates._tcp]
         # socrates://session/<id> and socrates://item/<id>: links on the Socrates calendar's
         # events open the lecture or the mail a deadline was read from. studyportal:// is what
         # events written before the app was renamed carry; it stays registered.
@@ -323,6 +331,12 @@ targets:
       - package: Panes
         product: Panes
         destinationFilters: [macOS]
+      # link: `PhoneLink` and its menu bar extra, toolbar capsule and Lecture menu items (Mac);
+      # `MacLink` and the outbox row's delivery line (iPhone).
+      - package: Link
+        product: Link
+      - package: Link
+        product: LinkUI
       - target: SocratesWidgets
         destinationFilters: [iOS]
         embed: true
