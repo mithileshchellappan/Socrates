@@ -36,7 +36,26 @@ extension FocusedValues {
     @Entry public var lectureNotesHighlight: LectureNotesCommand?
 }
 
+/// Retry on a lecture's Summary (its recording's line, and Write Again while something can be
+/// re-run): the lecture's failed transcriptions queued again and the study pass's failed units run
+/// again with a fresh budget. The app installs it as `\.lectureNotesRetry` (Mac); nil in renders.
+public struct LectureNotesRetryAction: Sendable {
+    private let action: @MainActor @Sendable (Lecture.ID) -> Void
+
+    public init(_ action: @escaping @MainActor @Sendable (Lecture.ID) -> Void) {
+        self.action = action
+    }
+
+    @MainActor
+    public func callAsFunction(_ lectureID: Lecture.ID) {
+        action(lectureID)
+    }
+}
+
 extension EnvironmentValues {
+    /// Retry of a lecture's recording on its way into the Summary (`LectureNotesRetryAction`).
+    @Entry public var lectureNotesRetry: LectureNotesRetryAction?
+
     /// Claude Code is not available on this Mac: the app's readable sentence ("Claude Code is not
     /// installed."), which a lecture whose notes are not written yet shows as its one line under
     /// the outline. Nil: available, or unknown (renders).

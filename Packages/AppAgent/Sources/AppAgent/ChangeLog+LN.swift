@@ -4,8 +4,9 @@ import StudyCore
 
 // ln (docs/plan-lecture-notes.md §5.6): the change rows of the agent's lecture notes actions and
 // their Undo.
-// - write_lecture_notes: a new version queued (`LectureNotesRepository.queue`, created by the
-//   agent), kind `lecture_notes`, target the version. Undo cancels it while it is open, else
+// - write_lecture_notes: a new version queued (`LectureNotesRepository.writeAgain`, created by
+//   the agent: Write Again's rules, from whatever there is to write from), kind `lecture_notes`,
+//   target the version. Undo cancels it while it is open, else
 //   discards that version (Previous Version's way), so the one before is current again.
 // - set_notes_length: a `preference` memory with its `notes_rule` (kind `notes_rule`, target the
 //   memory); an older rule of the same scope is forgotten and its change superseded. Undo forgets
@@ -13,17 +14,19 @@ import StudyCore
 // - keep_notes_answer: a kept answer (`lecture_notes_mark`, kind `answer`, created by the agent),
 //   kind `notes_answer`, target the mark. Undo removes the mark.
 extension ChangeLog {
-    /// write_lecture_notes: queues a version of the lecture's notes with the student's sentence and
-    /// logs it. `.refused` when one is being written already or there is nothing to write from.
-    /// The version's task reports into `origin.conversationID` when it is done.
+    /// write_lecture_notes: queues a version of the lecture's notes and logs it. `request`: the
+    /// student's words, their new standing instruction; nil keeps the standing one. `.refused`
+    /// when one is being written already or there is nothing to write from. The version's task
+    /// reports into `origin.conversationID` when it is done.
     public func queueNotes(lectureID: Lecture.ID, request: String?, quote: String, origin: Origin) async throws -> Outcome {
         let quote = quote.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !quote.isEmpty else { return .refused("A change needs the exact words it comes from.") }
         let repository = LectureNotesRepository(store: services.records)
         let versions = try await repository.versions(lectureID: lectureID)
         if versions.contains(where: { $0.state.isOpen }) { return .unchanged("Its summary is being written already.") }
-        guard let notes = try await repository.queue(lectureID: lectureID, request: request, createdBy: .agent) else {
-            return .refused("There is nothing to write its summary from yet (no slides, or its study pass has not finished).")
+        let instruction: NotesInstruction = request.map { .new($0) } ?? .standing
+        guard let notes = try await repository.writeAgain(lectureID: lectureID, instruction: instruction, createdBy: .agent) else {
+            return .refused("There is nothing to write its summary from yet (no slides and no transcript).")
         }
         let store = services.records
         let date = now()

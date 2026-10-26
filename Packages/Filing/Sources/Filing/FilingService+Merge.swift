@@ -26,8 +26,9 @@ import StudyCore
 /// the survivor's go when the other brings slides), and its notes, flags, item sources, tutor
 /// conversations, practice questions, kept answers and filings follow; then it is deleted, its
 /// study pass, generated notes and detected links kept for Undo (`DeletedRows`). Claude's
-/// slides-only notes of the survivor that are not written yet are cancelled when a recording
-/// comes in: its study pass writes them from the recording, once (`queueAfterStudyPass`). One
+/// slides-only notes of the survivor that are not written yet (and carry no instruction of the
+/// student's) are cancelled when a recording comes in: its study pass writes them from the
+/// recording, once (`queueAfterStudyPass`). One
 /// `agent_change` row (`lecture_merge`) holds it all in `before.deletion`; Undo splits the two
 /// again.
 public struct LectureMerges: Sendable, Codable {
@@ -474,8 +475,10 @@ extension FilingService {
         let loserSlides = try LectureSlides.current(lectureID: loserID, in: db)
         if !recordings.isEmpty {
             // Claude's slides-only notes of the survivor not written yet: with a recording, the
-            // study pass writes its notes from it (once, `queueAfterStudyPass`).
-            for notes in try LectureNotes.where({ $0.lectureID.eq(survivorID) }).fetchAll(db) where notes.state.isOpen && notes.source == .slides {
+            // study pass writes its notes from it (once, `queueAfterStudyPass`). Not a version
+            // with the student's instruction: it is written, then replaced once with the same.
+            for notes in try LectureNotes.where({ $0.lectureID.eq(survivorID) }).fetchAll(db)
+            where notes.state.isOpen && notes.source == .slides && notes.request == nil {
                 _ = try LectureNotesRepository.cancel(notes.id, in: db, now: now)
             }
         }

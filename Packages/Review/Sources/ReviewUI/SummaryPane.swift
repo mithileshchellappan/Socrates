@@ -12,7 +12,9 @@ import SwiftUI
 /// review's context; Ask… and Highlight go to the screen through `ReviewModel.notesCommands`.
 /// Until the notes are written (or while a version is paused or failed): the study pass's blocks,
 /// and on the Mac the first show queues the notes (`queueIfNeeded`). A version that failed puts
-/// its failure line over the blocks (triangle, reason, Write Again…: `LectureNotesFailureBar`).
+/// its failure line over the blocks (triangle, reason, Write Again…: `LectureNotesFailureBar`);
+/// else a recording whose way into the Summary is blocked puts its line there ("Not
+/// transcribed", Retry), as the notes do above their text.
 /// Write Again… for a finished version and Previous Version are the notes page's (its ⋯), as
 /// before panes. The student's own notes are Whole lecture's.
 struct SummaryPane: View {
@@ -53,11 +55,10 @@ struct SummaryPane: View {
     private var blocks: some View {
         #if os(macOS)
         VStack(alignment: .leading, spacing: 0) {
-            if LectureNotes.current(of: versionsQuery.wrappedValue)?.state == .failed {
-                LectureNotesFailureBar(lectureID: model.lecture.id)
-                    .padding(.horizontal, 14)
-                    .padding(.top, 12)
-            }
+            // Draws nothing unless the version failed or the recording's way is blocked.
+            LectureNotesFailureBar(lectureID: model.lecture.id)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
             SummaryStudyBlocks(model: model, items: items)
         }
         .task(id: model.lecture.id) {

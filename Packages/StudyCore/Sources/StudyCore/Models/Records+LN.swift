@@ -57,6 +57,27 @@ public enum NotesLength: String, Hashable, Sendable, Codable, CaseIterable, Quer
     }
 }
 
+/// The instruction a new version is written with (`lecture_notes.request`).
+public enum NotesInstruction: Sendable, Hashable {
+    /// The student's standing instruction for the lecture's Summary (`LectureNotes.instruction(of:)`):
+    /// every version that is not the student's new word carries it on.
+    case standing
+    /// Write Again's popover or the student's words through the agent: the new standing
+    /// instruction (trimmed, at most `LectureNotes.requestLimit`); empty clears it.
+    case new(String)
+
+    /// The `request` of a new version among `versions`.
+    public func request(after versions: [LectureNotes]) -> String? {
+        switch self {
+        case .standing:
+            return LectureNotes.instruction(of: versions)
+        case .new(let text):
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : String(trimmed.prefix(LectureNotes.requestLimit))
+        }
+    }
+}
+
 /// A mark the student keeps on the notes (`lecture_notes_mark.kind`).
 public enum LectureNotesMarkKind: String, Hashable, Sendable, Codable, CaseIterable, QueryBindable {
     /// The student's yellow highlight under a passage.
@@ -214,8 +235,9 @@ public struct LectureNotes: StudyRecord {
     public var version: Int
     public var state: LectureNotesState
     public var source: LectureNotesSource
-    /// The student's sentence for Write Again… ("more on the merge rule"), ≤ `requestLimit`; nil
-    /// for an automatic version.
+    /// The student's instruction it was written with ("shorter, more formulas"), ≤ `requestLimit`;
+    /// nil without one. Write Again's popover sets it; every later version, automatic or not,
+    /// carries it on until the student changes it (`LectureNotes.instruction(of:)`).
     public var request: String?
     /// The length it was written at (the student's rule when it started); nil while queued.
     public var length: NotesLength?
@@ -407,8 +429,9 @@ public struct LectureNotesMark: StudyRecord {
 
 extension AgentTaskKind {
     /// Write a version of a lecture's notes (`lecture_notes.task_id` points back; `lecture_id`
-    /// set): run in code by the task queue, one at a time, queued only by
-    /// `LectureNotesRepository.queue` / `queueIfNeeded`.
+    /// set): run in code by the task queue, one at a time, queued only by `LectureNotesRepository`
+    /// (`writeAgain`, `queueIfNeeded`, `queueAfterStudyPass`, `queueDueReplacement`,
+    /// `requeueWaiting`).
     public static let lectureNotes: Self = "lecture_notes"
 }
 

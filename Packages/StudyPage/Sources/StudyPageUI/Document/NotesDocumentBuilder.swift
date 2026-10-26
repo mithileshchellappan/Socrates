@@ -13,6 +13,8 @@ protocol NotesDocumentActions: NotesSizeObserver {
     func open(_ target: NotesChipTarget)
     func toggleAnswers(_ key: String)
     func writeAgain()
+    /// Retry on the recording's line (`\.lectureNotesRetry`).
+    func retryRecording()
     func keptAnswerHovered(_ mark: LectureNotesMark.ID, _ hovered: Bool)
     func removeKept(_ mark: LectureNotesMark)
     func continueInChat(_ mark: LectureNotesMark)
@@ -94,14 +96,17 @@ final class NotesDocumentBuilder {
 
     func build() -> NotesBuild {
         var build = NotesBuild()
+        // The recording's line comes first, before the overview (its own part: no marks).
+        let line = recordingUnit()
         guard let notes = input.notes, notes.hasText else {
-            build.units = placeholderDocument()
+            build.units = (line.map { [$0] } ?? []) + placeholderDocument()
             return build
         }
         let document = parsed.document(notes.body)
         let writing = notes.state == .generating || notes.state == .paused || notes.state == .queued
         let lastKey = document.parts.last?.key
         var sectionsUnits: [(key: String, heading: [NotesUnit], body: [NotesUnit])] = []
+        if let line { sectionsUnits.append((Self.recordingKey, [], [line])) }
 
         if let overview = document.overview {
             var body = partUnits(overview, sectionKey: LectureNotesFormat.overviewKey, sparkle: true)
@@ -237,10 +242,14 @@ final class NotesDocumentBuilder {
         return build
     }
 
+    /// The recording line's part of the document (never a section of the notes).
+    static let recordingKey = "recording"
+
     /// Before the text: the outline's headings over skeleton lines while queued, writing or paused.
     /// No Claude Code, or a version that failed before its first words: the headings and one line
     /// saying why (failed: the triangle and Write Again…). No version at all (nothing to write
-    /// from yet): nothing, never a skeleton that waits forever.
+    /// from yet): nothing (the recording's line, when its way is blocked, stands alone), never a
+    /// skeleton that waits forever.
     private func placeholderDocument() -> [NotesUnit] {
         var units: [NotesUnit] = []
         let outline = input.outline
@@ -746,10 +755,29 @@ final class NotesDocumentBuilder {
         let actions = actions
         let canWrite = input.canWriteAgain
         let attachment = HostedBlockAttachment(
-            NotesFailureLine(reason: notes.error, canWrite: canWrite, zoom: metrics.zoom) { actions?.writeAgain() }, estimate: scaled(26), margin: 2,
-            measure: measure
+            NotesFailureLine(label: notes.error, help: notes.error, action: .writeAgain, isEnabled: canWrite, zoom: metrics.zoom) {
+                actions?.writeAgain()
+            },
+            estimate: scaled(26), margin: 2, measure: measure
         )
         return blockUnit(attachment, signature: "fail|\(canWrite)|\(notes.error ?? "")", sectionKey: sectionKey, role: .chrome, spacingBefore: scaled(8))
+    }
+
+    /// The recording's way into the Summary is blocked: one line in the failure line's
+    /// typography ("Not transcribed", Retry), at the top of the document. Nil otherwise.
+    private func recordingUnit() -> NotesUnit? {
+        guard let line = NotesRecordingLine(input.recording) else { return nil }
+        let actions = actions
+        let attachment = HostedBlockAttachment(
+            NotesFailureLine(label: line.label, help: line.help, action: line.retries ? .retry : nil, zoom: metrics.zoom) {
+                actions?.retryRecording()
+            },
+            estimate: scaled(26), margin: 2, measure: measure
+        )
+        return blockUnit(
+            attachment, signature: "rec|\(line.label)|\(line.retries)|\(line.help ?? "")", sectionKey: Self.recordingKey, role: .chrome,
+            spacingBefore: 0, spacing: scaled(12)
+        )
     }
 
     private func lineUnit(_ sentence: String, sectionKey: String) -> NotesUnit {
@@ -837,36 +865,83 @@ struct AnswersDisclosure: View {
     }
 }
 
-/// Failed: what came stays; one secondary line, the triangle and the reason (in full on hover
-/// when it is cut), then Write Again… (off while nothing could be written: no slides with pages,
-/// no transcript).
+/// One secondary line, 12 pt: the triangle, a short fact cut to one line (its help in full on
+/// hover), then at most one borderless button. A version that failed: what came stays, then its
+/// reason and Write Again… (off while nothing could be written: no slides with pages, no
+/// transcript). A recording whose way into the Summary is blocked (`NotesRecordingLine`): "Not
+/// transcribed" with Retry, "Too little speech".
 struct NotesFailureLine: View {
-    let reason: String?
-    var canWrite = true
+    enum Action {
+        case writeAgain
+        case retry
+    }
+
+    let label: String?
+    var help: String?
+    var action: Action?
+    var isEnabled = true
     var zoom: CGFloat = 1
-    let writeAgain: () -> Void
+    let perform: () -> Void
 
     var body: some View {
         HStack(spacing: 6 * zoom) {
             Image(systemName: "exclamationmark.triangle")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            if let reason, !reason.isEmpty {
-                Text(verbatim: reason)
+            if let label, !label.isEmpty {
+                Text(verbatim: label)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .help(Text(verbatim: reason))
+                    .help(Text(verbatim: help ?? label))
             }
-            Button("Write Again…", action: writeAgain)
-                .buttonStyle(.borderless)
-                .disabled(!canWrite)
-                .fixedSize()
-                .padding(.leading, 2)
+            if let action {
+                button(action)
+                    .buttonStyle(.borderless)
+                    .disabled(!isEnabled)
+                    .fixedSize()
+                    .padding(.leading, 2)
+            }
         }
         .font(.system(size: 12 * zoom))
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func button(_ action: Action) -> some View {
+        switch action {
+        case .writeAgain: Button("Write Again…", action: perform)
+        case .retry: Button("Retry", action: perform)
+        }
+    }
+}
+
+/// The Summary's line while its recording's way into it is blocked (`RecordingNotesState`): a
+/// short fact, its help (a failed transcription's reason), and whether Retry shows (something can
+/// be re-run). Nil while nothing is blocked (no recording, on its way, or written).
+struct NotesRecordingLine: Equatable {
+    var label: String
+    var help: String?
+    var retries: Bool
+
+    init?(_ state: RecordingNotesState) {
+        switch state {
+        case .none, .coming:
+            return nil
+        case .transcriptionFailed(let reason):
+            label = String(localized: "Not transcribed")
+            help = reason
+            retries = true
+        case .tooLittleSpeech:
+            label = String(localized: "Too little speech")
+            help = nil
+            retries = false
+        case .studyPassFailed(let overBudget):
+            label = overBudget ? String(localized: "Over budget") : String(localized: "Couldn’t finish")
+            help = nil
+            retries = true
+        }
     }
 }
 #endif

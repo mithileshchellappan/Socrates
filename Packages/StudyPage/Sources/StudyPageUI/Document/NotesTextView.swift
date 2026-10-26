@@ -759,6 +759,10 @@ final class NotesTextCoordinator: NSObject, NSTextViewDelegate, NSTextLayoutMana
         controller?.writeAgain()
     }
 
+    func retryRecording() {
+        controller?.retryRecording()
+    }
+
     func removeKept(_ mark: LectureNotesMark) {
         controller?.removeKept(mark)
     }

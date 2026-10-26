@@ -67,4 +67,8 @@ public struct StudyUnit: StudyRecord {
 
     /// After this many failed attempts a unit is `failed` until its inputs change.
     public static let maximumAttempts = 3
+
+    /// `error` of the units a generation over the lecture's budget failed (the Summary's
+    /// "Over budget" line reads it).
+    public static let overBudget = "Over budget"
 }

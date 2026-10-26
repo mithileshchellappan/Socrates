@@ -120,12 +120,13 @@ struct LectureNotesTools: Sendable {
                 description: """
                     Writes a lecture's summary again as a new version in the background (Write Again), ONLY when the student's \
                     message asks you to (quote: their words asking). request: what they want different, in their words \
-                    ("more on the merge rule, fewer formulas"), at most 300 characters; null for none. Undo cancels it while \
-                    it is written, else goes back to the version before.
+                    ("more on the merge rule, fewer formulas"), at most 300 characters; it becomes their standing instruction \
+                    for that summary, kept for every later version. null keeps the standing instruction they gave before. \
+                    Undo cancels it while it is written, else goes back to the version before.
                     """,
                 inputSchema: Schema.object([
                     "lecture": Schema.string("The lecture's key, \"DC 2\" or id."),
-                    "request": Schema.optionalString("What the student wants different, in their words; null for none."),
+                    "request": Schema.optionalString("What the student wants different, in their words; null keeps their standing instruction."),
                     "quote": writes.quoteProperty,
                 ])
             ),

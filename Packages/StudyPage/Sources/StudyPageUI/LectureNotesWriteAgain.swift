@@ -5,21 +5,28 @@ import StudyCore
 import StudyUI
 import SwiftUI
 
-/// Write Again… (the notes page's ⋯ and failure line, Review's Summary): a new version with
-/// the student's sentence, queued through `LectureNotesRepository.queue` (which logs why when it
-/// queues nothing: a version is open, or there is nothing to write from), with Edit ▸ Undo "Undo
-/// Write Again" (Previous Version; Redo brings the new one back). The task queue writes it on the
-/// one background notes slot once Claude Code is ready.
+/// Write Again… (the notes page's ⋯ and failure line, Review's Summary): the student's act. A new
+/// version from whatever there is to write from (`LectureNotesRepository.writeAgain`, which logs
+/// why when it queues nothing: a version is open, or there is nothing at all), with the
+/// popover's instruction or the standing one, and Edit ▸ Undo "Undo Write Again" (Previous
+/// Version; Redo brings the new one back). While the recording's way into the Summary can be
+/// re-run (a failed transcription, the study pass's failed units), it is re-run too (`retry`):
+/// when it lands, the Summary is written once more from the recording, with the same instruction.
+/// The task queue writes the version on the one background notes slot once Claude Code is ready.
 @MainActor
 public enum LectureNotesWriteAgain {
-    public static func queue(lectureID: Lecture.ID, request: String, services: StudyServices, undoManager: UndoManager?) {
+    public static func queue(
+        lectureID: Lecture.ID, instruction: NotesInstruction, retry: LectureNotesRetryAction?, services: StudyServices, undoManager: UndoManager?
+    ) {
         let repository = LectureNotesRepository(store: services.records)
-        let trimmed = request.trimmingCharacters(in: .whitespacesAndNewlines)
+        let database = services.database
         Task {
             do {
-                guard let queued = try await repository.queue(lectureID: lectureID, request: trimmed.isEmpty ? nil : trimmed, createdBy: .user)
-                else { return }
-                registerUndo(repository: repository, lectureID: lectureID, version: queued.id, undoManager: undoManager)
+                if let queued = try await repository.writeAgain(lectureID: lectureID, instruction: instruction, createdBy: .user) {
+                    registerUndo(repository: repository, lectureID: lectureID, version: queued.id, undoManager: undoManager)
+                }
+                let recording = try await database.read { db in try LectureNotesRepository.inputs(lectureID: lectureID, in: db).recording }
+                if recording.canRetry { retry?(lectureID) }
             } catch {
                 StudyPageLog.logger.error("Queueing the lecture's notes failed: \(String(describing: error), privacy: .public)")
             }
@@ -41,6 +48,8 @@ public enum LectureNotesWriteAgain {
 }
 
 /// Write Again…'s popover: one optional line ("more on the merge rule, fewer formulas"), ↩ writes.
+/// The host opens it with the student's standing instruction (`LectureNotes.instruction(of:)`),
+/// editable; what it holds when it writes is the new standing instruction (empty clears it).
 public struct LectureNotesWriteAgainPopover: View {
     @Binding var request: String
     let write: (String) -> Void
@@ -69,9 +78,11 @@ public struct LectureNotesWriteAgainPopover: View {
     }
 }
 
-/// Review's Summary while the lecture's current notes failed (the study pass's blocks stay
-/// under it): the failure line, triangle, the reason and Write Again…, whose popover hangs off this
-/// plain view; a version without text is queued again at once. Nothing otherwise.
+/// Review's Summary above the study pass's blocks: while the lecture's current notes failed, the
+/// failure line (triangle, the reason, Write Again…, whose popover hangs off this plain view; a
+/// version without text is queued again at once with the standing instruction); else, while the
+/// recording's way into the Summary is blocked, its line ("Not transcribed", Retry). Nothing
+/// otherwise.
 public struct LectureNotesFailureBar: View {
     private let lectureID: Lecture.ID
     @Fetch private var state: LectureNotesWriteState
@@ -79,6 +90,7 @@ public struct LectureNotesFailureBar: View {
     @State private var request = ""
     @Environment(\.studyServices) private var services
     @Environment(\.undoManager) private var undoManager
+    @Environment(\.lectureNotesRetry) private var retry
 
     public init(lectureID: Lecture.ID) {
         self.lectureID = lectureID
@@ -87,42 +99,51 @@ public struct LectureNotesFailureBar: View {
 
     public var body: some View {
         if let notes = state.current, notes.state == .failed {
-            NotesFailureLine(reason: notes.error, canWrite: state.canWrite) {
+            NotesFailureLine(label: notes.error, help: notes.error, action: .writeAgain, isEnabled: state.canWrite) {
                 if notes.hasText {
+                    request = state.instruction ?? ""
                     Task { @MainActor in shown = true }
                 } else {
-                    write("")
+                    write(.standing)
                 }
             }
             .popover(isPresented: $shown, arrowEdge: .bottom) {
                 LectureNotesWriteAgainPopover(request: $request) { sentence in
                     shown = false
-                    write(sentence)
+                    write(.new(sentence))
                 }
+            }
+        } else if let line = NotesRecordingLine(state.recording) {
+            NotesFailureLine(label: line.label, help: line.help, action: line.retries ? .retry : nil) {
+                retry?(lectureID)
             }
         }
     }
 
-    private func write(_ sentence: String) {
+    private func write(_ instruction: NotesInstruction) {
         guard let services else { return }
-        request = ""
-        LectureNotesWriteAgain.queue(lectureID: lectureID, request: sentence, services: services, undoManager: undoManager)
+        LectureNotesWriteAgain.queue(lectureID: lectureID, instruction: instruction, retry: retry, services: services, undoManager: undoManager)
     }
 }
 
-/// The current notes and whether a new version could be written now (`LectureNotesRepository.source`).
+/// The current notes, whether a new version could be written now (`LectureNotesInputs.available`),
+/// the student's standing instruction and how the recording is getting into the Summary.
 struct LectureNotesWriteState: Equatable, Sendable {
     var current: LectureNotes?
     var canWrite = false
+    var instruction: String?
+    var recording: RecordingNotesState = .none
 }
 
 struct LectureNotesWriteStateRequest: FetchKeyRequest {
     let lectureID: Lecture.ID
 
     func fetch(_ db: Database) throws -> LectureNotesWriteState {
-        LectureNotesWriteState(
-            current: try LectureNotesRepository.current(lectureID: lectureID, in: db),
-            canWrite: try LectureNotesRepository.source(lectureID: lectureID, in: db) != nil
+        let versions = try LectureNotesRepository.versions(lectureID: lectureID, in: db)
+        let inputs = try LectureNotesRepository.inputs(lectureID: lectureID, in: db)
+        return LectureNotesWriteState(
+            current: LectureNotes.current(of: versions), canWrite: inputs.available != nil, instruction: LectureNotes.instruction(of: versions),
+            recording: inputs.recording
         )
     }
 }
