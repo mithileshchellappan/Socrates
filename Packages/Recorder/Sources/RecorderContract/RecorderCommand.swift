@@ -77,18 +77,25 @@ public struct RecorderCommand: Codable, Hashable, Sendable, Identifiable {
     public var recordingID: RecordingID
     public var action: Action
     public var origin: Origin
+    /// The snapshot `sequence` the sender's button was drawn from (the Mac remote's Pause and
+    /// Resume): the recorder refuses the command when its phase began after it
+    /// (`.rejected(.stalePhase)`), so a press that crossed a pause or resume made elsewhere never
+    /// undoes it. Nil: not checked (the screen, the Live Activity, Stop, whose intent holds in
+    /// either phase).
+    public var basis: Int?
 
-    public init(id: ID, recordingID: RecordingID, action: Action, origin: Origin) {
+    public init(id: ID, recordingID: RecordingID, action: Action, origin: Origin, basis: Int? = nil) {
         self.id = id
         self.recordingID = recordingID
         self.action = action
         self.origin = origin
+        self.basis = basis
     }
 
     /// A new request with a new id: one tap on the screen, one remote button press. A retry of
     /// the same request reuses the command (and so its id).
-    public static func fresh(_ action: Action, recordingID: RecordingID, origin: Origin) -> Self {
-        Self(id: ID(rawValue: UUID().uuidString), recordingID: recordingID, action: action, origin: origin)
+    public static func fresh(_ action: Action, recordingID: RecordingID, origin: Origin, basis: Int? = nil) -> Self {
+        Self(id: ID(rawValue: UUID().uuidString), recordingID: recordingID, action: action, origin: origin, basis: basis)
     }
 
     /// A Live Activity button's request: the id is derived from what the button was drawn for

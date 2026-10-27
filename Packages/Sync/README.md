@@ -24,6 +24,7 @@ sync.status          // .idle, .starting, .running, .unavailable(reason), .faile
 sync.isRunning       // the phone's agent sheet shows only while true
 sync.isSynchronizing // sending or fetching right now
 sync.unsentCount     // rows iCloud has not received (refreshUnsent()); Settings ▸ Accounts
+sync.accountSwitched // iCloud switched to another account in this run (the recording link stops)
 sync.stop()
 // Mac, before sync.start() (only once sync.hasEngine): rows the first upload deleted, once.
 await LibraryRestore(services: services).runOnce { courseID in /* CourseSchedule.replan, counted */ }

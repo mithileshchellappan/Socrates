@@ -81,8 +81,9 @@ lectureID:assignment:)` changes the course and class the manifest names, also wh
 
 ### Pause and resume (iPhone)
 
-`LiveLectureSession.pause()` / `releaseInput()` / `resume()` over `AudioCaptureSource.pause()` /
-`releaseInput()` / `resume()` (`MicrophoneCapture`; other sources refuse). The Mac never pauses.
+`LiveLectureSession.pause()` / `holdInput()` / `releaseInput()` / `resume()` over
+`AudioCaptureSource.pause()` / `holdInput()` / `releaseInput()` / `resume()` (`MicrophoneCapture`;
+other sources refuse). The Mac never pauses.
 
 - **Pause**: the clock is read the moment Pause stops the engine (host time, and
   `ContinuousClock` for the gap). A barrier through the writer's own queue (private to the
@@ -93,9 +94,17 @@ lectureID:assignment:)` changes the course and class the manifest names, also wh
   interruption iOS never ended, because the clock counts that time as recorded like any
   interruption; `page` = the slide on screen; `wallClock` = when Pause was pressed) and the
   manifest are written, awaited. `releaseInput()` then ends the audio session (the microphone
-  indicator goes out). Nothing is stamped while paused: slide moves and flags do nothing,
-  interruptions and route changes are ignored. A write that failed (storage full), also one
-  reported while paused, stops the recording.
+  indicator goes out). Or `holdInput()` keeps the input claimed (the Mac remote attached): the
+  audio session stays active and an engine of its own runs whose tap drops every buffer, so
+  nothing is written or reaches meters and captions, and iOS keeps the app running, so Resume can
+  record again with the phone locked. The hold is wanted until `releaseInput()`, `resume()` or
+  `stop()`, apart from its engine: an interruption (a call) ends the engine, and the
+  interruption's end or a route change makes it again, tried five times 0.1 to 0.8 s apart,
+  then the input is released; `holdInput()` during the call answers true and leaves it to the
+  call's end, and called again later it holds again an input the system let go. A `resume()`
+  whose engine does not start keeps the hold. Nothing is stamped while paused:
+  slide moves and flags do nothing, interruptions and route changes are otherwise ignored. A
+  write that failed (storage full), also one reported while paused, stops the recording.
 - **Resume**: the audio session and a new engine run start; the recording clock is placed at
   the pause's place plus the time paused, measured with `ContinuousClock` (the host clock stops
   while the phone sleeps, which would place everything after the pause too early). The next
@@ -123,6 +132,17 @@ lectureID:assignment:)` changes the course and class the manifest names, also wh
   is placed at the first `resume` at or after the previous segment's end, not right after it.
 - No format change: the manifest keeps version 1 and its segment reasons (an older Mac decodes a
   new package and ignores the two event kinds). The importer makes no rows for them.
+
+### Closed segments (the recording link)
+
+`LiveLectureSession.segments` is the capture's segment list as last reported, kept in memory and
+set before each manifest write (the manifest on disk lags behind, and a crash can leave it
+without the newest segment). `closedThrough` is the highest segment whose file is closed, so it
+can be copied while recording (a closed file never changes; the next segment is a new file,
+opened only after the one before it closed): paused, finished or failed, every segment; otherwise
+the newest once its frame count is known, else the one before it. A missing frame count alone
+never means "still open" (a crash and a failed write both leave one). The iPhone recorder
+publishes it as `RecorderSnapshot.closedSegments`.
 
 ## Using it from the app
 
@@ -154,7 +174,8 @@ LiveLectureView(
 )
 
 // 4. Menu commands (→ next, ← previous, F flag, ⇧⌘R record/stop; ⌃⌘I inspector). Space is
-//    handled by the view.
+//    handled by the view. `leading` items go before Next Slide, `trailing` ones after Record
+//    (the iPhone's recording on the Mac; they bring their own divider).
 WindowGroup { … }.commands { LiveLectureCommands(); InspectorCommands() }
 
 // 5. At launch, before any recording starts: import packages left behind by a crash.

@@ -12,17 +12,17 @@ import StudyCore
 /// Nothing it records enters the phone's library; the Mac files and processes it.
 ///
 /// Every surface drives it through commands (`perform(_:)` with a `RecorderCommand`; the screen
-/// through `submit(_:)`, the Live Activity through `RecorderControl`, later the Mac remote) and
-/// renders one published state, `snapshot` (README "Recorder contract"). The session it records
-/// with is internal, so nothing reaches past the commands. Everything that changes the recording
-/// (commands, Record, the course menu, opening the screen) runs on one serial queue the model
-/// owns, on the main actor.
+/// through `submit(_:)`, the Live Activity through `RecorderControl`, the Mac remote's link
+/// through `RecorderEndpoint`) and renders one published state, `snapshot` (README "Recorder
+/// contract"). The session it records with is internal, so nothing reaches past the commands.
+/// Everything that changes the recording (commands, Record, the course menu, opening the screen)
+/// runs on one serial queue the model owns, on the main actor.
 ///
 /// The app owns one for its lifetime (recording outlives the screen) and calls `activate()` at
 /// launch; the screen calls `prepare()` when it opens.
 @MainActor
 @Observable
-public final class PhoneRecorder {
+public final class PhoneRecorder: RecorderEndpoint {
     public let services: StudyServices
 
     /// The courses that may record (recording consent), in the sidebar's order.
@@ -46,7 +46,8 @@ public final class PhoneRecorder {
     /// recording's first audio, kept after Stop until another session opens.
     public internal(set) var snapshot: RecorderSnapshot?
     /// What the screen should show the student until it is dismissed: Record failed, the
-    /// recording stopped by itself, or a command failed (from any surface).
+    /// recording stopped by itself, or a command from the screen or the Live Activity failed (a
+    /// remote command's failure is the Mac's to show).
     public internal(set) var problem: RecorderProblem?
 
     /// The command rules and the ids already decided for this recording.
@@ -56,6 +57,8 @@ public final class PhoneRecorder {
     @ObservationIgnored var commandTail: Task<Void, Never>?
     /// The last snapshot sequence published; it never goes back while the recorder runs.
     @ObservationIgnored var lastSequence = 0
+    /// A remote that can send Resume is attached (`setRemoteAttached`): a pause holds the input.
+    @ObservationIgnored var isRemoteAttached = false
     #if DEBUG
     @ObservationIgnored var previewRecordingID: RecordingID?
     #endif

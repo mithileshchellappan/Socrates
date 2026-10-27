@@ -62,6 +62,20 @@ public struct SessionRepository: Sendable {
         }
     }
 
+    /// Non-cancelled sessions overlapping `interval` whose course records lectures (recording
+    /// consent set), in time order: the classes a phone recording may be made in.
+    public func recordingClasses(overlapping interval: DateInterval) async throws -> [LectureSession] {
+        try await store.database.read { db in
+            let recording = Set(try Course.where { $0.recordingConsentAt.isNot(nil) }.fetchAll(db).map(\.id))
+            guard !recording.isEmpty else { return [] }
+            return try LectureSession
+                .where { $0.startsAt.lt(interval.end) && $0.endsAt.gt(interval.start) && !$0.isCancelled }
+                .order(by: \.startsAt)
+                .fetchAll(db)
+                .filter { recording.contains($0.courseID) }
+        }
+    }
+
     /// Non-cancelled sessions still running or starting at or after `date`, soonest first.
     public func upcoming(after date: Date, courseID: Course.ID? = nil, limit: Int = 20) async throws -> [LectureSession] {
         try await store.database.read { db in

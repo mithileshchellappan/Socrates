@@ -4,6 +4,9 @@ import ChatUI
 import CoachUI
 import CoursesUI
 import FilingUI
+#if os(macOS)
+import LinkUI
+#endif
 import MailUI
 import NotesUI
 #if os(macOS)
@@ -91,9 +94,16 @@ struct SocratesApp: App {
             }
             GoCommands()
             ReviewCommands()
-            // ln: the Lecture menu also holds the lecture notes' Ask… and Highlight (Mac).
+            // ln: the Lecture menu also holds the lecture notes' Ask… and Highlight (Mac). link: and,
+            // after Record, the iPhone's recording (only while one is known).
             #if os(macOS)
-            LiveLectureCommands { LectureNotesMenuItems() }
+            LiveLectureCommands {
+                LectureNotesMenuItems()
+            } trailing: {
+                if let link = model.phoneLink {
+                    PhoneRecordingMenuItems(link: link)
+                }
+            }
             #else
             LiveLectureCommands()
             #endif
@@ -123,6 +133,8 @@ struct SocratesApp: App {
         #if os(macOS)
         LiveLectureScene(model: model)
         SettingsScene(model: model)
+        // link: the iPhone's recording in the menu bar (only while one is known or arriving).
+        PhoneRecordingScene(model: model)
         #endif
     }
 

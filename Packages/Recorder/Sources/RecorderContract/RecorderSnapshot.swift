@@ -55,6 +55,17 @@ public struct RecorderSnapshot: Codable, Hashable, Sendable {
     /// With `phase` stopped: why the recording stopped by itself (storage full, consent
     /// withdrawn); nil after Stop and while it runs.
     public var failure: RecorderFailure?
+    /// The highest sequence among the recording's closed audio segments (0: none closed yet). A
+    /// closed segment's file never changes again, so a reader may copy every segment up to it
+    /// while the recording goes on. It bounds what is closed: a segment counts as closed once a
+    /// higher one exists or its frame count is known, every segment once the recording paused or
+    /// stopped, and a missing frame count never means "still open". It speaks only for the
+    /// recording this snapshot is of; earlier packages are whole. Read as 0 from earlier builds.
+    public var closedSegments: Int
+    /// The `sequence` at which the current `phase` began: a command drawn from an older snapshot
+    /// (`RecorderCommand.basis` below it) was decided against a phase that has ended since. Read as
+    /// `sequence` from earlier builds.
+    public var phaseSince: Int
 
     public init(
         recordingID: RecordingID,
@@ -68,7 +79,9 @@ public struct RecorderSnapshot: Codable, Hashable, Sendable {
         course: Course,
         sessionName: String,
         accepts: Set<RecorderCommand.Kind>,
-        failure: RecorderFailure? = nil
+        failure: RecorderFailure? = nil,
+        closedSegments: Int = 0,
+        phaseSince: Int? = nil
     ) {
         self.recordingID = recordingID
         self.sequence = sequence
@@ -82,6 +95,8 @@ public struct RecorderSnapshot: Codable, Hashable, Sendable {
         self.sessionName = sessionName
         self.accepts = accepts
         self.failure = failure
+        self.closedSegments = closedSegments
+        self.phaseSince = phaseSince ?? sequence
     }
 
     public init(from decoder: any Decoder) throws {
@@ -98,9 +113,13 @@ public struct RecorderSnapshot: Codable, Hashable, Sendable {
         sessionName = try container.decode(String.self, forKey: .sessionName)
         accepts = RecorderCommand.Kind.known(try container.decode([String].self, forKey: .accepts))
         failure = try container.decodeIfPresent(RecorderFailure.self, forKey: .failure)
+        closedSegments = try container.decodeIfPresent(Int.self, forKey: .closedSegments) ?? 0
+        phaseSince = try container.decodeIfPresent(Int.self, forKey: .phaseSince) ?? sequence
     }
 
     public var isPaused: Bool { phase == .paused }
+    /// Not stopped: recording, paused or stopping.
+    public var isLive: Bool { phase != .stopped }
 
     /// Whether this snapshot is newer than `other`, the one rule a receiver keeps: of one
     /// recording the higher sequence wins; of two recordings the one started later.

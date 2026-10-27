@@ -3,6 +3,7 @@ import CalendarUI
 import ChatUI
 import CoachUI
 import CoursesUI
+import LinkUI
 import MailUI
 import PhoneUI
 import Recorder
@@ -46,6 +47,7 @@ struct PhoneLaunch {
 /// keeps the split view (`RootView`).
 struct PhoneRootView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
     @State private var tab: PhoneTab
     @State private var cover: PhoneCover?
     @State private var mailScope = MailScope.inbox
@@ -93,6 +95,12 @@ struct PhoneRootView: View {
             .environment(\.studyCoach, model.screenCoach)
             .environment(\.searchProviders, SearchProviders())
             .environment(\.calendarVisibility, model.calendarVisibility)
+            // link: in the foreground the phone links for captures the Mac has not received yet,
+            // and finds the Mac again (iOS makes a suspended app's discovery defunct). The
+            // starting phase too: an app opened with such captures links at once.
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                model.macLink?.setActive(phase == .active)
+            }
         }
     }
 
@@ -101,7 +109,10 @@ struct PhoneRootView: View {
         switch cover {
         case .recorder:
             if let recorder {
-                RecorderScreen(recorder: recorder)
+                // link: each outbox row's delivery line, what the Mac holds of it (DESIGN 8.11).
+                RecorderScreen(recorder: recorder) { capture in
+                    CaptureDeliveryLabel(delivery: model.macLink?.delivery(of: capture))
+                }
             }
         case .round(let id):
             // The round sets its own title ("Practice", "6 / 12") and End.

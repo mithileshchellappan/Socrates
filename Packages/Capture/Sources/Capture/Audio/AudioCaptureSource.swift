@@ -132,8 +132,15 @@ public protocol AudioCaptureSource: AnyObject, Sendable {
     /// its own writes first. Throws `notRecording` unless recording.
     func pause() async throws -> CapturePause
 
-    /// Gives the input up while paused (iOS: the audio session goes inactive, the microphone
-    /// indicator goes out and the app may be suspended).
+    /// Keeps the input claimed through the pause without recording (iOS): nothing is written or
+    /// sent on, the microphone indicator stays on, and iOS keeps the app running, so `resume()`
+    /// can record again with the phone locked. Until `releaseInput()`, `resume()` or `stop()`;
+    /// during an interruption (a call) it is held once the interruption ends. Calling it again
+    /// holds again an input the system let go. False when not paused or the input cannot be held.
+    func holdInput() async -> Bool
+
+    /// Gives the input up while paused, a held one too (iOS: the audio session goes inactive,
+    /// the microphone indicator goes out and the app may be suspended).
     func releaseInput() async
 
     /// Records again after `pause()` into the same recording: the clock is placed after the
@@ -150,6 +157,7 @@ public protocol AudioCaptureSource: AnyObject, Sendable {
 extension AudioCaptureSource {
     /// Sources that cannot pause (the Mac never does) refuse.
     public func pause() async throws -> CapturePause { throw CaptureError.notRecording }
+    public func holdInput() async -> Bool { false }
     public func releaseInput() async {}
     public func resume() async throws -> CaptureResume { throw CaptureError.notPaused }
     public func reopen(_ paused: PausedRecording) async throws -> RecordingClock { throw CaptureError.notPaused }

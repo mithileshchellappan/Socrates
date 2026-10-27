@@ -6,11 +6,11 @@ import RecorderContract
 
 // The recorder's command executor and its published state (README "Recorder contract").
 //
-// - Every surface sends a `RecorderCommand`: the Live Activity and later the remote through
-//   `perform(_:)`, the screen through `submit(_:)`. Commands run one at a time on the model's
-//   serial queue on the main actor (the session's actor, where stamps take their host time),
-//   each checked by `RecorderMachine` against the snapshot before it acts and against the phase
-//   it should reach after, and each id is applied once.
+// - Every surface sends a `RecorderCommand`: the Live Activity and the Mac remote
+//   (`RecorderEndpoint`) through `perform(_:)`, the screen through `submit(_:)`. Commands run
+//   one at a time on the model's serial queue on the main actor (the session's actor, where
+//   stamps take their host time), each checked by `RecorderMachine` against the snapshot before
+//   it acts and against the phase it should reach after, and each id is applied once.
 // - `snapshot` is the only state a surface renders. `publish()` rebuilds it from the session and
 //   the course and counts `sequence` up when its content changed; it runs after every command,
 //   and on any other change of what it reads (a failure, the input lost), through an
@@ -76,8 +76,9 @@ extension PhoneRecorder {
                 "\(command.action.kind.rawValue, privacy: .public) from \(command.origin.rawValue, privacy: .public): \(String(describing: result), privacy: .public)"
             )
         }
-        // A recording that stopped meanwhile says so itself (`didFinish`).
-        if case .failed(let failure) = result, failure != .stoppedMeanwhile {
+        // A recording that stopped meanwhile says so itself (`didFinish`); a remote command's
+        // failure is the remote's to show (the Mac draws it under its controls).
+        if case .failed(let failure) = result, failure != .stoppedMeanwhile, command.origin != .remote {
             problem = RecorderProblem(moment: .command(command.action.kind), failure: failure)
         }
         if command.origin == .liveActivity {
@@ -112,13 +113,21 @@ extension PhoneRecorder {
         switch action {
         case .pause:
             try await session.pause()
-            // The Live Activity shows Paused before the input goes: iOS may suspend the app
-            // seconds after the audio session ends.
             publish()
+            // Held for a remote, the input never goes and iOS keeps the app running; otherwise
+            // the Live Activity shows Paused before it goes: iOS may suspend the app seconds
+            // after the audio session ends.
+            let held = await holdInputForRemote(session)
             await activity.settled()
-            await session.releaseInput()
+            if !held { await session.releaseInput() }
         case .resume:
-            try await session.resume()
+            do {
+                try await session.resume()
+            } catch {
+                // Still paused (a call, the input refused): a held input that went is held again.
+                if isRemoteAttached { await settleInput(of: session) }
+                throw error
+            }
         case .nextSlide:
             guard session.next() else { throw CaptureError.notRecording }
         case .previousSlide:
@@ -128,6 +137,22 @@ extension PhoneRecorder {
         case .stop:
             await session.stop()
         }
+    }
+
+    /// A paused recording's input: held while a remote that can send Resume is attached, so iOS
+    /// keeps the app running and that Resume records again with the phone locked (iOS does not
+    /// let a backgrounded app start recording); otherwise released, so the microphone indicator
+    /// goes out. A hold that cannot start now (iOS refuses a backgrounded app) is a release.
+    func settleInput(of session: LiveLectureSession) async {
+        guard session.phase == .paused else { return }
+        if await holdInputForRemote(session) { return }
+        await session.releaseInput()
+    }
+
+    /// Holds a paused recording's input while a remote is attached; true when it is held.
+    private func holdInputForRemote(_ session: LiveLectureSession) async -> Bool {
+        guard isRemoteAttached, session.phase == .paused else { return false }
+        return await session.holdInput()
     }
 
     /// A Live Activity button that did nothing was drawn from an older state (or the system ran
@@ -151,10 +176,18 @@ extension PhoneRecorder {
     /// Rebuilds `snapshot` and, when its content changed, counts its sequence up and brings the
     /// Live Activity along (ended once stopped). Idempotent.
     func publish() {
-        guard let built = makeSnapshot(sequence: snapshot?.sequence ?? 0), built != snapshot else { return }
+        guard let built = makeSnapshot(sequence: snapshot?.sequence ?? 0, phaseSince: snapshot?.phaseSince),
+              built != snapshot else { return }
         var next = built
         lastSequence += 1
         next.sequence = lastSequence
+        // The phase's start stays while the recording and its phase do (so an unchanged state
+        // still compares equal above); a new phase or recording starts at this sequence.
+        if let snapshot, snapshot.recordingID == next.recordingID, snapshot.phase == next.phase {
+            next.phaseSince = snapshot.phaseSince
+        } else {
+            next.phaseSince = next.sequence
+        }
         snapshot = next
         let state = RecordingActivityState(snapshot: next)
         if next.phase == .stopped {
@@ -177,8 +210,8 @@ extension PhoneRecorder {
         }
     }
 
-    /// The state now, or nil before the recording's first audio.
-    private func makeSnapshot(sequence: Int) -> RecorderSnapshot? {
+    /// The state now, or nil before the recording's first audio. `phaseSince` nil: `sequence`.
+    private func makeSnapshot(sequence: Int, phaseSince: Int? = nil) -> RecorderSnapshot? {
         guard let session, let course, let recordingID, let startedAt = session.startedAt else { return nil }
         let phase: RecorderSnapshot.Phase
         var failure: RecorderFailure?
@@ -208,7 +241,9 @@ extension PhoneRecorder {
             course: RecorderSnapshot.Course(name: course.name, shortName: course.shortName, colorHex: course.colorHex),
             sessionName: sessionName,
             accepts: RecorderMachine.accepts(phase: phase, canGoNext: session.canGoNext, canGoPrevious: session.canGoPrevious),
-            failure: failure
+            failure: failure,
+            closedSegments: session.closedThrough,
+            phaseSince: phaseSince
         )
     }
 

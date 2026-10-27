@@ -15,8 +15,13 @@ import SwiftUI
 /// While recording it renders `recorder.snapshot` (and the model's read-only level, stamp times
 /// and deck), and every button goes through the model (`submit`, `record`, `select`); what is
 /// enabled is what the snapshot accepts. The alert shows the model's `problem`.
-public struct RecorderScreen: View {
+///
+/// `delivery` draws one more line on each outbox row under its day and stamps: what another
+/// device holds of that capture (the recording link's copy to the Mac, mockup 63). The app fills
+/// it; the Recorder package knows nothing of the link. Without it the rows are as before.
+public struct RecorderScreen<Delivery: View>: View {
     let recorder: PhoneRecorder
+    let delivery: @MainActor (PhoneCapture.ID) -> Delivery
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -24,15 +29,16 @@ public struct RecorderScreen: View {
     @State private var confirmsStop = false
     @State private var showsOutbox = false
 
-    public init(recorder: PhoneRecorder) {
+    public init(recorder: PhoneRecorder, @ViewBuilder delivery: @escaping @MainActor (PhoneCapture.ID) -> Delivery) {
         self.recorder = recorder
+        self.delivery = delivery
     }
 
     public var body: some View {
         @Bindable var recorder = recorder
         Group {
             if recorder.finished != nil || showsOutbox {
-                OutboxView(recorder: recorder, finished: recorder.finished) {
+                OutboxView(recorder: recorder, finished: recorder.finished, delivery: delivery) {
                     if recorder.finished != nil { dismiss() } else { showsOutbox = false }
                 }
             } else {
@@ -181,6 +187,13 @@ public struct RecorderScreen: View {
             Color.clear.frame(height: 54)
                 .accessibilityHidden(true)
         }
+    }
+}
+
+extension RecorderScreen where Delivery == EmptyView {
+    /// The recorder without a delivery line on the outbox rows (no recording link).
+    public init(recorder: PhoneRecorder) {
+        self.init(recorder: recorder) { _ in EmptyView() }
     }
 }
 
