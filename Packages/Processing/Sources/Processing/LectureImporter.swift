@@ -132,7 +132,7 @@ public struct LectureImporter: Sendable {
             deck = try await DeckImporter(services: services).importDeck(at: deckURL, courseID: course.id).0
         }
 
-        let ownsPackage = Self.isInside(url, directory: services.paths.recordings)
+        let ownsPackage = LecturePackageReader.libraryOwns(package, recordings: services.paths.recordings)
         // A package from elsewhere is never marked imported, so its recording row says it was.
         let existingRecording = try await store.fetch(Recording.self, id: manifest.id)
         let alreadyImported = manifest.importedAt != nil || (!ownsPackage && existingRecording != nil)
@@ -462,17 +462,6 @@ public struct LectureImporter: Sendable {
         }
     }
 
-    /// True when `url` lies inside `directory` (symlinks resolved, e.g. /var → /private/var).
-    static func isInside(_ url: URL, directory: URL) -> Bool {
-        func path(_ url: URL) -> String {
-            let resolved = url.standardizedFileURL.resolvingSymlinksInPath().path(percentEncoded: false)
-            return resolved.hasSuffix("/") ? resolved : resolved + "/"
-        }
-        let child = path(url)
-        let parent = path(directory)
-        return child != parent && child.hasPrefix(parent)
-    }
-
     static func creationDate(of url: URL) -> Date? {
         try? url.resourceValues(forKeys: [.creationDateKey]).creationDate
     }
@@ -602,19 +591,46 @@ public struct LectureImporter: Sendable {
         }
     }
 
-    /// The coarse, untimed span that says which deck (and pages) a lecture uses. Alignment reads
-    /// the deck from it. Replaces an earlier coarse span of the same lecture and deck.
-    private func linkDeck(_ deck: Deck, to lecture: Lecture, pages: ClosedRange<Int>?, source: SpanSource) async throws {
-        let existing = try await LectureRepository(store: store).spans(lectureID: lecture.id)
-            .first { !$0.isTimed && $0.deckID == deck.id }
-        try await store.save(LectureDeckSpan(
-            id: existing?.id ?? UUID(),
-            lectureID: lecture.id,
-            deckID: deck.id,
-            firstPage: pages?.lowerBound ?? 1,
-            lastPage: pages?.upperBound ?? deck.pageCount,
-            source: source
-        ))
+    /// The coarse, untimed span that says which deck (and pages) a lecture uses; alignment reads
+    /// the deck from it. One span per lecture and deck: a capture's stamped `pages` widen the
+    /// lecture's range to cover both (a second recording of the class that showed other slides
+    /// never narrows it), and a capture without stamps keeps the range there is. When the range
+    /// grew (or the link is new), `align` is queued for the lecture's transcribed recordings.
+    private func linkDeck(_ deck: Deck, to lecture: Lecture, pages stamped: ClosedRange<Int>?, source: SpanSource) async throws {
+        let store = store
+        let now = now()
+        let lectureID = lecture.id
+        let deckID = deck.id
+        let wholeDeck = 1...max(deck.pageCount, 1)
+        try await services.database.write { db in
+            let existing = try LectureDeckSpan
+                .where { $0.lectureID.eq(lectureID) && $0.deckID.eq(deckID) && $0.startTime.is(nil) }
+                .order(by: \.updatedAt)
+                .fetchAll(db)
+                .last
+            let kept = existing.flatMap { span in span.firstPage.flatMap { first in span.lastPage.map { first...$0 } } }
+            let pages: ClosedRange<Int>
+            switch (kept, stamped) {
+            case (nil, nil):
+                pages = wholeDeck
+            case (.some, nil):
+                return
+            case (nil, .some(let stamped)):
+                pages = stamped
+            case (.some(let kept), .some(let stamped)):
+                let union = min(kept.lowerBound, stamped.lowerBound)...max(kept.upperBound, stamped.upperBound)
+                guard union != kept else { return }
+                pages = union
+            }
+            let span = store.stamp(LectureDeckSpan(
+                id: existing?.id ?? UUID(), lectureID: lectureID, deckID: deckID,
+                firstPage: pages.lowerBound, lastPage: pages.upperBound, source: source
+            ))
+            try LectureDeckSpan.upsert { span }.execute(db)
+            for job in try LectureSlides.alignmentJobs(lectureID: lectureID, in: db, now: now).map(store.stamp) {
+                try Job.upsert { job }.execute(db)
+            }
+        }
     }
 
     private func enqueueTranscription(lecture: Lecture, recording: Recording) async throws -> Job {

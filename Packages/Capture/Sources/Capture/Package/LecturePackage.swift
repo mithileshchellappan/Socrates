@@ -157,12 +157,31 @@ public enum LecturePackageReader {
 
     /// Packages in `directory` that were not imported yet (including crashed ones).
     public static func pending(in directory: URL) throws -> [LecturePackage] {
-        try LecturePackage.all(in: directory).filter { package in
-            guard let manifest = try? CaptureJSON.read(LectureManifest.self, from: package.manifestURL) else {
-                return false
-            }
-            return manifest.importedAt == nil
+        try LecturePackage.all(in: directory).filter(isPending)
+    }
+
+    /// Whether `package` still waits for its import: its manifest reads and is not marked
+    /// imported (a package left by a crash included). The one rule for the launch's pass
+    /// (`pending(in:)`), the link's inbox and filing: an imported package whose recording was
+    /// deleted since is not filed again.
+    public static func isPending(_ package: LecturePackage) -> Bool {
+        guard let manifest = try? CaptureJSON.read(LectureManifest.self, from: package.manifestURL) else { return false }
+        return manifest.importedAt == nil
+    }
+
+    /// Whether the library owns `package`: it lies inside the library's Recordings folder
+    /// (`recordings`), where live capture writes, the link moves arrivals and dropped bundles are
+    /// unpacked (symlinks resolved, e.g. /var → /private/var). Only such a package loses its audio
+    /// and is marked imported once its rows are in; one picked anywhere else (a backup, a USB
+    /// drive) is read and copied, never changed.
+    public static func libraryOwns(_ package: LecturePackage, recordings: URL) -> Bool {
+        func path(_ url: URL) -> String {
+            let resolved = url.standardizedFileURL.resolvingSymlinksInPath().path(percentEncoded: false)
+            return resolved.hasSuffix("/") ? resolved : resolved + "/"
         }
+        let child = path(package.url)
+        let parent = path(recordings)
+        return child != parent && child.hasPrefix(parent)
     }
 
     /// Matches the manifest's segment list with the audio files on disk.

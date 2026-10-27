@@ -25,8 +25,8 @@ actor RecordingInbox {
         /// Taken: the arrival row (for a final offer) and the bytes already here.
         case accepted(Arrival?, held: [Stored])
         /// The Mac has this recording already: nothing is copied. `unfiled`: its package in
-        /// `Recordings/`, which nothing filed yet (a session that ended between the move and the
-        /// filing): file it.
+        /// `Recordings/`, never imported (a session that ended between the move and the filing):
+        /// file it.
         case known(unfiled: URL?)
         /// Not a package the inbox takes (a path or a size the rules refuse).
         case refused
@@ -68,7 +68,7 @@ actor RecordingInbox {
     enum Completion: Sendable {
         /// In `Recordings/` now, at this URL.
         case kept(URL)
-        /// A package of that id was in `Recordings/` already (`unfiled`: nothing filed it yet).
+        /// A package of that id was in `Recordings/` already (`unfiled`: never imported).
         case known(unfiled: URL?)
         /// It failed the package checks.
         case refused
@@ -326,24 +326,26 @@ actor RecordingInbox {
     /// Whether the Mac has a recording.
     private enum Presence {
         case absent
-        /// Filed, imported, or in `Recordings/`; `unfiled`: the package there, which nothing filed
-        /// yet (as the launch's filing pass would find it).
+        /// Filed, imported, or in `Recordings/`; `unfiled`: the package there while it still waits
+        /// for its import (`LecturePackageReader.isPending`, as the launch's filing pass finds it).
+        /// An imported package whose recording was deleted since is present and filed by nothing.
         case present(unfiled: URL?)
     }
 
     private func presence(of recording: RecordingID) async -> Presence {
         let destination = destination(of: recording)
         let isThere = FileManager.default.fileExists(atPath: destination.path(percentEncoded: false))
+        let unfiled = isThere && LecturePackageReader.isPending(LecturePackage(url: destination)) ? destination : nil
         do {
             if try await FilingRepository(store: services.records).latest(recordingID: recording.rawValue) != nil {
                 return .present(unfiled: nil)
             }
-            if isThere { return .present(unfiled: destination) }
+            if isThere { return .present(unfiled: unfiled) }
             if try await services.records.fetch(Recording.self, id: recording.rawValue) != nil { return .present(unfiled: nil) }
         } catch {
             LinkLog.inbox.error("Looking up \(recording.uuidString, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             // Filing files a recording id once, so handing it the package again is safe.
-            if isThere { return .present(unfiled: destination) }
+            if isThere { return .present(unfiled: unfiled) }
         }
         return .absent
     }
