@@ -608,7 +608,8 @@ public struct LectureImporter: Sendable {
                 .order(by: \.updatedAt)
                 .fetchAll(db)
                 .last
-            let kept = existing.flatMap { span in span.firstPage.flatMap { first in span.lastPage.map { first...$0 } } }
+            // The range as every reader sees it (`LectureSlideRange`, as `LectureSlides.link` reads it).
+            let kept = existing.flatMap { LectureSlideRange(span: $0, deck: deck)?.pages }
             let pages: ClosedRange<Int>
             switch (kept, stamped) {
             case (nil, nil):
