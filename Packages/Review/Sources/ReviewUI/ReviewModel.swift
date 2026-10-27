@@ -25,8 +25,10 @@ final class ReviewModel {
     /// mr: the lecture's pages of the deck (`LectureSlides.current`); nil without a link (a
     /// capture's stamped deck, shown whole).
     let range: LectureSlideRange?
-    /// Nil without a deck (or when its PDF cannot be read): no rail, no slide.
-    let deck: SlideDeck?
+    /// The lecture's slides as this device has them.
+    let slides: Slides
+    /// The deck on screen; nil without one (no rail, no slide).
+    var deck: SlideDeck? { slides.deck }
     let session: ReviewSession
     let services: StudyServices
     @ObservationIgnored let keeper: ReviewStateKeeper
@@ -111,7 +113,7 @@ final class ReviewModel {
 
     init(
         lecture: Lecture, course: Course?, recording: Recording?, recordings: [Recording] = [], deckID: Deck.ID?,
-        range: LectureSlideRange? = nil, deck: SlideDeck?, session: ReviewSession, services: StudyServices,
+        range: LectureSlideRange? = nil, slides: Slides, session: ReviewSession, services: StudyServices,
         realign: @escaping AnchorEditor.Realign
     ) {
         self.lecture = lecture
@@ -120,7 +122,7 @@ final class ReviewModel {
         self.recordings = recordings.isEmpty ? recording.map { [$0] } ?? [] : recordings
         self.deckID = deckID
         self.range = range
-        self.deck = deck
+        self.slides = slides
         self.session = session
         self.services = services
         // `review_position` is on the first recording's clock; another one never moves it.
@@ -128,7 +130,7 @@ final class ReviewModel {
         keeper = ReviewStateKeeper(lecture: lecture, store: services.records, savesPosition: isFirst)
         anchors = AnchorEditor(store: services.records, realign: realign)
         edits = StudyEdits(store: services.records)
-        slideText = deck.map { SlideTextLocator(url: $0.url) }
+        slideText = slides.deck.map { SlideTextLocator(url: $0.url) }
         let keeper = keeper
         session.player?.onTick = { [weak session] time in
             guard let session, let player = session.player else { return }
@@ -160,7 +162,8 @@ final class ReviewModel {
             let found = try await slides(lectureID: lectureID, database: services.database)
             var deckRow: Deck?
             if let deckID = found.deckID { deckRow = try await store.fetch(Deck.self, id: deckID) }
-            let deck = await openDeck(deckRow, services: services)
+            let opened = await openSlides(deckRow, services: services)
+            let deck = opened.deck
 
             var player: LecturePlayer?
             var timeline = SlideTimeline.empty
@@ -188,7 +191,7 @@ final class ReviewModel {
             let session = ReviewSession(player: player, pageCount: deck?.pageCount ?? 0, pages: range?.pages, timeline: timeline)
             let model = ReviewModel(
                 lecture: lecture, course: course, recording: recording, recordings: all, deckID: deckRow?.id, range: range,
-                deck: deck, session: session, services: services, realign: realign
+                slides: opened, session: session, services: services, realign: realign
             )
             model.inkPages = inkPages
             let resume = recording?.id == all.first?.id ? lecture.reviewPosition : nil
@@ -228,19 +231,21 @@ final class ReviewModel {
         return "\(range.pagesText) of \(range.pageCount)"
     }
 
-    /// Opens the deck's PDF off the main actor; nil when there is none or it cannot be read.
-    nonisolated static func openDeck(_ deck: Deck?, services: StudyServices) async -> SlideDeck? {
-        guard let deck, let blob = deck.blob else { return nil }
+    /// Opens the deck's PDF off the main actor: `.none` when there is no deck or its PDF cannot
+    /// be read, `.notOnThisDevice` when its file is not in this device's BlobStore.
+    nonisolated static func openSlides(_ deck: Deck?, services: StudyServices) async -> Slides {
+        guard let deck, let blob = deck.blob else { return .none }
+        guard services.blobs.contains(blob) else { return .notOnThisDevice }
         do {
-            return try SlideDeck(
+            return .shown(try SlideDeck(
                 url: services.blobs.url(for: blob),
                 sha256: blob.sha256,
                 cacheDirectory: services.paths.caches.appending(path: "Slides", directoryHint: .isDirectory),
                 memoryBudgetBytes: ReviewModel.slideMemoryBudget
-            )
+            ))
         } catch {
             ReviewLog.logger.error("Opening slides failed: \(String(describing: error), privacy: .public)")
-            return nil
+            return .none
         }
     }
 
@@ -457,6 +462,23 @@ final class ReviewModel {
     /// A load that was replaced before it was shown: stop it without writing anything.
     func discard() {
         player?.pause()
+    }
+}
+
+extension ReviewModel {
+    /// What a lecture's slides are on this device.
+    enum Slides: Sendable {
+        /// The lecture has no slides (or their PDF cannot be read): Review offers to take them.
+        case none
+        /// The deck's PDF, open.
+        case shown(SlideDeck)
+        /// The lecture has slides whose file is on another device: files do not sync (2026-10-19),
+        /// and a deck added on the Mac reaches the iPhone as its row only.
+        case notOnThisDevice
+
+        var deck: SlideDeck? {
+            if case .shown(let deck) = self { deck } else { nil }
+        }
     }
 }
 

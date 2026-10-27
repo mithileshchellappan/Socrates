@@ -67,6 +67,12 @@ deck link on the default database, which the app already points at the same data
   lecture | Summary: the Mac's Notes pane, the iPad's inspector; see "Panes" below). No deck: no
   rail and no slide, notes on the lecture. No recording: no player and no
   transcript. No transcript yet: the transcription job's determinate progress.
+- **Slides on this device** (`ReviewModel.Slides`, 2026-10-27): `none` (no deck, or its PDF
+  cannot be read), `shown` (the deck open) or `notOnThisDevice` (the deck row synced, its file is
+  not in this device's BlobStore: `BlobStore.contains`; files do not sync). Without slides or a
+  recording the column is the drop prompt "Drop this lecture's slides here." only for `none`;
+  `notOnThisDevice` shows `rectangle.on.rectangle` and "Not on this device", no drop target.
+  Playback is unchanged.
 - **Window layout (mockup 03).** The toolbar title is the screen's own item (title 3 semibold over
   the course and day; `.toolbar(removing: .title)`, the navigation title stays for the Window
   menu). The iPad (the Mac's notes are a side pane since panes): the toolbar is one row with no
