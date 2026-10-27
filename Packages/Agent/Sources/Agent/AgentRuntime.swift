@@ -12,8 +12,10 @@ import StudyCore
 ///   `api_call` row the ledger wrote for its response (by request id).
 /// - `send` rebuilds the history from the stored turns byte for byte and appends; nothing is ever
 ///   edited. The model, effort, system prompt and tools of a conversation never change.
-/// - A file a student's turn sends (an image, a PDF) is stored by reference to the bytes sent
-///   (`BlockSource.blob`, 2026-10-27); each request carries its base64 again, the same bytes.
+/// - A file a student's turn sends (an image, a PDF, a text file, a document's text) is stored by
+///   reference to the bytes sent (`BlockSource.blob`, 2026-10-27); each request carries its base64
+///   (or its text) again, the same bytes. A file gone from the BlobStore fails the run with "The
+///   file is no longer there."
 /// - The end: `finished`; an error, a refusal, truncation or the call limit: `failed` with a
 ///   readable error. `recoverInterrupted()` fails what a quit left `running` and adds the
 ///   composer's parse of what such a `deadlines` conversation was told when it wrote nothing.
@@ -477,9 +479,16 @@ public actor AgentRuntime {
             // One readable sentence is stored and shown; the error itself goes to the log only.
             // Only a task's run is tried again by itself (the queue): an answer's says "busy".
             if (error as? ClaudeError)?.isServiceTrouble == true { serviceTrouble.insert(id) }
-            let message = ReadableError.sentence(
-                for: error, otherwise: String(localized: "The answer could not be saved."), retrying: conversation.kind == .task, now: now()
-            )
+            let message: String
+            if case .missing? = error as? BlobStoreError {
+                // A file a stored turn sends by reference is gone (`sendable(blobs:)`): nothing is
+                // sent without it.
+                message = String(localized: "The file is no longer there.")
+            } else {
+                message = ReadableError.sentence(
+                    for: error, otherwise: String(localized: "The answer could not be saved."), retrying: conversation.kind == .task, now: now()
+                )
+            }
             AgentModule.log.error(
                 "Conversation failed: \(ReadableError.kind(of: error), privacy: .public): \(String(describing: error), privacy: .private)"
             )

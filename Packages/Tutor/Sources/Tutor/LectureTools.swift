@@ -71,13 +71,23 @@ struct LectureTools: Sendable {
                 return .object(row)
             }
             // Recordings filed with no lecture show on no screen: listed here, the agent can place
-            // them (move_recording). With a course, only that course's.
-            let withoutLecture = library.withoutLecture.filter { courseID == nil || $0.courseID == courseID }
+            // them (move_recording). With a course, that course's and those with no course (most
+            // of them: a plain recording, a capture whose course was gone, a filing undone). The
+            // newest `withoutLectureShown`, oldest first, then how many more.
+            let withoutLecture = library.withoutLecture.filter { courseID == nil || $0.courseID == nil || $0.courseID == courseID }
             var head: JSONObject = [:]
-            if !withoutLecture.isEmpty { head["recordings_without_lecture"] = .array(withoutLecture.map(Self.recordingLine)) }
+            if !withoutLecture.isEmpty {
+                head["recordings_without_lecture"] = .array(withoutLecture.suffix(Self.withoutLectureShown).map(Self.recordingLine))
+                let more = withoutLecture.count - Self.withoutLectureShown
+                if more > 0 { head["recordings_without_lecture_more"] = .int(more) }
+            }
             return TutorJSON.fitted(head, key: "lectures", rows: rows)
         }
     }
+
+    /// The most recordings without a lecture `list_lectures` names (the newest): the lines come
+    /// before the lecture rows in its 4,000 characters.
+    static let withoutLectureShown = 10
 
     /// A recording's key, start and length: "b680d175 · Thu 22 Oct, 14:02 · 1:28:10".
     static func recordingLine(_ recording: Recording) -> JSONValue {

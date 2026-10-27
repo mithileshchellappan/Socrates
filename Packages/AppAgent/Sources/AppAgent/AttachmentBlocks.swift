@@ -14,11 +14,14 @@ import UniformTypeIdentifiers
 /// JPEG at that size), PDFs as document blocks (titled with the file name), text and code as a
 /// `text`-source document titled with the file name. At most `AgentAttachment.maximumPerMessage`.
 ///
-/// An image or PDF block names the bytes it sends in the BlobStore (`BlockSource.blob`,
-/// 2026-10-27) instead of carrying them, so the stored turn stays under iCloud's record size; the
-/// runtime builds the base64 before each request. A re-encoded image's JPEG is kept in the
-/// BlobStore when it is made and named by the attachment as sent (`AgentAttachment.sentBlob`),
-/// which the turn's context lists, so `BlobUsage` keeps it.
+/// Every image and document block (an image, a PDF, a text file, a document's text) names the
+/// bytes it sends in the BlobStore (`BlockSource.blob`, 2026-10-27) instead of carrying them, so
+/// the stored turn stays under iCloud's record size (a long PDF's `<attached_file>` excerpt, at
+/// most 8,000 characters, stays inline); the runtime builds the base64 (a text's string) before
+/// each request. Bytes that are not the original's, a
+/// re-encoded image's JPEG or a document's extracted text, are kept in the BlobStore when they are
+/// made and named by the attachment as sent (`AgentAttachment.sentBlob`), which the turn's context
+/// lists, so `BlobUsage` keeps them.
 enum AttachmentBlocks {
     enum Failure: Error, CustomStringConvertible, LocalizedError {
         case unreadable(String)
@@ -57,7 +60,7 @@ enum AttachmentBlocks {
     /// sentence), a PDF over the send limits (not slides: those were filed) as `<attached_file>`
     /// with its first pages' text (≤ `attachedFileCharacters`, so `keep_document` can still keep
     /// it), the rest as `block`. `sent`: the attachments as sent, in order (`sentBlob` set where
-    /// the bytes sent are not the original's).
+    /// the bytes sent are not the original's: a re-encoded image, a document's text).
     static func contentBlocks(
         _ attachments: [AgentAttachment], blobs: BlobStore
     ) async throws -> (blocks: [ContentBlock], sent: [AgentAttachment]) {
@@ -67,8 +70,9 @@ enum AttachmentBlocks {
         for attachment in attachments {
             switch attachment.kind {
             case .document:
-                result.append(try await documentText(attachment, blobs: blobs))
-                sent.append(attachment)
+                let made = try await documentText(attachment, blobs: blobs)
+                result.append(made.block)
+                sent.append(made.sent)
             case .pdf where sentAsText(attachment):
                 guard blobs.contains(attachment.blob),
                       let leading = await DocumentExtractor.leadingText(ofPDFAt: blobs.url(for: attachment.blob), characters: attachedFileCharacters)
@@ -98,8 +102,9 @@ enum AttachmentBlocks {
     static let attachedFileCharacters = 8_000
 
     /// A `.document` attachment's text (Documents' extractor, off the main actor), in a text
-    /// document block titled with the file name.
-    static func documentText(_ attachment: AgentAttachment, blobs: BlobStore) async throws -> ContentBlock {
+    /// document block titled with the file name. The text is kept in the BlobStore and named by
+    /// the block and by the attachment as sent (`sentBlob`).
+    static func documentText(_ attachment: AgentAttachment, blobs: BlobStore) async throws -> (block: ContentBlock, sent: AgentAttachment) {
         guard blobs.contains(attachment.blob) else { throw Failure.unreadable(attachment.fileName) }
         let type = UTType(attachment.contentType) ?? UTType(filenameExtension: (attachment.fileName as NSString).pathExtension) ?? .data
         let extracted: ExtractedDocument
@@ -112,26 +117,36 @@ enum AttachmentBlocks {
         }
         var text = extracted.pages.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
         if text.count > documentCharacters { text = String(text.prefix(documentCharacters)) + "…" }
-        return .document(DocumentBlock(source: .text(text), title: attachment.fileName))
+        let stored: BlobRef
+        do {
+            stored = try blobs.put(Data(text.utf8), fileExtension: "txt")
+        } catch {
+            throw Failure.unreadable(attachment.fileName)
+        }
+        var sent = attachment
+        sent.sentBlob = stored
+        return (.document(DocumentBlock(source: .blob(stored, mediaType: BlockSource.plainText), title: attachment.fileName)), sent)
     }
 
-    /// An image, PDF or text attachment's block, and the attachment as sent. An image or a PDF
-    /// names its bytes in the BlobStore (`BlockSource.blob`): the original, or the JPEG made for
-    /// an image Claude cannot take as it is, kept now and named by `sentBlob`.
+    /// An image, PDF or text attachment's block, and the attachment as sent. Each names its bytes
+    /// in the BlobStore (`BlockSource.blob`): the original, or the JPEG made for an image Claude
+    /// cannot take as it is, kept now and named by `sentBlob`. A text file is read only to check
+    /// it is UTF-8, a PDF not at all (the runtime reads what it sends).
     static func block(_ attachment: AgentAttachment, blobs: BlobStore) throws -> (block: ContentBlock, sent: AgentAttachment) {
         if attachment.kind == .pdf,
            attachment.byteCount > AgentAttachment.maximumPDFBytes || (attachment.pageCount ?? 0) > AgentAttachment.maximumPDFPages {
             throw Failure.pdfTooLarge(attachment.fileName)
         }
-        let data: Data
-        do {
-            data = try blobs.data(for: attachment.blob)
-        } catch {
-            throw Failure.unreadable(attachment.fileName)
+        func data() throws -> Data {
+            do {
+                return try blobs.data(for: attachment.blob)
+            } catch {
+                throw Failure.unreadable(attachment.fileName)
+            }
         }
         switch attachment.kind {
         case .image:
-            guard let image = image(data, contentType: attachment.contentType) else { throw Failure.unreadable(attachment.fileName) }
+            guard let image = image(try data(), contentType: attachment.contentType) else { throw Failure.unreadable(attachment.fileName) }
             var sent = attachment
             if let encoded = image.encoded {
                 do {
@@ -142,10 +157,11 @@ enum AttachmentBlocks {
             }
             return (.image(ImageBlock(source: .blob(sent.sentBlob ?? attachment.blob, mediaType: image.mediaType))), sent)
         case .pdf:
+            guard blobs.contains(attachment.blob) else { throw Failure.unreadable(attachment.fileName) }
             return (.document(DocumentBlock(source: .blob(attachment.blob, mediaType: "application/pdf"), title: attachment.fileName)), attachment)
         case .text:
-            guard let text = String(data: data, encoding: .utf8) else { throw Failure.unreadable(attachment.fileName) }
-            return (.document(DocumentBlock(source: .text(text), title: attachment.fileName)), attachment)
+            guard String(data: try data(), encoding: .utf8) != nil else { throw Failure.unreadable(attachment.fileName) }
+            return (.document(DocumentBlock(source: .blob(attachment.blob, mediaType: BlockSource.plainText), title: attachment.fileName)), attachment)
         case .document:
             // Read by `contentBlocks` (its extracted text); never sent as bytes.
             throw Failure.unreadable(attachment.fileName)

@@ -167,8 +167,8 @@ public actor AppAgent {
     /// carried yet (`<task_result>`, then `reported_at`), and (mc) the reminders shown since the
     /// student last wrote to the newest `app` conversation (`<reminder>`, when this message goes
     /// there or starts a new one). `agent_turn.context` keeps the context,
-    /// the thread's context line (when the screen changed) and the attachments (as sent: an image
-    /// or a PDF goes in the turn by reference to its bytes, `BlockSource.blob`). `writtenAt`: when
+    /// the thread's context line (when the screen changed) and the attachments (as sent: a file
+    /// goes in the turn by reference to the bytes sent, `BlockSource.blob`). `writtenAt`: when
     /// the student asked, when that was earlier (an iPhone question the Mac picks up later): the
     /// clock says so and relative days in the words are read against it.
     public func send(
@@ -218,7 +218,8 @@ public actor AppAgent {
         let previous = history.last { $0.role == .user && $0.context?.context != nil }?.context?.context
         let changed = previous?.settled != context.settled
         // The files in the student's order, as sent: an image re-encoded for Claude also names its
-        // JPEG (`sentBlob`), which the stored turn refers to, so `BlobUsage` keeps it.
+        // JPEG, a document its extracted text (`sentBlob`), which the stored turn refers to, so
+        // `BlobUsage` keeps it.
         let listed = attachments.map { attachment in prepared.sent.first { $0.id == attachment.id } ?? attachment }
         let turnContext = AgentTurnContext(
             context: context, label: changed ? block.label : nil, glyph: changed ? block.glyph : nil, attachments: listed
