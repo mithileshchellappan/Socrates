@@ -191,12 +191,13 @@ public enum LectureSlides {
     }
 
     /// Undo of a `deck_link` / `deck_unlink` change, only while the link is still what the change
-    /// made of it (else `DeckLinkError.changedSince`): a link the change made is removed, a range
-    /// it changed goes back, a link it removed comes back with its range. A link that comes back
-    /// keeps the `updated_at` it had (`spanUpdatedAt`), so a deck that was not the lecture's
-    /// current one does not become it; rows without that value get now. Alignment is queued only
-    /// when the lecture's current slides changed. Returns the `align` jobs queued. The caller
-    /// marks the change undone in the same transaction.
+    /// made of it (else `DeckLinkError.changedSince`; for a link, its range and the source the
+    /// change wrote, so a detected range a capture's filing settled stays): a link the change made
+    /// is removed, a range it changed goes back, a link it removed comes back with its range. A
+    /// link that comes back keeps the `updated_at` it had (`spanUpdatedAt`), so a deck that was
+    /// not the lecture's current one does not become it; rows without that value get now.
+    /// Alignment is queued only when the lecture's current slides changed. Returns the `align`
+    /// jobs queued. The caller marks the change undone in the same transaction.
     @discardableResult
     public static func undo(_ change: AgentChange, in db: Database, store: RecordStore, now: Date) throws -> [Job] {
         guard change.targetTable == .deckSpan, let before = change.before, let after = change.after,
@@ -215,7 +216,9 @@ public enum LectureSlides {
         let restoredAt: Date = before.spanUpdatedAt ?? now
         switch change.kind {
         case .deckLink:
-            guard let link, link.firstPage == after.firstPage, link.lastPage == after.lastPage else { throw DeckLinkError.changedSince }
+            guard let link, link.firstPage == after.firstPage, link.lastPage == after.lastPage,
+                  after.spanSource.map({ $0 == link.source }) ?? true
+            else { throw DeckLinkError.changedSince }
             if before.exists == false {
                 try removeLink(lectureID: lectureID, deckID: deckID, in: db)
                 return try queueAlignmentIfCurrentChanged(lectureID: lectureID, from: previous, in: db, store: store, now: now)

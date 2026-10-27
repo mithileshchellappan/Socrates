@@ -67,8 +67,9 @@ Each import writes `Lecture` (course language, deck title), `Recording` + `Recor
 (audio in the BlobStore), the `Deck` + pages if new, a coarse untimed `LectureDeckSpan` that links
 the deck to the lecture (whole deck for imports; for captures the stamped page range, and a second
 capture of the lecture with the deck widens the range to cover both, never narrows it, while one
-without stamps keeps it; when the range grew, `align` is queued for the lecture's transcribed
-recordings, 2026-10-27), and a queued
+without stamps keeps it; a range only continuation detection guessed is written again with the
+capture's source, so the detection's Undo and a merge treat it as filed; when the lecture's slides
+changed, `align` is queued for its transcribed recordings, 2026-10-27), and a queued
 `transcribe` job. Captures also bring their slide stamps, flags and quick notes (via Capture's
 `LecturePackageImporter`). Importing the same audio again returns the existing lecture.
 

@@ -594,8 +594,11 @@ public struct LectureImporter: Sendable {
     /// The coarse, untimed span that says which deck (and pages) a lecture uses; alignment reads
     /// the deck from it. One span per lecture and deck: a capture's stamped `pages` widen the
     /// lecture's range to cover both (a second recording of the class that showed other slides
-    /// never narrows it), and a capture without stamps keeps the range there is. When the range
-    /// grew (or the link is new), `align` is queued for the lecture's transcribed recordings.
+    /// never narrows it), and a capture without stamps keeps the range there is. A range only
+    /// continuation detection guessed (`auto`) is settled by the capture: written again with its
+    /// source and full confidence, so the detection's Undo and a merge treat it as filed. When the
+    /// lecture's slides changed (a new link, a wider range, another deck current), `align` is
+    /// queued for its transcribed recordings.
     private func linkDeck(_ deck: Deck, to lecture: Lecture, pages stamped: ClosedRange<Int>?, source: SpanSource) async throws {
         let store = store
         let now = now()
@@ -610,24 +613,31 @@ public struct LectureImporter: Sendable {
                 .last
             // The range as every reader sees it (`LectureSlideRange`, as `LectureSlides.link` reads it).
             let kept = existing.flatMap { LectureSlideRange(span: $0, deck: deck)?.pages }
+            let settled = existing.map { $0.source != .auto } ?? false
             let pages: ClosedRange<Int>
             switch (kept, stamped) {
             case (nil, nil):
                 pages = wholeDeck
-            case (.some, nil):
-                return
+            case (.some(let kept), nil):
+                guard !settled else { return }
+                pages = kept
             case (nil, .some(let stamped)):
                 pages = stamped
             case (.some(let kept), .some(let stamped)):
                 let union = min(kept.lowerBound, stamped.lowerBound)...max(kept.upperBound, stamped.upperBound)
-                guard union != kept else { return }
+                guard union != kept || !settled else { return }
                 pages = union
             }
+            let previous = try LectureSlides.current(lectureID: lectureID, in: db)
             let span = store.stamp(LectureDeckSpan(
                 id: existing?.id ?? UUID(), lectureID: lectureID, deckID: deckID,
                 firstPage: pages.lowerBound, lastPage: pages.upperBound, source: source
             ))
             try LectureDeckSpan.upsert { span }.execute(db)
+            let current = try LectureSlides.current(lectureID: lectureID, in: db)
+            guard current?.deckID != previous?.deckID || current?.firstPage != previous?.firstPage
+                || current?.lastPage != previous?.lastPage
+            else { return }
             for job in try LectureSlides.alignmentJobs(lectureID: lectureID, in: db, now: now).map(store.stamp) {
                 try Job.upsert { job }.execute(db)
             }
