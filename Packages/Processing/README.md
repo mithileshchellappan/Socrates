@@ -59,9 +59,9 @@ let recording = try await importer.storeRecording(audio: url, startedAt: start)
 `ImportedLecture.createdLecture` says whether the import made the lecture. An existing lecture
 without a session that is dated only by day takes the recording's start.
 
-Only packages in the library's Recordings folder lose their audio and get marked imported; a
-`.lecture` picked anywhere else is copied but never changed (importing it again finds its
-recording by id).
+Only packages in the library's Recordings folder lose their audio and get marked imported
+(Capture's `LecturePackageReader.libraryOwns`, the rule filing uses too); a `.lecture` picked
+anywhere else is copied but never changed (importing it again finds its recording by id).
 
 Each import writes `Lecture` (course language, deck title), `Recording` + `RecordingSegment`s
 (audio in the BlobStore), the `Deck` + pages if new, a coarse untimed `LectureDeckSpan` that links

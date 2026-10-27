@@ -132,7 +132,7 @@ public struct LectureImporter: Sendable {
             deck = try await DeckImporter(services: services).importDeck(at: deckURL, courseID: course.id).0
         }
 
-        let ownsPackage = Self.isInside(url, directory: services.paths.recordings)
+        let ownsPackage = LecturePackageReader.libraryOwns(package, recordings: services.paths.recordings)
         // A package from elsewhere is never marked imported, so its recording row says it was.
         let existingRecording = try await store.fetch(Recording.self, id: manifest.id)
         let alreadyImported = manifest.importedAt != nil || (!ownsPackage && existingRecording != nil)
@@ -460,17 +460,6 @@ public struct LectureImporter: Sendable {
         } catch {
             throw LectureImportError.unreadableAudio(url.lastPathComponent)
         }
-    }
-
-    /// True when `url` lies inside `directory` (symlinks resolved, e.g. /var → /private/var).
-    static func isInside(_ url: URL, directory: URL) -> Bool {
-        func path(_ url: URL) -> String {
-            let resolved = url.standardizedFileURL.resolvingSymlinksInPath().path(percentEncoded: false)
-            return resolved.hasSuffix("/") ? resolved : resolved + "/"
-        }
-        let child = path(url)
-        let parent = path(directory)
-        return child != parent && child.hasPrefix(parent)
     }
 
     static func creationDate(of url: URL) -> Date? {
