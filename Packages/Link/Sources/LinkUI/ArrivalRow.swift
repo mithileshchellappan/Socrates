@@ -3,16 +3,15 @@ import StudyUI
 import SwiftUI
 
 /// One recording arriving on the Mac: the course dot (when its colour is known: the arrival's
-/// course in the Mac's library, else the link's snapshot of it) and the title,
-/// a determinate bar, then "212 of 520 MB" in SF Mono 11 secondary.
+/// course in the Mac's library, else the link's snapshot of it; `Arrival.colorHex`) and the
+/// title, a determinate bar, then "212 of 520 MB" in SF Mono 11 secondary.
 struct ArrivalRow: View {
     let arrival: Arrival
-    let colorHex: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
-                if let colorHex {
+                if let colorHex = arrival.colorHex {
                     CourseDot(hex: colorHex, size: 8)
                 }
                 Text(arrival.title)

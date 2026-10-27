@@ -15,16 +15,19 @@ import StudyCore
 ///   sync acknowledged) and at its end, and renamed to `<path>` only when the hash matches the
 ///   offer; a first mismatch starts the file over, a second refuses the recording;
 /// - a recording is complete when its final offer's files are all checked: the package is read
-///   (its manifest names this recording, every segment has its canonical path), moved into
-///   `Recordings/` in one step, and handed to filing by the caller.
+///   (its manifest names this recording, every segment has its canonical path, every segment the
+///   manifest lists was offered), moved into `Recordings/` in one step (the move synced), and
+///   handed to filing by the caller.
 ///
 /// What the Mac holds is the staging folder itself; nothing else is persisted.
 actor RecordingInbox {
     enum OfferDecision: Sendable {
         /// Taken: the arrival row (for a final offer) and the bytes already here.
         case accepted(Arrival?, held: [Stored])
-        /// The Mac has this recording already: nothing is copied.
-        case known
+        /// The Mac has this recording already: nothing is copied. `unfiled`: its package in
+        /// `Recordings/`, which nothing filed yet (a session that ended between the move and the
+        /// filing): file it.
+        case known(unfiled: URL?)
         /// Not a package the inbox takes (a path or a size the rules refuse).
         case refused
     }
@@ -65,11 +68,12 @@ actor RecordingInbox {
     enum Completion: Sendable {
         /// In `Recordings/` now, at this URL.
         case kept(URL)
-        /// A package of that id was in `Recordings/` already.
-        case known
+        /// A package of that id was in `Recordings/` already (`unfiled`: nothing filed it yet).
+        case known(unfiled: URL?)
         /// It failed the package checks.
         case refused
-        /// It could not be moved (left in staging; tried again later).
+        /// It could not be moved, or its manifest lists a segment that was not offered (left in
+        /// staging; tried again in a later session).
         case failed
     }
 
@@ -206,9 +210,9 @@ actor RecordingInbox {
             discard(offer.recording, of: device)
             return .refused
         }
-        if await isKnown(offer.recording) {
+        if case .present(let unfiled) = await presence(of: offer.recording) {
             discard(offer.recording, of: device)
-            return .known
+            return .known(unfiled: unfiled)
         }
         let colorHex = await courseColor(offer.isFinal ? offer.courseID : nil)
         guard owners[device] == sender.session else { return .accepted(nil, held: []) }
@@ -283,14 +287,16 @@ actor RecordingInbox {
         return (length, false)
     }
 
-    /// Keeps only `recordings` of `device`'s staging (its phone no longer offers the others: the
-    /// student deleted them there).
-    func keep(_ recordings: [RecordingID], from sender: Sender) {
+    /// Keeps only `recordings` of `device`'s staging (its phone no longer holds the others: the
+    /// student deleted them there) and returns the recordings it discarded.
+    func keep(_ recordings: [RecordingID], from sender: Sender) -> [RecordingID] {
         let device = sender.device
-        guard owners[device] == sender.session else { return }
+        guard owners[device] == sender.session else { return [] }
         let kept = Set(recordings)
+        var discarded: Set<RecordingID> = []
         for recording in (incoming[device]?.keys).map(Array.init) ?? [] where !kept.contains(recording) {
             discard(recording, of: device)
+            discarded.insert(recording)
         }
         let suffix = ".\(LecturePackage.pathExtension).partial"
         let partials = (try? FileManager.default.contentsOfDirectory(at: folder(of: device), includingPropertiesForKeys: nil)) ?? []
@@ -300,8 +306,10 @@ actor RecordingInbox {
             if !kept.contains(id) {
                 LinkLog.inbox.notice("Deleting staging of \(id.uuidString, privacy: .public): no longer on the phone")
                 try? FileManager.default.removeItem(at: partial)
+                discarded.insert(id)
             }
         }
+        return Array(discarded)
     }
 
     private func discard(_ recording: RecordingID, of device: LinkDeviceID) {
@@ -315,15 +323,29 @@ actor RecordingInbox {
         try? FileManager.default.removeItem(at: staging(recording, of: device))
     }
 
-    private func isKnown(_ recording: RecordingID) async -> Bool {
-        if FileManager.default.fileExists(atPath: destination(of: recording).path(percentEncoded: false)) { return true }
+    /// Whether the Mac has a recording.
+    private enum Presence {
+        case absent
+        /// Filed, imported, or in `Recordings/`; `unfiled`: the package there, which nothing filed
+        /// yet (as the launch's filing pass would find it).
+        case present(unfiled: URL?)
+    }
+
+    private func presence(of recording: RecordingID) async -> Presence {
+        let destination = destination(of: recording)
+        let isThere = FileManager.default.fileExists(atPath: destination.path(percentEncoded: false))
         do {
-            if try await FilingRepository(store: services.records).latest(recordingID: recording.rawValue) != nil { return true }
-            if try await services.records.fetch(Recording.self, id: recording.rawValue) != nil { return true }
+            if try await FilingRepository(store: services.records).latest(recordingID: recording.rawValue) != nil {
+                return .present(unfiled: nil)
+            }
+            if isThere { return .present(unfiled: destination) }
+            if try await services.records.fetch(Recording.self, id: recording.rawValue) != nil { return .present(unfiled: nil) }
         } catch {
             LinkLog.inbox.error("Looking up \(recording.uuidString, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            // Filing files a recording id once, so handing it the package again is safe.
+            if isThere { return .present(unfiled: destination) }
         }
-        return false
+        return .absent
     }
 
     // MARK: - Wants
@@ -504,49 +526,66 @@ actor RecordingInbox {
 
     // MARK: - Completion
 
-    /// A recording of `device` whose final offer's files are all whole and checked.
-    func completeRecording(of sender: Sender) -> RecordingID? {
+    /// A recording of `device` whose final offer's files are all whole and checked, other than
+    /// those in `skipping` (they could not be completed in this session).
+    func completeRecording(of sender: Sender, skipping: Set<RecordingID>) -> RecordingID? {
         let device = sender.device
         guard owners[device] == sender.session else { return nil }
-        return (order[device] ?? []).first { incoming[device]?[$0]?.isComplete == true }
+        return (order[device] ?? []).first { !skipping.contains($0) && incoming[device]?[$0]?.isComplete == true }
     }
 
     /// Checks the complete `recording` as a package and moves it into `Recordings/`.
-    func complete(_ recording: RecordingID, of sender: Sender) -> Completion {
+    func complete(_ recording: RecordingID, of sender: Sender) async -> Completion {
         let device = sender.device
         guard owners[device] == sender.session, let state = incoming[device]?[recording], state.isComplete else { return .failed }
-        let folder = staging(recording, of: device)
-        removeStrays(in: folder, keeping: Set(state.offer.files.map(\.path)))
+        let fileManager = FileManager.default
+        let destination = destination(of: recording)
+        if fileManager.fileExists(atPath: destination.path(percentEncoded: false)) {
+            discard(recording, of: device)
+            guard case .present(let unfiled) = await presence(of: recording) else { return .known(unfiled: nil) }
+            return .known(unfiled: unfiled)
+        }
+        let partial = staging(recording, of: device)
+        let offered = Set(state.offer.files.map(\.path))
+        removeStrays(in: partial, keeping: offered)
+        let missing: [String]
         do {
-            let contents = try LecturePackageReader.read(LecturePackage(url: folder))
+            let contents = try LecturePackageReader.read(LecturePackage(url: partial))
             let format = contents.manifest.fileFormat
-            guard contents.manifest.id == recording.rawValue, state.offer.files.contains(where: { $0.path == "manifest.json" }),
+            guard contents.manifest.id == recording.rawValue, offered.contains("manifest.json"),
                   state.offer.files.allSatisfy({ file in
                       InboxRules.segmentSequence(file.path).map {
                           file.path == LecturePackage.segmentRelativePath(sequence: $0, fileExtension: format)
                       } ?? true
                   })
             else {
-                throw LecturePackageError.missingManifest(folder.lastPathComponent)
+                throw LecturePackageError.missingManifest(partial.lastPathComponent)
             }
+            // The reader keeps only the segments it finds, so a final offer that lacks one would
+            // otherwise be filed as a shorter lecture.
+            missing = contents.manifest.segments
+                .map { LecturePackage.segmentRelativePath(sequence: $0.sequence, fileExtension: format) }
+                .filter { !offered.contains($0) }
         } catch {
             LinkLog.inbox.error("\(recording.uuidString, privacy: .public) is not a whole recording; refused: \(String(describing: error), privacy: .public)")
             discard(recording, of: device)
             return .refused
         }
-        let fileManager = FileManager.default
-        let destination = destination(of: recording)
-        if fileManager.fileExists(atPath: destination.path(percentEncoded: false)) {
-            discard(recording, of: device)
-            return .known
+        guard missing.isEmpty else {
+            LinkLog.inbox.error("\(recording.uuidString, privacy: .public) lacks \(missing.joined(separator: ", "), privacy: .public); it waits for a later offer")
+            return .failed
         }
         do {
             try fileManager.createDirectory(at: services.paths.recordings, withIntermediateDirectories: true)
-            try fileManager.moveItem(at: folder, to: destination)
+            try fileManager.moveItem(at: partial, to: destination)
         } catch {
             LinkLog.inbox.error("Moving \(recording.uuidString, privacy: .public) into Recordings failed: \(error.localizedDescription, privacy: .public)")
             return .failed
         }
+        // The rename itself on the storage before the phone is told: a power loss must not take
+        // the package back to staging after the phone wrote its receipt.
+        Self.syncDirectory(services.paths.recordings)
+        Self.syncDirectory(folder(of: device))
         incoming[device]?[recording] = nil
         order[device]?.removeAll { $0 == recording }
         LinkLog.inbox.notice("\(recording.uuidString, privacy: .public) arrived")
@@ -588,6 +627,19 @@ actor RecordingInbox {
     private static func fullSync(_ handle: FileHandle) {
         if fcntl(handle.fileDescriptor, F_FULLFSYNC) == -1 {
             try? handle.synchronize()
+        }
+    }
+
+    /// A directory's entries on the storage (`F_FULLFSYNC`, a plain fsync where that is refused).
+    private static func syncDirectory(_ url: URL) {
+        let descriptor = Darwin.open(url.path(percentEncoded: false), O_RDONLY)
+        guard descriptor >= 0 else {
+            LinkLog.inbox.error("Opening \(url.lastPathComponent, privacy: .public) to sync it failed: \(errno)")
+            return
+        }
+        defer { Darwin.close(descriptor) }
+        if fcntl(descriptor, F_FULLFSYNC) == -1, fsync(descriptor) == -1 {
+            LinkLog.inbox.error("Syncing \(url.lastPathComponent, privacy: .public) failed: \(errno)")
         }
     }
 

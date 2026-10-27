@@ -10,6 +10,12 @@ import StudyCore
 /// keeps one session per phone, runs the remote's commands over it, and hands arriving recordings
 /// to the inbox and then to filing.
 ///
+/// It is the one owner of what the Mac shows of the phone (`MacLinkEvent`): the recording (newest
+/// snapshot first, replaced by the first snapshot of a new session, cleared by a nil or stopped
+/// snapshot, frozen at the last byte heard when its session ends, dropped when it is filed here
+/// another way or `LinkPolicy.frozenLifetime` after it was last heard) and the rows of recordings
+/// arriving (each ends with the session that brings it; a later final offer brings it back).
+///
 /// Listening:
 /// - over Wi-Fi, Ethernet and the USB cable (the infrastructure listener) whenever at least one
 ///   trusted iPhone row exists;
@@ -19,8 +25,10 @@ import StudyCore
 ///   the infrastructure listener is never rebuilt for it.
 ///
 /// Before a peer is known, at most `LinkPolicy.maximumPendingConnections` connections wait for
-/// their hello, `maximumPendingPerHost` from one address, each for `helloTimeout` at most.
-/// While a session runs, the Mac holds a user-initiated activity so App Nap does not delay pings.
+/// their hello, `maximumPendingPerHost` from one address, each for `helloTimeout` at most (a
+/// refused handshake gives its slot back at once).
+/// While a session runs, the Mac holds a user-initiated activity so App Nap does not delay pings;
+/// it still lets the Mac sleep when idle.
 actor MacLinkService {
     private let services: StudyServices
     private let file: @MainActor @Sendable (URL) async -> Void
@@ -75,8 +83,28 @@ actor MacLinkService {
     }
 
     private var commands: [RecorderCommand.ID: PendingCommand] = [:]
-    /// The phone's last running or paused recording and when it was last heard of.
-    private var lastRecording: (snapshot: RecorderSnapshot, seen: Date)?
+
+    /// The phone recording shown, and the phone it is from.
+    private struct Shown {
+        var device: LinkDeviceID
+        var recording: RemoteRecording
+    }
+
+    /// What `PhoneLink` was last told of the recording.
+    private struct Published: Equatable {
+        var recording: RemoteRecording?
+        var controlOn: Bool
+    }
+
+    private var shown: Shown?
+    private var published: Published?
+    /// Drops a frozen recording at the end of its lifetime.
+    private var expiry: Task<Void, Never>?
+    /// The phone each arrival row comes from: the row ends with that phone's session.
+    private var arrivalSenders: [RecordingID: LinkDeviceID] = [:]
+    /// An arrival's course colour once known: the Mac's own for the offer's course, else the
+    /// phone's snapshot of that recording (gone once the recording stopped).
+    private var arrivalColors: [RecordingID: String] = [:]
 
     init(services: StudyServices, file: @escaping @MainActor @Sendable (URL) async -> Void) {
         self.services = services
@@ -150,11 +178,17 @@ actor MacLinkService {
         peerToPeer = nil
         filing?.cancel()
         filing = nil
+        expiry?.cancel()
+        expiry = nil
         for case .awaited(_, let continuation) in commands.values {
             continuation.resume(returning: nil)
         }
         commands = [:]
         sessions = [:]
+        shown = nil
+        published = nil
+        arrivalSenders = [:]
+        arrivalColors = [:]
         updateActivity()
         await directory.stop()
         trusted = TrustedPeers()
@@ -167,7 +201,7 @@ actor MacLinkService {
         guard started else { return }
         trusted = peers
         for session in sessions.values where !peers.contains(session.device) {
-            await session.channel.close(Goodbye(reason: .untrusted))
+            await session.channel.close(Goodbye(reason: .untrusted), within: .seconds(1))
         }
         if peers.isEmpty {
             infrastructure?.cancel()
@@ -308,7 +342,7 @@ actor MacLinkService {
         sessions[device] = Registration(id: id, device: device, channel: channel, controlOn: controlOn, isPeerToPeer: peerToPeer)
         updateActivity()
         await inbox.claim(RecordingInbox.Sender(device: device, session: id))
-        events?.yield(.connected(device, controlOn: controlOn))
+        publishRecording()
         if let previous {
             await previous.channel.close(Goodbye(reason: .replaced), within: .seconds(1))
         }
@@ -331,17 +365,29 @@ actor MacLinkService {
             }
         }
         await inbox.release(RecordingInbox.Sender(device: device, session: id))
+        guard let registration = sessions[device], registration.id == id else { return }
+        // Frozen at the last byte heard, never at the moment the loss was declared (seconds
+        // later): the Mac never counts a time the phone did not confirm.
+        let lost = await registration.channel.lastHeard
         guard sessions[device]?.id == id else { return }
         sessions[device] = nil
         updateActivity()
-        if let last = lastRecording { lastRecording = (last.snapshot, Date()) }
-        events?.yield(.disconnected(device))
+        if var current = shown, current.device == device, current.recording.isLive {
+            current.recording.freshness = .lastSeen(lost)
+            shown = current
+            scheduleExpiry(lost: lost)
+        }
+        // Its copies stop with it; a later session's final offer brings each row back.
+        withdraw(arrivalSenders.filter { $0.value == device }.map(\.key))
+        publishRecording()
         await evaluateWindow()
     }
 
     private func updateActivity() {
         if !sessions.isEmpty, activity == nil {
-            activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Recording link to the iPhone")
+            activity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep, reason: "Recording link to the iPhone"
+            )
         } else if sessions.isEmpty, let token = activity {
             ProcessInfo.processInfo.endActivity(token)
             activity = nil
@@ -355,16 +401,73 @@ actor MacLinkService {
         registration.hasSnapshot = true
         registration.recording = message.snapshot?.recordingID
         sessions[registration.device] = registration
-        let wasKnown = isRecordingKnown(at: Date())
-        if let snapshot = message.snapshot, snapshot.phase != .stopped {
-            lastRecording = (snapshot, Date())
-        } else {
-            lastRecording = nil
-        }
-        events?.yield(.snapshot(message, from: registration.device, isFirst: isFirst))
-        if wasKnown != isRecordingKnown(at: Date()) {
+        let wasKnown = shown != nil
+        show(message, from: registration.device, isFirst: isFirst)
+        publishRecording()
+        if wasKnown != (shown != nil) {
             await evaluateWindow()
         }
+    }
+
+    // MARK: - The recording shown
+
+    /// Applies a phone's snapshot (`isFirst`: the first of its session, which replaces what was
+    /// shown unless another phone's recording is live).
+    private func show(_ message: SnapshotMessage, from device: LinkDeviceID, isFirst: Bool) {
+        guard let snapshot = message.snapshot, snapshot.phase != .stopped else {
+            // Nothing records on that phone any more (or it stopped): the item goes.
+            if let current = shown,
+               current.device == device || current.recording.snapshot.recordingID == message.snapshot?.recordingID {
+                clearShown()
+            }
+            return
+        }
+        let replaces = isFirst && (shown == nil || shown?.device == device || shown?.recording.isLive != true)
+        guard replaces || snapshot.supersedes(shown?.recording.snapshot) else { return }
+        shown = Shown(
+            device: device,
+            recording: RemoteRecording(
+                snapshot: snapshot, freshness: .live, elapsedAtReceipt: message.elapsed,
+                isRunning: message.isRunning, receivedAt: Date()
+            )
+        )
+        expiry?.cancel()
+        expiry = nil
+    }
+
+    private func clearShown() {
+        shown = nil
+        expiry?.cancel()
+        expiry = nil
+        publishRecording()
+    }
+
+    /// Tells `PhoneLink` the recording and whether its phone takes commands, when either changed.
+    private func publishRecording() {
+        let now = Published(recording: shown?.recording, controlOn: shown.flatMap { sessions[$0.device]?.controlOn } ?? false)
+        guard now != published else { return }
+        published = now
+        events?.yield(.recording(now.recording, controlOn: now.controlOn))
+    }
+
+    /// A frozen recording goes `LinkPolicy.frozenLifetime` after its phone was last heard.
+    private func scheduleExpiry(lost: Date) {
+        expiry?.cancel()
+        let left = max(.zero, LinkPolicy.frozenLifetime - .seconds(Date().timeIntervalSince(lost)))
+        expiry = Task { [weak self] in
+            do {
+                try await Task.sleep(for: left)
+            } catch {
+                return
+            }
+            await self?.expire(lost: lost)
+        }
+    }
+
+    private func expire(lost: Date) async {
+        guard case .lastSeen(lost)? = shown?.recording.freshness else { return }
+        clearShown()
+        await evaluateWindow()
     }
 
     // MARK: - Commands
@@ -413,20 +516,41 @@ actor MacLinkService {
 
     // MARK: - Arrivals
 
-    /// A recording being received (its final offer, its progress).
-    func arriving(_ arrival: Arrival) {
+    /// A recording being received from `device`'s phone (its final offer, its progress).
+    func arriving(_ arrival: Arrival, from device: LinkDeviceID) {
+        var arrival = arrival
+        if let colorHex = arrival.colorHex {
+            arrivalColors[arrival.id] = colorHex
+        } else if let colorHex = arrivalColors[arrival.id] {
+            arrival.colorHex = colorHex
+        } else if let current = shown, current.recording.snapshot.recordingID == arrival.id {
+            arrival.colorHex = current.recording.snapshot.course.colorHex
+            arrivalColors[arrival.id] = arrival.colorHex
+        }
+        arrivalSenders[arrival.id] = device
         events?.yield(.arrival(arrival))
     }
 
-    /// The Mac took `recording` (in `Recordings/` at `url`, filed next) or will not.
+    /// The Mac took `recording` (in `Recordings/` at `url`, filed next; `url` also for a package
+    /// found there that nothing filed yet) or will not.
     func arrived(_ recording: RecordingID, at url: URL?) {
-        events?.yield(.arrived(recording))
+        arrivalColors[recording] = nil
+        withdraw([recording])
         guard let url else { return }
         let previous = filing
         let file = file
         filing = Task {
             await previous?.value
             await file(url)
+        }
+    }
+
+    /// The rows of `recordings` go: their copies stopped (the session ended, or the phone no longer
+    /// has them and their staging is gone).
+    func withdraw(_ recordings: [RecordingID]) {
+        for recording in recordings {
+            arrivalSenders[recording] = nil
+            events?.yield(.arrived(recording))
         }
     }
 
@@ -452,11 +576,11 @@ actor MacLinkService {
         }
     }
 
-    /// The phone's last recording, while no session of it runs, has a `filing` row: the Mac has it,
-    /// so it is no longer shown or known (the peer-to-peer window may close).
+    /// The recording shown, while no session reports it, has a `filing` row: the Mac has it, so it
+    /// is no longer shown or known (the peer-to-peer window may close).
     private func filingsChanged() async {
-        guard started, let last = lastRecording else { return }
-        let recording = last.snapshot.recordingID
+        guard started, let current = shown else { return }
+        let recording = current.recording.snapshot.recordingID
         guard !sessions.values.contains(where: { $0.recording == recording }) else { return }
         do {
             guard try await FilingRepository(store: services.records).latest(recordingID: recording.rawValue) != nil else { return }
@@ -464,21 +588,14 @@ actor MacLinkService {
             LinkLog.link.error("Reading a recording's filing failed: \(String(describing: error), privacy: .public)")
             return
         }
-        guard started, lastRecording?.snapshot.recordingID == recording else { return }
-        lastRecording = nil
-        events?.yield(.filed(recording))
+        guard started, shown?.recording.snapshot.recordingID == recording,
+              !sessions.values.contains(where: { $0.recording == recording })
+        else { return }
+        clearShown()
         await evaluateWindow()
     }
 
     // MARK: - Peer-to-peer window
-
-    /// A phone recording runs or is paused: its session is up, or it was heard of within the
-    /// frozen lifetime.
-    private func isRecordingKnown(at now: Date) -> Bool {
-        guard let last = lastRecording else { return false }
-        if sessions.values.contains(where: { $0.recording == last.snapshot.recordingID }) { return true }
-        return now.timeIntervalSince(last.seen) < TimeInterval(LinkPolicy.frozenLifetime.components.seconds)
-    }
 
     /// Opens or closes the peer-to-peer listener by `PeerToPeerWindow`.
     private func evaluateWindow() async {
@@ -501,7 +618,7 @@ actor MacLinkService {
         let isOpen = PeerToPeerWindow.isOpen(
             now: now,
             classes: classes,
-            recordingKnown: isRecordingKnown(at: now),
+            recordingKnown: shown != nil,
             peerToPeerSessions: sessions.values.filter(\.isPeerToPeer).count,
             margin: margin
         )

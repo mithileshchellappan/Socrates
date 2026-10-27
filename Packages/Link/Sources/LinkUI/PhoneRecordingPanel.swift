@@ -15,11 +15,10 @@ public struct PhoneRecordingPanel: View {
     }
 
     public var body: some View {
-        let shown = PhoneShown(link)
         VStack(alignment: .leading, spacing: 0) {
-            if let recording = shown.recording {
+            if let recording = link.recording {
                 RemoteRecordingView(link: link, recording: recording)
-                if !shown.arrivals.isEmpty {
+                if !link.arrivals.isEmpty {
                     Hairline()
                         .padding(.horizontal, -14)
                         .padding(.top, 14)
@@ -27,8 +26,8 @@ public struct PhoneRecordingPanel: View {
                 }
             }
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(shown.arrivals) { arrival in
-                    ArrivalRow(arrival: arrival, colorHex: arrival.colorHex ?? shown.colorHex(of: arrival))
+                ForEach(link.arrivals) { arrival in
+                    ArrivalRow(arrival: arrival)
                 }
             }
         }

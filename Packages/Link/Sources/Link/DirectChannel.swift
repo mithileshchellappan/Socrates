@@ -27,6 +27,9 @@ actor DirectChannel: LinkChannel {
 
     private var control: [Outgoing] = []
     private var bulk: [Outgoing] = []
+    /// The waiter of the frame the writer is sending now: resumed by the writer when the network
+    /// took it, or by `finish` first (a send stuck on a dead path never outlives the channel).
+    private var inFlight: CheckedContinuation<Void, any Error>?
     private var writerWaiting: CheckedContinuation<Void, Never>?
     private var ended = false
     private var closing = false
@@ -85,6 +88,11 @@ actor DirectChannel: LinkChannel {
     /// must be a trusted device of the other platform (`peersFor`: the rows with that key), the
     /// hello must name one of those devices and that platform, and the two hellos must share a
     /// feature. Anything else is answered with a goodbye and thrown.
+    ///
+    /// A handshake either side's pin check refuses leaves the connection waiting, not failed: the
+    /// first waiting or failed state ends the exchange at once (`refused`), so a stranger's Mac or
+    /// phone costs a dial pass or an admission slot milliseconds, not the whole timeout. The
+    /// timeout stays for a peer that finishes TLS and never says hello.
     static func open(
         _ connection: NetworkConnection<TLS>, hello: Hello,
         peersFor: @escaping @Sendable (LinkFingerprint) async -> Set<LinkDeviceID>
@@ -93,15 +101,12 @@ actor DirectChannel: LinkChannel {
         let theirs: Hello
         do {
             theirs = try await withDeadline(LinkPolicy.helloTimeout) {
-                try await write(try LinkFrame.encode(.hello(hello)), to: connection)
-                switch try await readMessage(from: connection, noteBytes: {}) {
-                case .hello(let theirs):
+                try await withThrowingTaskGroup(of: Hello.self) { group in
+                    group.addTask { try await exchangeHellos(hello, on: connection) }
+                    group.addTask { try await refusal(of: connection) }
+                    defer { group.cancelAll() }
+                    guard let theirs = try await group.next() else { throw LinkChannelError.timedOut }
                     return theirs
-                case .goodbye(let goodbye):
-                    LinkLog.direct.notice("Turned away before the hello: \(goodbye.reason.rawValue, privacy: .public)")
-                    throw LinkChannelError.closed
-                case let other:
-                    throw LinkChannelError.protocolViolation(.unexpected(kind: other.kind))
                 }
             }
         } catch let error as LinkProtocolError {
@@ -134,9 +139,44 @@ actor DirectChannel: LinkChannel {
             await refuse(connection, .unsupported)
             throw LinkChannelError.untrusted
         }
-        LinkLog.direct.info("Linked to \(expected.rawValue, privacy: .public) \(device.description, privacy: .public) (\(theirs.app, privacy: .public))")
+        LinkLog.direct.info("Linked to \(expected.rawValue, privacy: .public) \(device.description, privacy: .public) (\(theirs.app, privacy: .public), run \(theirs.instance.uuidString, privacy: .public))")
         return LinkPeer(device: device, fingerprint: fingerprint, hello: theirs)
     }
+
+    /// This side's hello out, the peer's in.
+    private static func exchangeHellos(_ hello: Hello, on connection: NetworkConnection<TLS>) async throws -> Hello {
+        try await write(try LinkFrame.encode(.hello(hello)), to: connection)
+        switch try await readMessage(from: connection, noteBytes: {}) {
+        case .hello(let theirs):
+            return theirs
+        case .goodbye(let goodbye):
+            LinkLog.direct.notice("Turned away before the hello: \(goodbye.reason.rawValue, privacy: .public)")
+            throw LinkChannelError.closed
+        case let other:
+            throw LinkChannelError.protocolViolation(.unexpected(kind: other.kind))
+        }
+    }
+
+    /// Throws `refused` at the connection's first waiting or failed state (a refused handshake on
+    /// either side, a path that went away) and `closed` once it is cancelled; never returns. It
+    /// reads the state every `refusalCheck` rather than taking the connection's one update
+    /// handler, which belongs to whoever made the connection.
+    private static func refusal(of connection: NetworkConnection<TLS>) async throws -> Hello {
+        while true {
+            switch connection.state {
+            case .waiting(let error), .failed(let error):
+                LinkLog.direct.info("The handshake did not go through: \(String(describing: error), privacy: .public)")
+                throw LinkChannelError.refused
+            case .cancelled:
+                throw LinkChannelError.closed
+            default:
+                try await Task.sleep(for: refusalCheck)
+            }
+        }
+    }
+
+    /// How often `refusal(of:)` looks at a connection's state during the hello.
+    private static let refusalCheck: Duration = .milliseconds(50)
 
     /// A goodbye on a connection that never became a channel, best effort, for a second at most.
     private static func refuse(_ connection: NetworkConnection<TLS>, _ reason: Goodbye.Reason) async {
@@ -217,6 +257,12 @@ actor DirectChannel: LinkChannel {
         finish(nil)
     }
 
+    var lastHeard: Date {
+        let silence = ContinuousClock.now - lastByte
+        let seconds = Double(silence.components.seconds) + Double(silence.components.attoseconds) / 1e18
+        return Date().addingTimeInterval(-seconds)
+    }
+
     // MARK: - Reader
 
     private func readLoop() async {
@@ -284,11 +330,14 @@ actor DirectChannel: LinkChannel {
                 }
                 continue
             }
+            inFlight = next.done
             do {
                 try await Self.write(next.frame, to: connection)
-                next.done?.resume()
+                inFlight?.resume()
+                inFlight = nil
             } catch {
-                next.done?.resume(throwing: error)
+                inFlight?.resume(throwing: error)
+                inFlight = nil
                 if !ended, !(error is CancellationError) {
                     LinkLog.direct.notice("Sending to \(self.peer.device.description, privacy: .public) failed: \(String(describing: error), privacy: .public)")
                 }
@@ -360,6 +409,8 @@ actor DirectChannel: LinkChannel {
         for item in waiting {
             item.done?.resume(throwing: LinkChannelError.closed)
         }
+        inFlight?.resume(throwing: LinkChannelError.closed)
+        inFlight = nil
         wakeWriter()
     }
 

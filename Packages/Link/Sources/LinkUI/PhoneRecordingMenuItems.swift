@@ -14,7 +14,7 @@ public struct PhoneRecordingMenuItems: View {
     }
 
     public var body: some View {
-        if let recording = PhoneShown(link).controllable {
+        if let recording = link.recording {
             Divider()
             Section("iPhone") {
                 if recording.snapshot.phase == .paused {

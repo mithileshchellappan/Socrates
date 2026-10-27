@@ -17,7 +17,7 @@ public struct PhoneRecordingCapsule: View {
 
     public var body: some View {
         Button(action: togglePanel) {
-            PhoneCapsuleLabel(item: PhoneShown(link).item, now: link.now)
+            PhoneCapsuleLabel(item: link.item, now: link.now)
         }
         .popover(isPresented: $showsPanel, arrowEdge: .bottom) {
             PhoneRecordingPanel(link: link)

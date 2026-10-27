@@ -1,5 +1,6 @@
 import Link
 import RecorderContract
+import SwiftUI
 
 /// How the Mac draws the phone's recording (DESIGN 8.11): recording and reachable, paused and
 /// reachable, or frozen: the last state the phone sent, grey, its time standing still (the phone
@@ -17,6 +18,16 @@ enum RemoteMark: Hashable {
         case .recording: self = .recording
         case .paused: self = .paused
         case .stopping, .stopped: self = .frozen
+        }
+    }
+
+    /// What VoiceOver says for the menu bar label: "Recording" or "Paused" only while the phone
+    /// confirms it; frozen, the device ("iPhone") with the last time and slide as its value.
+    var accessibilityLabel: Text {
+        switch self {
+        case .recording: Text("Recording")
+        case .paused: Text("Paused")
+        case .frozen: Text("iPhone")
         }
     }
 

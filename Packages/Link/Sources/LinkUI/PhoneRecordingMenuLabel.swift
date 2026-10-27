@@ -17,13 +17,13 @@ public struct PhoneRecordingMenuLabel: View {
 
     public var body: some View {
         Group {
-            switch PhoneShown(link).item {
+            switch link.item {
             case .recording(let recording)?:
                 let mark = RemoteMark(recording)
                 let text = "\(ClockText.string(recording.elapsed(at: link.now))) S\(recording.snapshot.slide)"
                 Text("\(Text(Image(systemName: mark.menuGlyph)).font(.system(size: mark == .paused ? 9 : 8))) \(text)")
                     .opacity(mark == .frozen ? 0.42 : 1)
-                    .accessibilityLabel(mark == .paused ? Text("Paused") : Text("Recording"))
+                    .accessibilityLabel(mark.accessibilityLabel)
                     .accessibilityValue(Text(text))
             case .arriving(let stored, let total)?:
                 Text("\(Text(Image(systemName: "arrow.down.circle")).font(.system(size: 12))) \(TransferText.bytes(stored, of: total))")

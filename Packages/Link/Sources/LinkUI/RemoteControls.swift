@@ -28,7 +28,7 @@ struct RemoteControls: View {
             Button(action: sendNextSlide) {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .bold))
+                        .font(.system(size: 10, weight: .semibold))
                     Text("Next Slide")
                 }
                 .frame(maxWidth: .infinity)

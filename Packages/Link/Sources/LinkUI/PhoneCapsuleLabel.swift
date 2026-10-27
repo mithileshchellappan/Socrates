@@ -5,7 +5,7 @@ import SwiftUI
 
 /// The capsule's content (one `HStack`, SF Mono 12).
 struct PhoneCapsuleLabel: View {
-    let item: PhoneShown.Item?
+    let item: PhoneLink.Item?
     let now: Date
 
     var body: some View {

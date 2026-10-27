@@ -1,3 +1,4 @@
+import Foundation
 import LinkCore
 
 /// One live, authenticated connection to the other device: the seam between the link's sessions
@@ -20,6 +21,9 @@ protocol LinkChannel: Sendable {
     /// Ends the channel at once, without a goodbye: the message stream finishes and whatever waits
     /// to be sent fails.
     func end() async
+    /// When the last byte from the peer arrived, on this device's clock: the last moment the peer
+    /// is known to have been there.
+    var lastHeard: Date { get async }
 }
 
 extension LinkChannel {
@@ -65,6 +69,9 @@ enum LinkChannelError: Error, Hashable, Sendable {
     case endOfStream
     /// TLS and both hellos were not done within `LinkPolicy.helloTimeout`.
     case timedOut
+    /// The connection went waiting or failed before the hellos: a pin check on either side said
+    /// no (a stranger, or a key whose row has not synced yet), or the path went away.
+    case refused
     /// The peer's key, ALPN or hello did not match a trusted device of the other platform.
     case untrusted
     /// A frame the link refuses, or a message out of place.

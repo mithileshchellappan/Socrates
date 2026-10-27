@@ -2,21 +2,15 @@ import Foundation
 import LinkCore
 import RecorderContract
 
-/// What the Mac's link service tells `PhoneLink`, in order.
+/// What the Mac's link service tells `PhoneLink`, in order. The service decides; `PhoneLink` only
+/// stores what it is told.
 enum MacLinkEvent: Sendable {
-    /// A phone's session began; `controlOn`: both hellos list control with the same recorder
-    /// contract.
-    case connected(LinkDeviceID, controlOn: Bool)
-    /// A phone's recorder state; `isFirst`: the first of its session, which replaces what was
-    /// shown.
-    case snapshot(SnapshotMessage, from: LinkDeviceID, isFirst: Bool)
-    /// A phone's session ended (lost, a goodbye, or replaced by none).
-    case disconnected(LinkDeviceID)
+    /// The phone recording to show now (nil: none), and whether its phone takes commands now
+    /// (linked, both hellos list control with the same recorder contract).
+    case recording(RemoteRecording?, controlOn: Bool)
     /// A recording being received: shown from its final offer, its progress as bytes are stored.
     case arrival(Arrival)
-    /// The Mac took the recording (or will not): its row goes.
+    /// Its row goes: the Mac took the recording or will not, or the copy stopped (the phone's
+    /// session ended, or the phone no longer has it). A later final offer brings it back.
     case arrived(RecordingID)
-    /// The recording the phone was last heard recording is filed on the Mac (another way, while
-    /// the phone was out of reach): a frozen item of it goes.
-    case filed(RecordingID)
 }
