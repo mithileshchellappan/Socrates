@@ -100,7 +100,10 @@ on that session; what the Mac holds is its staging folder. Neither keeps anythin
   is final; the Mac asks for one file at a time from the length it holds, acknowledges durable
   bytes (`stored`), checks each file's SHA-256 and that every segment the manifest lists came,
   moves the whole package into `Recordings/` (the move synced), files it, then says `received`.
-  A package found in `Recordings/` that nothing filed is filed when the phone offers it again. The phone keeps one receipt per capture and never offers it again.
+  A package found in `Recordings/` that nothing filed is filed when the phone offers it again, as
+  long as it was never imported (Capture's `LecturePackageReader.isPending`, the launch pass's
+  rule); an imported one, whose recording was deleted on the Mac, is answered `known` and nothing
+  is filed (no toast). The phone keeps one receipt per capture and never offers it again.
   An offer names its manifest's course (`courseID`, optional): the arrival row's dot takes the
   Mac's own colour for it.
 
