@@ -72,16 +72,15 @@ public final class MacLink {
         let stream = recorder.snapshots()
         let backgroundTime = backgroundTime
         snapshots = Task {
-            var wasLive = false
+            var previous: RecorderSnapshot?
             for await snapshot in stream {
-                let isLive = snapshot.map { $0.phase != .stopped } ?? false
                 // Stop ends the audio session before the package is closed and sent: the time to
                 // finish begins here, before the agent hears of it (it ends the time when there
                 // is nothing to send).
-                if snapshot?.phase == .stopping || (wasLive && !isLive) {
+                if LinkBackgroundTime.stopBegan(from: previous, to: snapshot) {
                     backgroundTime.hold()
                 }
-                wasLive = isLive
+                previous = snapshot
                 await agent.recorderChanged(snapshot)
             }
         }

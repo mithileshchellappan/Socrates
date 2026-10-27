@@ -118,6 +118,8 @@ public struct RecorderSnapshot: Codable, Hashable, Sendable {
     }
 
     public var isPaused: Bool { phase == .paused }
+    /// Not stopped: recording, paused or stopping.
+    public var isLive: Bool { phase != .stopped }
 
     /// Whether this snapshot is newer than `other`, the one rule a receiver keeps: of one
     /// recording the higher sequence wins; of two recordings the one started later.

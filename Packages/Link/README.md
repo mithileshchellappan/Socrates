@@ -56,12 +56,12 @@ dials, sessions and timers, and cancel them in `stop()`.
 | Type | Owns |
 |---|---|
 | `PhoneLink` (Mac, main actor) | `MacLinkService`; stores what its events (`MacLinkEvent`) say of the recording and the arrivals, the pending buttons (held until the result and the snapshot that shows it), the remote problem, the second tick |
-| `MacLinkService` (actor) | the infrastructure and peer-to-peer listeners, admission, one `MacSession` per phone, the commands waiting for results, the filing queue, App Nap's activity; the one owner of the recording shown (newest snapshot, frozen at the last byte heard, gone when stopped, filed another way or after the frozen lifetime) and of the arrival rows (each ends with its phone's session) |
+| `MacLinkService` (actor) | the infrastructure and peer-to-peer listeners, admission, one `MacSession` per phone, the commands waiting for results, the filing queue, App Nap's activity (no idle sleep while the recording shown's phone is linked or a recording arrives); the one owner of the recording shown (newest snapshot, frozen at the last byte heard, gone when stopped, filed another way or after the frozen lifetime) and of the arrival rows (each ends with its phone's session) |
 | `MacSession` | one phone's messages in order: snapshots and results to the service, holdings, offers and chunks to the inbox, one want at a time, filing then `received`; a recording that cannot be completed waits for the next session without holding up the others |
 | `RecordingInbox` (actor) | `Incoming/<device>/<uuid>.lecture.partial/`: `.part` files, their hashes, syncs and acknowledgements, the package checks and the move into `Recordings/` |
 | `MacLink` (iPhone, main actor) | `PhoneLinkAgent`; bridges the recorder's snapshots to it, shows its deliveries; begins background time the moment the recorder shows a Stop |
 | `LinkBackgroundTime` (main actor) | the one UIKit background task: begun before any Stop runs (by `MacLink`, by the agent before the Mac's Stop), ended by the agent or by iOS |
-| `PhoneLinkAgent` (actor) | when to link, browsing and dialing (`Dialing`: idle, running, given up after `LinkPolicy.maximumFailedPasses`), the session with the Mac, what the Mac has been told (`sync`, a pass of its own), commands to the recorder and whether a remote is attached (`setRemoteAttached`), the sidecars, when background time ends |
+| `PhoneLinkAgent` (actor) | when to link, browsing and dialing (`Dialing`: idle, running, given up after `LinkPolicy.maximumFailedPasses` with a probe pass every `LinkPolicy.probeInterval` while recording), the session with the Mac, what the Mac has been told (`sync`, a pass of its own), commands to the recorder and whether a remote is attached (`setRemoteAttached`), the sidecars, when background time ends |
 | `Outbox`, `OutboxReceipts` | the outbox as the link sees it (what may be offered, hashes, bytes) and each capture's sidecar, `PhoneCaptures/.link/<uuid>.json` |
 | `LinkChannel` / `DirectChannel` (actor) | the transport seam and its TCP + TLS route: framing, hello and its checks, the two lanes, pings and loss |
 | `LinkIdentityStore`, `LinkIdentity`, `PeerCertificate` | the Keychain key, the certificate made from it, the peer's key fingerprint and ALPN |
@@ -114,13 +114,19 @@ on that session; what the Mac holds is its staging folder. Neither keeps anythin
   `PeerToPeerWindow.isOpen` (a class that records is on, a phone recording is known, or a session
   runs on it). The phone always browses and dials with peer-to-peer included, and only while it
   records, has undelivered captures in the foreground, or holds background time after Stop.
-- **Dialing gives up** after `LinkPolicy.maximumFailedPasses` (12) passes in a row without a Mac,
-  about 5 minutes, and waits for a reason to try again: Record, Pause, Resume, Stop, the
-  foreground, a network path that comes up (`NWPathMonitor`), a change of the trusted Macs.
+- **Dialing gives up** in the background after `LinkPolicy.maximumFailedPasses` (12) passes in a
+  row without a Mac (a Mac that quits or refuses the phone counts), about 5 minutes, and waits
+  for a reason to try again: Record, Pause, Resume, Stop, the foreground, a network path that
+  comes up (`NWPathMonitor`), a change of the trusted Macs. While a recording goes on it still
+  tries one pass every `LinkPolicy.probeInterval` (2 minutes), so a Mac woken or opened later is
+  found. In the foreground it never gives up.
 - **A remote is attached** from a session with `control.1` until dialing ends or gives up
   (`RecorderEndpoint.setRemoteAttached`): the recorder's pause then holds the input (nothing
   recorded, the microphone indicator on), so iOS keeps the app running and Resume and Stop from
   the Mac work with the phone locked. Without one the pause is cold and iOS may suspend the app.
+  The foreground tells the recorder again, so a hold the system ended (a call) is held again.
+- **The Mac stays awake** (no idle sleep) while the phone of the recording shown is linked or a
+  recording arrives over a session; other sessions only keep App Nap from delaying pings.
 - **Nothing personal is broadcast**: a random service name per launch, no TXT record, the
   certificate's name is "Socrates".
 

@@ -27,8 +27,10 @@ import StudyCore
 /// Before a peer is known, at most `LinkPolicy.maximumPendingConnections` connections wait for
 /// their hello, `maximumPendingPerHost` from one address, each for `helloTimeout` at most (a
 /// refused handshake gives its slot back at once).
-/// While a session runs, the Mac holds a user-initiated activity so App Nap does not delay pings;
-/// it still lets the Mac sleep when idle.
+/// While a session runs, the Mac holds a user-initiated activity so App Nap does not delay pings.
+/// It keeps the Mac from idle-sleeping only while the phone of the recording shown is linked or a
+/// recording arrives over a session: a sleeping Mac drops the link, and a phone in a pocket stops
+/// dialing a few minutes later. Otherwise the Mac may sleep when idle.
 actor MacLinkService {
     private let services: StudyServices
     private let file: @MainActor @Sendable (URL) async -> Void
@@ -68,7 +70,14 @@ actor MacLinkService {
     }
 
     private var sessions: [LinkDeviceID: Registration] = [:]
-    private var activity: (any NSObjectProtocol)?
+
+    /// The `ProcessInfo` activity held, and whether it keeps the Mac from idle-sleeping.
+    private struct Activity {
+        let token: any NSObjectProtocol
+        let keepsAwake: Bool
+    }
+
+    private var activity: Activity?
 
     /// A command sent and its answer.
     private enum PendingCommand {
@@ -383,15 +392,22 @@ actor MacLinkService {
         await evaluateWindow()
     }
 
+    /// Holds the activity a session needs (see the type's notes), or none without a session.
     private func updateActivity() {
-        if !sessions.isEmpty, activity == nil {
-            activity = ProcessInfo.processInfo.beginActivity(
-                options: .userInitiatedAllowingIdleSystemSleep, reason: "Recording link to the iPhone"
+        let linkedRecording = shown.map { sessions[$0.device] != nil } ?? false
+        let wanted: Bool? = sessions.isEmpty ? nil : linkedRecording || !arrivalSenders.isEmpty
+        guard wanted != activity?.keepsAwake else { return }
+        let previous = activity
+        activity = wanted.map { keepsAwake in
+            Activity(
+                token: ProcessInfo.processInfo.beginActivity(
+                    options: keepsAwake ? .userInitiated : .userInitiatedAllowingIdleSystemSleep,
+                    reason: keepsAwake ? "Phone recording linked" : "Recording link to the iPhone"
+                ),
+                keepsAwake: keepsAwake
             )
-        } else if sessions.isEmpty, let token = activity {
-            ProcessInfo.processInfo.endActivity(token)
-            activity = nil
         }
+        if let previous { ProcessInfo.processInfo.endActivity(previous.token) }
     }
 
     /// A snapshot from session `id`'s phone.
@@ -404,6 +420,7 @@ actor MacLinkService {
         let wasKnown = shown != nil
         show(message, from: registration.device, isFirst: isFirst)
         publishRecording()
+        updateActivity()
         if wasKnown != (shown != nil) {
             await evaluateWindow()
         }
@@ -414,7 +431,7 @@ actor MacLinkService {
     /// Applies a phone's snapshot (`isFirst`: the first of its session, which replaces what was
     /// shown unless another phone's recording is live).
     private func show(_ message: SnapshotMessage, from device: LinkDeviceID, isFirst: Bool) {
-        guard let snapshot = message.snapshot, snapshot.phase != .stopped else {
+        guard let snapshot = message.snapshot, snapshot.isLive else {
             // Nothing records on that phone any more (or it stopped): the item goes.
             if let current = shown,
                current.device == device || current.recording.snapshot.recordingID == message.snapshot?.recordingID {
@@ -440,6 +457,7 @@ actor MacLinkService {
         expiry?.cancel()
         expiry = nil
         publishRecording()
+        updateActivity()
     }
 
     /// Tells `PhoneLink` the recording and whether its phone takes commands, when either changed.
@@ -529,6 +547,7 @@ actor MacLinkService {
         }
         arrivalSenders[arrival.id] = device
         events?.yield(.arrival(arrival))
+        updateActivity()
     }
 
     /// The Mac took `recording` (in `Recordings/` at `url`, filed next; `url` also for a package
@@ -552,6 +571,7 @@ actor MacLinkService {
             arrivalSenders[recording] = nil
             events?.yield(.arrived(recording))
         }
+        updateActivity()
     }
 
     // MARK: - Filed another way

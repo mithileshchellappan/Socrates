@@ -29,11 +29,16 @@ public enum LinkPolicy {
         }
     }
 
-    /// The phone stops dialing after this many passes in a row found no Mac (about 5 minutes of
-    /// `dialDelay`), until a reason to try again: Record, Pause, Resume, Stop, the app in the
-    /// foreground, a network path that comes up, a change of the trusted Macs. The battery is
-    /// spared through a lecture with no Mac around.
+    /// In the background the phone stops dialing after this many passes in a row found no Mac
+    /// (about 5 minutes of `dialDelay`), until a reason to try again: Record, Pause, Resume, Stop,
+    /// the app in the foreground, a network path that comes up, a change of the trusted Macs. The
+    /// battery is spared through a lecture with no Mac around. In the foreground it never stops.
     public static let maximumFailedPasses = 12
+
+    /// While a recording goes on after the phone gave up, it still tries one pass this often (a
+    /// 5 s browse, then the Macs listed or the last address), so a Mac that wakes or opens later
+    /// in the lecture is found by itself; a few percent of the peer-to-peer radio's time.
+    public static let probeInterval: Duration = .seconds(2 * 60)
 
     /// The Mac's limits before a peer has said hello: connections in total and per remote host.
     public static let maximumPendingConnections = 8

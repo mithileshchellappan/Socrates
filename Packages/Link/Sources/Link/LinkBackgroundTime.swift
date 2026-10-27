@@ -1,3 +1,5 @@
+import RecorderContract
+
 /// The phone's time to finish after the app leaves the foreground (UIKit's background task,
 /// through the app's `MacLink.BeginBackgroundTime`), held at most once at a time. Stop ends the
 /// audio session before the package is closed, and a locked phone may be suspended from then on,
@@ -13,6 +15,15 @@ final class LinkBackgroundTime {
 
     init(begin: MacLink.BeginBackgroundTime?) {
         self.begin = begin
+    }
+
+    /// It is held (begun and neither ended nor taken back).
+    var isHeld: Bool { end != nil }
+
+    /// A Stop between two of the recorder's snapshots: one beginning (`stopping`), or one seen
+    /// only once done (live before, not now). The moment the time is held.
+    nonisolated static func stopBegan(from old: RecorderSnapshot?, to new: RecorderSnapshot?) -> Bool {
+        new?.phase == .stopping || ((old?.isLive ?? false) && !(new?.isLive ?? false))
     }
 
     /// Begins it unless it is held.
