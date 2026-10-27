@@ -435,11 +435,14 @@ public actor FilingService {
             ? try await Self.unpack(bundle: evidence.url, recordingID: recordingID, into: services.paths.recordings)
             : evidence.url
         guard let best = decision.best, decision.verdict != .needsCourse else {
-            // Read and copied, never changed: the package stays as it is until it gets a course.
-            // An unpacked bundle is the library's copy: its audio goes into the BlobStore now.
+            // The rows wait for a course (Change… moves them). The library's own package (live
+            // capture's, the link's, an unpacked bundle) is marked imported and its audio, now in
+            // the BlobStore, removed: a recording deleted later is not filed again at launch. One
+            // picked anywhere else is read and copied, never changed.
+            let package = LecturePackage(url: packageURL)
+            let owned = LecturePackageReader.libraryOwns(package, recordings: services.paths.recordings)
             let result = try await LecturePackageImporter(services: services).importPackage(
-                LecturePackage(url: packageURL), lectureID: nil, courseID: nil,
-                removeAudioAfterImport: capture.isBundle, markImported: capture.isBundle
+                package, lectureID: nil, courseID: nil, removeAudioAfterImport: owned, markImported: owned
             )
             let filing = try await store.save(unfiled(evidence, sha256: "", decision: decision, createdAt: createdAt, recordingID: result.recording.id))
             return try await outcome(evidence, filing: filing, status: .needsCourse, decision: decision)
@@ -461,17 +464,16 @@ public actor FilingService {
 
     /// The package of a dropped capture bundle in the library's Recordings folder, unpacked off
     /// the actor at disk speed (`CaptureBundle.unpack` refuses links, paths outside the package
-    /// and a second root). A package already there from an attempt that did not finish is used as
-    /// it is; one whose import finished (its recording was since deleted) is replaced.
+    /// and a second root). A package already there that still waits for its import
+    /// (`LecturePackageReader.isPending`: an attempt that did not finish) is used as it is; one
+    /// whose import finished (its recording was since deleted) is replaced.
     @concurrent
     nonisolated static func unpack(bundle url: URL, recordingID: UUID, into recordings: URL) async throws -> URL {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: recordings, withIntermediateDirectories: true)
         let existing = recordings.appending(path: "\(recordingID.uuidString).\(LecturePackage.pathExtension)", directoryHint: .isDirectory)
         if fileManager.fileExists(atPath: existing.path(percentEncoded: false)) {
-            if let manifest = try? LecturePackageReader.read(LecturePackage(url: existing)).manifest, manifest.importedAt == nil {
-                return existing
-            }
+            if LecturePackageReader.isPending(LecturePackage(url: existing)) { return existing }
             try fileManager.removeItem(at: existing)
         }
         let package = try CaptureBundle.unpack(url, into: recordings)
