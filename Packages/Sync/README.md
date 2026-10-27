@@ -111,7 +111,12 @@ await backup.runHourly()   // now, then once an hour; runDaily() after each wake
   on one device.
 - **Blobs do not sync** in M7 (decks, audio, images are files in the BlobStore, not rows): a
   synced row whose blob is missing shows as not on this device. Rows over CloudKit's 1 MB record
-  size stay on their device ("3 not uploaded").
+  size stay on their device: SQLiteData drops a refused record without telling, so they count
+  among the rows "to upload". A chat turn stores its files by reference for this reason (Agent's
+  README, "Storage").
+- **"N to upload"** (Settings ▸ Accounts' iCloud row, 2026-10-27): rows iCloud has not received,
+  whether they wait for the next send, the device is offline or iCloud refused them; SQLiteData
+  1.12.1 reports no per-record refusal, so the row never says "not uploaded".
 - **Failures** are readable (`.failed(localizedDescription)`), logged under `sync`, and never
   crash; the library keeps working without sync.
 - **One writer per library**: the triggers live in the syncing app's own connections, so another
