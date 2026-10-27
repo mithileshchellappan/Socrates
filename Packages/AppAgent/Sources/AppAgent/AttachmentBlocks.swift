@@ -56,7 +56,7 @@ enum AttachmentBlocks {
     /// file name (≤ `documentCharacters`, then "…"; refused with the extractor's readable
     /// sentence), a PDF over the send limits (not slides: those were filed) as `<attached_file>`
     /// with its first pages' text (≤ `attachedFileCharacters`, so `keep_document` can still keep
-    /// it), the rest as `blocks`. `sent`: the attachments as sent, in order (`sentBlob` set where
+    /// it), the rest as `block`. `sent`: the attachments as sent, in order (`sentBlob` set where
     /// the bytes sent are not the original's).
     static func contentBlocks(
         _ attachments: [AgentAttachment], blobs: BlobStore
