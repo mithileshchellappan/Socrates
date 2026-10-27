@@ -20,7 +20,7 @@ let services = try StudyServices.live(syncContainer: CloudSyncConfiguration.cont
 // (a SOCRATES_DATA_ROOT library never syncs); the metadatabase is attached when set.
 let sync = CloudSync(services: services)   // nil without services.syncContainer; builds the engine
 Task { await sync?.start() }               // ~2 s after launch (AppModel.startBackgroundWork)
-await sync.retry()   // the Mac's wake, the app in front; also on CKAccountChanged (CloudSync itself)
+await sync.retry()   // the Mac's wake, the iPhone or iPad app in front; also on CKAccountChanged (CloudSync itself)
 sync.status          // .idle, .starting, .running, .unavailable(reason), .failed(reason)
 sync.isRunning       // the phone's agent sheet shows only while true
 sync.isSynchronizing // sending or fetching right now
@@ -44,9 +44,10 @@ await backup.runHourly()   // now, then once an hour; runDaily() after each wake
   restricted", "iCloud is unavailable", "iCloud status unknown").
 - **Sync that is off starts again within the run** (`retry()`): when iCloud reports an account
   change (`CKAccountChanged`, which `CloudSync` follows for the app's life), when the Mac wakes and
-  when the app comes to the front (the app's calls). Only from `.unavailable` or `.failed`, and
-  never after a switch to another account in this run (`accountSwitched`; the next launch asks
-  again). A sign-out and a sign-in to the same account resume where sync stopped.
+  when the iPhone or iPad app comes to the front (the app's calls). Only from `.unavailable` or
+  `.failed`, and never after a switch to another account in this run (`accountSwitched`; the next
+  launch asks again). A `retry()` while a start asks iCloud is noted: that start tries once more
+  if it ends off. A sign-out and a sign-in to the same account resume where sync stopped.
 - **A sign-out or an account switch keeps every row** (`AccountChangeGuard`, SQLiteData's
   `SyncEngineDelegate`): sync stops ("Not signed in to iCloud", "Another iCloud account").
   SQLiteData's default would delete every row of the synced tables on the device.

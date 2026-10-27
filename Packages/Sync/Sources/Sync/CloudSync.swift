@@ -16,7 +16,7 @@ import os
 /// phone's agent sheet shows only while it runs. Sync that is off because iCloud was not ready or
 /// the start failed starts again within the run (`retry()`): when iCloud reports an account change
 /// (`CKAccountChanged`, followed here for the app's life), and when the app calls it (the Mac's
-/// wake, the app coming to the front).
+/// wake, the iPhone or iPad app coming to the front).
 ///
 /// Guards (docs/decisions.md, 2026-10-20):
 /// - An iCloud sign-out or account switch stops syncing and keeps every row
@@ -70,6 +70,9 @@ public final class CloudSync {
     private let deletionLog = SyncDeletionLog(tables: Set(SyncedTables.tableNames))
     /// Follows `CKAccountChanged` for this object's life (`retry()` on each).
     @ObservationIgnored private var accountChanges: Task<Void, Never>?
+    /// A `retry()` came while a start was asking iCloud: its answer may be stale, so a start that
+    /// ends off tries once more.
+    @ObservationIgnored private var retryRequested = false
 
     /// Nil unless the library was opened for a CloudKit container (`services.syncContainer`).
     /// Builds the engine at once (not started; no CloudKit call).
@@ -97,12 +100,30 @@ public final class CloudSync {
     }
 
     /// Checks the iCloud account, then starts the sync engine. A signed-out account or a failure
-    /// leaves `status` saying why; calling again (after iCloud came back) retries.
+    /// leaves `status` saying why; calling again (after iCloud came back) retries. A `retry()`
+    /// during the start (iCloud came back while it was asked) makes a start that ends off try
+    /// again; each extra try needs another such call.
     public func start() async {
         switch status {
         case .starting, .running: return
         case .idle, .unavailable, .failed: break
         }
+        repeat {
+            retryRequested = false
+            await begin()
+        } while retryRequested && isOff && !accountSwitched
+    }
+
+    /// Off for a reason that may pass: iCloud unavailable or the start failed.
+    private var isOff: Bool {
+        switch status {
+        case .unavailable, .failed: true
+        case .idle, .starting, .running: false
+        }
+    }
+
+    /// One start: the account, the Mac's pre-sync copy, the engine, the rows to queue again.
+    private func begin() async {
         status = .starting
         let missing = SyncedTables.missingTables
         guard missing.isEmpty else {
@@ -163,18 +184,21 @@ public final class CloudSync {
     }
 
     /// Starts sync again when it is off for a reason that may have passed: iCloud was unavailable
-    /// (signed out, restricted, re-authentication pending) or the start failed. Nothing while it
-    /// starts or runs, before the launch's own `start()`, or once iCloud switched to another
-    /// account in this run (the library's sync state belongs to the account it synced with; the
-    /// next launch checks again). `CKAccountChanged` calls it; the app calls it when the Mac wakes
-    /// and when the app comes to the front.
+    /// (signed out, restricted, re-authentication pending) or the start failed. While a start asks
+    /// iCloud, it is noted, and that start tries again if it ends off. Nothing while it runs,
+    /// before the launch's own `start()`, or once iCloud switched to another account in this run
+    /// (the library's sync state belongs to the account it synced with; the next launch checks
+    /// again). `CKAccountChanged` calls it; the app calls it when the Mac wakes and when the
+    /// iPhone or iPad app comes to the front.
     public func retry() async {
         guard !accountSwitched else { return }
         switch status {
         case .unavailable, .failed:
             SyncLog.sync.info("Starting sync again")
             await start()
-        case .idle, .starting, .running:
+        case .starting:
+            retryRequested = true
+        case .idle, .running:
             return
         }
     }
