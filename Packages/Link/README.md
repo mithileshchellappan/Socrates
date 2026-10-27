@@ -61,8 +61,8 @@ dials, sessions and timers, and cancel them in `stop()`.
 | `RecordingInbox` (actor) | `Incoming/<device>/<uuid>.lecture.partial/`: `.part` files, their hashes, syncs and acknowledgements, the package checks and the move into `Recordings/` |
 | `MacLink` (iPhone, main actor) | `PhoneLinkAgent`; bridges the recorder's snapshots to it, shows its deliveries; begins background time the moment the recorder shows a Stop |
 | `LinkBackgroundTime` (main actor) | the one UIKit background task: begun before any Stop runs (by `MacLink`, by the agent before the Mac's Stop), ended by the agent or by iOS |
-| `PhoneLinkAgent` (actor) | when to link, browsing and dialing, the session with the Mac, what the Mac has been told (`sync`, a pass of its own), commands to the recorder, receipts, when background time ends |
-| `Outbox`, `OutboxReceipts` | the outbox as the link sees it (what may be offered, hashes, bytes) and `PhoneCaptures/.link/<uuid>.json` |
+| `PhoneLinkAgent` (actor) | when to link, browsing and dialing (`Dialing`: idle, running, given up after `LinkPolicy.maximumFailedPasses`), the session with the Mac, what the Mac has been told (`sync`, a pass of its own), commands to the recorder and whether a remote is attached (`setRemoteAttached`), the sidecars, when background time ends |
+| `Outbox`, `OutboxReceipts` | the outbox as the link sees it (what may be offered, hashes, bytes) and each capture's sidecar, `PhoneCaptures/.link/<uuid>.json` |
 | `LinkChannel` / `DirectChannel` (actor) | the transport seam and its TCP + TLS route: framing, hello and its checks, the two lanes, pings and loss |
 | `LinkIdentityStore`, `LinkIdentity`, `PeerCertificate` | the Keychain key, the certificate made from it, the peer's key fingerprint and ALPN |
 | `LinkDirectory` (actor), `TrustedPeers` | this device's `link_device` row and the trusted rows of the other platform, followed as they sync |
@@ -74,8 +74,9 @@ an end whose files changed in the last minute is left out until the recorder say
 (the agent lists again when that minute is over), and one with a segment file it cannot read is
 left out rather than offered without it. The holdings name every capture still on the phone
 without the Mac's answer, offered or not; an outbox that cannot be read sends none. The phone
-keeps one persistent fact per capture, its receipt, written only for a recording offered on that
-session; what the Mac holds is its staging folder. Neither keeps anything else.
+keeps one sidecar per capture: the bytes the Mac acknowledged until it answers (so the outbox row
+shows them after a relaunch), then its answer, the receipt, written only for a recording offered
+on that session; what the Mac holds is its staging folder. Neither keeps anything else.
 
 ## Protocol (generation 1)
 
@@ -113,6 +114,13 @@ session; what the Mac holds is its staging folder. Neither keeps anything else.
   `PeerToPeerWindow.isOpen` (a class that records is on, a phone recording is known, or a session
   runs on it). The phone always browses and dials with peer-to-peer included, and only while it
   records, has undelivered captures in the foreground, or holds background time after Stop.
+- **Dialing gives up** after `LinkPolicy.maximumFailedPasses` (12) passes in a row without a Mac,
+  about 5 minutes, and waits for a reason to try again: Record, Pause, Resume, Stop, the
+  foreground, a network path that comes up (`NWPathMonitor`), a change of the trusted Macs.
+- **A remote is attached** from a session with `control.1` until dialing ends or gives up
+  (`RecorderEndpoint.setRemoteAttached`): the recorder's pause then holds the input (nothing
+  recorded, the microphone indicator on), so iOS keeps the app running and Resume and Stop from
+  the Mac work with the phone locked. Without one the pause is cold and iOS may suspend the app.
 - **Nothing personal is broadcast**: a random service name per launch, no TXT record, the
   certificate's name is "Socrates".
 

@@ -57,6 +57,8 @@ public final class PhoneRecorder: RecorderEndpoint {
     @ObservationIgnored var commandTail: Task<Void, Never>?
     /// The last snapshot sequence published; it never goes back while the recorder runs.
     @ObservationIgnored var lastSequence = 0
+    /// A remote that can send Resume is attached (`setRemoteAttached`): a pause holds the input.
+    @ObservationIgnored var isRemoteAttached = false
     #if DEBUG
     @ObservationIgnored var previewRecordingID: RecordingID?
     #endif

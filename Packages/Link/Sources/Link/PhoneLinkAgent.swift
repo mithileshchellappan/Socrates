@@ -13,6 +13,13 @@ import StudyCore
 /// It links only while it has a reason to, to spare the battery: while a recording goes on, while
 /// it holds background time after Stop with the recording not received yet, or while the app is
 /// in the foreground and a capture waits for the Mac. Without a reason it says goodbye (`done`).
+/// After `LinkPolicy.maximumFailedPasses` passes in a row without a Mac it stops dialing until a
+/// reason to try again (Record, Pause, Resume, Stop, the foreground, a network path that comes up,
+/// a change of the trusted Macs).
+///
+/// From a session with control until dialing ends or gives up, it tells the recorder a remote
+/// is attached (`RecorderEndpoint.setRemoteAttached`): a pause then keeps the input, so the app
+/// keeps running and the Mac's Resume works with the phone locked.
 ///
 /// What the Mac has been told is reconciled in one place (`sync`), in the protocol's order:
 /// holdings, final offers oldest first, the other captures' audio, the recording going on, the
@@ -51,7 +58,8 @@ actor PhoneLinkAgent {
     private var quietRelist: Task<Void, Never>?
     private var receipts: [RecordingID: Received.Outcome] = [:]
     private var hashes: [URL: Outbox.Hash] = [:]
-    /// Bytes the Mac acknowledged in this run, by recording and path.
+    /// Bytes the Mac acknowledged, by recording and path; kept in the capture's sidecar until the
+    /// Mac answers, so a relaunch shows them before the Mac is reachable again.
     private var onMac: [RecordingID: [String: Int64]] = [:]
     /// Each capture's bytes, from its last offer.
     private var totals: [RecordingID: Int64] = [:]
@@ -63,11 +71,33 @@ actor PhoneLinkAgent {
     private var syncGeneration = 0
     private var syncAgain = false
 
-    private var linkTask: Task<Void, Never>?
+    private var dialing = Dialing.idle
     private var linkGeneration = 0
     /// The address of the last Mac session, dialed when browsing finds nothing (iOS may not browse
     /// while the phone is locked). Memory only.
     private var lastEndpoint: NWEndpoint?
+    /// Follows the network path: one that comes up is a reason to dial again after giving up.
+    private var pathWatch: Task<Void, Never>?
+    /// What the recorder was last told (`RecorderEndpoint.setRemoteAttached`).
+    private var remoteAttached = false
+
+    /// The dial loop.
+    private enum Dialing {
+        /// No reason to link.
+        case idle
+        /// Browsing and dialing, or in a session.
+        case running(Task<Void, Never>)
+        /// `LinkPolicy.maximumFailedPasses` passes found no Mac: it waits for a reason to try
+        /// again (`dialAgain`).
+        case gaveUp
+
+        var task: Task<Void, Never>? {
+            switch self {
+            case .running(let task): task
+            case .idle, .gaveUp: nil
+            }
+        }
+    }
 
     /// The session with the Mac and what it has been told.
     private struct Session {
@@ -120,10 +150,17 @@ actor PhoneLinkAgent {
         }
         let packages = try? LecturePackage.all(in: services.paths.phoneCaptures)
         let existing = packages.map { Set($0.compactMap { package in package.id.map { RecordingID($0) } }) }
-        receipts = await receiptStore.load(existing: existing)
+        let sidecars = await receiptStore.load(existing: existing)
         guard started else { return }
+        receipts = sidecars.receipts
+        onMac = sidecars.onMac
         await directory.follow { [weak self] peers in
             await self?.trustChanged(peers)
+        }
+        pathWatch = Task { [weak self] in
+            for await path in NWPathMonitor() where path.status == .satisfied {
+                await self?.networkCameUp()
+            }
         }
         relistNeeded = true
         requestSync()
@@ -139,8 +176,10 @@ actor PhoneLinkAgent {
         syncTask = nil
         quietRelist?.cancel()
         quietRelist = nil
-        let task = linkTask
-        linkTask = nil
+        pathWatch?.cancel()
+        pathWatch = nil
+        let task = dialing.task
+        dialing = .idle
         if let channel = session?.channel {
             await channel.close(Goodbye(reason: .shuttingDown), within: .seconds(1))
         }
@@ -148,6 +187,7 @@ actor PhoneLinkAgent {
         await directory.stop()
         trusted = TrustedPeers()
         await releaseBackgroundTime()
+        await attachRemote(false)
         deliveries?.finish()
         deliveries = nil
     }
@@ -160,7 +200,7 @@ actor PhoneLinkAgent {
         guard started else { return }
         if active {
             relistNeeded = true
-            await restartDialing()
+            await dialAgain()
             requestSync()
         }
         await updateLink()
@@ -187,10 +227,11 @@ actor PhoneLinkAgent {
         if old?.recordingID != new?.recordingID || wasLive != isLive || old?.closedSegments != new?.closedSegments {
             relistNeeded = true
         }
-        // Record and Stop dial again at once with a new browser, also out of a backoff wait: after
-        // Stop the background time is the only chance to send the rest.
-        if isLive != wasLive, session == nil {
-            await restartDialing()
+        // Record, Pause, Resume and Stop dial again at once with a new browser, also out of a
+        // backoff wait or after dialing gave up: after Stop the background time is the only
+        // chance to send the rest.
+        if old?.recordingID != new?.recordingID || old?.phase != new?.phase {
+            await dialAgain()
         }
         await updateLink()
         requestSync()
@@ -204,12 +245,29 @@ actor PhoneLinkAgent {
     }
 
     private func trustChanged(_ peers: TrustedPeers) async {
+        let changed = peers != trusted
         trusted = peers
         if let session, !peers.contains(session.channel.peer.device) {
             await session.channel.close(Goodbye(reason: .untrusted), within: .seconds(1))
         }
         if !canLink { await releaseBackgroundTime() }
+        // Another Mac may be reachable: dialing that gave up tries again.
+        if changed, case .gaveUp = dialing { dialing = .idle }
         await updateLink()
+    }
+
+    /// A network path came up or changed: dialing that gave up tries again.
+    private func networkCameUp() async {
+        guard started, case .gaveUp = dialing else { return }
+        LinkLog.link.info("The network changed; dialing again")
+        await dialAgain()
+    }
+
+    /// Tells the recorder whether a remote that can send Resume is attached (only a change).
+    private func attachRemote(_ attached: Bool) async {
+        guard remoteAttached != attached else { return }
+        remoteAttached = attached
+        await recorder.setRemoteAttached(attached)
     }
 
     private func holdBackgroundTime(for recording: RecordingID) async {
@@ -240,24 +298,30 @@ actor PhoneLinkAgent {
         canLink && (isRecording || holdsBackgroundTime || (isActive && !listing.entries.isEmpty))
     }
 
-    /// Starts dialing when the phone wants a link; says goodbye when it no longer does.
+    /// Starts dialing when the phone wants a link (unless it gave up); says goodbye when it no
+    /// longer does. Without a reason, giving up is forgotten: the next reason dials at once.
     private func updateLink() async {
         if wantsLink {
-            guard linkTask == nil else { return }
+            guard case .idle = dialing else { return }
             linkGeneration += 1
             let generation = linkGeneration
-            linkTask = Task { await self.dialLoop(generation) }
-        } else if let channel = session?.channel {
+            dialing = .running(Task { await self.dialLoop(generation) })
+            return
+        }
+        if case .gaveUp = dialing { dialing = .idle }
+        if let channel = session?.channel {
             await channel.close(Goodbye(reason: .done), within: .seconds(1))
         }
     }
 
-    /// A new pass with a new browser now, unless a session is up.
-    private func restartDialing() async {
-        guard session == nil, let task = linkTask else { return }
-        task.cancel()
-        linkTask = nil
-        linkGeneration += 1
+    /// A new pass with a new browser now, unless a session is up; also after dialing gave up.
+    private func dialAgain() async {
+        guard session == nil else { return }
+        if let task = dialing.task {
+            task.cancel()
+            linkGeneration += 1
+        }
+        dialing = .idle
         await updateLink()
     }
 
@@ -277,9 +341,12 @@ actor PhoneLinkAgent {
 
     /// Browses and dials while the phone wants a link: the Macs listed, wired ones first, else the
     /// last address that worked; the first to finish its hello wins. After a pass where none did,
-    /// it waits 5, 10, 20, then 30 s, browsing meanwhile: a changed list ends the wait.
+    /// it waits 5, 10, 20, then 30 s, browsing meanwhile: a changed list ends the wait. After
+    /// `LinkPolicy.maximumFailedPasses` such passes in a row it gives up until a reason to try
+    /// again. When it ends, no remote is attached any more.
     private func dialLoop(_ generation: Int) async {
         var failedPasses = 0
+        var gaveUp = false
         var previous: Set<String> = []
         passes: while !Task.isCancelled, wantsLink, generation == linkGeneration {
             let found: Browse
@@ -310,8 +377,16 @@ actor PhoneLinkAgent {
                 LinkLog.link.notice("No Mac reachable after Stop; the rest goes when the app is open")
                 await releaseBackgroundTime()
             }
+            if failedPasses >= LinkPolicy.maximumFailedPasses {
+                LinkLog.link.notice("No Mac in \(failedPasses) passes; dialing waits for a reason to try again")
+                gaveUp = true
+                break passes
+            }
         }
-        if generation == linkGeneration { linkTask = nil }
+        // A newer loop or `stop()` took over: theirs is the state.
+        guard generation == linkGeneration else { return }
+        dialing = gaveUp ? .gaveUp : .idle
+        await attachRemote(false)
     }
 
     private func dial(_ endpoint: NWEndpoint) async -> DialResult {
@@ -396,6 +471,8 @@ actor PhoneLinkAgent {
         let id = current.id
         session = current
         defer { if session?.id == id { session = nil } }
+        // The Mac can send Resume: a pause keeps the input from now until dialing ends.
+        if current.controlOn { await attachRemote(true) }
         let (wants, wantSink) = AsyncStream.makeStream(of: Want.self)
         defer { wantSink.finish() }
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -409,7 +486,7 @@ actor PhoneLinkAgent {
             for try await message in channel.messages {
                 switch message {
                 case .want(let want): wantSink.yield(want)
-                case .stored(let stored): noteStored(stored, session: id)
+                case .stored(let stored): await noteStored(stored, session: id)
                 case .received(let received): await noteReceived(received, session: id)
                 case .command(let command): await run(command, on: channel, controlOn: current.controlOn)
                 default: break
@@ -441,15 +518,26 @@ actor PhoneLinkAgent {
         }
     }
 
-    /// Bytes of a file offered on session `id` are on the Mac (never more than the file has).
-    private func noteStored(_ stored: Stored, session id: UUID) {
+    /// Bytes of a file offered on session `id` are on the Mac (never more than the file has),
+    /// kept in the capture's sidecar until the Mac answers for it.
+    private func noteStored(_ stored: Stored, session id: UUID) async {
         guard let session, session.id == id, let file = session.files[stored.recording]?[stored.path] else {
             LinkLog.outbox.notice("The Mac stored \(stored.path, privacy: .public) of \(stored.recording.uuidString, privacy: .public), which is not offered; ignored")
             return
         }
+        // Answered already: the sidecar holds the answer, never bytes again.
+        guard receipts[stored.recording] == nil else { return }
         let known = onMac[stored.recording]?[stored.path] ?? 0
-        onMac[stored.recording, default: [:]][stored.path] = max(known, min(stored.bytes, file.size))
+        let bytes = max(known, min(stored.bytes, file.size))
+        guard bytes != known else { return }
+        onMac[stored.recording, default: [:]][stored.path] = bytes
         emitDeliveries()
+        let held = onMac[stored.recording] ?? [:]
+        do {
+            try await receiptStore.write(.copying(onMac: held), for: stored.recording, at: Date())
+        } catch {
+            LinkLog.outbox.error("Keeping the Mac's bytes failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// The Mac's answer for a recording offered on session `id`: its receipt is written and it is
@@ -462,7 +550,7 @@ actor PhoneLinkAgent {
         }
         receipts[received.recording] = received.outcome
         do {
-            try await receiptStore.write(received.outcome, for: received.recording, at: Date())
+            try await receiptStore.write(.answered(received.outcome), for: received.recording, at: Date())
         } catch {
             LinkLog.outbox.error("Writing a receipt failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -634,7 +722,7 @@ actor PhoneLinkAgent {
     }
 
     /// What the Mac holds of each capture: received (or known there), else the bytes it
-    /// acknowledged in this run.
+    /// acknowledged (also in an earlier run, from the sidecar).
     private func emitDeliveries() {
         var deliveries: [UUID: CaptureDelivery] = [:]
         for id in listing.all {

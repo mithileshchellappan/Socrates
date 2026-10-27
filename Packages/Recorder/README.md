@@ -9,7 +9,7 @@ shared to the Mac as capture bundles (`.lecturebundle`) that the Mac's smart imp
 |---|---|---|
 | `RecorderContract` | `RecorderCommand`, `RecorderSnapshot`, `RecordingTiming`, `RecorderOutcome`, `RecorderFailure`, `RecordingID`, `RecorderContractVersion`, `RecorderEndpoint` (see "Recorder contract") | Foundation only: no UI, no transport. The app, the widget extension, Phone (the Record slot) and the Mac remote link it |
 | `RecorderActivity` | `RecordingActivityState` (a projection of the snapshot: + `init(snapshot:)`, `slideText`, `detailLine`, `shortSlide`, `timerRange`, `showsSame(as:)`; reads states of earlier builds), `RecordingActivityAttributes` (iOS), `RecorderControl` | Foundation, RecorderContract, ActivityKit (iOS). Linked by the app and the widget extension, each with RecorderContract |
-| `Recorder` | `PhoneRecorder` (+ `perform(_:)`, `submit(_:)`, `record()`, `select(_:)`, `snapshot`, `problem`; a `RecorderEndpoint` with `snapshots()`), `RecorderProblem`, `PhoneCapture`, `RecorderText`; internal `RecorderMachine` (the rules), `RecordingActivityController` | RecorderContract, RecorderActivity, StudyCore, Capture, Courses (ActivityKit on iOS) |
+| `Recorder` | `PhoneRecorder` (+ `perform(_:)`, `submit(_:)`, `record()`, `select(_:)`, `snapshot`, `problem`; a `RecorderEndpoint` with `snapshots()` and `setRemoteAttached(_:)`), `RecorderProblem`, `PhoneCapture`, `RecorderText`; internal `RecorderMachine` (the rules), `RecordingActivityController` | RecorderContract, RecorderActivity, StudyCore, Capture, Courses (ActivityKit on iOS) |
 | `RecorderUI` | `RecorderScreen` (+ its outbox rows' delivery slot; internal `OutboxView`, `RecorderWaveform`, the problem's words) | Recorder, RecorderContract, StudyUI, Capture, CaptureUI, SwiftUI |
 
 The Live Activity's widget is in `Widgets/SocratesWidgets.swift` (the `SocratesWidgets`
@@ -119,7 +119,8 @@ never pauses it again.
 **Endpoint** (`RecorderEndpoint`, `@MainActor`): `snapshots()` (the current snapshot first,
 then every change, newest only, so a reader that falls behind skips to the latest complete
 state; nil while nothing records; it ends when the recorder goes, and its observation stops when
-the reader stops iterating) and `perform(_:)`. The Mac remote's link reaches the recorder only
+the reader stops iterating), `perform(_:)` and `setRemoteAttached(_:)` (a remote that can send
+Resume came or went; queued with the commands; see Pause). The Mac remote's link reaches the recorder only
 through it; the Live Activity keeps `RecorderControl`. A remote command runs on the same serial
 queue as every other command, with the same rules. Its failure is the Mac's to show: the
 phone's `problem` is set only for the screen's and the Live Activity's commands (origin
@@ -142,6 +143,16 @@ after). Resume continues the same package as a new segment placed after the real
 (Capture README, "Pause and resume"). `ResumeRecordingIntent` is also an `AudioRecordingIntent`,
 which lets a suspended app start recording again from the Lock Screen. A failed Resume (a call in
 progress, the input refused) answers `.failed(.inputBusy)` and stays paused.
+
+**Held while a remote is attached** (`setRemoteAttached(true)`: the Mac link, from a session
+with control until its dialing ends or gives up): after the same order the input is held instead
+of released (`LiveLectureSession.holdInput()`): the audio session stays active and an engine
+runs whose tap drops every buffer, so nothing is captured, but the microphone indicator stays on
+and iOS keeps the app running. The remote's Resume then records again with the phone locked (iOS
+does not let a backgrounded app start recording), and its Stop finishes the recording. When the
+remote goes while paused the input is released; when one comes while paused it is held if iOS
+lets it (the app in front). A Resume that fails holds the input again. A hold that cannot start
+is a cold pause.
 
 **Killed while paused**: a suspended app can be killed; its Live Activity stays with Resume and
 Stop, and a tap relaunches the app in the background. At launch (`activate()`, queued before any

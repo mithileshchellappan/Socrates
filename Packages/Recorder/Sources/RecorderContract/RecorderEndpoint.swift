@@ -11,4 +11,10 @@ public protocol RecorderEndpoint: AnyObject, Sendable {
     /// Runs one command through the recorder's rules (applied once by id, checked against the
     /// state now) and answers with the state after it.
     func perform(_ command: RecorderCommand) async -> RecorderOutcome
+
+    /// Whether a remote that can send Resume is attached (linked, or reconnecting). While it is,
+    /// a pause keeps the input claimed without recording, so the system keeps the app running and
+    /// the remote's Resume works with the phone locked; once it is not, the input is given up as
+    /// after any pause. Queued with the commands; the last call wins.
+    func setRemoteAttached(_ attached: Bool)
 }

@@ -113,13 +113,21 @@ extension PhoneRecorder {
         switch action {
         case .pause:
             try await session.pause()
-            // The Live Activity shows Paused before the input goes: iOS may suspend the app
-            // seconds after the audio session ends.
             publish()
+            // Held for a remote, the input never goes and iOS keeps the app running; otherwise
+            // the Live Activity shows Paused before it goes: iOS may suspend the app seconds
+            // after the audio session ends.
+            let held = await holdInputForRemote(session)
             await activity.settled()
-            await session.releaseInput()
+            if !held { await session.releaseInput() }
         case .resume:
-            try await session.resume()
+            do {
+                try await session.resume()
+            } catch {
+                // Still paused (a call, the input refused): a held input that went is held again.
+                if isRemoteAttached { await settleInput(of: session) }
+                throw error
+            }
         case .nextSlide:
             guard session.next() else { throw CaptureError.notRecording }
         case .previousSlide:
@@ -129,6 +137,22 @@ extension PhoneRecorder {
         case .stop:
             await session.stop()
         }
+    }
+
+    /// A paused recording's input: held while a remote that can send Resume is attached, so iOS
+    /// keeps the app running and that Resume records again with the phone locked (iOS does not
+    /// let a backgrounded app start recording); otherwise released, so the microphone indicator
+    /// goes out. A hold that cannot start now (iOS refuses a backgrounded app) is a release.
+    func settleInput(of session: LiveLectureSession) async {
+        guard session.phase == .paused else { return }
+        if await holdInputForRemote(session) { return }
+        await session.releaseInput()
+    }
+
+    /// Holds a paused recording's input while a remote is attached; true when it is held.
+    private func holdInputForRemote(_ session: LiveLectureSession) async -> Bool {
+        guard isRemoteAttached, session.phase == .paused else { return false }
+        return await session.holdInput()
     }
 
     /// A Live Activity button that did nothing was drawn from an older state (or the system ran

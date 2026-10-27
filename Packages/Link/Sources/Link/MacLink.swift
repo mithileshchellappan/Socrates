@@ -18,7 +18,7 @@ public final class MacLink {
     ) -> @MainActor @Sendable () -> Void
 
     /// What the Mac holds of each outbox capture (by the capture's id, `PhoneCapture.ID`), known
-    /// from its acknowledgements in this run and from the receipts kept beside the outbox.
+    /// from its acknowledgements and answers, both kept beside the outbox.
     public private(set) var deliveries: [UUID: CaptureDelivery] = [:]
 
     @ObservationIgnored private let agent: PhoneLinkAgent?

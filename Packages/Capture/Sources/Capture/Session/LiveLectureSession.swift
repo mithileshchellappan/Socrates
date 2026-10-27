@@ -410,7 +410,16 @@ public final class LiveLectureSession {
         }
     }
 
-    /// Gives the input up while paused (iOS: the microphone indicator goes out).
+    /// Keeps the input claimed through the pause without recording (iOS), so the app keeps
+    /// running and a Resume from the Mac can record again with the phone locked; the microphone
+    /// indicator stays on. False when not paused or the input cannot be held now. Ends with
+    /// `releaseInput()`, `resume()` or `stop()`.
+    public func holdInput() async -> Bool {
+        guard phase == .paused else { return false }
+        return await capture.holdInput()
+    }
+
+    /// Gives the input up while paused, a held one too (iOS: the microphone indicator goes out).
     public func releaseInput() async {
         guard phase == .paused else { return }
         await capture.releaseInput()

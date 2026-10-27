@@ -15,6 +15,10 @@ import Foundation
 ///   that keeps counting while the phone sleeps (`ContinuousClock`; the host clock stops then).
 ///   Resume places the recording clock after the real time paused and starts a new engine run,
 ///   so the next audio opens a new segment after the gap, as after an interruption.
+/// - A pause the Mac may end (`holdInput()`) keeps the input open on an engine of its own whose
+///   tap drops every buffer: nothing is written or sent to meters, and iOS keeps the app running,
+///   because iOS does not let a backgrounded app start recording. A route change or an ended
+///   interruption makes that engine again.
 /// - A recording an earlier run left paused (the app was killed meanwhile) can be taken up
 ///   (`reopen(_:)`) and resumed into the same folder.
 /// - While recording, a `ProcessInfo` activity keeps the Mac from idle-sleeping.
@@ -51,6 +55,8 @@ public actor MicrophoneCapture: AudioCaptureSource {
     private let tapBufferSize: AVAudioFrameCount
     private var state = State.idle
     private var engine: AVAudioEngine?
+    /// The engine holding the input through a pause (`holdInput()`); nil: none.
+    private var holdEngine: AVAudioEngine?
     private var writer: SegmentedAudioWriter?
     /// The writer task's queue (nil before start and after stop).
     private var writerInput: AsyncStream<WriterInput>.Continuation?
@@ -80,6 +86,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
         writerInput?.finish()
         writerTask?.cancel()
         tearDownEngine()
+        endHold()
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
         broadcaster.finish()
         status.continuation.finish()
@@ -175,6 +182,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
         for task in observerTasks { task.cancel() }
         observerTasks = []
         tearDownEngine()
+        endHold()
         broadcaster.finish()
         writerInput?.finish()
         writerInput = nil
@@ -248,8 +256,22 @@ public actor MicrophoneCapture: AudioCaptureSource {
         return CapturePause(sampleTime: sampleTime, audioEnd: audioEnd, segments: segments)
     }
 
+    public func holdInput() async -> Bool {
+        guard state == .paused else { return false }
+        guard holdEngine == nil else { return true }
+        do {
+            try startHold()
+        } catch {
+            CaptureLog.capture.notice("Holding the input through the pause failed: \(String(describing: error), privacy: .public)")
+            return false
+        }
+        CaptureLog.capture.info("Holding the input through the pause")
+        return true
+    }
+
     public func releaseInput() async {
         guard state == .paused else { return }
+        endHold()
         #if os(iOS)
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -266,9 +288,12 @@ public actor MicrophoneCapture: AudioCaptureSource {
         // Audio that cannot be written must not look recorded: stay paused.
         guard !writerFailed else { throw CaptureError.writeFailed }
         #if os(iOS)
-        // Fails during a phone call, or when iOS does not let a suspended app record: stay paused.
+        // Fails during a phone call, or when iOS does not let a suspended app record: stay paused
+        // (a held input stays held).
         try Self.activateAudioSession()
         #endif
+        // The input is claimed: the engine that held it gives way to the one that records.
+        endHold()
         // The real time paused, also while the phone slept: the clock keeps wall time, so the
         // Mac files, plays and transcribes the gap as silence and later stamps stay in place.
         let paused = ContinuousClock.now - mark.at
@@ -440,6 +465,50 @@ public actor MicrophoneCapture: AudioCaptureSource {
         self.engine = nil
     }
 
+    /// Claims the input while paused (iOS: the audio session, still active after a pause) and
+    /// runs an engine whose tap drops every buffer. When it throws, no engine runs and the audio
+    /// session is as it was: `releaseInput()` gives it up.
+    private func startHold() throws {
+        #if os(iOS)
+        try Self.activateAudioSession()
+        #endif
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInputDevice }
+        input.installTap(onBus: 0, bufferSize: tapBufferSize, format: format, block: Self.makeDiscardingTapBlock())
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            throw CaptureError.engineFailed(error.localizedDescription)
+        }
+        holdEngine = engine
+    }
+
+    /// Stops the engine holding the input, if any (the audio session stays as it is).
+    private func endHold() {
+        guard let holdEngine else { return }
+        holdEngine.inputNode.removeTap(onBus: 0)
+        holdEngine.stop()
+        self.holdEngine = nil
+    }
+
+    /// Makes the holding engine again after the system stopped it (a route change, an ended
+    /// interruption). If it cannot, the input is released, as after a pause never held.
+    private func rehold(reason: String) async {
+        guard state == .paused, holdEngine != nil else { return }
+        endHold()
+        do {
+            try startHold()
+            CaptureLog.capture.notice("Holding the input again: \(reason, privacy: .public)")
+        } catch {
+            CaptureLog.capture.notice("The input is no longer held (\(reason, privacy: .public)): \(String(describing: error), privacy: .public)")
+            await releaseInput()
+        }
+    }
+
     /// Rebuilds the engine after a configuration change or interruption. Retries until audio
     /// flows again or recording stops; the writer starts a new segment on the next chunk.
     private func restartEngine(reason: String) async {
@@ -498,12 +567,21 @@ public actor MicrophoneCapture: AudioCaptureSource {
 
     private func handleConfigurationChange(_ engineID: ObjectIdentifier?) async {
         // The engine stops itself when the hardware changes; a change it survived needs nothing.
+        if state == .paused, let holdEngine, ObjectIdentifier(holdEngine) == engineID, !holdEngine.isRunning {
+            await rehold(reason: "configuration change")
+            return
+        }
         guard state == .recording, isCurrentEngine(engineID), engine?.isRunning == false else { return }
         await restartEngine(reason: "configuration change")
     }
 
     #if os(iOS)
     private func handleInterruption(ended: Bool) async {
+        // A held pause: the interruption stopped the holding engine; it is made again after.
+        if state == .paused {
+            if ended { await rehold(reason: "interruption ended") }
+            return
+        }
         guard state == .recording else { return }
         if ended {
             try? Self.activateAudioSession()
@@ -542,5 +620,10 @@ public actor MicrophoneCapture: AudioCaptureSource {
             writer?.yield(.audio(chunk))
             broadcaster.send(chunk)
         }
+    }
+
+    /// The holding engine's tap: drops every buffer (built without actor isolation, as above).
+    private static func makeDiscardingTapBlock() -> AVAudioNodeTapBlock {
+        { _, _ in }
     }
 }

@@ -29,6 +29,12 @@ public enum LinkPolicy {
         }
     }
 
+    /// The phone stops dialing after this many passes in a row found no Mac (about 5 minutes of
+    /// `dialDelay`), until a reason to try again: Record, Pause, Resume, Stop, the app in the
+    /// foreground, a network path that comes up, a change of the trusted Macs. The battery is
+    /// spared through a lecture with no Mac around.
+    public static let maximumFailedPasses = 12
+
     /// The Mac's limits before a peer has said hello: connections in total and per remote host.
     public static let maximumPendingConnections = 8
     public static let maximumPendingPerHost = 2

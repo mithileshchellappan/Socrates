@@ -9,7 +9,10 @@ struct PhoneRecordingScene: Scene {
     let model: AppModel
 
     var body: some Scene {
-        MenuBarExtra(isInserted: isInserted) {
+        // Read in the body, so the scene follows the link through observation: the item is
+        // inserted and removed with it, whether or not SwiftUI tracks a binding's getter.
+        let showsItem = model.phoneLink?.showsItem ?? false
+        MenuBarExtra(isInserted: .constant(showsItem)) {
             if let link = model.phoneLink {
                 PhoneRecordingPanel(link: link)
             }
@@ -19,10 +22,5 @@ struct PhoneRecordingScene: Scene {
             }
         }
         .menuBarExtraStyle(.window)
-    }
-
-    /// The link alone decides whether the item shows.
-    private var isInserted: Binding<Bool> {
-        Binding(get: { model.phoneLink?.showsItem ?? false }, set: { _ in })
     }
 }

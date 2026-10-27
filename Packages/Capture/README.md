@@ -81,8 +81,9 @@ lectureID:assignment:)` changes the course and class the manifest names, also wh
 
 ### Pause and resume (iPhone)
 
-`LiveLectureSession.pause()` / `releaseInput()` / `resume()` over `AudioCaptureSource.pause()` /
-`releaseInput()` / `resume()` (`MicrophoneCapture`; other sources refuse). The Mac never pauses.
+`LiveLectureSession.pause()` / `holdInput()` / `releaseInput()` / `resume()` over
+`AudioCaptureSource.pause()` / `holdInput()` / `releaseInput()` / `resume()` (`MicrophoneCapture`;
+other sources refuse). The Mac never pauses.
 
 - **Pause**: the clock is read the moment Pause stops the engine (host time, and
   `ContinuousClock` for the gap). A barrier through the writer's own queue (private to the
@@ -93,9 +94,13 @@ lectureID:assignment:)` changes the course and class the manifest names, also wh
   interruption iOS never ended, because the clock counts that time as recorded like any
   interruption; `page` = the slide on screen; `wallClock` = when Pause was pressed) and the
   manifest are written, awaited. `releaseInput()` then ends the audio session (the microphone
-  indicator goes out). Nothing is stamped while paused: slide moves and flags do nothing,
-  interruptions and route changes are ignored. A write that failed (storage full), also one
-  reported while paused, stops the recording.
+  indicator goes out). Or `holdInput()` keeps the input claimed (the Mac remote attached): the
+  audio session stays active and an engine of its own runs whose tap drops every buffer, so
+  nothing is written or reaches meters and captions, and iOS keeps the app running, so Resume can
+  record again with the phone locked; a route change or an ended interruption makes that engine
+  again, and `releaseInput()`, `resume()` or `stop()` end it. Nothing is stamped while paused:
+  slide moves and flags do nothing, interruptions and route changes are otherwise ignored. A
+  write that failed (storage full), also one reported while paused, stops the recording.
 - **Resume**: the audio session and a new engine run start; the recording clock is placed at
   the pause's place plus the time paused, measured with `ContinuousClock` (the host clock stops
   while the phone sleeps, which would place everything after the pause too early). The next

@@ -25,4 +25,15 @@ extension PhoneRecorder {
         continuation.onTermination = { _ in forwarding.cancel() }
         return stream
     }
+
+    /// A remote that can send Resume came or went: a paused recording's input follows at once
+    /// (`settleInput`), queued with the commands so it never lands inside a Pause or a Resume.
+    public func setRemoteAttached(_ attached: Bool) {
+        enqueue {
+            guard self.isRemoteAttached != attached else { return }
+            self.isRemoteAttached = attached
+            RecorderLog.recorder.info("A remote is \(attached ? "attached" : "gone", privacy: .public)")
+            if let session = self.session { await self.settleInput(of: session) }
+        }
+    }
 }
