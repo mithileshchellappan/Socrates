@@ -12,7 +12,12 @@ import Security
 /// peer's, then `run` keeps a reader, a writer and a pinger as child tasks while the session runs
 /// as `body`. When `body` returns, the peer says goodbye, liveness is lost or the protocol is
 /// broken, the children end, `run` returns and the scope closes the connection. Nothing outlives it.
+///
+/// The channel takes the connection's state handler (one per connection: a later
+/// `onStateUpdate` replaces it), so the code that makes a connection never sets one.
 actor DirectChannel: LinkChannel {
+    private typealias ConnectionState = NetworkChannel<TLS>.State
+
     nonisolated let peer: LinkPeer
     nonisolated let messages: AsyncThrowingStream<LinkMessage, any Error>
     private let inbound: AsyncThrowingStream<LinkMessage, any Error>.Continuation
@@ -90,20 +95,23 @@ actor DirectChannel: LinkChannel {
     /// feature. Anything else is answered with a goodbye and thrown.
     ///
     /// A handshake either side's pin check refuses leaves the connection waiting, not failed: the
-    /// first waiting or failed state ends the exchange at once (`refused`), so a stranger's Mac or
-    /// phone costs a dial pass or an admission slot milliseconds, not the whole timeout. The
-    /// timeout stays for a peer that finishes TLS and never says hello.
+    /// first waiting or failed state ends the exchange the moment Network reports it (`refused`),
+    /// so a stranger's Mac or phone costs a dial pass or an admission slot no longer than its
+    /// handshake, not the whole timeout. The timeout stays for a peer that finishes TLS and never
+    /// says hello.
     static func open(
         _ connection: NetworkConnection<TLS>, hello: Hello,
         peersFor: @escaping @Sendable (LinkFingerprint) async -> Set<LinkDeviceID>
     ) async throws -> LinkPeer {
         let expected: LinkRole = hello.role == .mac ? .iPhone : .mac
+        let (states, watching) = stateUpdates(of: connection)
+        defer { watching.finish() }
         let theirs: Hello
         do {
             theirs = try await withDeadline(LinkPolicy.helloTimeout) {
                 try await withThrowingTaskGroup(of: Hello.self) { group in
                     group.addTask { try await exchangeHellos(hello, on: connection) }
-                    group.addTask { try await refusal(of: connection) }
+                    group.addTask { try await refusal(in: states) }
                     defer { group.cancelAll() }
                     guard let theirs = try await group.next() else { throw LinkChannelError.timedOut }
                     return theirs
@@ -158,25 +166,38 @@ actor DirectChannel: LinkChannel {
     }
 
     /// Throws `refused` at the connection's first waiting or failed state (a refused handshake on
-    /// either side, a path that went away) and `closed` once it is cancelled; never returns. It
-    /// reads the state every `refusalCheck` rather than taking the connection's one update
-    /// handler, which belongs to whoever made the connection.
-    private static func refusal(of connection: NetworkConnection<TLS>) async throws -> Hello {
-        while true {
-            switch connection.state {
+    /// either side, a path that went away) and `closed` once it is cancelled; never returns.
+    /// Cancelled when the hellos came first.
+    private static func refusal(in states: AsyncStream<ConnectionState>) async throws -> Hello {
+        for await state in states {
+            switch state {
             case .waiting(let error), .failed(let error):
                 LinkLog.direct.info("The handshake did not go through: \(String(describing: error), privacy: .public)")
                 throw LinkChannelError.refused
             case .cancelled:
                 throw LinkChannelError.closed
             default:
-                try await Task.sleep(for: refusalCheck)
+                continue
             }
         }
+        throw CancellationError()
     }
 
-    /// How often `refusal(of:)` looks at a connection's state during the hello.
-    private static let refusalCheck: Duration = .milliseconds(50)
+    /// The connection's states from now on, as Network reports them, for `open`'s one reader:
+    /// the state it is in when the handler is set comes first, so a change made before is not
+    /// missed. The stream finishes when the connection is cancelled or when `open` finishes it;
+    /// the handler then stays with the connection, yielding nothing, until the connection goes.
+    private static func stateUpdates(
+        of connection: NetworkConnection<TLS>
+    ) -> (AsyncStream<ConnectionState>, AsyncStream<ConnectionState>.Continuation) {
+        let (states, continuation) = AsyncStream.makeStream(of: ConnectionState.self)
+        connection.onStateUpdate { _, state in
+            continuation.yield(state)
+            if state == .cancelled { continuation.finish() }
+        }
+        continuation.yield(connection.state)
+        return (states, continuation)
+    }
 
     /// A goodbye on a connection that never became a channel, best effort, for a second at most.
     private static func refuse(_ connection: NetworkConnection<TLS>, _ reason: Goodbye.Reason) async {
