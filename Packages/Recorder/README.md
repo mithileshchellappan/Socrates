@@ -151,8 +151,10 @@ runs whose tap drops every buffer, so nothing is captured, but the microphone in
 and iOS keeps the app running. The remote's Resume then records again with the phone locked (iOS
 does not let a backgrounded app start recording), and its Stop finishes the recording. When the
 remote goes while paused the input is released; when one comes while paused it is held if iOS
-lets it (the app in front). A Resume that fails holds the input again. A hold that cannot start
-is a cold pause.
+lets it (the app in front). Every `setRemoteAttached` call settles the input again, so the link's
+repeated `true` when the app comes to the front holds again a hold the system ended (a call iOS
+never said ended). A Resume that fails holds the input again (during a call, once the call ends).
+A hold that cannot start is a cold pause.
 
 **Killed while paused**: a suspended app can be killed; its Live Activity stays with Resume and
 Stop, and a tap relaunches the app in the background. At launch (`activate()`, queued before any

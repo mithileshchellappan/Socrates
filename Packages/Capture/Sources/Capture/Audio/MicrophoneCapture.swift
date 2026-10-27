@@ -17,8 +17,9 @@ import Foundation
 ///   so the next audio opens a new segment after the gap, as after an interruption.
 /// - A pause the Mac may end (`holdInput()`) keeps the input open on an engine of its own whose
 ///   tap drops every buffer: nothing is written or sent to meters, and iOS keeps the app running,
-///   because iOS does not let a backgrounded app start recording. A route change or an ended
-///   interruption makes that engine again.
+///   because iOS does not let a backgrounded app start recording. The hold is wanted until
+///   `releaseInput()`, `resume()` or `stop()`: an interruption (a call) ends its engine, and its
+///   end or a route change makes the engine again, tried a few times like a recording's engine.
 /// - A recording an earlier run left paused (the app was killed meanwhile) can be taken up
 ///   (`reopen(_:)`) and resumed into the same folder.
 /// - While recording, a `ProcessInfo` activity keeps the Mac from idle-sleeping.
@@ -55,8 +56,16 @@ public actor MicrophoneCapture: AudioCaptureSource {
     private let tapBufferSize: AVAudioFrameCount
     private var state = State.idle
     private var engine: AVAudioEngine?
-    /// The engine holding the input through a pause (`holdInput()`); nil: none.
+    /// The engine holding the input through a pause; nil: none, also while the hold waits for
+    /// an interruption's end.
     private var holdEngine: AVAudioEngine?
+    /// The pause holds the input (`holdInput()` until `releaseInput()`, `resume()` or `stop()`),
+    /// whether or not `holdEngine` runs right now.
+    private var holdWanted = false
+    /// An interruption (a call) began and has not ended: iOS refuses the input meanwhile.
+    private var interrupted = false
+    /// `rehold` is trying; another reason to hold again leaves it to that attempt.
+    private var isReholding = false
     private var writer: SegmentedAudioWriter?
     /// The writer task's queue (nil before start and after stop).
     private var writerInput: AsyncStream<WriterInput>.Continuation?
@@ -75,6 +84,9 @@ public actor MicrophoneCapture: AudioCaptureSource {
     /// Engine runs up to this one ended in a pause: audio of theirs still arriving is dropped
     /// (their segment is closed).
     private var sealedRun = 0
+
+    /// How many times `rehold` tries before it gives the input up.
+    private static let reholdAttempts = 5
 
     public init(host: HostClock = .system, tapBufferSize: AVAudioFrameCount = 4096) {
         self.host = host
@@ -179,6 +191,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
         guard state == .recording || state == .starting || state == .paused else { throw CaptureError.notRecording }
         state = .stopped
         pauseMark = nil
+        holdWanted = false
         for task in observerTasks { task.cancel() }
         observerTasks = []
         tearDownEngine()
@@ -258,19 +271,32 @@ public actor MicrophoneCapture: AudioCaptureSource {
 
     public func holdInput() async -> Bool {
         guard state == .paused else { return false }
-        guard holdEngine == nil else { return true }
+        holdWanted = true
+        if holdEngine?.isRunning == true { return true }
+        // An engine the system stopped is made again.
+        endHold()
         do {
             try startHold()
         } catch {
+            // During a call the hold stays wanted and is made again when the call ends (or at
+            // the caller's next settle, should iOS never say it ended).
+            if interrupted {
+                CaptureLog.capture.info("The input is held again once the interruption ends")
+                return true
+            }
+            holdWanted = false
             CaptureLog.capture.notice("Holding the input through the pause failed: \(String(describing: error), privacy: .public)")
             return false
         }
+        // The input was claimed: whatever interrupted it is over.
+        interrupted = false
         CaptureLog.capture.info("Holding the input through the pause")
         return true
     }
 
     public func releaseInput() async {
         guard state == .paused else { return }
+        holdWanted = false
         endHold()
         #if os(iOS)
         do {
@@ -289,10 +315,13 @@ public actor MicrophoneCapture: AudioCaptureSource {
         guard !writerFailed else { throw CaptureError.writeFailed }
         #if os(iOS)
         // Fails during a phone call, or when iOS does not let a suspended app record: stay paused
-        // (a held input stays held).
+        // (a held input stays held, or waits for the call's end).
         try Self.activateAudioSession()
         #endif
         // The input is claimed: the engine that held it gives way to the one that records.
+        interrupted = false
+        let wasHeld = holdWanted
+        holdWanted = false
         endHold()
         // The real time paused, also while the phone slept: the clock keeps wall time, so the
         // Mac files, plays and transcribes the gap as silence and later stamps stay in place.
@@ -304,9 +333,13 @@ public actor MicrophoneCapture: AudioCaptureSource {
         do {
             try startEngine()
         } catch {
-            #if os(iOS)
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            #endif
+            // A held pause stays held on the session still active (a locked phone could not claim
+            // the input anew); otherwise the input is given up, as before the Resume.
+            if !(wasHeld && holdAgainAfterFailedResume()) {
+                #if os(iOS)
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                #endif
+            }
             throw error
         }
         state = .recording
@@ -419,19 +452,26 @@ public actor MicrophoneCapture: AudioCaptureSource {
 
     // MARK: - Engine
 
+    /// Starts a new engine run that records (the tap feeds the writer and the fan-out).
     @discardableResult
     private func startEngine() throws -> AVAudioFormat {
+        run += 1
+        let (engine, format) = try startedEngine(tap: Self.makeTapBlock(run: run, writer: writerInput, broadcaster: broadcaster))
+        self.engine = engine
+        CaptureLog.capture.info(
+            "Engine run \(self.run) started: \(format.sampleRate) Hz, \(format.channelCount) ch"
+        )
+        return format
+    }
+
+    /// A new engine running with `block` on its input's tap. Throws when there is no input or the
+    /// engine does not start; nothing is left running then.
+    private func startedEngine(tap block: @escaping AVAudioNodeTapBlock) throws -> (AVAudioEngine, AVAudioFormat) {
         let engine = AVAudioEngine()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInputDevice }
-        run += 1
-        input.installTap(
-            onBus: 0,
-            bufferSize: tapBufferSize,
-            format: format,
-            block: Self.makeTapBlock(run: run, writer: writerInput, broadcaster: broadcaster)
-        )
+        input.installTap(onBus: 0, bufferSize: tapBufferSize, format: format, block: block)
         engine.prepare()
         do {
             try engine.start()
@@ -439,11 +479,7 @@ public actor MicrophoneCapture: AudioCaptureSource {
             input.removeTap(onBus: 0)
             throw CaptureError.engineFailed(error.localizedDescription)
         }
-        self.engine = engine
-        CaptureLog.capture.info(
-            "Engine run \(self.run) started: \(format.sampleRate) Hz, \(format.channelCount) ch"
-        )
-        return format
+        return (engine, format)
     }
 
     private func beginActivity() {
@@ -472,19 +508,20 @@ public actor MicrophoneCapture: AudioCaptureSource {
         #if os(iOS)
         try Self.activateAudioSession()
         #endif
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInputDevice }
-        input.installTap(onBus: 0, bufferSize: tapBufferSize, format: format, block: Self.makeDiscardingTapBlock())
-        engine.prepare()
+        holdEngine = try startedEngine(tap: Self.makeDiscardingTapBlock()).0
+    }
+
+    /// After a Resume whose engine did not start: the pause holds the input again on the audio
+    /// session still active. False when it cannot.
+    private func holdAgainAfterFailedResume() -> Bool {
         do {
-            try engine.start()
+            try startHold()
         } catch {
-            input.removeTap(onBus: 0)
-            throw CaptureError.engineFailed(error.localizedDescription)
+            CaptureLog.capture.error("Holding the input again after a failed Resume failed: \(String(describing: error), privacy: .public)")
+            return false
         }
-        holdEngine = engine
+        holdWanted = true
+        return true
     }
 
     /// Stops the engine holding the input, if any (the audio session stays as it is).
@@ -495,18 +532,34 @@ public actor MicrophoneCapture: AudioCaptureSource {
         self.holdEngine = nil
     }
 
-    /// Makes the holding engine again after the system stopped it (a route change, an ended
-    /// interruption). If it cannot, the input is released, as after a pause never held.
+    /// Makes the holding engine again while the hold is wanted and the system stopped it (a
+    /// route change, an ended interruption), tried again after 0.1, 0.2, 0.4 and 0.8 s like a
+    /// recording's engine. When every attempt fails the input is released, as after a pause never
+    /// held (the caller's next settle may hold it again); an interruption meanwhile leaves it to
+    /// the interruption's end.
     private func rehold(reason: String) async {
-        guard state == .paused, holdEngine != nil else { return }
-        endHold()
-        do {
-            try startHold()
-            CaptureLog.capture.notice("Holding the input again: \(reason, privacy: .public)")
-        } catch {
-            CaptureLog.capture.notice("The input is no longer held (\(reason, privacy: .public)): \(String(describing: error), privacy: .public)")
-            await releaseInput()
+        guard state == .paused, holdWanted, !isReholding else { return }
+        isReholding = true
+        defer { isReholding = false }
+        var delay = Duration.milliseconds(100)
+        for attempt in 1...Self.reholdAttempts {
+            guard state == .paused, holdWanted, !interrupted, holdEngine?.isRunning != true else { return }
+            endHold()
+            do {
+                try startHold()
+                CaptureLog.capture.notice("Holding the input again: \(reason, privacy: .public)")
+                return
+            } catch {
+                CaptureLog.capture.error("Holding the input again failed (\(reason, privacy: .public), attempt \(attempt)): \(String(describing: error), privacy: .public)")
+            }
+            if attempt < Self.reholdAttempts {
+                try? await Task.sleep(for: delay)
+                delay *= 2
+            }
         }
+        guard state == .paused, holdWanted, !interrupted, holdEngine?.isRunning != true else { return }
+        CaptureLog.capture.notice("The input is no longer held (\(reason, privacy: .public))")
+        await releaseInput()
     }
 
     /// Rebuilds the engine after a configuration change or interruption. Retries until audio
@@ -577,18 +630,26 @@ public actor MicrophoneCapture: AudioCaptureSource {
 
     #if os(iOS)
     private func handleInterruption(ended: Bool) async {
-        // A held pause: the interruption stopped the holding engine; it is made again after.
-        if state == .paused {
-            if ended { await rehold(reason: "interruption ended") }
-            return
-        }
-        guard state == .recording else { return }
-        if ended {
-            try? Self.activateAudioSession()
-            await restartEngine(reason: "interruption ended")
-        } else {
-            tearDownEngine()
-            status.continuation.yield(.inputLost)
+        interrupted = !ended
+        switch state {
+        case .paused:
+            // The interruption stopped the holding engine: it goes, and is made again after (if
+            // the hold is still wanted).
+            if ended {
+                await rehold(reason: "interruption ended")
+            } else {
+                endHold()
+            }
+        case .recording:
+            if ended {
+                try? Self.activateAudioSession()
+                await restartEngine(reason: "interruption ended")
+            } else {
+                tearDownEngine()
+                status.continuation.yield(.inputLost)
+            }
+        case .idle, .starting, .stopped:
+            break
         }
     }
 

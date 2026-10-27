@@ -97,8 +97,12 @@ other sources refuse). The Mac never pauses.
   indicator goes out). Or `holdInput()` keeps the input claimed (the Mac remote attached): the
   audio session stays active and an engine of its own runs whose tap drops every buffer, so
   nothing is written or reaches meters and captions, and iOS keeps the app running, so Resume can
-  record again with the phone locked; a route change or an ended interruption makes that engine
-  again, and `releaseInput()`, `resume()` or `stop()` end it. Nothing is stamped while paused:
+  record again with the phone locked. The hold is wanted until `releaseInput()`, `resume()` or
+  `stop()`, apart from its engine: an interruption (a call) ends the engine, and the
+  interruption's end or a route change makes it again, tried five times 0.1 to 0.8 s apart,
+  then the input is released; `holdInput()` during the call answers true and leaves it to the
+  call's end, and called again later it holds again an input the system let go. A `resume()`
+  whose engine does not start keeps the hold. Nothing is stamped while paused:
   slide moves and flags do nothing, interruptions and route changes are otherwise ignored. A
   write that failed (storage full), also one reported while paused, stops the recording.
 - **Resume**: the audio session and a new engine run start; the recording clock is placed at

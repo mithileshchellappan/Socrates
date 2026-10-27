@@ -15,6 +15,7 @@ public protocol RecorderEndpoint: AnyObject, Sendable {
     /// Whether a remote that can send Resume is attached (linked, or reconnecting). While it is,
     /// a pause keeps the input claimed without recording, so the system keeps the app running and
     /// the remote's Resume works with the phone locked; once it is not, the input is given up as
-    /// after any pause. Queued with the commands; the last call wins.
+    /// after any pause. Queued with the commands; the last call wins. Each call settles the input
+    /// again, so a repeated `true` (the app back in front) holds again a hold the system ended.
     func setRemoteAttached(_ attached: Bool)
 }

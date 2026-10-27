@@ -134,8 +134,9 @@ public protocol AudioCaptureSource: AnyObject, Sendable {
 
     /// Keeps the input claimed through the pause without recording (iOS): nothing is written or
     /// sent on, the microphone indicator stays on, and iOS keeps the app running, so `resume()`
-    /// can record again with the phone locked. Until `releaseInput()`, `resume()` or `stop()`.
-    /// False when not paused or the input cannot be held now.
+    /// can record again with the phone locked. Until `releaseInput()`, `resume()` or `stop()`;
+    /// during an interruption (a call) it is held once the interruption ends. Calling it again
+    /// holds again an input the system let go. False when not paused or the input cannot be held.
     func holdInput() async -> Bool
 
     /// Gives the input up while paused, a held one too (iOS: the audio session goes inactive,
