@@ -63,7 +63,7 @@ dials, sessions and timers, and cancel them in `stop()`.
 | `LinkBackgroundTime` (main actor) | the one UIKit background task: begun before any Stop runs (by `MacLink`, by the agent before the Mac's Stop), ended by the agent or by iOS |
 | `PhoneLinkAgent` (actor) | when to link, browsing and dialing (`Dialing`: idle, running, given up after `LinkPolicy.maximumFailedPasses` with a probe pass every `LinkPolicy.probeInterval` while recording), the session with the Mac, what the Mac has been told (`sync`, a pass of its own), commands to the recorder and whether a remote is attached (`setRemoteAttached`), the sidecars, when background time ends |
 | `Outbox`, `OutboxReceipts` | the outbox as the link sees it (what may be offered, hashes, bytes) and each capture's sidecar, `PhoneCaptures/.link/<uuid>.json` |
-| `LinkChannel` / `DirectChannel` (actor) | the transport seam and its TCP + TLS route: framing, hello and its checks, the two lanes, pings and loss |
+| `LinkChannel` / `DirectChannel` (actor) | the transport seam and its TCP + TLS route: framing, hello and its checks, the two lanes, pings and loss; the connection's one state handler, so a refused handshake ends the hello the moment Network reports it |
 | `LinkIdentityStore`, `LinkIdentity`, `PeerCertificate` | the Keychain key, the certificate made from it, the peer's key fingerprint and ALPN |
 | `LinkDirectory` (actor), `TrustedPeers` | this device's `link_device` row and the trusted rows of the other platform, followed as they sync |
 
@@ -73,7 +73,9 @@ its JSON files once it is final (it ended, or its last event is not a pause); a 
 an end whose files changed in the last minute is left out until the recorder says what it is
 (the agent lists again when that minute is over), and one with a segment file it cannot read is
 left out rather than offered without it. The holdings name every capture still on the phone
-without the Mac's answer, offered or not; an outbox that cannot be read sends none. The phone
+without the Mac's answer, offered or not; an outbox that cannot be read sends none. The Mac
+drops the staging of a capture they leave out, and the session forgets having offered it, so a
+capture listed again is offered again in the same session. The phone
 keeps one sidecar per capture: the bytes the Mac acknowledged until it answers (so the outbox row
 shows them after a relaunch), then its answer, the receipt, written only for a recording offered
 on that session; what the Mac holds is its staging folder. Neither keeps anything else.

@@ -686,8 +686,15 @@ actor PhoneLinkAgent {
                 // Mac deletes the staging of any recording left out.
                 let holdings = listing.all.subtracting(receipts.keys).sorted { $0.uuidString < $1.uuidString }
                 if current.toldHoldings != holdings {
+                    // Noted before it goes: the Mac drops what is left out, so this session
+                    // forgets having offered it, and a capture listed again is offered again.
+                    let held = Set(holdings)
+                    update(id) {
+                        $0.toldHoldings = holdings
+                        $0.toldOffers = $0.toldOffers.filter { held.contains($0.key) }
+                        $0.files = $0.files.filter { held.contains($0.key) }
+                    }
                     try await channel.send(.holdings(Holdings(recordings: holdings)), lane: .control)
-                    update(id) { $0.toldHoldings = holdings }
                 }
                 let ordered = listing.entries.filter(\.isFinal)
                     + listing.entries.filter { !$0.isFinal && !$0.isLive }
