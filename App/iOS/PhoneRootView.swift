@@ -97,9 +97,11 @@ struct PhoneRootView: View {
             .environment(\.calendarVisibility, model.calendarVisibility)
             // link: in the foreground the phone links for captures the Mac has not received yet,
             // and finds the Mac again (iOS makes a suspended app's discovery defunct). The
-            // starting phase too: an app opened with such captures links at once.
+            // starting phase too: an app opened with such captures links at once. Sync that is off
+            // starts again when the app comes to the front.
             .onChange(of: scenePhase, initial: true) { _, phase in
                 model.macLink?.setActive(phase == .active)
+                if phase == .active { model.retrySync() }
             }
         }
     }
