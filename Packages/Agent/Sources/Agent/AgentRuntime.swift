@@ -12,6 +12,8 @@ import StudyCore
 ///   `api_call` row the ledger wrote for its response (by request id).
 /// - `send` rebuilds the history from the stored turns byte for byte and appends; nothing is ever
 ///   edited. The model, effort, system prompt and tools of a conversation never change.
+/// - A file a student's turn sends (an image, a PDF) is stored by reference to the bytes sent
+///   (`BlockSource.blob`, 2026-10-27); each request carries its base64 again, the same bytes.
 /// - The end: `finished`; an error, a refusal, truncation or the call limit: `failed` with a
 ///   readable error. `recoverInterrupted()` fails what a quit left `running` and adds the
 ///   composer's parse of what such a `deadlines` conversation was told when it wrote nothing.
@@ -349,8 +351,10 @@ public actor AgentRuntime {
 
     /// At launch: conversations a quit left `running` end `failed`. A `deadlines` conversation
     /// that wrote nothing gets the composer's parse of the student's last words (relative to when
-    /// they were written), as a failed run does.
+    /// they were written), as a failed run does. Stored turns too large to sync are counted in
+    /// the log (`logTurnsTooLargeToSync`).
     public func recoverInterrupted() async {
+        await logTurnsTooLargeToSync()
         let interrupted: [AgentConversation]
         do {
             interrupted = try await conversations.running().filter { tasks[$0.id] == nil }
@@ -437,8 +441,10 @@ public actor AgentRuntime {
         )
         do {
             let courses = CourseList(tokens: try await CourseTokens.load(services.database))
+            // Files stored by reference carry their bytes again, as the first request did.
+            let messages = try history.map { try $0.sendable(blobs: services.blobs) }
             let request = MessageRequest(
-                model: spec.model, maxTokens: spec.maxTokens, effort: spec.effort, messages: history,
+                model: spec.model, maxTokens: spec.maxTokens, effort: spec.effort, messages: messages,
                 system: [SystemBlock(text: spec.system(conversation.createdAt, courses))],
                 tools: spec.requestTools, thinking: spec.thinking, cacheControl: .ephemeral
             )
@@ -512,14 +518,35 @@ public actor AgentRuntime {
 
     // MARK: - Turns
 
-    /// A turn's stored form: the Messages API JSON, sorted keys, every block verbatim.
+    /// A turn's stored form: the Messages API JSON, sorted keys, every block verbatim (a file the
+    /// student's turn sends is a `BlockSource.blob` reference already, made so by its sender).
     static func encode(_ turn: MessageParam) throws -> String {
         try turn.json.serializedString()
     }
 
-    /// The history as stored, decoded without changing a byte of what will be sent again.
+    /// The history as stored, decoded without changing a byte of what will be sent again (`run`
+    /// gives files stored by reference their bytes back: `MessageParam.sendable(blobs:)`).
     static func history(_ turns: [AgentTurn]) throws -> [MessageParam] {
         try turns.map { try MessageParam(json: JSONValue.parse($0.message)) }
+    }
+
+    /// iCloud's record size: a stored turn larger than this never syncs.
+    static let syncedRecordBytes = 1_000_000
+
+    /// Turns over iCloud's record size, stored before files went by reference (2026-10-27): they
+    /// stay as they are, on this device, and are never rewritten. One log line a launch says how
+    /// many (the message's length in bytes, read without its text).
+    private func logTurnsTooLargeToSync() async {
+        do {
+            let limit = Self.syncedRecordBytes
+            let count = try await services.database.read { db in
+                try Int.fetchOne(db, sql: #"SELECT count(*) FROM "agent_turn" WHERE octet_length("message") > ?"#, arguments: [limit]) ?? 0
+            }
+            guard count > 0 else { return }
+            AgentModule.log.notice("\(count, privacy: .public) stored turns are over iCloud's record size and stay on this device")
+        } catch {
+            AgentModule.log.error("Counting turns too large to sync failed: \(ReadableError.kind(of: error), privacy: .public)")
+        }
     }
 }
 

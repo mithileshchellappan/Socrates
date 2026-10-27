@@ -208,6 +208,10 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
     public var pixelWidth: Int?
     public var pixelHeight: Int?
     public var blob: BlobRef
+    /// The bytes the agent sent when they are not the original's: an image re-encoded as JPEG
+    /// for Claude (2026-10-27). The stored turn names them (Agent's `BlockSource.blob`), and this
+    /// row keeps them in use for `BlobUsage`. Nil for a file sent as it is, and in older rows.
+    public var sentBlob: BlobRef?
 
     public var id: String { blob.sha256 + "/" + fileName }
 
@@ -219,7 +223,8 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
         pageCount: Int? = nil,
         pixelWidth: Int? = nil,
         pixelHeight: Int? = nil,
-        blob: BlobRef
+        blob: BlobRef,
+        sentBlob: BlobRef? = nil
     ) {
         self.kind = kind
         self.fileName = fileName
@@ -229,6 +234,7 @@ public struct AgentAttachment: Hashable, Sendable, Codable, Identifiable {
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
         self.blob = blob
+        self.sentBlob = sentBlob
     }
 
     // MARK: Limits
