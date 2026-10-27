@@ -70,7 +70,10 @@ public final class CloudSync {
     private let deletionLog = SyncDeletionLog(tables: Set(SyncedTables.tableNames))
     /// Follows `CKAccountChanged` for this object's life (`retry()` on each).
     @ObservationIgnored private var accountChanges: Task<Void, Never>?
-    /// A `retry()` came while a start was asking iCloud: its answer may be stale, so a start that
+    /// A `start()` is in progress. Tracked apart from `status`, which `halt()` may set while a
+    /// start still waits on iCloud: a second start never runs beside the first.
+    @ObservationIgnored private var starting = false
+    /// A `retry()` came while a start was in progress: its answer may be stale, so a start that
     /// ends off tries once more.
     @ObservationIgnored private var retryRequested = false
 
@@ -104,10 +107,9 @@ public final class CloudSync {
     /// during the start (iCloud came back while it was asked) makes a start that ends off try
     /// again; each extra try needs another such call.
     public func start() async {
-        switch status {
-        case .starting, .running: return
-        case .idle, .unavailable, .failed: break
-        }
+        guard !starting, status != .running else { return }
+        starting = true
+        defer { starting = false }
         repeat {
             retryRequested = false
             await begin()
@@ -192,13 +194,16 @@ public final class CloudSync {
     /// iPhone or iPad app comes to the front.
     public func retry() async {
         guard !accountSwitched else { return }
+        // A start in progress (its status may already say off: `halt()` during it) tries again.
+        guard !starting else {
+            retryRequested = true
+            return
+        }
         switch status {
         case .unavailable, .failed:
             SyncLog.sync.info("Starting sync again")
             await start()
-        case .starting:
-            retryRequested = true
-        case .idle, .running:
+        case .idle, .starting, .running:
             return
         }
     }
