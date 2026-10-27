@@ -29,9 +29,13 @@ struct LectureTools: Sendable {
         AgentTool(
             tool: .custom(
                 name: "list_lectures",
-                description: "The student's lectures with their keys, titles, days, classes (or the lecture whose class they joined), slide counts, durations and recordings (keys), then the recordings that have no lecture (keys).",
+                description: "The student's lectures with their keys, titles, days, classes (or the lecture whose class they joined), slide counts, durations and recordings (keys), then the newest recordings that have no lecture (keys; recordings_before lists the older ones).",
                 inputSchema: TutorJSON.schema([
                     "course": TutorJSON.nullable(["type": "string", "description": "Course token; null for all courses."]),
+                    "recordings_before": TutorJSON.nullable([
+                        "type": "string",
+                        "description": "A key from recordings_without_lecture: lists those that started before it. Null for the newest.",
+                    ]),
                 ])
             ),
             effect: .read
@@ -73,8 +77,15 @@ struct LectureTools: Sendable {
             // Recordings filed with no lecture show on no screen: listed here, the agent can place
             // them (move_recording). With a course, that course's and those with no course (most
             // of them: a plain recording, a capture whose course was gone, a filing undone). The
-            // newest `withoutLectureShown`, oldest first, then how many more.
-            let withoutLecture = library.withoutLecture.filter { courseID == nil || $0.courseID == nil || $0.courseID == courseID }
+            // newest `withoutLectureShown`, oldest first, then how many more; `recordings_before`
+            // (a listed key) pages back to the older ones.
+            var withoutLecture = library.withoutLecture.filter { courseID == nil || $0.courseID == nil || $0.courseID == courseID }
+            if let key = call.text("recordings_before")?.lowercased() {
+                guard let index = withoutLecture.firstIndex(where: { ChatCitation.key($0.id) == key }) else {
+                    return .error("recordings_before must be a key from recordings_without_lecture.")
+                }
+                withoutLecture = Array(withoutLecture[..<index])
+            }
             var head: JSONObject = [:]
             if !withoutLecture.isEmpty {
                 head["recordings_without_lecture"] = .array(withoutLecture.suffix(Self.withoutLectureShown).map(Self.recordingLine))
