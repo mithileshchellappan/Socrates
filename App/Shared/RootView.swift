@@ -33,6 +33,8 @@ struct RootView: View {
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    #else
+    @Environment(\.scenePhase) private var scenePhase
     #endif
     /// The Settings window's tab ("Set Up Mail…" opens Accounts).
     @AppStorage(SettingsTab.storageKey) private var settingsTab = SettingsTab.semester
@@ -333,6 +335,12 @@ struct RootView: View {
         // minimum and the panes laid out now (a frame with both bounds reports its own minimum,
         // not its content's).
         .modifier(PaneRoomMinimum(panes: paneHost, minimum: screenMinWidth + shownSidebarWidth))
+        #else
+        // The iPad: sync that is off starts again when the app comes to the front (the Mac's
+        // retry is its wake).
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { model.retrySync() }
+        }
         #endif
         // mt: a book or paper dropped on the window goes to the course whose screen shows.
         .onChange(of: selection?.courseScreenID, initial: true) { _, id in center.screenCourse = id }

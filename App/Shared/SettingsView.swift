@@ -54,9 +54,9 @@ struct SettingsView: View {
         }
     }
 
-    /// M7: "Up to date", "Syncing", "12,480 to upload" (the Mac's first upload), "3 not uploaded"
-    /// (rows iCloud refused, e.g. over its 1 MB record size), or why sync is off ("Not signed in
-    /// to iCloud"); nothing in a build without sync or before it started.
+    /// M7: "Up to date", "Syncing", "12,480 to upload" (rows not in iCloud yet: the Mac's first
+    /// upload, rows waiting for the next send or while offline; 2026-10-27), or why sync is off
+    /// ("Not signed in to iCloud"); nothing in a build without sync or before it started.
     private var iCloudValue: Text? {
         guard let sync = model.cloudSync else { return nil }
         switch sync.status {
@@ -64,7 +64,7 @@ struct SettingsView: View {
             let unsent = sync.unsentCount ?? 0
             if unsent > 0 {
                 let count = Text(unsent, format: .number).font(.mono(13))
-                return sync.isSynchronizing ? Text("\(count) to upload") : Text("\(count) not uploaded")
+                return Text("\(count) to upload")
             }
             return sync.isSynchronizing ? Text("Syncing") : Text("Up to date")
         case .unavailable(let reason), .failed(let reason):

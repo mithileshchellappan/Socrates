@@ -81,11 +81,26 @@ struct ReviewContent: View {
                         .opacity(transcriptCollapsed ? 0 : 1)
                         .allowsHitTesting(!transcriptCollapsed)
                         .accessibilityHidden(transcriptCollapsed)
-                } else if model.deck == nil {
-                    // Neither slides nor a recording (or its deck was deleted): the column is a
-                    // drop target for this lecture's slides (the screen reloads once they are in).
-                    EmptyDropPrompt(systemImage: "rectangle.on.rectangle", line: "Drop this lecture's slides here.", target: .lecture(model.lecture.id))
+                } else {
+                    switch model.slides {
+                    case .none:
+                        // Neither slides nor a recording (or its deck was deleted): the column is a
+                        // drop target for this lecture's slides (the screen reloads once they are in).
+                        EmptyDropPrompt(systemImage: "rectangle.on.rectangle", line: "Drop this lecture's slides here.", target: .lecture(model.lecture.id))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    case .notOnThisDevice:
+                        // The lecture has slides, on another device (files do not sync): there is
+                        // nothing to drop here.
+                        ContentUnavailableView {
+                            Image(systemName: "rectangle.on.rectangle")
+                        } description: {
+                            Text("Not on this device")
+                        }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    case .shown:
+                        // The slide fills the column above.
+                        EmptyView()
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

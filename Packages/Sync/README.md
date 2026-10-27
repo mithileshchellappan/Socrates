@@ -20,6 +20,7 @@ let services = try StudyServices.live(syncContainer: CloudSyncConfiguration.cont
 // (a SOCRATES_DATA_ROOT library never syncs); the metadatabase is attached when set.
 let sync = CloudSync(services: services)   // nil without services.syncContainer; builds the engine
 Task { await sync?.start() }               // ~2 s after launch (AppModel.startBackgroundWork)
+await sync.retry()   // the Mac's wake, the iPhone or iPad app in front; also on CKAccountChanged (CloudSync itself)
 sync.status          // .idle, .starting, .running, .unavailable(reason), .failed(reason)
 sync.isRunning       // the phone's agent sheet shows only while true
 sync.isSynchronizing // sending or fetching right now
@@ -40,7 +41,13 @@ await backup.runHourly()   // now, then once an hour; runDaily() after each wake
   writes made after they exist. The app makes `CloudSync` first in `AppModel.init`.
 - **The account first**: `start()` asks `CKContainer(identifier:).accountStatus()`; anything but
   available is `.unavailable` with a readable reason ("Not signed in to iCloud", "iCloud is
-  restricted", "iCloud is unavailable", "iCloud status unknown"). The next launch asks again.
+  restricted", "iCloud is unavailable", "iCloud status unknown").
+- **Sync that is off starts again within the run** (`retry()`): when iCloud reports an account
+  change (`CKAccountChanged`, which `CloudSync` follows for the app's life), when the Mac wakes and
+  when the iPhone or iPad app comes to the front (the app's calls). Only from `.unavailable` or
+  `.failed`, and never after a switch to another account in this run (`accountSwitched`; the next
+  launch asks again). A `retry()` while a start asks iCloud is noted: that start tries once more
+  if it ends off. A sign-out and a sign-in to the same account resume where sync stopped.
 - **A sign-out or an account switch keeps every row** (`AccountChangeGuard`, SQLiteData's
   `SyncEngineDelegate`): sync stops ("Not signed in to iCloud", "Another iCloud account").
   SQLiteData's default would delete every row of the synced tables on the device.
@@ -105,7 +112,12 @@ await backup.runHourly()   // now, then once an hour; runDaily() after each wake
   on one device.
 - **Blobs do not sync** in M7 (decks, audio, images are files in the BlobStore, not rows): a
   synced row whose blob is missing shows as not on this device. Rows over CloudKit's 1 MB record
-  size stay on their device ("3 not uploaded").
+  size stay on their device: SQLiteData drops a refused record without telling, so they count
+  among the rows "to upload". A chat turn stores its files by reference for this reason (Agent's
+  README, "Storage").
+- **"N to upload"** (Settings ▸ Accounts' iCloud row, 2026-10-27): rows iCloud has not received,
+  whether they wait for the next send, the device is offline or iCloud refused them; SQLiteData
+  1.12.1 reports no per-record refusal, so the row never says "not uploaded".
 - **Failures** are readable (`.failed(localizedDescription)`), logged under `sync`, and never
   crash; the library keeps working without sync.
 - **One writer per library**: the triggers live in the syncing app's own connections, so another

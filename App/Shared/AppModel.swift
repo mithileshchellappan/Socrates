@@ -194,8 +194,13 @@ final class AppModel {
     @ObservationIgnored private var activationObserver: Task<Void, Never>?
     @ObservationIgnored private var calendarStoreObserver: Task<Void, Never>?
     @ObservationIgnored private var memoryObserver: Task<Void, Never>?
-    /// The daily library backup (Mac): at launch, once an hour and after each wake.
+    /// The daily library backup (Mac): at launch, once an hour and after each wake, which first
+    /// starts sync again when it is off (`CloudSync.retry`).
     @ObservationIgnored private var backupTask: Task<Void, Never>?
+    #if os(iOS)
+    /// The start of sync again when the app comes to the front (`retrySync`), one at a time.
+    @ObservationIgnored private var syncRetry: Task<Void, Never>?
+    #endif
     /// ma: the full calendar sync after the student's calendars changed (coalesced, at most one a
     /// minute), and when the last one ran.
     @ObservationIgnored private var calendarEditSync: Task<Void, Never>?
@@ -512,11 +517,14 @@ final class AppModel {
         }
         #if os(macOS)
         // One copy of the library a day, in the background: at launch and once an hour
-        // (`runHourly`), and after each wake (the Mac app stays open for days).
+        // (`runHourly`), and after each wake (the Mac app stays open for days). Each wake first
+        // starts sync again if it is off for a reason that may have passed (`CloudSync.retry`).
         let backup = LibraryBackup(services: services)
+        let cloudSync = cloudSync
         backupTask = Task(priority: .background) {
             async let hourly: Void = backup.runHourly()
             for await _ in NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification) {
+                await cloudSync?.retry()
                 await backup.runDaily()
             }
             await hourly
@@ -653,6 +661,19 @@ final class AppModel {
             }
         }
     }
+
+    #if os(iOS)
+    /// The app came to the front: sync that is off for a reason that may have passed starts again
+    /// (`CloudSync.retry` decides; nothing before the launch's own start). The model owns the
+    /// call, so a scene going inactive meanwhile never cancels a start halfway.
+    func retrySync() {
+        guard let cloudSync, syncRetry == nil else { return }
+        syncRetry = Task { [weak self] in
+            await cloudSync.retry()
+            self?.syncRetry = nil
+        }
+    }
+    #endif
 
     /// M7: the launch passes that rewrite the library's rows (recovering the agent's interrupted
     /// conversations, the filing passes, reading transcripts) run where the library's work is

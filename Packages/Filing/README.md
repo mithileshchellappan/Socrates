@@ -31,8 +31,9 @@ ChangeFilingSheet(filingID: id, center: center)       // also reachable: center.
   `afterImport` after every filing that wrote something.
 - `undo(_:) -> Filing?` (the filing when it stays: an un-filed capture), `change(_:to:) -> Filing`,
   `changeToNewLecture(_:courseID:)`.
-- At launch: `unfiledCaptures(in:excluding:)` (capture packages that never reached a filing; the
-  app files them with `file(_:)`), `repairDeckTitles()` (decks stored under their file name get
+- At launch: `unfiledCaptures(in:excluding:)` (capture packages that never reached a filing and
+  still wait for their import, Capture's `LecturePackageReader.isPending`; the app files them with
+  `file(_:)`), `repairDeckTitles()` (decks stored under their file name get
   their title slide's heading).
 - For screens: `place(of:)`, `places(courseID:)`, `courses()`, `filing(_:)`, `size(of:)`.
 - `Filing.needsReview` (auto, and below 0.75, unfiled, or with a runner-up within 0.1) and
@@ -90,7 +91,9 @@ exercise's own count is not a lecture number, so no second "L2"). A title-slide 
 the day's class meetings. Two lectures on one day stay two.
 
 Verdict: no course ≥ 0.45 → **needs course** (stored unfiled: a deck without course, a recording
-without lecture and without transcription job; the toast offers Change…); the two best within 0.1
+without lecture and without transcription job, a capture's rows without lecture or course, its
+package in the library marked imported and its audio removed as when filed, so a delete later
+stays a delete; the toast offers Change…); the two best within 0.1
 → **ask** (the HUD shows both and stops following the cursor so you can drop on one; a plain drop
 files the best one for review and the toast offers the runner-up in one click); best ≥ 0.75 →
 **filed**; otherwise **review** (filed to the best guess). A re-dropped file (same SHA-256, or a

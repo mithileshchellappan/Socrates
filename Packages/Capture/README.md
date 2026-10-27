@@ -203,6 +203,14 @@ manifest is marked `importedAt`; `removeAudioAfterImport: false, markImported: f
 package the user picked elsewhere untouched. The manifest is untrusted: segment paths always come
 from the files found in `audio/`, and only regular files (no links) there are copied or deleted.
 
+Two rules every reader of a package's state uses (2026-10-27), so the launch pass, the link's inbox,
+filing and Processing's import cannot disagree:
+- `LecturePackageReader.isPending(_:)`: the manifest reads and is not marked imported (a crashed
+  package included); `pending(in:)` is its filter over a folder. An imported package whose
+  recording was deleted since is never filed again.
+- `LecturePackageReader.libraryOwns(_:recordings:)`: the package lies inside the library's
+  Recordings folder (symlinks resolved). Only such a package loses its audio and is marked imported.
+
 ## Pieces
 
 - `MicrophoneCapture` (actor): `AVAudioEngine` input tap → `AudioChunk` (Sendable copy, mono)
