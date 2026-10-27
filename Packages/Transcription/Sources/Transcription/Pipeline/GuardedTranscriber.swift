@@ -39,15 +39,26 @@ public struct GuardedTranscriber: Sendable {
         options: TranscriptionOptions,
         progress: @escaping TranscriptionProgressHandler = { _ in }
     ) async throws -> Transcript {
-        guard !samples.isEmpty else { throw TranscriptionError.emptyAudio }
+        try await transcribe(timeline: SampleTimeline(samples), options: options, progress: progress)
+    }
+
+    /// Transcribes a recording's runs of 16 kHz mono audio. Times in the result are seconds from
+    /// the clock's sample 0; a gap between runs reads as silence (nothing is decoded there), and
+    /// only the windows being decoded are copied out.
+    func transcribe(
+        timeline: SampleTimeline,
+        options: TranscriptionOptions,
+        progress: @escaping TranscriptionProgressHandler = { _ in }
+    ) async throws -> Transcript {
+        guard !timeline.isEmpty else { throw TranscriptionError.emptyAudio }
         let started = ContinuousClock.now
         let rate = Double(Self.sampleRate)
-        let duration = Double(samples.count) / rate
-        let speech = speechDetector.speechRegions(in: samples)
-        let plan = planner.plan(sampleCount: samples.count, speech: speech)
+        let duration = Double(timeline.count) / rate
+        let speech = speechDetector.speechRegions(in: timeline)
+        let plan = planner.plan(sampleCount: timeline.count, speech: speech)
         let cleaner = SegmentPostProcessor(removeHallucinations: options.guards.cleanUpText)
         let context = Context(
-            samples: samples,
+            samples: timeline,
             options: options,
             prompt: Self.prompt(from: options.glossary),
             firstPassLanguage: Self.chunkLanguage(for: options.language),
@@ -373,7 +384,8 @@ public struct GuardedTranscriber: Sendable {
     }
 
     struct Context: Sendable {
-        var samples: [Float]
+        /// The recording's audio; decode windows are copied out of it (`request(for:)`).
+        var samples: SampleTimeline
         var options: TranscriptionOptions
         var prompt: String?
         var firstPassLanguage: ChunkLanguage
@@ -386,7 +398,7 @@ public struct GuardedTranscriber: Sendable {
         temperature: Float, fallbackCount: Int, prompt: String?
     ) -> ChunkDecodeRequest {
         ChunkDecodeRequest(
-            samples: Array(context.samples[range]),
+            samples: context.samples.samples(in: range),
             language: language,
             temperature: temperature,
             temperatureFallbackCount: fallbackCount,

@@ -35,6 +35,13 @@ try await transcripts.replaceSegments(recordingID: recording.id,
 
 ## Pipeline (`GuardedTranscriber`)
 
+A recording's segment files are loaded onto its clock as runs of continuous 16 kHz audio
+(`AudioTimeline.runs` → `SampleTimeline`): a part within 1 s of the current run's end joins it, a
+later one (after a pause or an interruption) starts a new run, so a gap is never held as samples.
+Every read (frame levels, decode windows) gives zeros where no run lies, at the same sample offsets
+as a zero-padded array, so the transcript and its times are the same; times are seconds from the
+clock's sample 0.
+
 1. Energy VAD with an adaptive noise floor (`SpeechActivityDetector`).
 2. Chunks ≤ 30 s cut in the longest pause of each window's second half (`ChunkPlanner`); chunks with
    < 0.3 s of speech are not decoded.

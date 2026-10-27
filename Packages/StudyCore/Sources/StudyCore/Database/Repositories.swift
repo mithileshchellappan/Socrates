@@ -420,6 +420,50 @@ public struct JobRepository: Sendable {
         }
     }
 
+    /// Each recording of a lecture (oldest first) with its transcript lines and its latest
+    /// transcription, and whether a job of the lecture or of its recordings is queued or running.
+    /// Reads only the job columns these need (never `progress`, `phase` or `updated_at`, written
+    /// twice a second during a transcription), so a screen observing it is not woken by progress.
+    public static func transcriptions(lectureID: Lecture.ID, in db: Database) throws -> (recordings: [RecordingTranscription], busy: Bool) {
+        let reference = Lecture.ID?.some(lectureID)
+        let recordingRows: [(Recording.ID, Date)] = try Recording
+            .where { $0.lectureID.eq(reference) }
+            .select { ($0.id, $0.startedAt) }
+            .fetchAll(db)
+        let recordings = recordingRows.sorted { $0.1 < $1.1 }.map { $0.0 }
+        let lines: [(Recording.ID, Int)] = try TranscriptSegment
+            .where { $0.lectureID.eq(reference) }
+            .group(by: \.recordingID)
+            .select { ($0.recordingID, $0.id.count()) }
+            .fetchAll(db)
+        var linesByRecording: [Recording.ID: Int] = [:]
+        for (recordingID, count) in lines { linesByRecording[recordingID, default: 0] += count }
+        let optional = recordings.map { Recording.ID?.some($0) }
+        let jobs: [(Recording.ID?, JobStage, JobState, String?, Date)] = try Job
+            .where { $0.lectureID.eq(reference) || $0.recordingID.in(optional) }
+            .select { ($0.recordingID, $0.stage, $0.state, $0.error, $0.createdAt) }
+            .fetchAll(db)
+        let open: Set<JobState> = [.queued, .running]
+        let busy = jobs.contains { open.contains($0.2) }
+        var latest: [Recording.ID: (state: JobState, error: String?, createdAt: Date)] = [:]
+        for (recordingID, stage, state, error, createdAt) in jobs where stage == .transcribe {
+            guard let recordingID else { continue }
+            if let seen = latest[recordingID], seen.createdAt > createdAt { continue }
+            latest[recordingID] = (state, error, createdAt)
+        }
+        let transcriptions = recordings.map { id in
+            RecordingTranscription(recordingID: id, lines: linesByRecording[id] ?? 0, latest: latest[id]?.state, error: latest[id]?.error)
+        }
+        return (transcriptions, busy)
+    }
+
+    /// The recordings of a lecture without transcript lines whose latest transcription failed or
+    /// was cancelled: what Retry on the Summary queues again (the one rule its state and the
+    /// processor's `retryTranscriptions` share).
+    public static func failedTranscriptions(lectureID: Lecture.ID, in db: Database) throws -> [RecordingTranscription] {
+        try transcriptions(lectureID: lectureID, in: db).recordings.filter(\.hasFailed)
+    }
+
     /// Reads, changes and writes a job in one transaction, so concurrent transitions (a cancel
     /// while the runner starts the job, a late progress report) never overwrite each other.
     private func update(

@@ -36,7 +36,48 @@ extension FocusedValues {
     @Entry public var lectureNotesHighlight: LectureNotesCommand?
 }
 
+/// Retry on a lecture's Summary (its recording's line): the lecture's failed transcriptions
+/// queued again and the study pass's failed units run again with a fresh budget, in a task the
+/// app owns. The app installs it as `\.lectureNotesRetry` (Mac); nil in renders.
+public struct LectureNotesRetryAction: Sendable {
+    private let action: @MainActor @Sendable (Lecture.ID) -> Void
+
+    public init(_ action: @escaping @MainActor @Sendable (Lecture.ID) -> Void) {
+        self.action = action
+    }
+
+    @MainActor
+    public func callAsFunction(_ lectureID: Lecture.ID) {
+        action(lectureID)
+    }
+}
+
+/// Write Again on a lecture's Summary (the page's ⋯, the failure line, Review's Summary): the
+/// app's one action (`NotesWriteAgain`: Retry of a blocked recording, then
+/// `LectureNotesRepository.writeAgain`), run in a task the app owns; `done` gets what it did on
+/// the main actor (the screen registers its Undo). The app installs it as
+/// `\.lectureNotesWriteAgain`; nil in renders.
+public struct LectureNotesWriteAgainAction: Sendable {
+    public typealias Done = @MainActor @Sendable (WriteAgainOutcome) -> Void
+    private let action: @MainActor @Sendable (Lecture.ID, NotesInstruction, @escaping Done) -> Void
+
+    public init(_ action: @escaping @MainActor @Sendable (Lecture.ID, NotesInstruction, @escaping Done) -> Void) {
+        self.action = action
+    }
+
+    @MainActor
+    public func callAsFunction(_ lectureID: Lecture.ID, _ instruction: NotesInstruction, done: @escaping Done) {
+        action(lectureID, instruction, done)
+    }
+}
+
 extension EnvironmentValues {
+    /// Retry of a lecture's recording on its way into the Summary (`LectureNotesRetryAction`).
+    @Entry public var lectureNotesRetry: LectureNotesRetryAction?
+
+    /// Write Again of a lecture's Summary (`LectureNotesWriteAgainAction`).
+    @Entry public var lectureNotesWriteAgain: LectureNotesWriteAgainAction?
+
     /// Claude Code is not available on this Mac: the app's readable sentence ("Claude Code is not
     /// installed."), which a lecture whose notes are not written yet shows as its one line under
     /// the outline. Nil: available, or unknown (renders).

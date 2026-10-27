@@ -90,9 +90,14 @@ struct NotesDocumentInput: Equatable {
     var answersOpen: Set<String> = []
     /// Claude Code is not available: the readable sentence (nil: available or unknown).
     var unavailable: String?
-    /// A new version could be written now (`LectureNotesRepository.source`): the failure line's
+    /// A new version could be written now (`LectureNotesInputs.available`): the failure line's
     /// Write Again… is off without it.
     var canWriteAgain = true
+    /// How the lecture's recording is getting into the Summary: a blocked way is the document's
+    /// first line ("Not transcribed", Retry).
+    var recording: RecordingNotesState = .none
+    /// A Write Again waits for the recording's study pass: the document's first line, plain.
+    var writeAgainWaits = false
 
     var outline: [LectureNotesSection] { notes?.sections ?? [] }
 

@@ -4,26 +4,41 @@ import StudyCore
 
 // ln (docs/plan-lecture-notes.md §5.6): the change rows of the agent's lecture notes actions and
 // their Undo.
-// - write_lecture_notes: a new version queued (`LectureNotesRepository.queue`, created by the
-//   agent), kind `lecture_notes`, target the version. Undo cancels it while it is open, else
-//   discards that version (Previous Version's way), so the one before is current again.
+// - write_lecture_notes: the app's Write Again (`writeNotesAgain`: Retry of a blocked recording,
+//   then `LectureNotesRepository.writeAgain`, created by the agent), kind `lecture_notes`, target
+//   the version queued or the row that waits for the recording. Undo cancels it while it is
+//   open, else discards it (Previous Version's way), so the one before is current again (or the
+//   instruction before stands again).
 // - set_notes_length: a `preference` memory with its `notes_rule` (kind `notes_rule`, target the
 //   memory); an older rule of the same scope is forgotten and its change superseded. Undo forgets
 //   it (and brings the older rule back), as any memory change.
 // - keep_notes_answer: a kept answer (`lecture_notes_mark`, kind `answer`, created by the agent),
 //   kind `notes_answer`, target the mark. Undo removes the mark.
 extension ChangeLog {
-    /// write_lecture_notes: queues a version of the lecture's notes with the student's sentence and
-    /// logs it. `.refused` when one is being written already or there is nothing to write from.
-    /// The version's task reports into `origin.conversationID` when it is done.
+    /// write_lecture_notes: writes the lecture's notes again as the Summary's Write Again does and
+    /// logs it. `request`: the student's words, their new standing instruction; nil keeps the
+    /// standing one. `.unchanged` when a version with that instruction is being written already,
+    /// `.refused` with nothing to write from. The version's task reports into
+    /// `origin.conversationID` when it is done (a row that waits for the recording has no task).
     public func queueNotes(lectureID: Lecture.ID, request: String?, quote: String, origin: Origin) async throws -> Outcome {
         let quote = quote.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !quote.isEmpty else { return .refused("A change needs the exact words it comes from.") }
         let repository = LectureNotesRepository(store: services.records)
-        let versions = try await repository.versions(lectureID: lectureID)
-        if versions.contains(where: { $0.state.isOpen }) { return .unchanged("Its summary is being written already.") }
-        guard let notes = try await repository.queue(lectureID: lectureID, request: request, createdBy: .agent) else {
-            return .refused("There is nothing to write its summary from yet (no slides, or its study pass has not finished).")
+        let instruction: NotesInstruction = request.map { .new($0) } ?? .standing
+        let outcome = try await writeNotesAgain(lectureID, instruction, .agent)
+        let notes: LectureNotes
+        let waits: Bool
+        switch outcome {
+        case .queued(let queued):
+            notes = queued
+            waits = false
+        case .waiting(let row):
+            notes = row
+            waits = true
+        case .writing:
+            return .unchanged("Its summary is being written already, with that instruction.")
+        case .nothingToWriteFrom:
+            return .refused("There is nothing to write its summary from yet (no slides and no transcript).")
         }
         let store = services.records
         let date = now()
@@ -32,7 +47,8 @@ extension ChangeLog {
             let name = lecture.map { lecture in
                 lecture.number.map { "Lecture \($0)" + (lecture.title.isEmpty ? "" : " · \(lecture.title)") } ?? lecture.title
             } ?? "Lecture"
-            let summary = notes.request.map { "Writing again: \($0)" } ?? "Writing again"
+            let lead = waits ? "Writing again with its recording" : "Writing again"
+            let summary = notes.request.map { "\(lead): \($0)" } ?? lead
             var change = AgentChange(
                 kind: .lectureNotes, targetTable: .lectureNotes, targetID: notes.id, title: String("Summary: \(name)".prefix(AgentChange.titleLimit)),
                 summary: String(summary.prefix(AgentChange.summaryLimit)), before: AgentChangeValues(exists: false),
@@ -57,7 +73,7 @@ extension ChangeLog {
             return .applied(change)
         } catch {
             // Not logged: not queued either (no change without its Undo).
-            _ = try? await repository.cancel(notes.id)
+            if (try? await repository.cancel(notes.id)) != true { try? await repository.discard(notes.id) }
             throw error
         }
     }

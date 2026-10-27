@@ -190,6 +190,10 @@ struct RootView: View {
                 // it), and why notes cannot be written when it is not.
                 .environment(\.lectureNotesAsker, model.lectureNotesAsker)
                 .environment(\.lectureNotesUnavailable, model.lectureNotesUnavailable)
+                // Retry on a Summary's recording line: failed transcriptions and the study pass's
+                // failed units run again. Write Again: the same retry first when it applies.
+                .environment(\.lectureNotesRetry, model.lectureNotesRetry)
+                .environment(\.lectureNotesWriteAgain, model.lectureNotesWriteAgain)
                 // mt: the course materials' writes (drops, ⌘V, Import…, Delete with Undo).
                 .environment(\.materialLibrary, model.materialLibrary)
                 // mt: the reader queues chapter summaries only while Claude Code can write them.

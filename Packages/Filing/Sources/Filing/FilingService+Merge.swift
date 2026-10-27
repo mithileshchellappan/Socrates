@@ -26,8 +26,10 @@ import StudyCore
 /// the survivor's go when the other brings slides), and its notes, flags, item sources, tutor
 /// conversations, practice questions, kept answers and filings follow; then it is deleted, its
 /// study pass, generated notes and detected links kept for Undo (`DeletedRows`). Claude's
-/// slides-only notes of the survivor that are not written yet are cancelled when a recording
-/// comes in: its study pass writes them from the recording, once (`queueAfterStudyPass`). One
+/// slides-only notes of the survivor that are not written yet (unless one alone carries the
+/// student's new instruction) are cancelled when a recording comes in: its study pass writes them
+/// from the recording, once (`queueAfterStudyPass`); the loser's Write Again instruction becomes
+/// the survivor's when it has none. One
 /// `agent_change` row (`lecture_merge`) holds it all in `before.deletion`; Undo splits the two
 /// again.
 public struct LectureMerges: Sendable, Codable {
@@ -55,6 +57,9 @@ public struct LectureMerges: Sendable, Codable {
         /// The survivor's own detected (`auto`) deck links that gave way to the loser's slides
         /// (nil: none; merges before the second pass have no such key).
         var superseded: DeletedRows?
+        /// ln: the survivor's row that keeps the loser's Write Again instruction
+        /// (`LectureNotesRepository.keepInstruction`; nil: none, and merges before 2026-10-26).
+        var instruction: LectureNotes.ID?
     }
 
     struct FilingBefore: Sendable, Codable {
@@ -474,11 +479,20 @@ extension FilingService {
         let loserSlides = try LectureSlides.current(lectureID: loserID, in: db)
         if !recordings.isEmpty {
             // Claude's slides-only notes of the survivor not written yet: with a recording, the
-            // study pass writes its notes from it (once, `queueAfterStudyPass`).
-            for notes in try LectureNotes.where({ $0.lectureID.eq(survivorID) }).fetchAll(db) where notes.state.isOpen && notes.source == .slides {
+            // study pass writes its notes from it (once, `queueAfterStudyPass`), with the standing
+            // instruction. Not a version that alone carries the student's new instruction (it is
+            // written, then replaced once with the same).
+            let versions = try LectureNotesRepository.versions(lectureID: survivorID, in: db)
+            for notes in versions where notes.state.isOpen && notes.source == .slides {
+                guard notes.request == LectureNotes.instruction(of: versions.filter({ $0.id != notes.id })) else { continue }
                 _ = try LectureNotesRepository.cancel(notes.id, in: db, now: now)
             }
         }
+        // The loser's Write Again instruction stays the survivor's when it has none (its versions
+        // go with the loser, kept for Undo).
+        let instruction = try LectureNotesRepository.keepInstruction(
+            of: try LectureNotesRepository.versions(lectureID: loserID, in: db), on: survivor, in: db, now: now
+        )
         for recording in recordings {
             try moveRecording(
                 recording.id, kind: recording.source == .file ? .recording : .capture, from: loserID, to: survivor,
@@ -574,7 +588,8 @@ extension FilingService {
         return LectureMerges.Pair(
             survivorID: survivorID, loserID: loserID, recordings: recordings.map(\.id),
             captures: recordings.filter { $0.source != .file }.map(\.id), decks: decks, moved: moved,
-            filings: filings, title: title, number: number, studyPass: studyPass, lecture: lecture, superseded: superseded
+            filings: filings, title: title, number: number, studyPass: studyPass, lecture: lecture, superseded: superseded,
+            instruction: instruction?.id
         )
     }
 
@@ -589,6 +604,9 @@ extension FilingService {
         }
         try pair.lecture.restore(in: db)
         try pair.studyPass.restore(in: db)
+        if let instruction = pair.instruction {
+            try LectureNotes.where { $0.id.eq(instruction) && $0.lectureID.eq(survivorID) }.delete().execute(db)
+        }
         guard let loser = try Lecture.find(loserID).fetchOne(db) else { throw FilingError.changedSince }
 
         for recordingID in pair.recordings {

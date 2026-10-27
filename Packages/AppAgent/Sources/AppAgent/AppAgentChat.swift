@@ -54,12 +54,14 @@ public enum AppAgentChat {
         public var materials: MaterialLibrary?
         /// mr: the lecture processor's `wake()` (a deck linked or unlinked queued alignment).
         public var wakeProcessing: @Sendable () async -> Void
+        /// ln: the app's Write Again (write_lecture_notes; nil: the repository's alone).
+        public var writeNotesAgain: NotesWriteAgain?
         public var now: @Sendable () -> Date
 
         public init(
             services: StudyServices, search: SearchEngine, drafter: ReplyDrafter?, memory: DeadlineMemory, coach: CoachEngine? = nil,
             documents: DocumentBank? = nil, materials: MaterialLibrary? = nil, wakeProcessing: @escaping @Sendable () async -> Void = {},
-            now: @escaping @Sendable () -> Date = { Date() }
+            writeNotesAgain: NotesWriteAgain? = nil, now: @escaping @Sendable () -> Date = { Date() }
         ) {
             self.services = services
             self.search = search
@@ -69,11 +71,15 @@ public enum AppAgentChat {
             self.documents = documents
             self.materials = materials
             self.wakeProcessing = wakeProcessing
+            self.writeNotesAgain = writeNotesAgain
             self.now = now
         }
 
         var changeLog: ChangeLog {
-            ChangeLog(services: services, memory: memory, documents: documents, materials: materials, wakeProcessing: wakeProcessing, now: now)
+            ChangeLog(
+                services: services, memory: memory, documents: documents, materials: materials, wakeProcessing: wakeProcessing,
+                writeNotesAgain: writeNotesAgain, now: now
+            )
         }
         /// md: the document bank's tools (`DocumentTools.swift`).
         var documentTools: DocumentTools { DocumentTools(services: services, search: lectureSearch, bank: documents, changeLog: changeLog) }

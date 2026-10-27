@@ -164,6 +164,28 @@ public actor LectureProcessor {
         return job
     }
 
+    /// Retry on a lecture's Summary: a transcription for each of its recordings without lines
+    /// whose latest transcription failed or was cancelled (`JobRepository.failedTranscriptions`),
+    /// queued in one transaction (a second Retry finds them queued), then the queue runs. Returns
+    /// how many were queued (0: none had failed).
+    @discardableResult
+    public func retryTranscriptions(lectureID: Lecture.ID) async throws -> Int {
+        let store = store
+        let stamp = Date()
+        let queued = try await services.database.write { db -> Int in
+            let failed = try JobRepository.failedTranscriptions(lectureID: lectureID, in: db)
+            for recording in failed {
+                let job = store.stamp(Job(stage: .transcribe, lectureID: lectureID, recordingID: recording.recordingID, createdAt: stamp))
+                try Job.upsert { job }.execute(db)
+            }
+            return failed.count
+        }
+        guard queued > 0 else { return 0 }
+        Log.jobs.info("Retrying \(queued) failed transcription(s) of lecture \(lectureID, privacy: .public)")
+        wake()
+        return queued
+    }
+
     /// Cancels the running job of a lecture (it is marked cancelled) and drops its queued ones.
     public func cancel(lectureID: Lecture.ID) async throws {
         try await cancel(try await jobs.jobs(lectureID: lectureID))
