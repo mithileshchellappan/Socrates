@@ -74,8 +74,9 @@ an end whose files changed in the last minute is left out until the recorder say
 (the agent lists again when that minute is over), and one with a segment file it cannot read is
 left out rather than offered without it. The holdings name every capture still on the phone
 without the Mac's answer, offered or not; an outbox that cannot be read sends none. The Mac
-drops the staging of a capture they leave out, and the session forgets having offered it, so a
-capture listed again is offered again in the same session. The phone
+drops the staging of a capture they leave out, and the session forgets having offered it and
+the bytes the Mac held of it, so a capture listed again is offered again, from nothing, in the
+same session; one the Mac answered for never is. The phone
 keeps one sidecar per capture: the bytes the Mac acknowledged until it answers (so the outbox row
 shows them after a relaunch), then its answer, the receipt, written only for a recording offered
 on that session; what the Mac holds is its staging folder. Neither keeps anything else.

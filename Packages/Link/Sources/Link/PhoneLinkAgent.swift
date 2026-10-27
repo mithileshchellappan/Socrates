@@ -687,13 +687,15 @@ actor PhoneLinkAgent {
                 let holdings = listing.all.subtracting(receipts.keys).sorted { $0.uuidString < $1.uuidString }
                 if current.toldHoldings != holdings {
                     // Noted before it goes: the Mac drops what is left out, so this session
-                    // forgets having offered it, and a capture listed again is offered again.
+                    // forgets having offered it and the bytes the Mac held, and a capture listed
+                    // again is offered again from nothing.
                     let held = Set(holdings)
                     update(id) {
                         $0.toldHoldings = holdings
                         $0.toldOffers = $0.toldOffers.filter { held.contains($0.key) }
                         $0.files = $0.files.filter { held.contains($0.key) }
                     }
+                    onMac = onMac.filter { held.contains($0.key) }
                     try await channel.send(.holdings(Holdings(recordings: holdings)), lane: .control)
                 }
                 let ordered = listing.entries.filter(\.isFinal)
@@ -705,7 +707,8 @@ actor PhoneLinkAgent {
                         relistNeeded = true
                         continue
                     }
-                    guard session?.id == id, session?.toldOffers[entry.id] != offer else { continue }
+                    // Answered (also while this pass listed or hashed): never offered again.
+                    guard session?.id == id, receipts[entry.id] == nil, session?.toldOffers[entry.id] != offer else { continue }
                     let files = Dictionary(entry.files.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
                     // Noted before it goes: the Mac's answer may come before this pass resumes.
                     update(id) {

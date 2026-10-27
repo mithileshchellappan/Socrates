@@ -183,18 +183,15 @@ actor DirectChannel: LinkChannel {
         throw CancellationError()
     }
 
-    /// The connection's states from now on, as Network reports them, for `open`'s one reader:
-    /// the state it is in when the handler is set comes first, so a change made before is not
-    /// missed. The stream finishes when the connection is cancelled or when `open` finishes it;
-    /// the handler then stays with the connection, yielding nothing, until the connection goes.
+    /// The connection's states as Network reports them, plus the state it is in when the handler
+    /// is set (so a change made before is not missed; a repeat is harmless), for `open`'s one
+    /// reader. `open` finishes the stream when it returns; the handler stays with the connection,
+    /// yielding nothing, until the connection goes.
     private static func stateUpdates(
         of connection: NetworkConnection<TLS>
     ) -> (AsyncStream<ConnectionState>, AsyncStream<ConnectionState>.Continuation) {
         let (states, continuation) = AsyncStream.makeStream(of: ConnectionState.self)
-        connection.onStateUpdate { _, state in
-            continuation.yield(state)
-            if state == .cancelled { continuation.finish() }
-        }
+        connection.onStateUpdate { _, state in continuation.yield(state) }
         continuation.yield(connection.state)
         return (states, continuation)
     }
