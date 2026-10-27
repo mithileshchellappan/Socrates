@@ -10,7 +10,8 @@ import StudyCore
 /// never misread.
 ///
 /// `AgentRuntime` builds the source again from those bytes before every request
-/// (`MessageParam.sendable(blobs:)`): base64 as ClaudeKit's `.image` and `.pdf` make it
+/// (`MessageParam.sendable(blobs:)`), in the turns the backend sends (Claude Code: the user turns
+/// after the last answer; the older turns go as stored): base64 as ClaudeKit's `.image` and `.pdf` make it
 /// (`Data.base64EncodedString()`), and for `plainText` the `text` source of the bytes read as
 /// UTF-8, as the sender read them. Claude receives what a turn holding the base64 or the text
 /// carried, byte for byte.

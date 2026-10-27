@@ -443,8 +443,17 @@ public actor AgentRuntime {
         )
         do {
             let courses = CourseList(tokens: try await CourseTokens.load(services.database))
-            // Files stored by reference carry their bytes again, as the first request did.
-            let messages = try history.map { try $0.sendable(blobs: services.blobs) }
+            // Files stored by reference carry their bytes again, as the first request did, in the
+            // turns the backend sends: Claude Code sends only the user turns after the last answer
+            // (its session holds the earlier ones, and a replay without it reads only their text),
+            // so an answered turn's file is never read, and one gone from this library (blobs do
+            // not sync) does not end every later run. The Messages API sends every turn.
+            let pending = client.backendKind == .messagesAPI
+                ? history.startIndex
+                : (history.lastIndex { $0.role == .assistant }.map { $0 + 1 } ?? history.startIndex)
+            let messages = try history.indices.map { index in
+                index >= pending ? try history[index].sendable(blobs: services.blobs) : history[index]
+            }
             let request = MessageRequest(
                 model: spec.model, maxTokens: spec.maxTokens, effort: spec.effort, messages: messages,
                 system: [SystemBlock(text: spec.system(conversation.createdAt, courses))],
@@ -534,7 +543,8 @@ public actor AgentRuntime {
     }
 
     /// The history as stored, decoded without changing a byte of what will be sent again (`run`
-    /// gives files stored by reference their bytes back: `MessageParam.sendable(blobs:)`).
+    /// gives files stored by reference in the turns it sends their bytes back:
+    /// `MessageParam.sendable(blobs:)`).
     static func history(_ turns: [AgentTurn]) throws -> [MessageParam] {
         try turns.map { try MessageParam(json: JSONValue.parse($0.message)) }
     }
