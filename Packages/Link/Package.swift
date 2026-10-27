@@ -55,7 +55,6 @@ let package = Package(
             name: "LinkUI",
             dependencies: [
                 "Link",
-                "LinkCore",
                 .product(name: "RecorderContract", package: "Recorder"),
                 .product(name: "StudyUI", package: "StudyUI"),
                 .product(name: "CaptureUI", package: "Capture"),

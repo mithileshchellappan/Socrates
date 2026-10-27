@@ -628,15 +628,13 @@ final class AppModel {
 
     /// link: starts the recording link (this device's `link_device` row, trust in the other
     /// platform's rows) unless iCloud already reported another account, and stops it for good when
-    /// it does: trust learned through the old account's rows goes with it. The Mac also stops it
-    /// when the app quits (goodbyes to the phone; its actor outlives a model that merely goes).
+    /// it does: trust learned through the old account's rows goes with it. Nothing stops it at
+    /// quit: the process ends before a goodbye could go, the phone notices the loss within seconds,
+    /// and a half-written file's length is read again at the next launch.
     private func startRecordingLink(_ cloudSync: CloudSync) {
         guard !cloudSync.accountSwitched else { return }
         #if os(macOS)
         guard let link = phoneLink else { return }
-        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
-            MainActor.assumeIsolated { link.stop() }
-        }
         #else
         guard let link = macLink else { return }
         #endif

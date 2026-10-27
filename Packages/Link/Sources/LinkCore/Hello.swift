@@ -7,8 +7,9 @@ import Foundation
 public struct Hello: Codable, Hashable, Sendable {
     public var role: LinkRole
     public var device: LinkDeviceID
-    /// New at every launch: tells a relaunched phone (whose snapshot sequence may start over) from
-    /// a reconnect of the same run.
+    /// New at every launch, for the peer's log: which run of the app linked. Nothing decides on
+    /// it (the Mac's first snapshot of a session replaces what it showed; a snapshot's sequence
+    /// never goes back while the recorder runs).
     public var instance: UUID
     /// The app's version and build ("1.4 (212)"), for the log only: features are decided by
     /// `capabilities`.

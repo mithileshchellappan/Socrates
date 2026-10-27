@@ -139,7 +139,7 @@ public final class LiveLectureSession {
     /// manifest is written: the manifest on disk lags behind (it is written asynchronously, and a
     /// crash can leave it without the newest segment), so a reader of the live recording asks
     /// this list (`closedThrough`), never the file.
-    public private(set) var segments: [AudioSegmentInfo] = []
+    private(set) var segments: [AudioSegmentInfo] = []
 
     /// Called once the package is final: after Stop, or after a recording failure stopped it.
     /// The owner (not the view) sets it to file the capture, so filing never depends on a screen

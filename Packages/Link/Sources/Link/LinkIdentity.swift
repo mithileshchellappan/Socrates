@@ -6,12 +6,11 @@ import Security
 /// This device's key on the link: the private key in the Keychain, its public half
 /// (SubjectPublicKeyInfo DER, what the `link_device` row carries) and the certificate it presents.
 /// Not Sendable: the key and the TLS identity made from it stay inside the actor that loaded it;
-/// only `spki` and `fingerprint` (values) leave it.
+/// only `spki` (a value) leaves it.
 final class LinkIdentity {
     let key: SecKey
     /// The public key's SubjectPublicKeyInfo DER (91 bytes for P-256).
     let spki: Data
-    let fingerprint: LinkFingerprint
 
     /// Nil when `key` is not a P-256 private key.
     init?(key: SecKey) {
@@ -24,7 +23,6 @@ final class LinkIdentity {
         guard let signingKey = try? P256.Signing.PublicKey(x963Representation: external) else { return nil }
         self.key = key
         spki = signingKey.derRepresentation
-        fingerprint = LinkFingerprint(spki: spki)
     }
 
     enum IdentityError: Error {

@@ -19,7 +19,7 @@ import SQLiteData
 @Table("link_device")
 public struct LinkDevice: StudyRecord {
     public let id: UUID
-    /// `LinkDevice.mac` or `LinkDevice.iPhone`.
+    /// "mac" or "iphone": the link's `LinkRole` (Packages/Link), its one definition.
     public var platform: String
     /// Base64 of the public key's SubjectPublicKeyInfo DER (about 91 bytes for P-256). TEXT, never
     /// a BLOB: sync would carry a BLOB column as a CloudKit asset.
@@ -28,11 +28,6 @@ public struct LinkDevice: StudyRecord {
     /// Set by the device that replaced this key; a retired row is never trusted.
     @Column("retired_at") public var retiredAt: Date?
     @Column("updated_at") public var updatedAt: Date
-
-    /// `platform` of a Mac.
-    public static let mac = "mac"
-    /// `platform` of an iPhone.
-    public static let iPhone = "iphone"
 
     public init(
         id: UUID = UUID(),

@@ -18,7 +18,7 @@ exists only in the iCloud build; ad-hoc and public builds have no link and nothi
 |---|---|---|
 | `LinkCore` | Values and pure rules, no I/O: `LinkProtocol` (ALPN `socrates-link/1`, the service type), `LinkCapability` (`control.1`, `files.1`), `LinkDeviceID`, `LinkRole`, `LinkFingerprint`, the messages (`Hello`, `Goodbye`, `Ping`, `SnapshotMessage`, `Holdings`, `Offer` + `OfferedFile`, `Want`, `Chunk`, `Stored`, `Received`), `LinkMessage`, `LinkFrame` + `LinkProtocolError`, `LinkPolicy`, `InboxRules`, `PeerToPeerWindow`, `SelfSignedCertificate` | Foundation, CryptoKit, RecorderContract |
 | `Link` | Everything with I/O, behind two `@MainActor @Observable` models: `PhoneLink` (the Mac) with `RemoteRecording`, `Arrival`, `RemoteProblem`, `RemoteAction`; `MacLink` (the iPhone) with `CaptureDelivery`. Internal: the channel, the identity store, the device directory, the Mac's service and inbox, the phone's agent and outbox | LinkCore, RecorderContract, StudyCore, Capture, GRDB, Network, Security |
-| `LinkUI` | SwiftUI only: `PhoneRecordingMenuLabel`, `PhoneRecordingPanel`, `PhoneRecordingCapsule`, `PhoneRecordingMenuItems` (the Mac), `CaptureDeliveryLabel` (the phone's outbox row) | Link, LinkCore, RecorderContract, StudyUI, CaptureUI |
+| `LinkUI` | SwiftUI only: `PhoneRecordingMenuLabel`, `PhoneRecordingPanel`, `PhoneRecordingCapsule`, `PhoneRecordingMenuItems` (the Mac), `CaptureDeliveryLabel` (the phone's outbox row) | Link, RecorderContract, StudyUI, CaptureUI |
 
 Dependencies point one way: Link uses the Recorder package's contract only, and the Recorder
 package never depends on Link (SwiftPM refuses a cycle). The phone's outbox shows the link's
@@ -30,8 +30,9 @@ state through `RecorderScreen`'s delivery slot, which the app fills with `Captur
 // The Mac (AppModel), only when cloudSync != nil:
 let phoneLink = PhoneLink.mac(services: services) { url in await filingCenter.file([url]) }
 phoneLink.start()          // after cloudSync.start(), unless cloudSync.accountSwitched
-phoneLink.stop()           // willTerminate, or when cloudSync.accountSwitched turns true
+phoneLink.stop()           // when cloudSync.accountSwitched turns true (nothing at quit)
 phoneLink.showsItem        // MenuBarExtra(isInserted:), the toolbar capsule
+phoneLink.item             // what the label and the capsule draw: .recording(_) or .arriving(stored:total:)
 phoneLink.recording        // RemoteRecording?: snapshot, freshness (.live / .lastSeen), elapsed(at:)
 phoneLink.arrivals         // [Arrival]: title, course colour, stored of total bytes
 phoneLink.canSend(.pause)  // live, control on, the snapshot accepts it, nothing pending
@@ -54,12 +55,13 @@ dials, sessions and timers, and cancel them in `stop()`.
 
 | Type | Owns |
 |---|---|
-| `PhoneLink` (Mac, main actor) | `MacLinkService`; applies its events (`MacLinkEvent`) to the recording, arrivals and pending buttons; the second tick and the frozen lifetime |
-| `MacLinkService` (actor) | the infrastructure and peer-to-peer listeners, admission, one `MacSession` per phone, the commands waiting for results, the filing queue, App Nap's activity; a frozen recording whose `filing` row appears (filed another way) is no longer known |
-| `MacSession` | one phone's messages in order: snapshots and results to the service, holdings, offers and chunks to the inbox, one want at a time, `received` then filing |
+| `PhoneLink` (Mac, main actor) | `MacLinkService`; stores what its events (`MacLinkEvent`) say of the recording and the arrivals, the pending buttons (held until the result and the snapshot that shows it), the remote problem, the second tick |
+| `MacLinkService` (actor) | the infrastructure and peer-to-peer listeners, admission, one `MacSession` per phone, the commands waiting for results, the filing queue, App Nap's activity; the one owner of the recording shown (newest snapshot, frozen at the last byte heard, gone when stopped, filed another way or after the frozen lifetime) and of the arrival rows (each ends with its phone's session) |
+| `MacSession` | one phone's messages in order: snapshots and results to the service, holdings, offers and chunks to the inbox, one want at a time, filing then `received`; a recording that cannot be completed waits for the next session without holding up the others |
 | `RecordingInbox` (actor) | `Incoming/<device>/<uuid>.lecture.partial/`: `.part` files, their hashes, syncs and acknowledgements, the package checks and the move into `Recordings/` |
-| `MacLink` (iPhone, main actor) | `PhoneLinkAgent`; bridges the recorder's snapshots to it, shows its deliveries, begins and ends background time |
-| `PhoneLinkAgent` (actor) | when to link, browsing and dialing, the session with the Mac, what the Mac has been told (`sync`), commands to the recorder, receipts |
+| `MacLink` (iPhone, main actor) | `PhoneLinkAgent`; bridges the recorder's snapshots to it, shows its deliveries; begins background time the moment the recorder shows a Stop |
+| `LinkBackgroundTime` (main actor) | the one UIKit background task: begun before any Stop runs (by `MacLink`, by the agent before the Mac's Stop), ended by the agent or by iOS |
+| `PhoneLinkAgent` (actor) | when to link, browsing and dialing, the session with the Mac, what the Mac has been told (`sync`, a pass of its own), commands to the recorder, receipts, when background time ends |
 | `Outbox`, `OutboxReceipts` | the outbox as the link sees it (what may be offered, hashes, bytes) and `PhoneCaptures/.link/<uuid>.json` |
 | `LinkChannel` / `DirectChannel` (actor) | the transport seam and its TCP + TLS route: framing, hello and its checks, the two lanes, pings and loss |
 | `LinkIdentityStore`, `LinkIdentity`, `PeerCertificate` | the Keychain key, the certificate made from it, the peer's key fingerprint and ALPN |
@@ -68,9 +70,12 @@ dials, sessions and timers, and cancel them in `stop()`.
 What the phone may offer (`Outbox`): the recording going on offers its audio segments up to the
 snapshot's `closedSegments`, never its JSON files; any other capture offers all its audio, and
 its JSON files once it is final (it ended, or its last event is not a pause); a capture without
-an end whose files changed in the last minute is left out until the recorder says what it is.
-The phone keeps one persistent fact per capture, its receipt; what the Mac holds is its staging
-folder. Neither keeps anything else.
+an end whose files changed in the last minute is left out until the recorder says what it is
+(the agent lists again when that minute is over), and one with a segment file it cannot read is
+left out rather than offered without it. The holdings name every capture still on the phone
+without the Mac's answer, offered or not; an outbox that cannot be read sends none. The phone
+keeps one persistent fact per capture, its receipt, written only for a recording offered on that
+session; what the Mac holds is its staging folder. Neither keeps anything else.
 
 ## Protocol (generation 1)
 
@@ -89,8 +94,9 @@ folder. Neither keeps anything else.
   receipt with its own clock. The two devices' clocks are never compared.
 - **Files**: the phone offers a recording's closed segments as they close and every file once it
   is final; the Mac asks for one file at a time from the length it holds, acknowledges durable
-  bytes (`stored`), checks each file's SHA-256, moves the whole package into `Recordings/`, says
-  `received`, then files it. The phone keeps one receipt per capture and never offers it again.
+  bytes (`stored`), checks each file's SHA-256 and that every segment the manifest lists came,
+  moves the whole package into `Recordings/` (the move synced), files it, then says `received`.
+  A package found in `Recordings/` that nothing filed is filed when the phone offers it again. The phone keeps one receipt per capture and never offers it again.
   An offer names its manifest's course (`courseID`, optional): the arrival row's dot takes the
   Mac's own colour for it.
 
