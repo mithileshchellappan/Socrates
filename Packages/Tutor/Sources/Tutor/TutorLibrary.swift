@@ -14,6 +14,10 @@ struct TutorLibrary: Sendable {
     /// In course order, then by number.
     let lectures: [Lecture]
     let recordings: [Lecture.ID: [Recording]]
+    /// Recordings filed with no lecture (a plain recording nothing could place, a capture whose
+    /// course was gone), oldest first: `list_lectures` names them so `move_recording` can place
+    /// them (2026-10-27).
+    let withoutLecture: [Recording]
     /// mr: the lecture's slides, a page range of a deck that other lectures may share
     /// (`LectureSlides.current`, as Review shows them; deck page numbers kept).
     let slides: [Lecture.ID: LectureSlideRange]
@@ -29,7 +33,7 @@ struct TutorLibrary: Sendable {
             for lecture in lectures {
                 if let range = try LectureSlides.current(lectureID: lecture.id, in: db) { slides[lecture.id] = range }
             }
-            let recordings = try Recording.where { $0.lectureID.isNot(nil) }.order(by: \.startedAt).fetchAll(db)
+            let recordings = try Recording.order(by: \.startedAt).fetchAll(db)
             let sessions = try LectureSession.order(by: \.startsAt).fetchAll(db)
             return (lectures: lectures, recordings: recordings, slides: slides, sessions: sessions)
         }
@@ -42,11 +46,16 @@ struct TutorLibrary: Sendable {
             return (lhs.heldAt ?? .distantFuture) < (rhs.heldAt ?? .distantFuture)
         }
         var recordings: [Lecture.ID: [Recording]] = [:]
+        var withoutLecture: [Recording] = []
         for recording in rows.recordings {
-            if let lectureID = recording.lectureID { recordings[lectureID, default: []].append(recording) }
+            if let lectureID = recording.lectureID {
+                recordings[lectureID, default: []].append(recording)
+            } else {
+                withoutLecture.append(recording)
+            }
         }
         return TutorLibrary(
-            courses: courses, lectures: lectures, recordings: recordings, slides: rows.slides,
+            courses: courses, lectures: lectures, recordings: recordings, withoutLecture: withoutLecture, slides: rows.slides,
             sessions: Dictionary(grouping: rows.sessions, by: \.courseID)
         )
     }
