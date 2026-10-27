@@ -23,27 +23,29 @@ public final class MacLink {
 
     @ObservationIgnored private let agent: PhoneLinkAgent?
     @ObservationIgnored private let recorder: (any RecorderEndpoint)?
-    @ObservationIgnored private let beginBackgroundTime: BeginBackgroundTime?
+    @ObservationIgnored private let backgroundTime: LinkBackgroundTime
     @ObservationIgnored private var isStarted = false
-    /// The agent's events, shown here.
+    /// The agent's deliveries, shown here.
     @ObservationIgnored private var consumer: Task<Void, Never>?
     /// The recorder's snapshots, handed to the agent.
     @ObservationIgnored private var snapshots: Task<Void, Never>?
     /// Start, stop and scene changes, one after the other.
     @ObservationIgnored private var lifecycle: Task<Void, Never>?
-    @ObservationIgnored private var endBackgroundTime: (@MainActor @Sendable () -> Void)?
 
     private init(services: StudyServices?, recorder: (any RecorderEndpoint)?, beginBackgroundTime: BeginBackgroundTime?) {
-        agent = services.flatMap { services in recorder.map { PhoneLinkAgent(services: services, recorder: $0) } }
+        let backgroundTime = LinkBackgroundTime(begin: beginBackgroundTime)
+        self.backgroundTime = backgroundTime
+        agent = services.flatMap { services in
+            recorder.map { PhoneLinkAgent(services: services, recorder: $0, backgroundTime: backgroundTime) }
+        }
         self.recorder = recorder
-        self.beginBackgroundTime = beginBackgroundTime
     }
 
     isolated deinit {
         consumer?.cancel()
         snapshots?.cancel()
         lifecycle?.cancel()
-        endBackgroundTime?()
+        backgroundTime.release()
     }
 
     /// The phone's link over `services`' library and `recorder`. Starts nothing.
@@ -58,19 +60,32 @@ public final class MacLink {
     public func start() {
         guard let agent, let recorder, !isStarted else { return }
         isStarted = true
-        let (events, sink) = AsyncStream.makeStream(of: PhoneLinkAgent.Event.self)
+        backgroundTime.onExpiry = { [weak self] in
+            self?.backgroundTimeExpired()
+        }
+        let (updates, sink) = AsyncStream.makeStream(of: [UUID: CaptureDelivery].self)
         consumer = Task { [weak self] in
-            for await event in events {
-                self?.apply(event)
+            for await latest in updates {
+                self?.deliveries = latest
             }
         }
         let stream = recorder.snapshots()
+        let backgroundTime = backgroundTime
         snapshots = Task {
+            var wasLive = false
             for await snapshot in stream {
+                let isLive = snapshot.map { $0.phase != .stopped } ?? false
+                // Stop ends the audio session before the package is closed and sent: the time to
+                // finish begins here, before the agent hears of it (it ends the time when there
+                // is nothing to send).
+                if snapshot?.phase == .stopping || (wasLive && !isLive) {
+                    backgroundTime.hold()
+                }
+                wasLive = isLive
                 await agent.recorderChanged(snapshot)
             }
         }
-        enqueue { await agent.start(events: sink) }
+        enqueue { await agent.start(deliveries: sink) }
     }
 
     /// Says goodbye and stops browsing and dialing.
@@ -81,7 +96,7 @@ public final class MacLink {
         consumer = nil
         snapshots?.cancel()
         snapshots = nil
-        finishBackgroundTime()
+        backgroundTime.release()
         deliveries = [:]
         enqueue { await agent.stop() }
     }
@@ -106,29 +121,10 @@ public final class MacLink {
         }
     }
 
-    private func apply(_ event: PhoneLinkAgent.Event) {
-        switch event {
-        case .deliveries(let latest):
-            deliveries = latest
-        case .backgroundTime(true):
-            guard endBackgroundTime == nil, let beginBackgroundTime else { return }
-            endBackgroundTime = beginBackgroundTime("Socrates recording link") { [weak self] in
-                self?.backgroundTimeExpired()
-            }
-        case .backgroundTime(false):
-            finishBackgroundTime()
-        }
-    }
-
+    /// iOS took the background time back: the agent stops counting on it.
     private func backgroundTimeExpired() {
-        finishBackgroundTime()
         guard let agent else { return }
         enqueue { await agent.backgroundTimeEnded() }
-    }
-
-    private func finishBackgroundTime() {
-        endBackgroundTime?()
-        endBackgroundTime = nil
     }
 
     #if DEBUG

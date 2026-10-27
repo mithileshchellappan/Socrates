@@ -16,7 +16,10 @@ import RecorderContract
 ///   paused may still be finished or taken up again, so it is not final);
 /// - a package without `endedAt` whose files changed within `quietPeriod` is left out: it may be a
 ///   recording that started before its first snapshot arrived (unless the recorder said it
-///   stopped: `settled`).
+///   stopped: `settled`); the listing says when the first such capture may be offered;
+/// - a package with a segment file that cannot be read now is left out, never offered without it.
+///
+/// Every capture is in the listing's `all`, offered or not: what the phone still holds.
 enum Outbox {
     /// A package without `endedAt` is offered only once its files have been still this long.
     static let quietPeriod: TimeInterval = 60
@@ -53,10 +56,20 @@ enum Outbox {
     }
 
     /// The outbox now: `entries` for the captures that may be offered, oldest first, leaving out
-    /// those received already; `all` every capture's id.
+    /// those received already; `all` every capture's id; `quietUntil` when the first capture left
+    /// out for changing recently may be offered.
     struct Listing: Sendable {
         var entries: [Entry] = []
         var all: Set<RecordingID> = []
+        var quietUntil: Date?
+    }
+
+    /// What one package gives the listing.
+    private enum Reading {
+        case entry(Entry)
+        /// Changed recently: offered once still until then.
+        case quiet(until: Date)
+        case skipped
     }
 
     /// A file's SHA-256, kept in memory while its size and date stay the same.
@@ -68,16 +81,18 @@ enum Outbox {
 
     // MARK: - Listing
 
+    /// The outbox now; nil when it cannot be read (never an empty outbox: the Mac would take that
+    /// as "the student deleted everything").
     @concurrent
     static func list(
         in directory: URL, live: Live?, settled: RecordingID?, skipping: Set<RecordingID>, now: Date
-    ) async -> Listing {
+    ) async -> Listing? {
         let packages: [LecturePackage]
         do {
             packages = try LecturePackage.all(in: directory)
         } catch {
             LinkLog.outbox.error("Listing the outbox failed: \(error.localizedDescription, privacy: .public)")
-            return Listing()
+            return nil
         }
         var listing = Listing()
         for package in packages {
@@ -86,42 +101,50 @@ enum Outbox {
             listing.all.insert(id)
             guard !skipping.contains(id) else { continue }
             if let live, live.id == id {
-                let audio = audioFiles(in: package).filter { $0.sequence <= live.closedSegments }.map(\.file)
-                listing.entries.append(Entry(id: id, title: live.title, courseID: nil, isFinal: false, isLive: true, files: audio))
+                guard let audio = audioFiles(in: package) else { continue }
+                let closed = audio.filter { $0.sequence <= live.closedSegments }.map(\.file)
+                listing.entries.append(Entry(id: id, title: live.title, courseID: nil, isFinal: false, isLive: true, files: closed))
                 continue
             }
-            if let entry = entry(for: package, id: id, isSettled: id == settled, now: now) {
+            switch reading(package, id: id, isSettled: id == settled, now: now) {
+            case .entry(let entry):
                 listing.entries.append(entry)
+            case .quiet(let until):
+                listing.quietUntil = min(listing.quietUntil ?? until, until)
+            case .skipped:
+                break
             }
         }
         return listing
     }
 
-    private static func entry(for package: LecturePackage, id: RecordingID, isSettled: Bool, now: Date) -> Entry? {
+    private static func reading(_ package: LecturePackage, id: RecordingID, isSettled: Bool, now: Date) -> Reading {
         let contents: LecturePackageContents
         do {
             contents = try LecturePackageReader.read(package)
         } catch {
             LinkLog.outbox.notice("Skipping unreadable capture \(id.uuidString, privacy: .public): \(String(describing: error), privacy: .public)")
-            return nil
+            return .skipped
         }
         let manifest = contents.manifest
-        guard manifest.id == id.rawValue else { return nil }
-        let audio = audioFiles(in: package).filter { $0.extension == manifest.fileFormat }.map(\.file)
+        guard manifest.id == id.rawValue else { return .skipped }
+        guard let segments = audioFiles(in: package) else { return .skipped }
+        let audio = segments.filter { $0.extension == manifest.fileFormat }.map(\.file)
         let json = jsonFiles(in: package)
         if manifest.endedAt == nil, !isSettled {
             let newest = (audio + json).map(\.modified).max() ?? .distantPast
-            guard now.timeIntervalSince(newest) >= quietPeriod else { return nil }
+            let still = newest.addingTimeInterval(quietPeriod)
+            guard now >= still else { return .quiet(until: still) }
         }
         let isFinal = manifest.endedAt != nil || contents.events.last?.kind != .pause
-        return Entry(
+        return .entry(Entry(
             id: id,
             title: title(of: manifest, startedAt: manifest.startedAt ?? contents.events.first?.wallClock),
             courseID: manifest.courseID,
             isFinal: isFinal,
             isLive: false,
             files: isFinal ? audio + json : audio
-        )
+        ))
     }
 
     /// "DC Lecture 2" (the recorder's name), else the course and the day.
@@ -132,8 +155,9 @@ enum Outbox {
         return [course, day].compactMap(\.self).joined(separator: " ")
     }
 
-    /// The package's segment files: regular files named `seg-NNNN.<ext>` in its audio folder.
-    private static func audioFiles(in package: LecturePackage) -> [(sequence: Int, extension: String, file: File)] {
+    /// The package's segment files: regular files named `seg-NNNN.<ext>` in its audio folder. Nil
+    /// when one of them cannot be read now: the capture is left out rather than offered without it.
+    private static func audioFiles(in package: LecturePackage) -> [(sequence: Int, extension: String, file: File)]? {
         let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
         let urls = (try? FileManager.default.contentsOfDirectory(at: package.audioDirectory, includingPropertiesForKeys: keys)) ?? []
         var files: [(sequence: Int, extension: String, file: File)] = []
@@ -142,9 +166,12 @@ enum Outbox {
             let path = "\(LecturePackage.audioFolder)/\(name)"
             let fileExtension = url.pathExtension
             guard let sequence = InboxRules.segmentSequence(path),
-                  name == LecturePackage.segmentFileName(sequence: sequence, fileExtension: fileExtension),
-                  let file = file(at: url, path: path)
+                  name == LecturePackage.segmentFileName(sequence: sequence, fileExtension: fileExtension)
             else { continue }
+            guard let file = file(at: url, path: path) else {
+                LinkLog.outbox.notice("Skipping \(package.url.lastPathComponent, privacy: .public) for now: \(name, privacy: .public) cannot be read")
+                return nil
+            }
             files.append((sequence, fileExtension, file))
         }
         return files.sorted { $0.sequence < $1.sequence }

@@ -16,27 +16,22 @@ import StudyCore
 ///
 /// What the Mac has been told is reconciled in one place (`sync`), in the protocol's order:
 /// holdings, final offers oldest first, the other captures' audio, the recording going on, the
-/// snapshot. A stopped recording's final offer so goes before its stopped snapshot.
+/// snapshot. A stopped recording's final offer so goes before its stopped snapshot. The sync runs
+/// in a pass the agent owns, so a snapshot or a message is never handled behind one.
 actor PhoneLinkAgent {
-    /// What `MacLink` shows or does on the main actor.
-    enum Event: Sendable {
-        /// What the Mac holds of each capture.
-        case deliveries([UUID: CaptureDelivery])
-        /// Whether the agent wants time to finish after the app leaves the foreground.
-        case backgroundTime(Bool)
-    }
-
     /// How long the first browse of a pass waits for the Mac to show up.
     static let discoveryTime: Duration = .seconds(5)
 
     private let services: StudyServices
     private let recorder: any RecorderEndpoint
+    private let backgroundTime: LinkBackgroundTime
     private let directory: LinkDirectory
     private let receiptStore: OutboxReceipts
     /// New at every launch (the hello's `instance`).
     private let instance = UUID()
 
-    private var events: AsyncStream<Event>.Continuation?
+    /// What the Mac holds of each capture, for `MacLink`.
+    private var deliveries: AsyncStream<[UUID: CaptureDelivery]>.Continuation?
     private var started = false
     private var secIdentity: sec_identity_t?
     private var device: LinkDeviceID?
@@ -52,6 +47,8 @@ actor PhoneLinkAgent {
     private var listing = Outbox.Listing()
     private var listingVersion = 0
     private var relistNeeded = true
+    /// Lists again once a capture left out for changing recently may be offered.
+    private var quietRelist: Task<Void, Never>?
     private var receipts: [RecordingID: Received.Outcome] = [:]
     private var hashes: [URL: Outbox.Hash] = [:]
     /// Bytes the Mac acknowledged in this run, by recording and path.
@@ -61,7 +58,9 @@ actor PhoneLinkAgent {
     private var lastDeliveries: [UUID: CaptureDelivery]?
 
     private var session: Session?
-    private var syncing = false
+    /// The sync passes (`requestSync`); a request while one runs runs one more.
+    private var syncTask: Task<Void, Never>?
+    private var syncGeneration = 0
     private var syncAgain = false
 
     private var linkTask: Task<Void, Never>?
@@ -85,9 +84,10 @@ actor PhoneLinkAgent {
         var files: [RecordingID: [String: Outbox.File]] = [:]
     }
 
-    init(services: StudyServices, recorder: any RecorderEndpoint) {
+    init(services: StudyServices, recorder: any RecorderEndpoint, backgroundTime: LinkBackgroundTime) {
         self.services = services
         self.recorder = recorder
+        self.backgroundTime = backgroundTime
         directory = LinkDirectory(services: services, role: .iPhone)
         receiptStore = OutboxReceipts(outbox: services.paths.phoneCaptures)
     }
@@ -96,10 +96,10 @@ actor PhoneLinkAgent {
 
     /// Loads the key (the link stays off without one), registers this phone's row, reads the
     /// receipts and the outbox, and follows the trusted Macs. Idempotent.
-    func start(events: AsyncStream<Event>.Continuation) async {
+    func start(deliveries: AsyncStream<[UUID: CaptureDelivery]>.Continuation) async {
         guard !started else { return }
         started = true
-        self.events = events
+        self.deliveries = deliveries
         let identity: LinkIdentity
         switch LinkIdentityStore().load() {
         case .ready(let loaded):
@@ -126,7 +126,7 @@ actor PhoneLinkAgent {
             await self?.trustChanged(peers)
         }
         relistNeeded = true
-        await requestSync()
+        requestSync()
     }
 
     /// Says goodbye and stops browsing and dialing.
@@ -134,6 +134,11 @@ actor PhoneLinkAgent {
         guard started else { return }
         started = false
         linkGeneration += 1
+        syncGeneration += 1
+        syncTask?.cancel()
+        syncTask = nil
+        quietRelist?.cancel()
+        quietRelist = nil
         let task = linkTask
         linkTask = nil
         if let channel = session?.channel {
@@ -142,9 +147,9 @@ actor PhoneLinkAgent {
         task?.cancel()
         await directory.stop()
         trusted = TrustedPeers()
-        releaseBackgroundTime()
-        events?.finish()
-        events = nil
+        await releaseBackgroundTime()
+        deliveries?.finish()
+        deliveries = nil
     }
 
     /// The scene's phase. Coming to the foreground reads the outbox again (the student may have
@@ -156,33 +161,39 @@ actor PhoneLinkAgent {
         if active {
             relistNeeded = true
             await restartDialing()
-            await requestSync()
+            requestSync()
         }
         await updateLink()
     }
 
-    /// The recorder's newest snapshot (nil: nothing records).
+    /// The recorder's newest snapshot (nil: nothing records). Quick: the sync it asks for runs
+    /// in its own pass.
     func recorderChanged(_ new: RecorderSnapshot?) async {
         let old = snapshot
         snapshot = new
-        guard started else { return }
         let wasLive = old.map { $0.phase != .stopped } ?? false
         let isLive = new.map { $0.phase != .stopped } ?? false
+        // A Stop, beginning or seen only once done: the time to send the rest is held for it.
+        // `MacLink` began it already when it saw the Stop; it ends here when there is nothing to
+        // send (no link, or the Mac has the recording).
+        if new?.phase == .stopping || (wasLive && !isLive) {
+            if canLink, let stopped = new?.recordingID ?? old?.recordingID, receipts[stopped] == nil {
+                await holdBackgroundTime(for: stopped)
+            } else if !holdsBackgroundTime {
+                await backgroundTime.release()
+            }
+        }
+        guard started else { return }
         if old?.recordingID != new?.recordingID || wasLive != isLive || old?.closedSegments != new?.closedSegments {
             relistNeeded = true
         }
-        if canLink, wasLive, !isLive, let stopped = new?.recordingID ?? old?.recordingID, receipts[stopped] == nil {
-            backgroundFor = stopped
-            if !holdsBackgroundTime {
-                holdsBackgroundTime = true
-                events?.yield(.backgroundTime(true))
-            }
-        }
-        if isLive, !wasLive, session == nil {
+        // Record and Stop dial again at once with a new browser, also out of a backoff wait: after
+        // Stop the background time is the only chance to send the rest.
+        if isLive != wasLive, session == nil {
             await restartDialing()
         }
         await updateLink()
-        await requestSync()
+        requestSync()
     }
 
     /// iOS took the background time back.
@@ -195,17 +206,23 @@ actor PhoneLinkAgent {
     private func trustChanged(_ peers: TrustedPeers) async {
         trusted = peers
         if let session, !peers.contains(session.channel.peer.device) {
-            await session.channel.close(Goodbye(reason: .untrusted))
+            await session.channel.close(Goodbye(reason: .untrusted), within: .seconds(1))
         }
-        if !canLink { releaseBackgroundTime() }
+        if !canLink { await releaseBackgroundTime() }
         await updateLink()
     }
 
-    private func releaseBackgroundTime() {
+    private func holdBackgroundTime(for recording: RecordingID) async {
+        backgroundFor = recording
+        holdsBackgroundTime = true
+        await backgroundTime.hold()
+    }
+
+    private func releaseBackgroundTime() async {
         backgroundFor = nil
         guard holdsBackgroundTime else { return }
         holdsBackgroundTime = false
-        events?.yield(.backgroundTime(false))
+        await backgroundTime.release()
     }
 
     // MARK: - When to link
@@ -231,7 +248,7 @@ actor PhoneLinkAgent {
             let generation = linkGeneration
             linkTask = Task { await self.dialLoop(generation) }
         } else if let channel = session?.channel {
-            await channel.close(Goodbye(reason: .done))
+            await channel.close(Goodbye(reason: .done), within: .seconds(1))
         }
     }
 
@@ -291,7 +308,7 @@ actor PhoneLinkAgent {
             failedPasses += 1
             if !isActive, !isRecording, holdsBackgroundTime {
                 LinkLog.link.notice("No Mac reachable after Stop; the rest goes when the app is open")
-                releaseBackgroundTime()
+                await releaseBackgroundTime()
             }
         }
         if generation == linkGeneration { linkTask = nil }
@@ -388,12 +405,12 @@ actor PhoneLinkAgent {
                 }
             }
             relistNeeded = true
-            await requestSync()
+            requestSync()
             for try await message in channel.messages {
                 switch message {
                 case .want(let want): wantSink.yield(want)
-                case .stored(let stored): noteStored(stored)
-                case .received(let received): await noteReceived(received)
+                case .stored(let stored): noteStored(stored, session: id)
+                case .received(let received): await noteReceived(received, session: id)
                 case .command(let command): await run(command, on: channel, controlOn: current.controlOn)
                 default: break
                 }
@@ -420,17 +437,29 @@ actor PhoneLinkAgent {
         } catch {
             LinkLog.outbox.notice("Sending \(want.path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             relistNeeded = true
-            await requestSync()
+            requestSync()
         }
     }
 
-    private func noteStored(_ stored: Stored) {
+    /// Bytes of a file offered on session `id` are on the Mac (never more than the file has).
+    private func noteStored(_ stored: Stored, session id: UUID) {
+        guard let session, session.id == id, let file = session.files[stored.recording]?[stored.path] else {
+            LinkLog.outbox.notice("The Mac stored \(stored.path, privacy: .public) of \(stored.recording.uuidString, privacy: .public), which is not offered; ignored")
+            return
+        }
         let known = onMac[stored.recording]?[stored.path] ?? 0
-        onMac[stored.recording, default: [:]][stored.path] = max(known, stored.bytes)
+        onMac[stored.recording, default: [:]][stored.path] = max(known, min(stored.bytes, file.size))
         emitDeliveries()
     }
 
-    private func noteReceived(_ received: Received) async {
+    /// The Mac's answer for a recording offered on session `id`: its receipt is written and it is
+    /// never offered again. An answer for anything else is dropped: a receipt the Mac did not earn
+    /// would show "On Mac" for a capture it never got.
+    private func noteReceived(_ received: Received, session id: UUID) async {
+        guard let session, session.id == id, session.toldOffers[received.recording] != nil else {
+            LinkLog.outbox.notice("The Mac answered for \(received.recording.uuidString, privacy: .public), which this session did not offer; ignored")
+            return
+        }
         receipts[received.recording] = received.outcome
         do {
             try await receiptStore.write(received.outcome, for: received.recording, at: Date())
@@ -441,8 +470,8 @@ actor PhoneLinkAgent {
         onMac[received.recording] = nil
         listing.entries.removeAll { $0.id == received.recording }
         emitDeliveries()
-        if received.recording == backgroundFor { releaseBackgroundTime() }
-        await requestSync()
+        if received.recording == backgroundFor { await releaseBackgroundTime() }
+        requestSync()
         await updateLink()
     }
 
@@ -451,7 +480,17 @@ actor PhoneLinkAgent {
         command.origin = .remote
         let outcome: RecorderOutcome
         if controlOn {
+            let stops = command.action.kind == .stop
+            // Stop ends the audio session before the package is closed: on a locked phone iOS may
+            // suspend the app from then on, so the time to finish it and send it comes first.
+            if stops, canLink, receipts[command.recordingID] == nil {
+                await holdBackgroundTime(for: command.recordingID)
+            }
             outcome = await recorder.perform(command)
+            let stopped = outcome.snapshot.map { $0.recordingID == command.recordingID && $0.phase == .stopped } ?? false
+            if stops, !stopped, backgroundFor == command.recordingID {
+                await releaseBackgroundTime()
+            }
         } else {
             outcome = RecorderOutcome(commandID: command.id, result: .rejected(.noRecording), snapshot: nil)
         }
@@ -460,33 +499,47 @@ actor PhoneLinkAgent {
 
     // MARK: - Telling the Mac
 
-    /// Brings the Mac up to date; one pass at a time (a request meanwhile runs one more).
-    private func requestSync() async {
+    /// Brings the Mac up to date in a pass the agent owns, one at a time (a request meanwhile
+    /// runs one more). Callers never wait for it.
+    private func requestSync() {
         guard started else { return }
-        if syncing {
+        guard syncTask == nil else {
             syncAgain = true
             return
         }
-        syncing = true
+        syncGeneration += 1
+        let generation = syncGeneration
+        syncTask = Task { await self.syncPasses(generation) }
+    }
+
+    private func syncPasses(_ generation: Int) async {
         repeat {
             syncAgain = false
             await syncOnce()
-        } while syncAgain && started
-        syncing = false
+        } while syncAgain && started && generation == syncGeneration
+        if generation == syncGeneration { syncTask = nil }
     }
 
     private func syncOnce() async {
         if relistNeeded {
             relistNeeded = false
             let stopped = snapshot.flatMap { $0.phase == .stopped ? $0.recordingID : nil }
-            listing = await Outbox.list(
+            // A listing that failed keeps the last one: an empty one would tell the Mac the
+            // student deleted every capture.
+            if let fresh = await Outbox.list(
                 in: services.paths.phoneCaptures, live: liveRecording, settled: stopped, skipping: Set(receipts.keys), now: Date()
-            )
-            listingVersion += 1
-            let urls = Set(listing.entries.flatMap { $0.files.map(\.url) })
-            hashes = hashes.filter { urls.contains($0.key) }
-            emitDeliveries()
-            await updateLink()
+            ) {
+                listing = fresh
+                listingVersion += 1
+                // A finished capture's total is its whole recording, also when no new offer goes
+                // (the link dropped before Stop): a bar never looks full for what is still here.
+                for entry in listing.entries { totals[entry.id] = entry.totalBytes }
+                let urls = Set(listing.entries.flatMap { $0.files.map(\.url) })
+                hashes = hashes.filter { urls.contains($0.key) }
+                scheduleQuietRelist(at: listing.quietUntil)
+                emitDeliveries()
+                await updateLink()
+            }
         }
         guard let current = session else { return }
         let id = current.id
@@ -494,7 +547,9 @@ actor PhoneLinkAgent {
         do {
             if current.filesOn, current.toldListing != listingVersion {
                 let version = listingVersion
-                let holdings = listing.entries.map(\.id)
+                // Everything still on the phone without the Mac's answer, offered now or not: the
+                // Mac deletes the staging of any recording left out.
+                let holdings = listing.all.subtracting(receipts.keys).sorted { $0.uuidString < $1.uuidString }
                 if current.toldHoldings != holdings {
                     try await channel.send(.holdings(Holdings(recordings: holdings)), lane: .control)
                     update(id) { $0.toldHoldings = holdings }
@@ -510,10 +565,14 @@ actor PhoneLinkAgent {
                     }
                     guard session?.id == id, session?.toldOffers[entry.id] != offer else { continue }
                     let files = Dictionary(entry.files.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
-                    update(id) { $0.files[entry.id] = files }
+                    // Noted before it goes: the Mac's answer may come before this pass resumes.
+                    update(id) {
+                        $0.files[entry.id] = files
+                        $0.toldOffers[entry.id] = offer
+                    }
                     totals[entry.id] = offer.totalBytes
+                    emitDeliveries()
                     try await channel.send(.offer(offer), lane: .control)
-                    update(id) { $0.toldOffers[entry.id] = offer }
                 }
                 update(id) { $0.toldListing = version }
             }
@@ -531,6 +590,28 @@ actor PhoneLinkAgent {
         } catch {
             // The channel ended; the next session starts over.
         }
+    }
+
+    /// Lists again once the first capture left out for changing recently may be offered (a
+    /// capture recovered after a kill mid-recording, a recording left paused and taken up).
+    private func scheduleQuietRelist(at date: Date?) {
+        quietRelist?.cancel()
+        quietRelist = nil
+        guard let date else { return }
+        let wait = max(0, date.timeIntervalSinceNow) + 1
+        quietRelist = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(wait))
+            } catch {
+                return
+            }
+            await self?.quietPeriodEnded()
+        }
+    }
+
+    private func quietPeriodEnded() {
+        relistNeeded = true
+        requestSync()
     }
 
     private func update(_ id: UUID, _ change: (inout Session) -> Void) {
@@ -566,6 +647,6 @@ actor PhoneLinkAgent {
         }
         guard deliveries != lastDeliveries else { return }
         lastDeliveries = deliveries
-        events?.yield(.deliveries(deliveries))
+        self.deliveries?.yield(deliveries)
     }
 }
