@@ -213,11 +213,12 @@ extension WriteTools {
                     Moves a recording to another lecture, ONLY when the student says it belongs there ("that recording is \
                     Tuesday's"). Its transcript, slide stamps, notes and flags go along; both lectures' study passes are \
                     built again; the lecture it leaves stays (delete_lecture when the student asks). recording: a key \
-                    from list_lectures' recordings, or a lecture that has exactly one. Into another course only when the \
-                    quote names that course. Undo moves it back.
+                    from list_lectures' recordings (also its recordings_without_lecture, which this places), or a \
+                    lecture that has exactly one. Into another course only when the quote names that course. Undo \
+                    moves it back.
                     """,
                 inputSchema: Schema.object([
-                    "recording": Schema.string("The recording's key (list_lectures' recordings), or a lecture with exactly one recording."),
+                    "recording": Schema.string("The recording's key (list_lectures' recordings or recordings_without_lecture), or a lecture with exactly one recording."),
                     "to": Schema.string("The lecture it goes to: its key, course token and number (\"DC 3\") or id."),
                     "quote": quoteProperty,
                 ])

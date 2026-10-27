@@ -29,7 +29,7 @@ struct LectureTools: Sendable {
         AgentTool(
             tool: .custom(
                 name: "list_lectures",
-                description: "The student's lectures with their keys, titles, days, classes (or the lecture whose class they joined), slide counts, durations and recordings (keys).",
+                description: "The student's lectures with their keys, titles, days, classes (or the lecture whose class they joined), slide counts, durations and recordings (keys), then the recordings that have no lecture (keys).",
                 inputSchema: TutorJSON.schema([
                     "course": TutorJSON.nullable(["type": "string", "description": "Course token; null for all courses."]),
                 ])
@@ -66,17 +66,22 @@ struct LectureTools: Sendable {
                     "cite": TutorJSON.string(cite),
                 ]
                 if let held = library.heldIn(lecture) { row["class"] = .string(held) }
-                // Each recording's key, start and length ("b680d175 · Thu 22 Oct, 14:02 · 1:28:10").
                 let recordings = library.recordings[lecture.id] ?? []
-                if !recordings.isEmpty {
-                    row["recordings"] = .array(recordings.map { recording in
-                        .string("\(ChatCitation.key(recording.id)) · \(ChangeSummary.dayTime(recording.startedAt)) · \(ChatCitation.clock(Int(recording.duration)))")
-                    })
-                }
+                if !recordings.isEmpty { row["recordings"] = .array(recordings.map(Self.recordingLine)) }
                 return .object(row)
             }
-            return TutorJSON.fitted([:], key: "lectures", rows: rows)
+            // Recordings filed with no lecture show on no screen: listed here, the agent can place
+            // them (move_recording). With a course, only that course's.
+            let withoutLecture = library.withoutLecture.filter { courseID == nil || $0.courseID == courseID }
+            var head: JSONObject = [:]
+            if !withoutLecture.isEmpty { head["recordings_without_lecture"] = .array(withoutLecture.map(Self.recordingLine)) }
+            return TutorJSON.fitted(head, key: "lectures", rows: rows)
         }
+    }
+
+    /// A recording's key, start and length: "b680d175 · Thu 22 Oct, 14:02 · 1:28:10".
+    static func recordingLine(_ recording: Recording) -> JSONValue {
+        .string("\(ChatCitation.key(recording.id)) · \(ChangeSummary.dayTime(recording.startedAt)) · \(ChatCitation.clock(Int(recording.duration)))")
     }
 
     // MARK: search_lectures
